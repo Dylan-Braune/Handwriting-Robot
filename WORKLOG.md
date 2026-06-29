@@ -34,6 +34,15 @@ Use this file as a short handoff record between PC, laptop, and Codex sessions. 
 - Committed `PROJECT_CONTEXT.md` locally with commit `940597f Add project context summary`.
 - Push from Codex hung due to likely credential/network handoff, so GitHub Desktop is preferred for committing and pushing from this point.
 
+## 2026-06-29 (Laptop)
+
+- Loaded the repository from `C:\Users\braun\OneDrive\Documents\GitHub\Handwriting-Robot`.
+- Read the previous Codex chat history from the pasted handoff attachment.
+- Confirmed the laptop Codex session can access the repository files, including `PROJECT_CONTEXT.md`, `WORKLOG.md`, `README.md`, `Research/ReferenceLinks.txt`, the proposal PDF, and the scaffolded software/hardware/data folders.
+- Read `PROJECT_CONTEXT.md`, `WORKLOG.md`, `README.md`, and `Research/ReferenceLinks.txt` to align with the PC session.
+- Confirmed the persistent workflow: use GitHub/GitHub Desktop as the shared project state, and use `PROJECT_CONTEXT.md` plus `WORKLOG.md` as the cross-machine Codex handoff context.
+- Noted that `git` is not currently available on this laptop shell's PATH, so GitHub Desktop should be used for commit/status/push actions unless Git is added to PATH.
+
 ## Suggested Next Steps
 
 - Commit and push `PROJECT_CONTEXT.md` and this `WORKLOG.md` using GitHub Desktop.
