@@ -43,9 +43,34 @@ Use this file as a short handoff record between PC, laptop, and Codex sessions. 
 - Confirmed the persistent workflow: use GitHub/GitHub Desktop as the shared project state, and use `PROJECT_CONTEXT.md` plus `WORKLOG.md` as the cross-machine Codex handoff context.
 - Noted that `git` is not currently available on this laptop shell's PATH, so GitHub Desktop should be used for commit/status/push actions unless Git is added to PATH.
 
+## 2026-07-01 (PC)
+
+- Created `Research/MODEL_REFERENCE_INVENTORY.md`.
+- The inventory lists model families from `Research/ReferenceLinks.txt` as proposed models versus mentioned/baseline models.
+- Added availability notes for code, training scripts, pretrained checkpoints, and datasets where verified.
+- Identified TrOCR, One-DM, Sketch-RNN, Graves-style handwriting synthesis, and standard EMNIST/MNIST CNN/LeNet implementations as the most reusable externally available model/code references.
+- Marked refs 8, 10, 12, 14, 16, and 17 for deeper PDF extraction because their model/baseline lists were not fully verified in this pass.
+- Noted that external pretrained models should be treated as research references or benchmarks unless their use can be justified against the proposal constraint that core processing/design must be student-implemented and embedded.
+
+## 2026-07-14 (PC)
+
+- Decided on a gantry-based mechanical design for the handwriting robot.
+- Designed several CAD parts for the gantry and started getting them 3D printed for physical testing.
+- Obtained approximately half of the required store-bought gantry components.
+- Current mechanical direction should be reflected in the first semester report progress section and used to guide the literature study discussion on XY motion, linear actuators, stepper motor control, pen lift/pressure, and positioning accuracy.
+
 ## Suggested Next Steps
 
 - Commit and push `PROJECT_CONTEXT.md` and this `WORKLOG.md` using GitHub Desktop.
 - Add a requirements traceability document that maps each proposal requirement to software, hardware, tests, and demonstration evidence.
 - Begin planning the software architecture around the proposal modes: training, classification, and reproduction.
 - Keep this worklog updated after each meaningful session before switching between PC and laptop.
+
+# Commands run on the Odroid through SSH
+
+- checked the IP of the odroid through Advanced IP Scanner app
+- then ran ssh root@192.168.0.199 -> ip changes sometimes
+- then log into odroid with linux and password 1234
+-> GETTING PYTHON
+- sudo apt update
+- sudo apt install python3 python3-pip gpiod -y
