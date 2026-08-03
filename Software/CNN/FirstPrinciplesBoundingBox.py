@@ -31,12 +31,11 @@ def OtsuThreshold(grayImg):
             currentMax = varBetween
             bestThresh = t
 
-    # Returns inverted binary matrix (Ink = 255, Background = 0)
     return (grayImg < bestThresh).astype(np.uint8) * 255
 
 
 # =====================================================================
-# 2D Morphological Dilation (First Principles NumPy Slice-Maxing)
+# 2D Morphological Dilation (NumPy Slice Maxing)
 # =====================================================================
 def DilateImage(binaryImg, kWidth, kHeight):
     h, w = binaryImg.shape
@@ -55,7 +54,7 @@ def DilateImage(binaryImg, kWidth, kHeight):
 
 
 # =====================================================================
-# Connected Components Analysis & Bounding Box Extraction (Two-Pass Union-Find)
+# Two-Pass Union-Find Connected Component Analysis
 # =====================================================================
 def FindComponents(binaryImg):
     h, w = binaryImg.shape
@@ -80,7 +79,6 @@ def FindComponents(binaryImg):
         if r1 != r2:
             parent[r2] = r1
 
-    # First Pass: Labeling and Equivalence Recording
     for r in range(h):
         for c in range(w):
             if binaryImg[r, c] == 0:
@@ -105,7 +103,6 @@ def FindComponents(binaryImg):
                 for n in neighbors:
                     union(minLbl, n)
 
-    # Second Pass: Bounding Box Aggregation
     boxesDict = {}
     for r in range(h):
         for c in range(w):
@@ -131,9 +128,9 @@ def FindComponents(binaryImg):
 
 
 # =====================================================================
-# Page Boundary & Horizontal Rule Detection
+# Page Boundary & Horizontal Rule Line Detection
 # =====================================================================
-def DetectBounds(binaryImg):
+def DetectPageBounds(binaryImg):
     h, w = binaryImg.shape
     yLines = []
 
@@ -172,114 +169,131 @@ def DetectBounds(binaryImg):
 
 
 # =====================================================================
-# Main Segmentation Pipeline Execution
+# Main Handwriting Extraction & Segmentation Pipeline
 # =====================================================================
 def ProcessSegmentation(imgPath):
     rawImage = Image.open(imgPath)
-    grayArray = np.array(rawImage.convert('L'))
-    h, w = grayArray.shape
+    RawGrayscaleArray = np.array(rawImage.convert('L'))
+    h, w = RawGrayscaleArray.shape
 
-    # Binary Thresholding
-    binaryImg = OtsuThreshold(grayArray)
+    # Binary Image Conversion
+    BinaryInvertedImage = OtsuThreshold(RawGrayscaleArray)
 
     # Detect Page Bounds
-    topY, botY = DetectBounds(binaryImg)
-    hwRegion = binaryImg[topY:botY, :]
+    topY, botY = DetectPageBounds(BinaryInvertedImage)
+    hwRegion = BinaryInvertedImage[topY:botY, :]
 
-    # Median Character Scale Estimate
+    # Estimate Median Character Scale
     rawComp = FindComponents(hwRegion)
     heights = [b[3] for b in rawComp if b[3] > 5]
     if not heights:
         return None
-    medianH = int(np.median(heights))
+    MedianCharacterHeight = int(np.median(heights))
 
-    # Line Extraction via Horizontal Dilation
-    lineKW = max(40, medianH * 3)
-    lineKH = max(3, medianH // 4)
+    # Line Separation
+    lineKW = max(40, MedianCharacterHeight * 3)
+    lineKH = max(3, MedianCharacterHeight // 4)
     dilatedLines = DilateImage(hwRegion, lineKW, lineKH)
 
     rawLineBoxes = FindComponents(dilatedLines)
-    lineBoxes = [b for b in rawLineBoxes if b[2] > medianH * 2]
-    lineBoxes.sort(key=lambda b: b[1])
+    LineBoundingBoxes = [b for b in rawLineBoxes if b[2] > MedianCharacterHeight * 2]
+    LineBoundingBoxes.sort(key=lambda b: b[1])
 
-    # Visualization Setup
+    # Canvas Drawing Setup
     drawCanvas = rawImage.convert('RGB')
     drawObj = ImageDraw.Draw(drawCanvas)
     drawObj.line([(0, topY), (w, topY)], fill=(0, 0, 255), width=2)
     drawObj.line([(0, botY), (w, botY)], fill=(0, 0, 255), width=2)
 
-    for lx, ly, lw, lh in lineBoxes:
+    for lx, ly, lw, lh in LineBoundingBoxes:
         drawObj.rectangle([lx, topY + ly, lx + lw, topY + ly + lh], outline=(255, 0, 0), width=2)
 
         lineBinary = hwRegion[ly:ly + lh, lx:lx + lw]
 
-        # Vertical Pen Stroke Stitching Kernel (2x5)
-        # Increases horizontal stroke smearing from 2px to 3px to bridge 'b' and 'p' gaps
-        dilatedStrokes = DilateImage(lineBinary, 3, 5)
-        rawBoxes = FindComponents(dilatedStrokes)
+        # Extract Raw Undilated Ink Components
+        rawInkBoxes = FindComponents(lineBinary)
+        
+        # Filter Noise
+        validInk = [b for b in rawInkBoxes if b[2] >= 2 and b[3] >= 2 and b[0] > 15]
 
-        validBoxes = []
-        for b in rawBoxes:
+        PunctuationBlocks = []
+        LetterBlocks = []
+
+        # --- Stage 1: Explicit Punctuation Detection ---
+        for b in validInk:
             wx, wy, ww, wh = b
-            if ww >= 2 and wh >= 2 and (ww * wh) >= 4:
-                if wx > 15:  # Left Margin Filter
-                    validBoxes.append([wx, wy, ww, wh])
+            
+            # Check upper half region directly above the ink blob
+            UpperRegion = lineBinary[0:int(lh * 0.45), wx:wx + ww]
+            IsEmptyAboveRegion = np.sum(UpperRegion) == 0
 
-        validBoxes.sort(key=lambda b: b[0])
+            # Punctuation Criteria: Sits in lower half + empty upper space + compact size
+            IsPunctuationBlob = (wy > lh * 0.45) and IsEmptyAboveRegion and (wh < MedianCharacterHeight * 1.1)
 
-        mergedBlocks = []
-        WordGapThresh = int(medianH * 0.45)
+            if IsPunctuationBlob:
+                PunctuationBlocks.append(b)
+            else:
+                LetterBlocks.append(b)
 
-        for box in validBoxes:
-            wx, wy, ww, wh = box
+        # --- Stage 2: Word Grouping (Punctuation Excluded) ---
+        # Stitch vertical letter strokes ('p', 'b', 't', etc.)
+        strokeKW = 3
+        strokeKH = 5
+        dilatedStrokes = DilateImage(lineBinary, strokeKW, strokeKH)
+        rawStrokeBoxes = FindComponents(dilatedStrokes)
+        
+        # Filter stroke boxes to only keep those containing letter components
+        LetterStrokeBoxes = []
+        for sb in rawStrokeBoxes:
+            sx, sy, sw, sh = sb
+            if sx <= 15:
+                continue
+            # Check if this stroke overlaps with any classified letter component
+            hasLetter = any(
+                not (lx2 < sx or lx1 > sx + sw or ly2 < sy or ly1 > sy + sh)
+                for lx1, ly1, lw1, lh1 in LetterBlocks
+                for lx2, ly2 in [(lx1 + lw1, ly1 + lh1)]
+            )
+            if hasLetter:
+                LetterStrokeBoxes.append(sb)
 
-         # Pushes the punctuation zone lower (65% down) and requires punctuation to be narrower
-            isBottomOnly = wy > (lh * 0.65)
-            isPunctSize = ww < (medianH * 0.5) and wh < (medianH * 0.8)
-            isPunctuation = isPunctSize and isBottomOnly
+        LetterStrokeBoxes.sort(key=lambda b: b[0])
 
-            isDotSize = ww < (medianH * 0.5) and wh < (medianH * 0.5)
-            isTopHalf = (wy + wh) < (lh * 0.5)
-            isIDot = isDotSize and isTopHalf
+        MergedWordBlocks = []
+        WordGapThreshold = int(MedianCharacterHeight * 0.55)
 
-            if not mergedBlocks:
-                mergedBlocks.append({'box': [wx, wy, ww, wh], 'is_punct': isPunctuation})
+        for b in LetterStrokeBoxes:
+            wx, wy, ww, wh = b
+
+            if not MergedWordBlocks:
+                MergedWordBlocks.append([wx, wy, ww, wh])
                 continue
 
-            lastBlock = mergedBlocks[-1]
-            lwx, lwy, lww, lwh = lastBlock['box']
+            lwx, lwy, lww, lwh = MergedWordBlocks[-1]
             gap = wx - (lwx + lww)
 
-            # Rule 1: 'i' dots expand upward
-            if isIDot and gap < WordGapThresh:
-                mergedBlocks[-1]['box'] = [
-                    min(lwx, wx), min(lwy, wy),
-                    max(lwx + lww, wx + ww) - min(lwx, wx),
-                    max(lwy + lwh, wy + wh) - min(lwy, wy)
-                ]
-                continue
-
-            # Rule 2: Commas & Full Stops break off
-            if isPunctuation:
-                mergedBlocks.append({'box': [wx, wy, ww, wh], 'is_punct': True})
-                continue
-
-            # Rule 3: Merge normal letters
-            if gap < WordGapThresh and not lastBlock['is_punct']:
-                mergedBlocks[-1]['box'] = [
+            if gap < WordGapThreshold:
+                # Merge into current word bounding box
+                MergedWordBlocks[-1] = [
                     min(lwx, wx), min(lwy, wy),
                     max(lwx + lww, wx + ww) - min(lwx, wx),
                     max(lwy + lwh, wy + wh) - min(lwy, wy)
                 ]
             else:
-                mergedBlocks.append({'box': [wx, wy, ww, wh], 'is_punct': False})
+                # Start new word bounding box
+                MergedWordBlocks.append([wx, wy, ww, wh])
 
-        for block in mergedBlocks:
-            bx, by, bw, bh = block['box']
-            color = (255, 0, 0) if block['is_punct'] else (0, 255, 0)
-            x1, y1 = lx + bx, topY + ly + by
-            x2, y2 = x1 + bw, y1 + bh
-            drawObj.rectangle([x1, y1, x2, y2], outline=color, width=2)
+        # Draw Word Boxes in GREEN
+        for b in MergedWordBlocks:
+            x1, y1 = lx + b[0], topY + ly + b[1]
+            x2, y2 = x1 + b[2], y1 + b[3]
+            drawObj.rectangle([x1, y1, x2, y2], outline=(0, 255, 0), width=2)
+
+        # Draw Punctuation Boxes in RED (Guaranteed Special Boxes)
+        for b in PunctuationBlocks:
+            x1, y1 = lx + b[0], topY + ly + b[1]
+            x2, y2 = x1 + b[2], y1 + b[3]
+            drawObj.rectangle([x1, y1, x2, y2], outline=(255, 0, 0), width=2)
 
     return drawCanvas
 
