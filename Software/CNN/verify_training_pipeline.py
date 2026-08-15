@@ -59,6 +59,13 @@ def main():
     parser.add_argument("--out-dir", default="verify_training_output")
     args = parser.parse_args()
 
+    if args.max_pages is None:
+        raw = input(
+            "How many pages would you like to verify? (Enter a number, e.g. 100 -- "
+            "use the SAME number you trained with, or leave blank to check every page): "
+        ).strip()
+        args.max_pages = int(raw) if raw.isdigit() and int(raw) > 0 else None
+
     script_dir = Path(__file__).resolve().parent
     data_dir = Path(args.data_dir) if args.data_dir else script_dir.parents[1] / "Data" / "Datasets" / "IAMpages671"
 
