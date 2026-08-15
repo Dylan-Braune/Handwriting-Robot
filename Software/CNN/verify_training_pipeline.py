@@ -137,20 +137,25 @@ def main():
     print(f"CTC time steps (T) for this model/input size: {T} (fixed -- every image is resized to the "
           f"same width before this, so T is the same for every sample).")
 
-    too_long = [(i, len(s["target"]), s["text"]) for i, s in enumerate(dataset.samples) if len(s["target"]) > T]
+    too_long = [
+        (i, len(s["target"]), s["text"], s.get("page_key", "?"))
+        for i, s in enumerate(dataset.samples) if len(s["target"]) > T
+    ]
     lengths = [len(s["target"]) for s in dataset.samples]
     max_len = max(lengths) if lengths else 0
     print(f"Longest label across all {len(dataset)} loaded samples: {max_len} chars vs T={T} time steps.")
+    print("(Note: IAMLineDatasetRaw already filters out any label over MAX_SAFE_LABEL_CHARS at load time, "
+          "printing a warning with the exact page/line it came from -- check the [1/5] output above for "
+          "any of those. What's below is just double-checking none slipped through.)")
     if too_long:
-        print(f"[PROBLEM] {len(too_long)} sample(s) have a label LONGER than T -- PyTorch's "
+        print(f"[PROBLEM] {len(too_long)} sample(s) STILL have a label LONGER than T -- PyTorch's "
               f"zero_infinity=True setting means these silently contribute ZERO loss and ZERO gradient "
-              f"instead of erroring, so they're quietly dropped from training with no visible warning. "
-              f"First few:")
-        for i, ln, text in too_long[:5]:
-            print(f"    sample {i}: {ln} chars -- {text!r}")
+              f"instead of erroring. First few:")
+        for i, ln, text, page_key in too_long[:5]:
+            print(f"    sample {i} ({page_key}): {ln} chars -- {text!r}")
     else:
-        print(f"OK -- every label fits comfortably within T={T} (max used: {max_len}/{T} "
-              f"= {max_len / T:.0%}). This is not the cause of a stuck loss.")
+        print(f"OK -- every remaining label fits comfortably within T={T} (max used: {max_len}/{T} "
+              f"= {max_len / T:.0%}).")
 
     print("\n" + "=" * 78)
     print("[5/5] Loss sanity baseline ...")
