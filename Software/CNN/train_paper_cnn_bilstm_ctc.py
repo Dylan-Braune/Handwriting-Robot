@@ -82,6 +82,7 @@ Usage:
     python train_paper_cnn_bilstm_ctc.py
 """
 
+import argparse
 import io
 import math
 import os
@@ -828,9 +829,29 @@ def train(config, device):
     return best_val_loss
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Train the paper CNN-BiLSTM-CTC model.")
+    parser.add_argument("--max-pages", type=int, default=None,
+                         help="Only train on the first N pages (in author-folder-sorted order) instead of "
+                              "the whole dataset -- e.g. --max-pages 100 to test on just the pages you've "
+                              "regenerated labels for so far. Omit (or pass 0) to use every page available.")
+    parser.add_argument("--force-rebuild", action="store_true",
+                         help="Ignore any existing line_image_cache/ and re-segment every page from scratch.")
+    return parser.parse_args()
+
+
 def main():
     script_dir = Path(__file__).resolve().parent
     data_dir = script_dir.parents[1] / "Data" / "Datasets" / "IAMpages671"
+
+    args = parse_args()
+    max_pages = args.max_pages
+    if max_pages is None:
+        raw = input(
+            "How many pages would you like to train on? (Enter a number, e.g. 100, "
+            "or leave blank to use every page available): "
+        ).strip()
+        max_pages = int(raw) if raw.isdigit() and int(raw) > 0 else None
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[Device] Training on: {device}")
@@ -849,8 +870,8 @@ def main():
         "name": "paper_cnn_bilstm_ctc",
         "data_dir": data_dir,
         "cache_dir": "line_image_cache",  # label-independent image cache; see LineImageCache
-        "force_rebuild": False,
-        "max_pages": None,
+        "force_rebuild": args.force_rebuild,
+        "max_pages": max_pages,
         "batch_size": 16,        # Section 6.1
         "lr": 1e-3,               # Section 6.1
         "weight_decay": 1e-5,     # Section 6.1
@@ -863,8 +884,10 @@ def main():
     np.random.seed(7)
     torch.manual_seed(7)
 
+    pages_desc = f"first {config['max_pages']} page(s)" if config['max_pages'] else "all available pages"
     print(f"\n--- Training {config['name']} "
-          f"(lr={config['lr']}, batch_size={config['batch_size']}, max_epochs={config['epochs']}) ---")
+          f"(lr={config['lr']}, batch_size={config['batch_size']}, max_epochs={config['epochs']}, "
+          f"data={pages_desc}) ---")
     try:
         best_val_loss = train(config, device)
         print(f"\nDone. Best validation loss: {best_val_loss:.4f}")

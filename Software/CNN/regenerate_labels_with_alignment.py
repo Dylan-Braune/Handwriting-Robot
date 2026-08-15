@@ -24,6 +24,12 @@ including "150" if it falls within --num-folders -- by explicit choice,
 since the alignment method has already been validated against 150's
 hand-verified labels and treating it as untouchable was no longer needed.
 
+NO ORIGINAL LABEL = SKIPPED, NOT REGENERATED: if a page never had a
+_labels.txt to begin with (the old pipeline didn't write one when its
+preprocessing didn't work out for that page), this script leaves it
+alone -- no attempt is made to invent a label for it. That page simply
+stays excluded from training, same as before.
+
 Every N pages that get a fresh label written (default 40), a
 verification bundle (annotated preview PNG + old-vs-new text) is saved
 to a review folder, same as before.
@@ -540,6 +546,15 @@ def write_label_lines(label_path, text_lines):
 def regenerate_page(img_path, dry_run):
     img_path = Path(img_path)
     label_path = img_path.with_name(img_path.stem + "_labels.txt")
+
+    # If this page never had a label to begin with, leave it alone. The old
+    # pipeline simply never wrote a label for pages where preprocessing
+    # didn't work out well, so "no original label" == "this page is meant
+    # to be excluded from training" -- not something for us to attempt and
+    # guess at. Skip it entirely, don't touch the (nonexistent) file.
+    if not label_path.exists():
+        return {"status": "skipped_no_original_label", "old_label_lines": []}
+
     old_label_lines = ReadLabelLines(str(img_path))
 
     # NOTE: two earlier gates were dropped after testing found them both
@@ -645,7 +660,7 @@ def main():
     if not args.dry_run:
         review_dir.mkdir(parents=True, exist_ok=True)
 
-    stats = {"written": 0, "empty": 0, "error": 0}
+    stats = {"written": 0, "empty": 0, "error": 0, "skipped_no_original_label": 0}
     total_pages, written_counter, line_count_changed = 0, 0, 0
 
     for author_id in selected:
@@ -671,12 +686,14 @@ def main():
             if total_pages % 100 == 0:
                 print(f"  ... {total_pages} pages processed so far "
                       f"(written={stats.get('written', 0)}, empty={stats.get('empty', 0)}, "
-                      f"error={stats.get('error', 0)})")
+                      f"error={stats.get('error', 0)}, "
+                      f"no_original_label={stats.get('skipped_no_original_label', 0)})")
 
     print("\n" + "=" * 75)
     print(f"[Regenerate] Total pages processed:                   {total_pages}")
     print(f"[Regenerate] Labels written:                          {stats.get('written', 0)}")
     print(f"[Regenerate] Skipped (no usable text detected):       {stats.get('empty', 0)}")
+    print(f"[Regenerate] Skipped (no original label -- untouched):{stats.get('skipped_no_original_label', 0)}")
     print(f"[Regenerate] Errors:                                  {stats.get('error', 0)}")
     print(f"[Regenerate] Pages where new line count differs from old label's line count: "
           f"{line_count_changed}/{stats.get('written', 0)}")
