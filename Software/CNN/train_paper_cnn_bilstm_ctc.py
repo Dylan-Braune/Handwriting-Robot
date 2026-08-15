@@ -187,6 +187,17 @@ def levenshtein(a, b):
 INPUT_HEIGHT = 64
 INPUT_WIDTH = 640
 
+# The CTC time dimension T is fixed by the model architecture: two 2x2
+# max-pools halve the width twice, so T = INPUT_WIDTH // 4 = 160 for the
+# current settings, regardless of what's actually in a given image. Any
+# label longer than T is mathematically impossible for CTC to align (and
+# with zero_infinity=True, PyTorch just silently zeroes that sample's loss
+# instead of erroring) -- and in practice a "line" label anywhere near that
+# long is a sign of collapsed/merged line segmentation, not a real single
+# handwritten line. Cap well under T so genuinely-long-but-legitimate lines
+# still get through while collapsed-multi-line labels get filtered out.
+MAX_SAFE_LABEL_CHARS = int((INPUT_WIDTH // 4) * 0.75)  # 120 at current settings
+
 
 def resize_line_image_fixed(pil_img, height=INPUT_HEIGHT, width=INPUT_WIDTH):
     """Resize to the fixed training size. Deliberately kept separate from
@@ -490,6 +501,7 @@ class IAMLineDatasetRaw(Dataset):
         self.author_to_idx = {author: idx for idx, author in enumerate(self.author_folders)}
 
         mismatched_pages = 0
+        oversized_labels = 0
         for author_id in self.author_folders:
             author_dir = root_dir / author_id
             author_pages = sorted(author_dir.glob("*.png"))
@@ -522,7 +534,28 @@ class IAMLineDatasetRaw(Dataset):
                     target = encode_text(text)
                     if len(target) == 0:
                         continue
+                    # A "line" label this long almost certainly isn't one physical
+                    # handwritten line -- it's a sign that line segmentation
+                    # collapsed several real lines into one detected region (e.g.
+                    # tight line spacing) and the alignment step then dumped that
+                    # whole run of printed words into a single bucket. A single
+                    # handwritten line crop has no realistic way to legibly fit
+                    # this much text, and the CTC time dimension (T, fixed by
+                    # model architecture -- see PaperCRNN) can't fit it either:
+                    # anything >= T silently contributes ZERO loss/gradient under
+                    # zero_infinity=True, so letting it into training either does
+                    # nothing (best case) or wastes a sample slot for nothing.
+                    # Skip loudly instead of letting it fail silently.
+                    if len(target) > MAX_SAFE_LABEL_CHARS:
+                        oversized_labels += 1
+                        print(f"[Dataset] Skipping oversized line label ({len(target)} chars, cap is "
+                              f"{MAX_SAFE_LABEL_CHARS}) at {page_key} line {line_idx} -- likely merged/"
+                              f"collapsed line segmentation on this page, not a real single line: "
+                              f"{text[:80]!r}...")
+                        continue
                     self.samples.append({
+                        "page_key": page_key,
+                        "line_idx": line_idx,
                         "image_png": png_list[line_idx],
                         "target": target,
                         "text": text,
@@ -531,6 +564,9 @@ class IAMLineDatasetRaw(Dataset):
 
         if mismatched_pages:
             print(f"[Dataset] {mismatched_pages} page(s) skipped due to image/label line-count mismatch.")
+        if oversized_labels:
+            print(f"[Dataset] {oversized_labels} line(s) skipped as oversized (likely collapsed/merged "
+                  f"line segmentation -- see warnings above for which pages).")
         print(f"[Dataset] Total line samples: {len(self.samples)}")
 
     @staticmethod
