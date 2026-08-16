@@ -762,6 +762,7 @@ def train(config, device):
     start_epoch = 1
     best_val_loss = float("inf")
     patience_counter = 0
+    restart_count = 0
 
     # Resume full training state (model + optimizer + counters), not just
     # weights -- a partial resume that only restores weights silently resets
@@ -776,12 +777,15 @@ def train(config, device):
         start_epoch = ckpt["epoch"] + 1
         best_val_loss = ckpt["best_val_loss"]
         patience_counter = ckpt["patience_counter"]
+        restart_count = ckpt.get("restart_count", 0)
         print(f"[Resume] Loaded checkpoint from epoch {ckpt['epoch']}, resuming at epoch {start_epoch} "
               f"(best_val_loss={best_val_loss:.4f}, patience_counter={patience_counter}, "
-              f"lr={optimizer.param_groups[0]['lr']:.6f}).")
+              f"restart_count={restart_count}, lr={optimizer.param_groups[0]['lr']:.6f}).")
 
     max_epochs = config["epochs"]
     early_stop_patience = config["early_stop_patience"]
+    eval_every = max(1, config.get("eval_every", 1))
+    max_restarts = config.get("max_restarts", 3)
 
     n_train_batches = len(train_loader)
 
@@ -823,33 +827,68 @@ def train(config, device):
 
         print()  # move off the \r line before the epoch summary
         train_loss = total_loss / max(1, n_batches)
-        print(f"[{config['name']}] Epoch {epoch:03d} training pass done in {(time.time() - epoch_start) / 60:.1f} min, "
-              f"now running validation...")
-        val_loss, val_char_acc, val_cer = evaluate(model, val_loader, device, ctc_loss_fn)
+        print(f"[{config['name']}] Epoch {epoch:03d} training pass done in {(time.time() - epoch_start) / 60:.1f} min.")
 
-        improved = val_loss < best_val_loss
-        if improved:
-            best_val_loss = val_loss
-            patience_counter = 0
-            torch.save(model.state_dict(), best_path)
-            saved_msg = " [BEST MODEL SAVED]"
+        # Validation is skipped on epochs that aren't a multiple of eval_every
+        # (always run on the very last epoch so you get a final read). This
+        # matters because CER computation in evaluate() runs Levenshtein
+        # distance in a pure-Python double loop per sample -- on CPU that can
+        # genuinely take longer than the (vectorized, tensor-op) training
+        # pass itself, especially with longer line labels. patience_counter
+        # only advances on epochs where validation actually ran, so
+        # early_stop_patience means "N validation checks with no improvement",
+        # not strictly "N epochs" -- with eval_every=5 that's up to 5x more
+        # wall-clock epochs between checks, which is the tradeoff for the
+        # speedup.
+        run_validation = (epoch % eval_every == 0) or (epoch == max_epochs)
+        if run_validation:
+            val_start = time.time()
+            val_loss, val_char_acc, val_cer = evaluate(model, val_loader, device, ctc_loss_fn)
+            val_elapsed = time.time() - val_start
+
+            # NOTE: this was previously missing entirely -- the scheduler was
+            # constructed but never stepped, so the LR silently stayed fixed
+            # at its initial value for the whole run regardless of how long
+            # val loss plateaued. ReduceLROnPlateau needs the val loss fed to
+            # it explicitly on every validation check (not every epoch, if
+            # eval_every > 1 -- its own internal patience counts in units of
+            # "times .step() was called", so skipped epochs correctly don't
+            # count against it either).
+            lr_before = optimizer.param_groups[0]["lr"]
+            scheduler.step(val_loss)
+            lr_after = optimizer.param_groups[0]["lr"]
+            lr_msg = f" | LR reduced {lr_before:.6f} -> {lr_after:.6f}" if lr_after < lr_before else ""
+
+            improved = val_loss < best_val_loss
+            if improved:
+                best_val_loss = val_loss
+                patience_counter = 0
+                torch.save(model.state_dict(), best_path)
+                saved_msg = " [BEST MODEL SAVED]"
+            else:
+                patience_counter += 1
+                saved_msg = ""
+
+            print(
+                f"[{config['name']}] Epoch {epoch:03d}/{max_epochs} | "
+                f"Train loss: {train_loss:.3f} | Val loss: {val_loss:.3f} (Best: {best_val_loss:.3f}) | "
+                f"Val char-acc: {val_char_acc:.2%} | Val CER: {val_cer:.2%} | "
+                f"Val took {val_elapsed / 60:.1f} min{lr_msg}{saved_msg}"
+            )
         else:
-            patience_counter += 1
-            saved_msg = ""
-
-        print(
-            f"[{config['name']}] Epoch {epoch:03d}/{max_epochs} | "
-            f"Train loss: {train_loss:.3f} | Val loss: {val_loss:.3f} (Best: {best_val_loss:.3f}) | "
-            f"Val char-acc: {val_char_acc:.2%} | Val CER: {val_cer:.2%}{saved_msg}"
-        )
+            print(f"[{config['name']}] Epoch {epoch:03d}/{max_epochs} | "
+                  f"Train loss: {train_loss:.3f} | (validation skipped this epoch -- runs every "
+                  f"{eval_every} epochs; last val loss: {best_val_loss:.3f} best-so-far)")
 
         torch.save(
             {
                 "epoch": epoch,
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
+                "scheduler_state_dict": scheduler.state_dict(),
                 "best_val_loss": best_val_loss,
                 "patience_counter": patience_counter,
+                "restart_count": restart_count,
                 "charset": CHARSET,
                 "input_height": INPUT_HEIGHT,
                 "input_width": INPUT_WIDTH,
@@ -857,10 +896,40 @@ def train(config, device):
             ckpt_path,
         )
 
-        # Section 6.1: early stop after 10 epochs with no val LOSS improvement.
-        if patience_counter >= early_stop_patience:
-            print(f"[{config['name']}] Early stopping: no val loss improvement for {early_stop_patience} epochs.")
-            break
+        # Section 6.1: early stop after 10 VALIDATION CHECKS with no val LOSS
+        # improvement (not raw epochs, when eval_every > 1 -- see note above).
+        #
+        # WARM RESTART instead of stopping outright: rather than ending the
+        # run the first time patience runs out, reload the best weights seen
+        # so far, throw away the optimizer's momentum and the LR-decay
+        # schedule's state (both reset to their fresh initial values), and
+        # keep training. The idea: the LR may have decayed down to something
+        # tiny by the time patience triggers (via the scheduler above), which
+        # can itself be *why* progress stalled -- a fresh, larger LR applied
+        # to the best-known weights sometimes finds a further improvement
+        # that the decayed-LR run couldn't reach. best_val_loss/best_path
+        # are NOT reset -- a restart only ever needs to beat the existing
+        # best to matter, same as normal training. Capped at max_restarts
+        # (config["max_restarts"], default 3) so a run that's genuinely done
+        # improving still stops for good eventually rather than restarting
+        # forever within the max_epochs budget.
+        if run_validation and patience_counter >= early_stop_patience:
+            if restart_count < max_restarts:
+                restart_count += 1
+                print(f"[{config['name']}] No val loss improvement for {early_stop_patience} validation "
+                      f"check(s) -- WARM RESTART #{restart_count}/{max_restarts}: reloading best weights "
+                      f"(val_loss={best_val_loss:.4f}) and resetting LR to {config['lr']:.6f}.")
+                if best_path.exists():
+                    model.load_state_dict(torch.load(best_path, map_location=device, weights_only=False))
+                optimizer = optim.RMSprop(model.parameters(), lr=config["lr"], weight_decay=config["weight_decay"])
+                scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=6, min_lr=1e-5)
+                patience_counter = 0
+                continue
+            else:
+                print(f"[{config['name']}] Early stopping for good: no val loss improvement for "
+                      f"{early_stop_patience} validation check(s) after {max_restarts} warm restart(s) "
+                      f"already used (eval_every={eval_every}).")
+                break
 
     return best_val_loss
 
@@ -873,6 +942,15 @@ def parse_args():
                               "regenerated labels for so far. Omit (or pass 0) to use every page available.")
     parser.add_argument("--force-rebuild", action="store_true",
                          help="Ignore any existing line_image_cache/ and re-segment every page from scratch.")
+    parser.add_argument("--eval-every", type=int, default=1,
+                         help="Run validation every N epochs instead of every epoch (default 1). Validation's "
+                              "CER computation is pure-Python and can be slow, so bumping this to e.g. 5 skips "
+                              "most of that cost. Early stopping then waits for N validation CHECKS (not raw "
+                              "epochs) with no improvement -- see the in-code comment in train().")
+    parser.add_argument("--max-restarts", type=int, default=3,
+                         help="When early-stop patience runs out, warm-restart from the best checkpoint with "
+                              "a fresh LR/optimizer instead of stopping outright, up to this many times "
+                              "(default 3). After the last restart also plateaus, training stops for good.")
     return parser.parse_args()
 
 
@@ -913,6 +991,8 @@ def main():
         "weight_decay": 1e-5,     # Section 6.1
         "epochs": 200,            # Section 6.1
         "early_stop_patience": 10,  # Section 6.1
+        "eval_every": args.eval_every,
+        "max_restarts": args.max_restarts,
         "resume": True,
     }
 
