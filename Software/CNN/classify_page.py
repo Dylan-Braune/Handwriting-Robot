@@ -21,6 +21,14 @@ Usage:
     python classify_page.py --input holdout_test_pages
     python classify_page.py --input some_page.png
     python classify_page.py --input holdout_test_pages --weights paper_cnn_bilstm_ctc_best.pt
+    python classify_page.py --input my_notebook_photo.png --personal-page
+        (for a page that ISN'T an IAM Sentence Database scan -- e.g. a
+        photo of your own ruled notebook paper. Skips the IAM-specific
+        header/footer detection, which otherwise misfires badly on a page
+        that doesn't have that printed-form layout, and uses a
+        periodicity-based line splitter suited to densely-written/ruled
+        pages instead. See ExtractLinePatches' docstring in
+        FullLineBoxMaker.py for the full story.)
 """
 
 import argparse
@@ -52,14 +60,18 @@ def load_model(weights_path, device):
     return model
 
 
-def transcribe_page(model, img_path, device):
+def transcribe_page(model, img_path, device, is_dataset=True):
     """Segments the page into lines using the SAME ExtractLinePatches call
     the training image cache uses, then runs each line crop through the
     model and greedily decodes it. Returns predicted line strings in
-    top-to-bottom order."""
+    top-to-bottom order.
+
+    is_dataset=True (default): IAM Sentence Database page layout.
+    is_dataset=False: personal/non-IAM page (e.g. a photo of ruled
+    notebook paper) -- see ExtractLinePatches' docstring."""
     line_samples, _, _ = ExtractLinePatches(
         str(img_path), targetHeight=32, maxWidth=1024,
-        expectedLineCount=None, labelLines=None,
+        expectedLineCount=None, labelLines=None, is_dataset=is_dataset,
     )
     predictions = []
     for sample in line_samples:
@@ -73,12 +85,12 @@ def transcribe_page(model, img_path, device):
     return predictions
 
 
-def process_image(model, img_path, device):
+def process_image(model, img_path, device, is_dataset=True):
     print("\n" + "=" * 78)
     print(f"Page: {img_path}")
     print("=" * 78)
 
-    predictions = transcribe_page(model, img_path, device)
+    predictions = transcribe_page(model, img_path, device, is_dataset=is_dataset)
     ground_truth = ReadLabelLines(str(img_path))
 
     page_chars, page_errors = 0, 0
@@ -110,6 +122,10 @@ def main():
     parser.add_argument("--input", default=None, help="Path to a page image or a folder of page images.")
     parser.add_argument("--weights", default=str(DEFAULT_WEIGHTS),
                          help="Path to model weights (default: paper_cnn_bilstm_ctc_best.pt).")
+    parser.add_argument("--personal-page", action="store_true",
+                         help="Set this for a page that is NOT an IAM Sentence Database scan (e.g. your own "
+                              "ruled notebook paper). Skips IAM-specific header/footer detection and uses a "
+                              "periodicity-based line splitter instead -- see FullLineBoxMaker.ExtractLinePatches.")
     args = parser.parse_args()
 
     input_path = args.input
@@ -119,6 +135,18 @@ def main():
             f"(blank = {DEFAULT_INPUT_DIR.name}): "
         ).strip()
         input_path = raw if raw else str(DEFAULT_INPUT_DIR)
+
+        # Only prompt for this when we're already asking interactively
+        # (i.e. --input wasn't passed) -- an unattended/scripted run that
+        # passes --input explicitly just uses --personal-page as given
+        # (default: IAM dataset page).
+        page_type = input(
+            "Is this an IAM Sentence Database page, or your own page (e.g. ruled notebook paper)? "
+            "[iam/personal, blank = iam]: "
+        ).strip().lower()
+        is_dataset = page_type not in ("personal", "p", "own", "mine")
+    else:
+        is_dataset = not args.personal_page
 
     input_path = Path(input_path)
     weights_path = Path(args.weights)
@@ -144,7 +172,7 @@ def main():
 
     total_chars, total_errors = 0, 0
     for img_path in img_paths:
-        chars, errors = process_image(model, img_path, device)
+        chars, errors = process_image(model, img_path, device, is_dataset=is_dataset)
         total_chars += chars
         total_errors += errors
 
