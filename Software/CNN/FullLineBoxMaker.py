@@ -4,6 +4,7 @@ import re
 import numpy as np
 from PIL import Image, ImageDraw
 import pytesseract
+from scipy.signal import find_peaks
 
 # Set your Tesseract OCR path if running on Windows
 if os.name == 'nt':
@@ -423,9 +424,104 @@ def MergeOrSplitToExpectedLineCount(lines, rowInkCount, expectedLineCount):
 
 
 # =====================================================================
+# Periodicity-based line splitting -- for densely-written pages (e.g. ruled
+# notebook paper) where lines sit close enough together that cursive
+# ascenders/descenders bridge the gap between adjacent lines, so there is
+# no blank row anywhere for the IAM-style ink-gap splitter above to find.
+#
+# Instead of requiring a genuinely blank row, this looks for the ink
+# density profile's RELATIVE low points (valleys) that repeat at a
+# consistent spacing -- real handwritten lines are still visibly denser at
+# letter-body height than at the thin baseline/gap between one line's
+# descenders and the next line's ascenders, even when that gap never
+# reaches zero ink. The expected spacing itself is estimated directly from
+# the page (via autocorrelation of the ink profile) rather than assumed,
+# so it adapts to different handwriting sizes/ruling spacing.
+# =====================================================================
+def EstimateLinePitch(smoothedRowInk, minPitch=40, maxPitch=400):
+    sig = smoothedRowInk - smoothedRowInk.mean()
+    autocorr = np.correlate(sig, sig, mode='full')[len(sig) - 1:]
+    maxPitch = min(maxPitch, len(autocorr))
+    if maxPitch <= minPitch:
+        return minPitch
+    search = autocorr[minPitch:maxPitch]
+    return minPitch + int(np.argmax(search))
+
+
+def SplitLinesByPeriodicity(binaryRegion, ruleLineHints=None, smoothWindow=9, minLineHeight=30):
+    """
+    binaryRegion: the (already margin-masked) binary ink image for the
+    whole writing area.
+    ruleLineHints: optional list of y-rows (relative to this region) where
+    faint ruled lines were detected -- used only as a light nudge, snapping
+    a nearby valley to the hint if one exists within a small window, since
+    ruled-line pixel detection on real photos was found too unreliable to
+    trust as the primary signal on its own (see ExtractLinePatches
+    docstring). Safe to omit/pass None -- works from ink periodicity alone.
+    Returns a list of (startRow, endRow) line segments.
+    """
+    rowInk = np.sum(binaryRegion > 0, axis=1).astype(np.float32)
+    if rowInk.max() <= 0:
+        return []
+
+    kernel = np.ones(smoothWindow) / smoothWindow
+    smoothed = np.convolve(rowInk, kernel, mode='same')
+
+    pitch = EstimateLinePitch(smoothed)
+    minDistance = max(minLineHeight, int(pitch * 0.55))
+    peaks, _ = find_peaks(-smoothed, distance=minDistance, prominence=max(1.0, rowInk.max() * 0.03))
+
+    if ruleLineHints:
+        snapWindow = max(6, int(pitch * 0.12))
+        peaks = list(peaks)
+        for i, p in enumerate(peaks):
+            nearby = [r for r in ruleLineHints if abs(r - p) <= snapWindow]
+            if nearby:
+                peaks[i] = min(nearby, key=lambda r: abs(r - p))
+        peaks = np.array(sorted(set(peaks)))
+
+    boundaries = [0] + list(peaks) + [len(rowInk)]
+    lines = [(boundaries[i], boundaries[i + 1]) for i in range(len(boundaries) - 1)]
+    # Drop segments with no ink at all (e.g. a stray split right at the
+    # very top/bottom margin with nothing in it).
+    lines = [(s, e) for s, e in lines if np.sum(rowInk[s:e]) > 0]
+    return lines
+
+
+# =====================================================================
 # Line Extraction Pipeline
 # =====================================================================
-def ExtractLinePatches(imgPath, targetHeight=32, maxWidth=1024, expectedLineCount=None, labelLines=None):
+def ExtractLinePatches(imgPath, targetHeight=32, maxWidth=1024, expectedLineCount=None, labelLines=None,
+                        is_dataset=True):
+    """
+    is_dataset=True (default, unchanged): assumes the IAM Sentence
+    Database form layout -- a printed title/ID bar, a printed prompt-text
+    box bounded by rule lines, then a handwriting zone bounded below by
+    another rule line. DetectPageBounds/DetectHeaderTopY/
+    ExtractPrintedGroundTruth all depend on that specific structure.
+
+    is_dataset=False: for a page that does NOT have that IAM structure
+    (e.g. a personal notebook page on ruled paper, with no printed prompt
+    box at all) -- skips the IAM-specific header/footer detection entirely,
+    since on a non-IAM page it doesn't just fail to help, it actively
+    misfires: DetectPageBounds's rule-line search can lock onto arbitrary
+    ordinary ruled-paper lines that happen to fall in the height-fraction
+    windows it expects an IAM form's boundary rules to be in, which then
+    (a) discards real handwriting outside that accidentally-chosen window
+    entirely, and (b) feeds real handwriting into
+    ExtractPrintedGroundTruth's OCR call as if it were printed text,
+    producing garbage. In this mode the whole page (minus a small margin)
+    is used as the writing region instead, and no printed-transcript OCR is
+    attempted (there's no known transcript source on a personal page).
+
+    Line splitting in this mode also switches from the IAM path's blank-gap
+    detector to SplitLinesByPeriodicity() -- densely-written ruled-paper
+    lines often have cursive ascenders/descenders bridging adjacent lines
+    with no blank row anywhere, which the blank-gap method needs. The
+    periodicity method instead finds the ink profile's repeating relative
+    low points, which was verified to correctly separate tightly-packed
+    lines that the blank-gap method collapsed into one giant block.
+    """
     rawImage = Image.open(imgPath)
     RawGrayscaleArray = np.array(rawImage.convert('L'))
     h, w = RawGrayscaleArray.shape
@@ -433,12 +529,21 @@ def ExtractLinePatches(imgPath, targetHeight=32, maxWidth=1024, expectedLineCoun
     # Binary Thresholding
     BinaryInvertedImage = OtsuThreshold(RawGrayscaleArray)
 
-    # Detect Page Bounds
-    topY, botY = DetectPageBounds(BinaryInvertedImage, RawGrayscaleArray)
-    headerTopY = DetectHeaderTopY(BinaryInvertedImage, RawGrayscaleArray, topY)
+    if not is_dataset:
+        # No IAM-style printed prompt box to bound against -- use almost the
+        # whole page, just trimming a small margin in case of scan/photo
+        # edge artifacts.
+        margin = int(h * 0.01)
+        topY, botY = margin, h - margin
+        headerTopY = None
+        printedWords = []
+    else:
+        # Detect Page Bounds
+        topY, botY = DetectPageBounds(BinaryInvertedImage, RawGrayscaleArray)
+        headerTopY = DetectHeaderTopY(BinaryInvertedImage, RawGrayscaleArray, topY)
 
-    # Extract printed words from top box
-    printedWords = ExtractPrintedGroundTruth(RawGrayscaleArray, topY, headerTopY)
+        # Extract printed words from top box
+        printedWords = ExtractPrintedGroundTruth(RawGrayscaleArray, topY, headerTopY)
 
     # HANDWRITING_TOP_MARGIN: the region actually scanned for handwriting
     # (and therefore cropped into training line images) starts this many
@@ -468,33 +573,41 @@ def ExtractLinePatches(imgPath, targetHeight=32, maxWidth=1024, expectedLineCoun
 
     # 1D Horizontal Projection Profile
     rowInkCount = np.sum(hwRegion > 0, axis=1)
-    hasInk = rowInkCount > max(10, int(w * 0.006))
 
-    pad1D = np.pad(hasInk, (3, 3), mode='constant')
-    smoothedInk = np.zeros_like(hasInk)
-    for dy in range(7):
-        smoothedInk = np.logical_or(smoothedInk, pad1D[dy:dy + len(hasInk)])
+    if not is_dataset:
+        # Densely-written page (see docstring) -- use the periodicity-based
+        # splitter instead of the blank-gap method below, since blank rows
+        # aren't a safe assumption here.
+        mergedLines = SplitLinesByPeriodicity(hwRegion)
+        mergedLines = MergeUndersizedFragments(mergedLines)
+    else:
+        hasInk = rowInkCount > max(10, int(w * 0.006))
 
-    diff = np.diff(np.concatenate(([0], smoothedInk.astype(np.int8), [0])))
-    lineStarts, lineEnds = np.where(diff == 1)[0], np.where(diff == -1)[0]
+        pad1D = np.pad(hasInk, (3, 3), mode='constant')
+        smoothedInk = np.zeros_like(hasInk)
+        for dy in range(7):
+            smoothedInk = np.logical_or(smoothedInk, pad1D[dy:dy + len(hasInk)])
 
-    rawLines = [(s, e) for s, e in zip(lineStarts, lineEnds) if (e - s) >= 8]
+        diff = np.diff(np.concatenate(([0], smoothedInk.astype(np.int8), [0])))
+        lineStarts, lineEnds = np.where(diff == 1)[0], np.where(diff == -1)[0]
 
-    # Merge Descender Fragments ('y', 'p', 'g')
-    mergedLines = []
-    for line in rawLines:
-        if not mergedLines:
-            mergedLines.append(line)
-        else:
-            prevS, prevE = mergedLines[-1]
-            currS, currE = line
-            if (currS - prevE) < 18:
-                mergedLines[-1] = (prevS, currE)
-            else:
+        rawLines = [(s, e) for s, e in zip(lineStarts, lineEnds) if (e - s) >= 8]
+
+        # Merge Descender Fragments ('y', 'p', 'g')
+        mergedLines = []
+        for line in rawLines:
+            if not mergedLines:
                 mergedLines.append(line)
+            else:
+                prevS, prevE = mergedLines[-1]
+                currS, currE = line
+                if (currS - prevE) < 18:
+                    mergedLines[-1] = (prevS, currE)
+                else:
+                    mergedLines.append(line)
 
-    mergedLines = MergeUndersizedFragments(mergedLines)
-    mergedLines = MergeOrSplitToExpectedLineCount(mergedLines, rowInkCount, expectedLineCount)
+        mergedLines = MergeUndersizedFragments(mergedLines)
+        mergedLines = MergeOrSplitToExpectedLineCount(mergedLines, rowInkCount, expectedLineCount)
 
     drawCanvas = rawImage.convert('RGB')
     drawObj = ImageDraw.Draw(drawCanvas)
