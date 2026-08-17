@@ -754,7 +754,7 @@ def train(config, device):
     # of settling into it. Decaying the LR when validation loss plateaus
     # lets it actually settle; the paper's own text even notes they
     # "tailored" the LR in some experiments, so this isn't out of spirit.
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=6, min_lr=1e-5)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=5, min_lr=1e-5)
 
     ckpt_path = script_dir / f"{config['name']}_checkpoint.pt"
     best_path = script_dir / f"{config['name']}_best.pt"
@@ -785,7 +785,9 @@ def train(config, device):
     max_epochs = config["epochs"]
     early_stop_patience = config["early_stop_patience"]
     eval_every = max(1, config.get("eval_every", 1))
-    max_restarts = config.get("max_restarts", 3)
+
+    max_restarts = config.get("max_restarts", 8)
+
 
     n_train_batches = len(train_loader)
 
@@ -990,7 +992,9 @@ def main():
         "lr": 1e-3,               # Section 6.1
         "weight_decay": 1e-5,     # Section 6.1
         "epochs": 200,            # Section 6.1
-        "early_stop_patience": 10,  # Section 6.1
+
+        "early_stop_patience": 15,  # Section 6.1
+
         "eval_every": args.eval_every,
         "max_restarts": args.max_restarts,
         "resume": True,
