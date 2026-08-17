@@ -52,11 +52,11 @@ def main():
     parser = argparse.ArgumentParser(description="Verify the training pipeline's image/label pairing and CTC setup.")
     parser.add_argument("--max-pages", type=int, default=None,
                          help="Use the SAME value you trained with, so this checks the exact dataset training saw.")
-    parser.add_argument("--cache-dir", default="line_image_cache")
+    parser.add_argument("--cache-dir", default="NOGIT/line_image_cache")
     parser.add_argument("--data-dir", default=None)
     parser.add_argument("--n-samples", type=int, default=12,
                          help="How many image+label pairs to dump for visual spot-checking.")
-    parser.add_argument("--out-dir", default="verify_training_output")
+    parser.add_argument("--out-dir", default="NOGIT/verify_training_output")
     args = parser.parse_args()
 
     if args.max_pages is None:
@@ -89,7 +89,7 @@ def main():
     print("[2/5] Dumping image+label pairs for a visual spot-check ...")
     print("=" * 78)
     out_dir = Path(args.out_dir)
-    out_dir.mkdir(exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
     n_head = min(args.n_samples // 2, len(dataset))
     sample_indices = list(range(n_head))
     if len(dataset) > len(sample_indices):

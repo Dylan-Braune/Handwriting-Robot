@@ -503,7 +503,7 @@ def ProcessPage(imgPath):
 # =====================================================================
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_DATA_DIR = SCRIPT_DIR.parents[1] / "Data" / "Datasets" / "IAMpages671" / "data"
-DEFAULT_OUT_DIR = SCRIPT_DIR / "generated_boxes_and_labels"
+DEFAULT_OUT_DIR = SCRIPT_DIR / "NOGIT" / "generated_boxes_and_labels"
 
 
 def main():

@@ -22,8 +22,9 @@ from pathlib import Path
 from FullLineBoxMaker import ReadLabelLines
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+NOGIT_DIR = SCRIPT_DIR / "NOGIT"
 DEFAULT_DATA_DIR = SCRIPT_DIR.parents[1] / "Data" / "Datasets" / "IAMpages671"
-DEFAULT_OUT_DIR = SCRIPT_DIR / "holdout_test_pages"
+DEFAULT_OUT_DIR = NOGIT_DIR / "holdout_test_pages"
 
 # Must match IAMLineDatasetRaw's min_pages_for_holdout default in
 # train_paper_cnn_bilstm_ctc.py -- if you ever change one, change both.

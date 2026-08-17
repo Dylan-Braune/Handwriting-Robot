@@ -48,8 +48,9 @@ from train_paper_cnn_bilstm_ctc import (
 )
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_WEIGHTS = SCRIPT_DIR / "paper_cnn_bilstm_ctc_best.pt"
-DEFAULT_INPUT_DIR = SCRIPT_DIR / "holdout_test_pages"
+NOGIT_DIR = SCRIPT_DIR / "NOGIT"
+DEFAULT_WEIGHTS = NOGIT_DIR / "weights" / "paper_cnn_bilstm_ctc_best.pt"
+DEFAULT_INPUT_DIR = NOGIT_DIR / "holdout_test_pages"
 
 
 def load_model(weights_path, device):

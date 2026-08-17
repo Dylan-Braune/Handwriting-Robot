@@ -756,8 +756,10 @@ def train(config, device):
     # "tailored" the LR in some experiments, so this isn't out of spirit.
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=5, min_lr=1e-5)
 
-    ckpt_path = script_dir / f"{config['name']}_checkpoint.pt"
-    best_path = script_dir / f"{config['name']}_best.pt"
+    weights_dir = script_dir / "NOGIT" / "weights"
+    weights_dir.mkdir(parents=True, exist_ok=True)
+    ckpt_path = weights_dir / f"{config['name']}_checkpoint.pt"
+    best_path = weights_dir / f"{config['name']}_best.pt"
 
     start_epoch = 1
     best_val_loss = float("inf")
@@ -985,7 +987,7 @@ def main():
     config = {
         "name": "paper_cnn_bilstm_ctc",
         "data_dir": data_dir,
-        "cache_dir": "line_image_cache",  # label-independent image cache; see LineImageCache
+        "cache_dir": "NOGIT/line_image_cache",  # label-independent image cache; see LineImageCache
         "force_rebuild": args.force_rebuild,
         "max_pages": max_pages,
         "batch_size": 16,        # Section 6.1

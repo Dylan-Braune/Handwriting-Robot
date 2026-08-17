@@ -528,8 +528,9 @@ def ProcessPage(imgPath):
 # Write-enabled regeneration driver
 # =====================================================================
 SCRIPT_DIR = Path(__file__).resolve().parent
+NOGIT_DIR = SCRIPT_DIR / "NOGIT"
 DEFAULT_DATA_DIR = SCRIPT_DIR.parents[1] / "Data" / "Datasets" / "IAMpages671"
-DEFAULT_REVIEW_DIR = SCRIPT_DIR / "label_regeneration_review"
+DEFAULT_REVIEW_DIR = NOGIT_DIR / "label_regeneration_review"
 
 
 def resolve_dataset_root(root_dir):
