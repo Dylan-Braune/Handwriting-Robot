@@ -16,14 +16,20 @@ Usage:
 """
 
 import argparse
+import os
 import shutil
+import sys
 from pathlib import Path
 
+# This file lives in Diagnostics/, one level deeper than Software/CNN/ --
+# FullLineBoxMaker.py stays up there, so it's no longer on sys.path by
+# default (Python only auto-adds the running script's OWN directory).
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from FullLineBoxMaker import ReadLabelLines
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-NOGIT_DIR = SCRIPT_DIR / "NOGIT"
-DEFAULT_DATA_DIR = SCRIPT_DIR.parents[1] / "Data" / "Datasets" / "IAMpages671"
+NOGIT_DIR = SCRIPT_DIR.parent / "NOGIT"
+DEFAULT_DATA_DIR = SCRIPT_DIR.parents[2] / "Data" / "Datasets" / "IAMpages671"
 DEFAULT_OUT_DIR = NOGIT_DIR / "holdout_test_pages"
 
 # Must match IAMLineDatasetRaw's min_pages_for_holdout default in

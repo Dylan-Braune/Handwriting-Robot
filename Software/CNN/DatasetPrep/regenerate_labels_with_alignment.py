@@ -528,8 +528,11 @@ def ProcessPage(imgPath):
 # Write-enabled regeneration driver
 # =====================================================================
 SCRIPT_DIR = Path(__file__).resolve().parent
-NOGIT_DIR = SCRIPT_DIR / "NOGIT"
-DEFAULT_DATA_DIR = SCRIPT_DIR.parents[1] / "Data" / "Datasets" / "IAMpages671"
+# This file lives in DatasetPrep/, one level deeper than Software/CNN/ --
+# NOGIT stays shared at Software/CNN/NOGIT, and the repo root needs one
+# extra .parent hop too.
+NOGIT_DIR = SCRIPT_DIR.parent / "NOGIT"
+DEFAULT_DATA_DIR = SCRIPT_DIR.parents[2] / "Data" / "Datasets" / "IAMpages671"
 DEFAULT_REVIEW_DIR = NOGIT_DIR / "label_regeneration_review"
 
 

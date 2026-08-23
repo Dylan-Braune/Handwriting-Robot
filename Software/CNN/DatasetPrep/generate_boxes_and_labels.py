@@ -502,8 +502,12 @@ def ProcessPage(imgPath):
 # Driver: ask how many author folders, process that many, save outputs
 # =====================================================================
 SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_DATA_DIR = SCRIPT_DIR.parents[1] / "Data" / "Datasets" / "IAMpages671" / "data"
-DEFAULT_OUT_DIR = SCRIPT_DIR / "NOGIT" / "generated_boxes_and_labels"
+# NOTE: this file lives in DatasetPrep/, one level deeper than Software/CNN/
+# itself, so it takes an extra .parent hop to reach the repo root / the
+# shared NOGIT/ folder (which stays at Software/CNN/NOGIT, not a new
+# DatasetPrep/NOGIT).
+DEFAULT_DATA_DIR = SCRIPT_DIR.parents[2] / "Data" / "Datasets" / "IAMpages671" / "data"
+DEFAULT_OUT_DIR = SCRIPT_DIR.parent / "NOGIT" / "generated_boxes_and_labels"
 
 
 def main():

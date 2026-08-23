@@ -31,11 +31,18 @@ What it checks, in order:
 
 import argparse
 import math
+import os
 import random
+import sys
 from pathlib import Path
 
 import torch
 
+# This file lives in Diagnostics/, one level deeper than Software/CNN/ --
+# train_paper_cnn_bilstm_ctc.py stays up there, so it's no longer on
+# sys.path by default (Python only auto-adds the running script's OWN
+# directory).
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from train_paper_cnn_bilstm_ctc import (
     CHARSET,
     CHAR_TO_IDX,
@@ -67,14 +74,18 @@ def main():
         args.max_pages = int(raw) if raw.isdigit() and int(raw) > 0 else None
 
     script_dir = Path(__file__).resolve().parent
-    data_dir = Path(args.data_dir) if args.data_dir else script_dir.parents[1] / "Data" / "Datasets" / "IAMpages671"
+    # One level deeper than Software/CNN/ now (this file lives in
+    # Diagnostics/) -- extra .parent hop to reach the repo root, and the
+    # shared line-image cache stays at Software/CNN/NOGIT, not a new
+    # Diagnostics/NOGIT.
+    data_dir = Path(args.data_dir) if args.data_dir else script_dir.parents[2] / "Data" / "Datasets" / "IAMpages671"
 
     print("=" * 78)
     print("[1/5] Loading dataset with the same parameters training would use ...")
     print("=" * 78)
     dataset = IAMLineDatasetRaw(
         root_dir=data_dir,
-        cache_dir=script_dir / args.cache_dir,
+        cache_dir=script_dir.parent / args.cache_dir,
         force_rebuild=False,
         max_pages=args.max_pages,
     )

@@ -22,7 +22,9 @@ import argparse
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_DATA_DIR = SCRIPT_DIR.parents[1] / "Data" / "Datasets" / "IAMpages671"
+# This file lives in DatasetPrep/, one level deeper than Software/CNN/ --
+# extra .parent hop to reach the repo root.
+DEFAULT_DATA_DIR = SCRIPT_DIR.parents[2] / "Data" / "Datasets" / "IAMpages671"
 
 
 def resolve_dataset_root(root_dir):
