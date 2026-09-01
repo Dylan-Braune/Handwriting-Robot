@@ -33,7 +33,7 @@ import torch
 from PIL import Image
 
 from FullLineBoxMaker import ExtractLinePatches, ReadLabelLines
-import NonDatasetSegmenterFP as PersonalSegmenter
+import NonDatasetSegmenterFP2 as PersonalSegmenter
 from train_paper_cnn_bilstm_ctc import (
     CHARSET,
     PaperCRNN,

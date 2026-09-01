@@ -106,3 +106,42 @@ doing, not scripts that produce a deliverable themselves.
 None of the above were deleted -- files in the synced project folder can't
 be removed by the assistant, only overwritten, so these are flagged here for
 you to clean up by hand rather than left unmentioned.
+
+## The writing side: text -> that author's handwriting -> gantry motion
+
+Added alongside the reading pipeline above; none of it touches
+`train_paper_cnn_bilstm_ctc.py`, its weights, or how `classify_page.py`
+reads text. The text recognizer is used here **for inference only**, as a
+forced-alignment tool that says where each character sits inside a line.
+
+| File | Role |
+|---|---|
+| `style_profile.py` | Builds a per-author **style profile** from `Data/Datasets/IAMpages10`: CTC forced alignment gives per-character x-spans, the ink is skeletonized (Zhang-Suen) to centerlines and traced into ordered polylines, and each character is stored as several **glyph variants** in a slant-removed baseline/x-height frame -- plus measured style parameters (slant, x-height, ascender/descender, letter advances, word spacing, stroke width, connectedness). Profiles are fitted on **non-holdout pages only** and saved to `NOGIT/StyleProfiles10/<author>.json`. |
+| `synthesize_handwriting.py` | Arbitrary text + a profile -> a **pen trajectory** (ordered polylines with pen-up/pen-down structure). Composes from the glyph library for unseen words, adds cursive ligatures for connected hands, and applies per-instance jitter and baseline drift so repeated text isn't stamped. |
+| `evaluate_style.py` | Measures the style claim: renders synthesized lines and asks `train_author_classifier.py`'s 10-author model who wrote them (**target: >= 85%**), compares feature distributions (slant / spacing / ink density) against the real hand, builds the real-vs-synth comparison sheet, and estimates the digital->physical loss with `MachineDistort` (microstep quantization + belt backlash + positioning noise). |
+| `gcode_writer.py` | Trajectory -> **G-code**, a **step/direction schedule**, and a plotter preview; plus `SimulateAndCompare`, which rasterizes the emitted G-code and checks it against the synthesized trajectory. |
+| `write_as_author.py` | **End-to-end entry point**: text + author -> profile -> trajectory -> preview + G-code + steps + simulation check. |
+
+### Where the machine calibration lives
+
+**All machine constants are in one place: the `GantryConfig` dataclass at
+the top of `gcode_writer.py`.** Nothing else in the writing pipeline
+hardcodes a hardware number.
+
+* **X/Y steps per mm** are *derived*, not hardcoded: NEMA 17
+  `fullStepsPerRev=200` x A4988 `microstepping=16` = 3200 microsteps/rev,
+  divided by `mmPerRevX` / `mmPerRevY`. Set only the mm-per-revolution of
+  your transmission -- GT2 2 mm belt on a 20-tooth pulley = 40 mm/rev
+  (the default, giving 80 steps/mm); for a leadscrew set it to the lead.
+* **Work area / origin**: `boundsMin/MaxX/Ymm`, `originXmm`, `originYmm`.
+  Anything outside is clamped and the G-code header says how many points
+  were clamped.
+* **Speeds**: `drawFeedMmMin`, `travelFeedMmMin`, `accelMmS2` (used for the
+  trapezoidal timing in the step schedule).
+* **Pen (one-way gear motor, no driver)**: the motor only turns one way and
+  every 90 degrees toggles the pen, so pen state cannot be commanded or
+  read back -- `PenController` tracks it in software and emits exactly one
+  90-degree pulse per state *change*. `penPulseMs` is how long your motor
+  takes to turn 90 degrees (measure once); `penUpCode` / `penDownCode` are
+  the M-codes your firmware should map to that pulse; `penStartsUp` is the
+  assumed power-on state.

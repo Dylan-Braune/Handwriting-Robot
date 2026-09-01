@@ -1,40 +1,32 @@
 """
-NonDatasetSegmenterFP.py  (FIRST-PRINCIPLES version)
+NonDatasetSegmenterFP.py -- first-principles (numpy + PIL only, no OpenCV/scipy)
+page -> line segmenter for personal (non-IAM) handwriting photos, plus its
+own test harness. Run this file directly to test it against the sample
+pages in NOGIT/NonDatasetImages/.
 
-Identical algorithm to NonDatasetSegmenterCV.py, but with every image
-operation implemented from scratch in numpy (see fp_ops.py):
+Pipeline: load/normalize -> page-mask detection -> illumination correction +
+binarization -> deskew -> rule-line removal -> connected components + MESS
+(diagram) scoring -> chain-based line grouping -> per-line rendering.
 
-  * no OpenCV, no scipy -- numpy is the only maths dependency
-  * PIL is used ONLY to decode the input file / hold the preview image,
-    never for processing
-
-Pipeline (same as CV version):
-  1. Load + EXIF + scale-normalize.
-  2. Page detection (largest bright low-saturation region, two-pass,
-     ragged/dark-edge trimming).
-  3. Illumination correction, adaptive binarization, red-ink masking,
-     speckle removal.
-  4. Deskew by projection-variance search.
-  5. Faint-component filtering (printed rules / bleed-through).
-  6. Rule-line removal via chained thin-run analysis with darkness gating.
-  7. Component MESS scoring (largest-enclosed-hole + wide-sparse), neighbour
-     veto, mess blocks with tall-column core bboxes.
-  8. Chain-based line building with local baseline curves; pitch-aware
-     merging; weak-chain demotion; leftover/tall-comp assignment.
-  9. Ordered TEXT/MESS output with non-rectangular per-line masks.
+ProcessPage(imgPath) -> (results, previewPIL, meta)
+  results: ordered list of {order, tag: 'TEXT'|'MESS', bbox, raw_crop, n_components}
 """
 
+import glob
+import json
 import os
+
 import numpy as np
-from PIL import Image, ImageOps, ImageDraw
+from PIL import Image, ImageDraw, ImageOps
 
 import fp_ops as F
 
 TARGET_LONG_SIDE = 2400
+INPUT_H, INPUT_W = 64, 640  # keep in sync with train_paper_cnn_bilstm_ctc.py
 
 
 # ---------------------------------------------------------------------------
-# Stage 1: load + scale normalize
+# Load + normalize
 # ---------------------------------------------------------------------------
 def LoadImage(imgPath, targetLongSide=TARGET_LONG_SIDE):
     img = Image.open(imgPath)
@@ -48,7 +40,7 @@ def LoadImage(imgPath, targetLongSide=TARGET_LONG_SIDE):
 
 
 # ---------------------------------------------------------------------------
-# Stage 2: page detection
+# Page detection: largest bright, low-saturation region
 # ---------------------------------------------------------------------------
 def DetectPageMask(rgb):
     gray = F.RgbToGray(rgb)
@@ -68,7 +60,7 @@ def DetectPageMask(rgb):
     best = int(np.argmax(areas))
     mask = labels == best
 
-    # PASS 2: re-threshold against the page's own brightness
+    # re-threshold against the page's own brightness
     paperMed = float(np.median(blur[mask]))
     paperish2 = (blur >= paperMed - 50) & (sat < 90)
     paperish2 = F.Open(paperish2, 9, 9)
@@ -85,6 +77,7 @@ def DetectPageMask(rgb):
     mask = _TrimRagged(mask)
     mask = _TrimDarkEdges(mask, blur)
 
+    # small erosion so the page's own shadow/edge doesn't get treated as ink
     er = max(4, int(min(mask.shape) * 0.006))
     kk = 2 * (er // 2) + 1
     mask = F.Erode(mask, kk, kk)
@@ -142,7 +135,7 @@ def _TrimDarkEdges(mask, blur):
 
 
 # ---------------------------------------------------------------------------
-# Stage 3+4: illumination, binarization, red masking, speckles
+# Illumination, binarization, red-ink mask, speckles
 # ---------------------------------------------------------------------------
 def CorrectIllumination(gray):
     bg = F.GaussianBlur(gray, gray.shape[1] / 30.0)
@@ -165,36 +158,17 @@ def BinarizeInk(illum, pageMask):
 
 
 def HysteresisRecoverInk(illum, pageMask, strong, weakC=3):
-    """Grows `strong` (this file's normal BinarizeInk output) into any
-    touching weaker ink, WITHOUT admitting a weak region that isn't
-    connected to a real stroke -- i.e. classic hysteresis thresholding
-    (cited in this project's own first-semester literature review).
-
-    NOT used for BinarizeInk itself. Tried that first: swapping the whole
-    pipeline's ink source to a hysteresis threshold recovered genuinely
-    faint stroke pixels (a real camera photo can have a stroke's tail fade
-    to ~140/255 against a ~230/255 background, well below a fixed C=12 cut)
-    but also changed connected-component shapes enough to flip MESS
-    classification on gantry_planning.png's diagrams and disrupt line
-    grouping elsewhere -- component structure feeds BOTH classification and
-    chaining, so loosening it upstream has ripple effects far past the
-    faint pixels it was meant to fix. Confining the recovery to crop
-    RENDERING only (see ProcessPage's inkRaw) gets the same visual/model-
-    input completeness without touching any classification decision."""
+    """Crop-rendering-only recovery of faint stroke fade (never used for the
+    real ink used in segmentation/classification -- see BinarizeInk). Weak
+    threshold pixels are kept if within a small proximity of strong ink
+    (not strict adjacency: a faded glyph can anti-alias into a weak-only
+    blob that never quite touches its own strong stroke)."""
     blockSize = max(15, 2 * (illum.shape[1] // 60) + 1)
     weak = F.AdaptiveThresholdInv(illum, blockSize, weakC) & pageMask
     labels, n = F.LabelComponents(weak, connectivity=8)
     if n == 0:
         return strong
     touchesStrong = np.zeros(n + 1, bool)
-    # "touching" is checked against a slightly dilated strong mask, not the
-    # raw pixels -- classic hysteresis (strict pixel adjacency) still missed
-    # real cases: a badly faded letter (e.g. the closing 'e' of "have" on a
-    # real camera photo) can anti-alias down to a weak-only blob that sits a
-    # couple of px clear of the nearest strong stroke, never actually
-    # touching it, so strict adjacency threw the whole glyph away. A small
-    # proximity buffer (a few px) bridges that anti-aliasing gap without
-    # being anywhere near wide enough to pull in unrelated ink elsewhere.
     touched = labels[F.Dilate(strong, 9, 25)]
     touched = touched[touched > 0]
     touchesStrong[touched] = True
@@ -212,7 +186,7 @@ def RemoveSpeckles(ink, minSize=10):
 
 
 # ---------------------------------------------------------------------------
-# Stage 5: deskew
+# Deskew
 # ---------------------------------------------------------------------------
 def EstimateSkew(ink, searchRange=5.0):
     small = F.DownsampleArea(ink, 4) > 0
@@ -235,13 +209,11 @@ def EstimateSkew(ink, searchRange=5.0):
 
 
 def Rotate(arr, angle, isMask=False, fill=0):
-    # cv2 version rotates with getRotationMatrix2D(center, -angle);
-    # F.Rotate(img, a) matches getRotationMatrix2D(center, +a)
     return F.Rotate(arr, -angle, nearest=isMask, fill=fill)
 
 
 # ---------------------------------------------------------------------------
-# Stage 6: rule-line removal
+# Rule-line removal
 # ---------------------------------------------------------------------------
 def _HorizontalRunLengths(ink):
     h, w = ink.shape
@@ -302,8 +274,7 @@ def RemoveRuleLines(ink, textH, illum=None):
     return ink & ~ruleMask, ruleMask
 
 
-def _ChainLongStructures(cand, minSpan, axis, textH, thk, lo=None, hi=None,
-                         illum=None):
+def _ChainLongStructures(cand, minSpan, axis, textH, thk, lo=None, hi=None, illum=None):
     labels, n = F.LabelComponents(cand, connectivity=8)
     if n == 0:
         return np.zeros_like(cand)
@@ -312,8 +283,7 @@ def _ChainLongStructures(cand, minSpan, axis, textH, thk, lo=None, hi=None,
     for i, st in enumerate(stats, start=1):
         if st is None:
             continue
-        d = dict(id=i, x=st['x'], y=st['y'], w=st['w'], h=st['h'],
-                 cx=st['cx'], cy=st['cy'])
+        d = dict(id=i, x=st['x'], y=st['y'], w=st['w'], h=st['h'], cx=st['cx'], cy=st['cy'])
         if illum is not None:
             sub = labels[st['y']:st['y'] + st['h'], st['x']:st['x'] + st['w']] == i
             d['dark'] = 255.0 - float(np.median(
@@ -363,9 +333,8 @@ def _ChainLongStructures(cand, minSpan, axis, textH, thk, lo=None, hi=None,
 
 
 def RemoveEdgeComponents(ink, pageMask, textH):
-    """Drop narrow components hugging the page mask's left/right edge: the
-    sliver of an adjacent page, spine shadows, and rule stubs running off the
-    page edge.  Genuine text starts inside the margin."""
+    """Drop narrow components hugging the page mask's edge (adjacent-page
+    slivers, spine shadows, rule stubs) -- real text starts inside the margin."""
     cols = np.nonzero(pageMask.any(axis=0))[0]
     if len(cols) == 0:
         return ink
@@ -390,11 +359,9 @@ def RemoveEdgeComponents(ink, pageMask, textH):
 
 
 def BreakRuleNetworks(ink, textH):
-    """Safety net: a single component spanning most of the page in BOTH
-    directions with very low fill is a residual rules/margin network that
-    chained text together.  Strip its moderately-long thin runs so the text
-    riding on it separates.  A real drawing never spans the whole page at
-    ~2% fill."""
+    """A component spanning most of the page in both directions at very low
+    fill is a residual rule/margin network chaining text together -- strip
+    its thin runs so the text separates."""
     h, w = ink.shape
     labels, n = F.LabelComponents(ink, connectivity=8)
     if n == 0:
@@ -466,7 +433,7 @@ def _Otsu1D(values, bins=64):
 
 
 # ---------------------------------------------------------------------------
-# Stage 7: components + MESS scoring
+# Components + MESS scoring
 # ---------------------------------------------------------------------------
 def ComponentStats(ink):
     labels, n = F.LabelComponents(ink, connectivity=8)
@@ -492,6 +459,8 @@ def EstimateTextHeight(comps):
 
 
 def ScoreComponentMess(comp, labels, textH):
+    """0..1 diagram-ness, driven by largest single enclosed hole relative to
+    glyph scale, plus a wide-and-sparse (open line-art) fallback signal."""
     x, y, w, h = comp['x'], comp['y'], comp['w'], comp['h']
     sub = (labels[y:y + h, x:x + w] == comp['id'])
     area = comp['area']
@@ -516,7 +485,7 @@ def ScoreComponentMess(comp, labels, textH):
 
 
 # ---------------------------------------------------------------------------
-# Stage 8: line grouping (identical logic to the CV version)
+# Line grouping
 # ---------------------------------------------------------------------------
 def EstimateLinePitch(proj, textH):
     p = proj - proj.mean()
@@ -572,7 +541,7 @@ def _CurveY(curve, x):
 
 
 def GroupLines(ink, labels, comps, textH, imgH):
-    # ---- 1. mess
+    # 1. MESS candidates + neighbour veto (rules out big heading letters)
     for c in comps:
         c['mess'] = ScoreComponentMess(c, labels, textH)
     messCand = [c for c in comps if c['mess'] >= 0.5
@@ -652,7 +621,7 @@ def GroupLines(ink, labels, comps, textH, imgH):
                 return b
         return None
 
-    # ---- 2. chain core comps
+    # 2. chain core comps left-to-right
     core = [c for c in textComps
             if 0.3 * textH <= c['h'] <= 1.8 * textH and c['area'] >= textH * 1.2
             and not UnderlineLike(c, textH, labels)]
@@ -681,7 +650,7 @@ def GroupLines(ink, labels, comps, textH, imgH):
         chains.setdefault(uf.find(i), []).append(c)
     chainList = [dict(comps=cs) for cs in chains.values()]
 
-    # ---- 3. merge chains sharing the same local y
+    # 3. merge chains sharing the same local y (baseline curve)
     def chainSpan(ch):
         return (min(c['x'] for c in ch['comps']),
                 max(c['x'] + c['w'] for c in ch['comps']))
@@ -720,7 +689,7 @@ def GroupLines(ink, labels, comps, textH, imgH):
     for ch in chainList:
         ch['curve'] = _LineCurve(ch['comps'])
 
-    # ---- 3b. pitch-aware second merge
+    # 3b. pitch-aware second merge
     centers = sorted(float(np.mean(ch['curve'][1])) for ch in chainList)
     gaps = [b - a for a, b in zip(centers, centers[1:]) if b - a > textH * 0.5]
     pitch = float(np.median(gaps)) if gaps else textH * 1.8
@@ -757,7 +726,7 @@ def GroupLines(ink, labels, comps, textH, imgH):
     for ch in chainList:
         ch['curve'] = _LineCurve(ch['comps'])
 
-    # ---- 3c. demote weak chains
+    # 3c. demote weak chains
     def _ChainStats(ch):
         cs = ch['comps']
         width = max(c['x'] + c['w'] for c in cs) - min(c['x'] for c in cs)
@@ -775,7 +744,8 @@ def GroupLines(ink, labels, comps, textH, imgH):
         (survivors if strong else demoted).append(ch)
     chainList = survivors
 
-    # ---- 4. leftovers
+    # 4. leftovers: underlines attach above; small marks join nearest curve;
+    # tall interline comps split pixel-wise between curves they span
     def nearestChain(x, y, maxDy):
         best, bestDy = None, maxDy
         for ch in chainList:
@@ -839,7 +809,7 @@ def GroupLines(ink, labels, comps, textH, imgH):
             if part['area'] >= 8:
                 ch['comps'].append(part)
 
-    # ---- 5. finalize lines
+    # 5. finalize lines
     textLines = []
     for ch in chainList:
         cs = ch['comps']
@@ -855,7 +825,7 @@ def GroupLines(ink, labels, comps, textH, imgH):
                               yc=float(np.average([c['cy'] for c in cs],
                                                   weights=[c['area'] for c in cs]))))
 
-    # ---- 6. merge mess blocks belonging to one drawing
+    # 6. merge mess blocks belonging to one drawing
     lineCenters = sorted(l['yc'] for l in textLines)
     mergedBlocks = True
     while mergedBlocks:
@@ -886,7 +856,7 @@ def GroupLines(ink, labels, comps, textH, imgH):
             if mergedBlocks:
                 break
 
-    # ---- 5b. absorb "text lines" living inside a drawing's core bbox
+    # 5b. absorb "text lines" living inside a drawing's core bbox
     keptLines = []
     for l in textLines:
         cs = l['comps']
@@ -913,54 +883,16 @@ def GroupLines(ink, labels, comps, textH, imgH):
 
 
 # ---------------------------------------------------------------------------
-# Stage 9: rendering + ordering
+# Rendering + ordering
 # ---------------------------------------------------------------------------
 def RenderLine(gray, labels, comps, pad=6, inkRaw=None, inkRawLabels=None, gapPx=6, deskew=False):
-    """Render one line onto a white canvas from its own ink.
-
-    Two separate recovery passes against inkRaw (hysteresis-recovered ink,
-    see HysteresisRecoverInk / ProcessPage -- never used for segmentation,
-    only for what gets painted here):
-
-    * A small fixed-radius dilation recovers pixels shaved right off the
-      edge of a stroke this line already owns (rule-removal fringe, a
-      stroke bottom clipped by a couple of px) -- inherently local, a few
-      px is enough.
-    * A wider proximity recovery (inkRawLabels, an anisotropic dilation --
-      gapPx reach horizontally, a small fixed reach vertically) additionally
-      pulls in any hysteresis ink within horizontal reach of this line's own
-      mask. This is the one that matters for genuinely faded pen strokes: a
-      whole letter can sit well past what the small edge-dilation above
-      would ever bridge, AND (found by testing) a badly faded glyph often
-      isn't even one connected blob at weak threshold -- "have"'s closing
-      'e' on a real test photo came out as 10+ disconnected 1-3px
-      fragments, so matching by connected-component ID (tried first) missed
-      most of them regardless of search radius; straight proximity catches
-      the scattered fragments a component match can't. The kernel stays
-      anisotropic specifically so the horizontal reach needed to bridge a
-      whole missed glyph can't also bridge the (often similar-sized) blank
-      gap between two separate lines.
-
-    deskew rotates the crop level by the line's own fitted slope.
-
-    The crop window itself has to be widened by gapPx too, not just the
-    recovery search inside it -- a faded glyph entirely past the strong-ink
-    bounding box (e.g. a whole missing trailing letter) can't be recovered
-    by any in-window search if the window never reaches it in the first
-    place. Found exactly this: gapPx-radius recovery alone still lost
-    "have"'s 'e' because the crop's x2 stopped ~6px past the 'v' (pad's
-    default), short of where the 'e' actually sat.
-
-    A single gapPx of padding on the window still wasn't always enough --
-    on a real photo, a badly faded 'e' at the very end of a line came out
-    up to ~1.6x gapPx beyond the strong-ink bbox (the fade runs the whole
-    width of the glyph, not just a rim around it). So the SEARCH window is
-    padded generously (3x gapPx) to guarantee it can reach any glyph the
-    gapPx-radius recovery pass below is actually capable of pulling in --
-    then, after recovery runs, the crop is trimmed back down to a tight
-    box around whatever ink (strong + recovered) actually ended up in the
-    mask, so this generosity doesn't bake three lines' worth of blank
-    margin into every single crop."""
+    """Render one line from its own ink onto a white canvas. inkRaw/inkRawLabels
+    (hysteresis-recovered ink, see HysteresisRecoverInk -- never affects
+    segmentation, only what gets painted here) recover faded stroke pixels
+    that strong-only binarization missed. The search window is padded
+    generously (3x gapPx) so a badly faded trailing glyph is reachable at
+    all, then trimmed back to a tight box around whatever ink actually
+    ended up in the mask."""
     searchPad = max(pad, gapPx * 3) if inkRawLabels is not None else pad
     x1 = max(0, min(c['x'] for c in comps) - searchPad)
     y1 = max(0, min(c['y'] for c in comps) - pad)
@@ -981,35 +913,13 @@ def RenderLine(gray, labels, comps, pad=6, inkRaw=None, inkRawLabels=None, gapPx
         near = F.Dilate(mask, 9, 3)
         mask |= (near & inkRaw[y1:y2, x1:x2])
     if inkRawLabels is not None:
-        # Component-ID matching was tried here and dropped: at weak
-        # threshold, a genuinely faint whole letter often isn't ONE
-        # connected blob at all -- testing on "have"'s closing 'e' found it
-        # broken into 10+ disconnected 1-3px fragments, so component-ID
-        # overlap missed most of them regardless of the lookup radius.
-        # Straight proximity (OR in any inkRaw pixel within reach of this
-        # line's own mask) picks up scattered fragments a component match
-        # can't. The kernel is anisotropic on purpose: wide horizontal
-        # reach (inter-LETTER gaps, which is what needed bridging -- a
-        # whole missed glyph, not just a shaved edge) but only a small
-        # fixed vertical reach, since the blank gap between two lines can be
-        # comparable in size to that reach and must never be bridged.
-        #
-        # F.Dilate's kx argument is a full kernel width, not a radius --
-        # F.Dilate(mask, 4, gapPx) only reached gapPx // 2 px, half of what
-        # it looked like. On "have"'s closing 'e' the real gap between the
-        # last strong-ink pixel and the faded glyph was ~1.6x gapPx, so a
-        # gapPx//2 reach could never bridge it even with the search window
-        # now wide enough to contain it. Reach is matched to searchPad
-        # (3x gapPx) above so anything the window can hold is reachable.
+        # anisotropic reach: wide horizontally (bridge a whole missed
+        # glyph), narrow vertically (never bridge the gap between lines)
         window = inkRawLabels[y1:y2, x1:x2] > 0
         reachPx = gapPx * 3
         near = F.Dilate(mask, 4, 2 * reachPx + 1)
         mask |= (near & window)
 
-        # Trim the generous search window back to a tight box around
-        # whatever actually ended up in the mask (pad px of margin, same
-        # as the plain-pad case below), so the 3x gapPx safety margin above
-        # doesn't show up as blank space in the saved crop.
         ys_, xs_ = np.nonzero(mask)
         if len(xs_):
             tx1 = max(0, xs_.min() - pad)
@@ -1062,11 +972,8 @@ def ProcessPage(imgPath):
         ink0 = BinarizeInk(illum, pageMask) & ~RedInkMask(rgb)
         ink0 = RemoveSpeckles(ink0)
 
-    # crop-time recovery source: raw ink, hysteresis-grown to recover faint
-    # stroke fade (see HysteresisRecoverInk -- deliberately NOT used upstream
-    # of this point, only here where it can only affect what gets PAINTED
-    # into a crop, never a segmentation/classification decision), minus
-    # thin-horizontal runs (rule-line stubs must not come back either way)
+    # crop-time-only recovery source (see RenderLine); minus thin horizontal
+    # runs so rule-line stubs never come back either way
     inkRecovered = HysteresisRecoverInk(illum, pageMask, ink0)
     hR, vR = _HorizontalRunLengths(inkRecovered), _VerticalRunLengths(inkRecovered)
     inkRaw = inkRecovered & ~((hR >= 10) & (vR <= 4))
@@ -1079,9 +986,7 @@ def ProcessPage(imgPath):
     roughH = EstimateTextHeight(roughComps)
 
     ink, ruleMask = RemoveRuleLines(ink0, roughH, illum=illum)
-    # second pass: with the bulk of the rules gone, run lengths recompute and
-    # previously-shielded stubs (thick spots, crossings) become removable
-    ink, ruleMask2 = RemoveRuleLines(ink, roughH, illum=illum)
+    ink, ruleMask2 = RemoveRuleLines(ink, roughH, illum=illum)  # 2nd pass: newly-unshielded stubs
     ink = RemoveSpeckles(ink, minSize=12)
     ink = BreakRuleNetworks(ink, roughH)
     ink = RemoveSpeckles(ink, minSize=12)
@@ -1116,3 +1021,104 @@ def ProcessPage(imgPath):
                 nText=sum(1 for r in results if r['tag'] == 'TEXT'),
                 nMess=sum(1 for r in results if r['tag'] == 'MESS'))
     return results, preview, meta
+
+
+# ---------------------------------------------------------------------------
+# Self-test harness (was NonDatasetSegmenterTest.py + NonDatasetPreprocessing.py
+# -- folded in here so the FP engine is fully self-contained in one file)
+# ---------------------------------------------------------------------------
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+IMAGES_DIR = os.path.join(SCRIPT_DIR, 'NOGIT', 'NonDatasetImages')
+OUTPUT_DIR = os.path.join(SCRIPT_DIR, 'NOGIT', 'NonDatasetTestOutput', 'fp')
+
+
+def ReadLabels(imgPath):
+    labelPath = os.path.splitext(imgPath)[0] + '_labels.txt'
+    if not os.path.exists(labelPath):
+        return None
+    rows = []
+    with open(labelPath, encoding='utf-8') as f:
+        for ln in f:
+            ln = ln.rstrip('\n')
+            if not ln.strip():
+                continue
+            parts = ln.split('\t', 1)
+            rows.append(parts[1] if len(parts) == 2 else ln)
+    return rows
+
+
+def Score(detected, labelRows):
+    expTags = ['MESS' if r.strip() == 'MESS' else 'TEXT' for r in labelRows]
+    detTags = [r['tag'] for r in detected]
+    n = max(len(expTags), len(detTags))
+    match = sum(1 for i in range(min(len(expTags), len(detTags))) if expTags[i] == detTags[i])
+    return (match / n if n else 1.0), expTags, detTags
+
+
+def _RunOnImage(imgPath):
+    name = os.path.splitext(os.path.basename(imgPath))[0]
+    results, preview, meta = ProcessPage(imgPath)
+
+    previewDir = os.path.join(OUTPUT_DIR, 'previews')
+    cropDir = os.path.join(OUTPUT_DIR, 'crops', name)
+    modelDir = os.path.join(OUTPUT_DIR, 'crops_model', name)
+    for d in (previewDir, cropDir, modelDir):
+        os.makedirs(d, exist_ok=True)
+    preview.save(os.path.join(previewDir, name + '_preview.png'))
+
+    for r in results:
+        fname = f"line_{r['order']:02d}_{r['tag']}.png"
+        img = Image.fromarray(r['raw_crop'])
+        img.save(os.path.join(cropDir, fname))
+        g = img.convert('L')
+        s = min(INPUT_W / g.width, INPUT_H / g.height)
+        g = g.resize((max(1, int(g.width * s)), max(1, int(g.height * s))), Image.Resampling.BILINEAR)
+        canvas = Image.new('L', (INPUT_W, INPUT_H), 255)
+        canvas.paste(g, (0, (INPUT_H - g.height) // 2))
+        canvas.save(os.path.join(modelDir, fname))
+
+    report = dict(page=name, detected=len(results),
+                  detected_mess=sum(1 for r in results if r['tag'] == 'MESS'),
+                  skew_deg=round(meta.get('skew', 0.0), 2),
+                  text_height_px=round(meta.get('textH', 0.0), 1))
+
+    labels = ReadLabels(imgPath)
+    if labels is None:
+        print(f"{name}: no label file -- segmented {len(results)} boxes (no accuracy score)")
+        return report
+
+    acc, expTags, detTags = Score(results, labels)
+    report.update(expected=len(expTags), expected_mess=expTags.count('MESS'), accuracy=round(acc, 4))
+    print(f"{name}: acc={acc*100:.1f}%  expected {len(expTags)} rows ({expTags.count('MESS')} MESS) | "
+          f"detected {len(detTags)} ({detTags.count('MESS')} MESS) | skew={report['skew_deg']}deg")
+    if acc < 1.0:
+        for i in range(max(len(expTags), len(detTags))):
+            e = expTags[i] if i < len(expTags) else '--'
+            d = detTags[i] if i < len(detTags) else '--'
+            if e != d:
+                lbl = labels[i][:50] if i < len(labels) else ''
+                print(f"   {i:2d}  exp={e:4s} det={d:4s}  {lbl}   <<< MISMATCH")
+    return report
+
+
+def RunAll():
+    imagePaths = sorted(p for ext in ('*.png', '*.jpg', '*.jpeg', '*.JPG', '*.JPEG')
+                        for p in glob.glob(os.path.join(IMAGES_DIR, ext)))
+    if not imagePaths:
+        print(f'No images found in {IMAGES_DIR}')
+        return []
+    reports = [_RunOnImage(p) for p in imagePaths]
+    scored = [r['accuracy'] for r in reports if 'accuracy' in r]
+    if scored:
+        print(f'== OVERALL: {100*sum(scored)/len(scored):.1f}% ==')
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    with open(os.path.join(OUTPUT_DIR, 'report.json'), 'w', encoding='utf-8') as f:
+        json.dump(reports, f, indent=2)
+    print(f"\nPreviews:    {os.path.join(OUTPUT_DIR, 'previews')}")
+    print(f"Crops:       {os.path.join(OUTPUT_DIR, 'crops')}")
+    print(f"Model crops: {os.path.join(OUTPUT_DIR, 'crops_model')}")
+    return reports
+
+
+if __name__ == '__main__':
+    RunAll()

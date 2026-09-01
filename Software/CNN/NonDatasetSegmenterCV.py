@@ -1,149 +1,113 @@
 """
-NonDatasetSegmenterCV.py  (library / OpenCV version)
+NonDatasetSegmenterCV.py -- OpenCV (cv2) based page -> line segmenter for
+personal (non-IAM) handwriting photos, plus its own test harness. Run this
+file directly to test it against the sample pages in NOGIT/NonDatasetImages/.
+Same algorithm shape as NonDatasetSegmenterFP.py but built on cv2 instead of
+numpy-only ops (see that file if you want the first-principles version).
 
-Label-free page -> line segmentation for personal (non-IAM) handwriting photos.
-
-Design (identical algorithm to NonDatasetSegmenterFP.py, which reimplements
-every image operation from first principles in numpy):
-
-  1.  Load + EXIF + scale-normalize to TARGET_LONG_SIDE.
-  2.  PAGE DETECTION: the paper is the largest bright region of the photo.
-      Everything outside it (desk, keyboards, screens, hands) is discarded.
-  3.  Illumination correction (divide by heavy blur) on the page region.
-  4.  Ink binarization (adaptive threshold), red-ink masking (teacher marks,
-      margin lines), speckle removal.
-  5.  DESKEW: search rotation maximizing row-projection "peakiness".
-  6.  RULE-LINE REMOVAL: printed/drawn ruled lines and long vertical margin
-      lines are detected and subtracted.
-  7.  COMPONENT ANALYSIS: connected components; per-component MESS scoring
-      (diagrams/sketches) using size, fill ratio, enclosed-hole area.
-  8.  LINE GROUPING: glyph components chain left-to-right into lines with
-      local baseline curves.  Line masks are NON-RECTANGULAR: a line owns
-      exactly its own components, so overlapping ascenders/descenders of
-      neighbouring lines do not bleed into each other's crops.
-  9.  Ordered output: text lines and MESS blocks interleaved by y position.
-      Each text line is rendered onto a white canvas from its own component
-      mask only.
-
-Output interface (both versions):
-    ProcessPage(imgPath) -> (results, previewPIL, meta)
-      results: ordered list of dicts:
-        {order, tag: 'TEXT'|'MESS', bbox:(x1,y1,x2,y2), raw_crop: np.uint8 HxW
-         grayscale (white background), n_components}
+ProcessPage(imgPath) -> (results, previewPIL, meta)
+  results: ordered list of {order, tag: 'TEXT'|'MESS', bbox, raw_crop, n_components}
 """
 
+import glob
+import json
 import os
-import numpy as np
+
 import cv2
-from PIL import Image, ImageOps
+import numpy as np
+from PIL import Image, ImageDraw, ImageOps
 
 TARGET_LONG_SIDE = 2400
+INPUT_H, INPUT_W = 64, 640  # keep in sync with train_paper_cnn_bilstm_ctc.py
 
 
 # ---------------------------------------------------------------------------
-# Stage 1: load + scale normalize
+# Load + normalize
 # ---------------------------------------------------------------------------
 def LoadImage(imgPath, targetLongSide=TARGET_LONG_SIDE):
     img = Image.open(imgPath)
     img = ImageOps.exif_transpose(img).convert('RGB')
-    w, h = img.size
+    arr = np.array(img)
+    h, w = arr.shape[:2]
     scale = targetLongSide / float(max(w, h))
-    img = img.resize((max(1, int(w * scale)), max(1, int(h * scale))),
-                     Image.Resampling.LANCZOS)
-    return np.array(img)  # HxWx3 uint8
+    newH, newW = max(1, int(h * scale)), max(1, int(w * scale))
+    out = cv2.resize(arr, (newW, newH), interpolation=cv2.INTER_LINEAR)
+    return np.clip(out, 0, 255).astype(np.uint8)
 
 
 # ---------------------------------------------------------------------------
-# Stage 2: page detection -- largest bright region
+# Page detection: largest bright, low-saturation region
 # ---------------------------------------------------------------------------
+def _FillHoles(mask):
+    m = mask.astype(np.uint8) * 255
+    h, w = m.shape
+    ff = np.zeros((h + 2, w + 2), np.uint8)
+    flood = m.copy()
+    cv2.floodFill(flood, ff, (0, 0), 255)
+    holes = cv2.bitwise_not(flood)
+    return (m | holes) > 0
+
+
 def DetectPageMask(rgb):
-    """The paper is the largest bright, LOW-SATURATION region containing the
-    image centre area.  Colour-cluttered background (wood, keyboards, screens)
-    is either darker or more saturated than paper."""
     gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
     hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
-    sat = hsv[:, :, 1]
+    sat = hsv[:, :, 1].astype(np.int16)
 
     blur = cv2.GaussianBlur(gray, (0, 0), 4)
     otsuVal, _ = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-    paperish = (blur >= otsuVal) & (sat < 90)
-    # light open to break thin bridges to bright background objects
-    paperish = cv2.morphologyEx(paperish.astype(np.uint8), cv2.MORPH_OPEN,
-                                np.ones((9, 9), np.uint8)).astype(bool)
+    paperish = ((blur >= otsuVal) & (sat < 90)).astype(np.uint8)
+    kernel = np.ones((9, 9), np.uint8)
+    paperish = cv2.morphologyEx(paperish, cv2.MORPH_OPEN, kernel)
 
-    n, labels, stats, _ = cv2.connectedComponentsWithStats(
-        paperish.astype(np.uint8), connectivity=4)
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(paperish, connectivity=4)
     if n <= 1:
         return np.ones(gray.shape, bool)
-    best = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
-    mask = (labels == best)
+    areas = stats[1:, cv2.CC_STAT_AREA]
+    best = 1 + int(np.argmax(areas))
+    mask = labels == best
 
-    # PASS 2: re-threshold against the page's own brightness, so mid-gray
-    # background (fabric, wood) that slipped past a low global Otsu is cut.
     paperMed = float(np.median(blur[mask]))
-    paperish2 = (blur >= paperMed - 50) & (sat < 90)
-    paperish2 = cv2.morphologyEx(paperish2.astype(np.uint8), cv2.MORPH_OPEN,
-                                 np.ones((9, 9), np.uint8)).astype(bool)
-    n, labels, stats, _ = cv2.connectedComponentsWithStats(
-        paperish2.astype(np.uint8), connectivity=4)
+    paperish2 = ((blur >= paperMed - 50) & (sat < 90)).astype(np.uint8)
+    paperish2 = cv2.morphologyEx(paperish2, cv2.MORPH_OPEN, kernel)
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(paperish2, connectivity=4)
     if n > 1:
-        best = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
-        mask = (labels == best)
+        areas = stats[1:, cv2.CC_STAT_AREA]
+        best = 1 + int(np.argmax(areas))
+        mask = labels == best
+
     mask = _FillHoles(mask)
-    # close small nicks, then fill again
-    mask = cv2.morphologyEx(mask.astype(np.uint8), cv2.MORPH_CLOSE,
-                            np.ones((15, 15), np.uint8)).astype(bool)
+    closeK = np.ones((15, 15), np.uint8)
+    mask = cv2.morphologyEx(mask.astype(np.uint8), cv2.MORPH_CLOSE, closeK) > 0
     mask = _FillHoles(mask)
 
-    # trim ragged bleed: keep the largest contiguous row block whose mask
-    # width is a substantial fraction of the page's typical width; same for
-    # columns.  Cuts background (fabric/desk) that grazed the thresholds.
     mask = _TrimRagged(mask)
-
-    # brightness trim: background (fabric, cork, desk) inside the mask is
-    # darker than paper -- drop rows/cols whose masked median brightness is
-    # far below the page's, then keep the largest contiguous block.
     mask = _TrimDarkEdges(mask, blur)
 
-    # erode so the page's own dark edge/shadow border is excluded
     er = max(4, int(min(mask.shape) * 0.018))
-    mask = cv2.erode(mask.astype(np.uint8), np.ones((er, er), np.uint8)).astype(bool)
+    kk = 2 * (er // 2) + 1
+    erKernel = np.ones((kk, kk), np.uint8)
+    mask = cv2.erode(mask.astype(np.uint8), erKernel) > 0
 
     if mask.mean() < 0.15:
         return np.ones(gray.shape, bool)
     return mask
 
 
-def _TrimDarkEdges(mask, blur):
-    if not mask.any():
-        return mask
-    pageMed = float(np.median(blur[mask]))
-    cut = pageMed - 45
-
-    for axis in (0, 1):
-        med = np.full(mask.shape[axis], pageMed)
-        idx = np.nonzero(mask.sum(axis=1 - axis) > 0)[0]
-        for i in idx:
-            sel = mask[i] if axis == 0 else mask[:, i]
-            vals = (blur[i] if axis == 0 else blur[:, i])[sel]
-            med[i] = np.median(vals)
-        good = med >= cut
-        # largest contiguous good block
-        best, bestSpan, i = 0, (0, len(good)), 0
-        while i < len(good):
-            if good[i]:
-                s = i
-                while i < len(good) and good[i]:
-                    i += 1
-                if i - s > best:
-                    best, bestSpan = i - s, (s, i)
-            else:
+def _LargestGoodBlock(good):
+    best, bestSpan, i = 0, (0, len(good)), 0
+    while i < len(good):
+        if good[i]:
+            s = i
+            while i < len(good) and good[i]:
                 i += 1
-        keep = np.zeros(len(good), bool)
-        keep[bestSpan[0]:bestSpan[1]] = True
-        mask = mask & (keep[:, None] if axis == 0 else keep[None, :])
-    return mask
+            if i - s > best:
+                best, bestSpan = i - s, (s, i)
+        else:
+            i += 1
+    keep = np.zeros(len(good), bool)
+    keep[bestSpan[0]:bestSpan[1]] = True
+    return keep
 
 
 def _TrimRagged(mask):
@@ -152,48 +116,40 @@ def _TrimRagged(mask):
         if prof.max() <= 0:
             return mask
         good = prof >= 0.55 * np.median(prof[prof > prof.max() * 0.2])
-        # largest contiguous run of good rows/cols
-        best, bestSpan = 0, (0, len(good))
-        i = 0
-        while i < len(good):
-            if good[i]:
-                s = i
-                while i < len(good) and good[i]:
-                    i += 1
-                if i - s > best:
-                    best, bestSpan = i - s, (s, i)
-            else:
-                i += 1
-        keep = np.zeros(len(good), bool)
-        keep[bestSpan[0]:bestSpan[1]] = True
-        if axis == 1:
-            mask = mask & keep[:, None]
-        else:
-            mask = mask & keep[None, :]
+        keep = _LargestGoodBlock(good)
+        mask = mask & (keep[:, None] if axis == 1 else keep[None, :])
     return mask
 
 
-def _FillHoles(mask):
-    h, w = mask.shape
-    ff = np.zeros((h + 2, w + 2), np.uint8)
-    inv = (~mask).astype(np.uint8)
-    cv2.floodFill(inv, ff, (0, 0), 2)
-    return mask | (inv == 1)
+def _TrimDarkEdges(mask, blur):
+    if not mask.any():
+        return mask
+    pageMed = float(np.median(blur[mask]))
+    cut = pageMed - 45
+    for axis in (0, 1):
+        n = mask.shape[axis]
+        med = np.full(n, pageMed)
+        counts = mask.sum(axis=1 - axis)
+        idx = np.nonzero(counts > 0)[0]
+        for i in idx:
+            sel = mask[i] if axis == 0 else mask[:, i]
+            vals = (blur[i] if axis == 0 else blur[:, i])[sel]
+            med[i] = np.median(vals)
+        keep = _LargestGoodBlock(med >= cut)
+        mask = mask & (keep[:, None] if axis == 0 else keep[None, :])
+    return mask
 
 
 # ---------------------------------------------------------------------------
-# Stage 3+4: illumination correction, binarization, red masking
+# Illumination, binarization, red-ink mask, speckles
 # ---------------------------------------------------------------------------
 def CorrectIllumination(gray):
-    bg = cv2.GaussianBlur(gray.astype(np.float32), (0, 0), gray.shape[1] / 30.0)
-    corr = gray.astype(np.float32) / (bg + 1e-3) * 255.0
+    bg = cv2.GaussianBlur(gray, (0, 0), gray.shape[1] / 30.0)
+    corr = gray.astype(np.float64) / (bg.astype(np.float64) + 1e-3) * 255.0
     return np.clip(corr, 0, 255).astype(np.uint8)
 
 
 def RedInkMask(rgb):
-    """Red / dark-red annotation ink (teacher marks, margin rules, stamps).
-    Catches saturated red AND darker maroon strokes where red only moderately
-    dominates but green/blue are clearly suppressed."""
     r = rgb[:, :, 0].astype(np.int16)
     g = rgb[:, :, 1].astype(np.int16)
     b = rgb[:, :, 2].astype(np.int16)
@@ -203,83 +159,34 @@ def RedInkMask(rgb):
 
 
 def BinarizeInk(illum, pageMask):
-    blockSize = 2 * (illum.shape[1] // 60) + 1
-    binv = cv2.adaptiveThreshold(illum, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                 cv2.THRESH_BINARY_INV, max(15, blockSize), 12)
-    ink = (binv > 0) & pageMask
-    return ink
-
-
-def RemoveEdgeComponents(ink, pageMask, textH):
-    """Drop narrow components hugging the page mask's left/right edge: the
-    sliver of an adjacent page, spine shadows, and rule stubs running off the
-    page edge.  Genuine text starts inside the margin."""
-    cols = np.nonzero(pageMask.any(axis=0))[0]
-    if len(cols) == 0:
-        return ink
-    mx1, mx2 = int(cols.min()), int(cols.max())
-    w = ink.shape[1]
-    n, labels, stats, _ = cv2.connectedComponentsWithStats(
-        ink.astype(np.uint8), connectivity=8)
-    keep = np.ones(n, bool)
-    for i in range(1, n):
-        cw = stats[i, cv2.CC_STAT_WIDTH]
-        cx = stats[i, cv2.CC_STAT_LEFT]
-        if cw >= w * 0.15:
-            continue
-        if cx <= mx1 + 8 or cx + cw >= mx2 - 8:
-            keep[i] = False
-    keep[0] = False
-    return keep[labels] & ink
-
-
-def BreakRuleNetworks(ink, textH):
-    """Safety net: a single component spanning most of the page in BOTH
-    directions with very low fill is a residual rules/margin network that
-    chained text together.  Strip its moderately-long thin runs so the text
-    riding on it separates.  A real drawing never spans the whole page at
-    ~2% fill."""
-    h, w = ink.shape
-    n, labels, stats, _ = cv2.connectedComponentsWithStats(
-        ink.astype(np.uint8), connectivity=8)
-    kill = np.zeros_like(ink)
-    for i in range(1, n):
-        cw, ch = stats[i, cv2.CC_STAT_WIDTH], stats[i, cv2.CC_STAT_HEIGHT]
-        area = stats[i, cv2.CC_STAT_AREA]
-        big = (ch > h * 0.5 and cw > w * 0.5) or (ch > h * 0.25 and cw > w * 0.6)
-        if not big:
-            continue
-        if area / float(ch * cw) > 0.055:
-            continue
-        kill |= (labels == i)
-    if not kill.any():
-        return ink
-    hRun = _HorizontalRunLengths(kill)
-    vRun = _VerticalRunLengths(kill)
-    thin = ((hRun >= textH) & (vRun <= 6)) | ((vRun >= textH) & (hRun <= 6))
-    return ink & ~(kill & thin)
+    blockSize = max(15, 2 * (illum.shape[1] // 60) + 1)
+    inv = cv2.adaptiveThreshold(illum, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                cv2.THRESH_BINARY_INV, blockSize, 12)
+    return (inv > 0) & pageMask
 
 
 def RemoveSpeckles(ink, minSize=10):
-    n, labels, stats, _ = cv2.connectedComponentsWithStats(
-        ink.astype(np.uint8), connectivity=8)
-    keep = np.zeros(n, bool)
-    keep[1:] = stats[1:, cv2.CC_STAT_AREA] >= minSize
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(ink.astype(np.uint8), connectivity=8)
+    if n <= 1:
+        return ink
+    areas = stats[:, cv2.CC_STAT_AREA]
+    keep = areas >= minSize
+    keep[0] = False
     return keep[labels]
 
 
 # ---------------------------------------------------------------------------
-# Stage 5: deskew
+# Deskew
 # ---------------------------------------------------------------------------
 def EstimateSkew(ink, searchRange=5.0):
-    small = cv2.resize(ink.astype(np.uint8) * 255, None, fx=0.25, fy=0.25,
-                       interpolation=cv2.INTER_AREA)
+    small = cv2.resize(ink.astype(np.uint8), None, fx=0.25, fy=0.25,
+                       interpolation=cv2.INTER_AREA) > 0
     h, w = small.shape
     center = (w / 2.0, h / 2.0)
 
     def score(angle):
         M = cv2.getRotationMatrix2D(center, angle, 1.0)
-        rot = cv2.warpAffine(small, M, (w, h), flags=cv2.INTER_NEAREST)
+        rot = cv2.warpAffine(small.astype(np.uint8), M, (w, h), flags=cv2.INTER_NEAREST, borderValue=0)
         prof = (rot > 0).sum(axis=1).astype(np.float64)
         return float(np.var(prof))
 
@@ -297,16 +204,17 @@ def EstimateSkew(ink, searchRange=5.0):
 
 def Rotate(arr, angle, isMask=False, fill=0):
     h, w = arr.shape[:2]
-    M = cv2.getRotationMatrix2D((w / 2.0, h / 2.0), -angle, 1.0)
-    flags = cv2.INTER_NEAREST if isMask else cv2.INTER_LINEAR
-    return cv2.warpAffine(arr, M, (w, h), flags=flags, borderValue=fill)
+    center = (w / 2.0, h / 2.0)
+    M = cv2.getRotationMatrix2D(center, angle, 1.0)
+    flag = cv2.INTER_NEAREST if isMask else cv2.INTER_LINEAR
+    borderVal = fill if arr.ndim == 2 else (fill, fill, fill)
+    return cv2.warpAffine(arr, M, (w, h), flags=flag, borderValue=borderVal)
 
 
 # ---------------------------------------------------------------------------
-# Stage 6: rule-line removal (horizontal ruled lines + vertical margin lines)
+# Rule-line removal
 # ---------------------------------------------------------------------------
 def _HorizontalRunLengths(ink):
-    """Per-pixel length of the horizontal ink run the pixel belongs to."""
     h, w = ink.shape
     a = ink.astype(np.int32)
     starts = np.zeros_like(a)
@@ -326,10 +234,6 @@ def _VerticalRunLengths(ink):
 
 
 def UnderlineLike(c, textH, labels=None):
-    """A single wide stroke: an underline / squiggle divider, never a diagram.
-    Test: at most columns, the ink occupies ONE thin vertical band.  A
-    diagram of the same width (e.g. two parallel long edges of a drawn box)
-    has a large per-column vertical spread instead."""
     if c['w'] <= 4.0 * textH or c['area'] / max(1, c['w']) > 6.5:
         return False
     if labels is None:
@@ -339,25 +243,15 @@ def UnderlineLike(c, textH, labels=None):
     if len(cols) == 0:
         return True
     ys = np.arange(sub.shape[0])[:, None]
-    inkY = np.where(sub, ys, -1)
-    ymax = inkY.max(axis=0)
-    inkY2 = np.where(sub, ys, 10 ** 9)
-    ymin = inkY2.min(axis=0)
+    ymax = np.where(sub, ys, -1).max(axis=0)
+    ymin = np.where(sub, ys, 10 ** 9).min(axis=0)
     spread = (ymax - ymin)[cols]
     return float(np.median(spread)) <= max(8.0, textH * 0.4)
 
 
 def RemoveRuleLines(ink, textH, illum=None):
-    """Rule lines = long thin horizontal runs; margin lines = long thin
-    vertical runs.  Thin candidate stubs are CHAINED across the page (rules
-    get broken into stubs wherever handwriting crosses them); a chain is a
-    rule only if it spans most of the page AND reaches both margins -- a
-    diagram's long strokes are long but local, so they survive.  Only thin
-    pixels are ever removed, so letter strokes crossing a rule keep their
-    vertical parts."""
     hRun = _HorizontalRunLengths(ink)
     vRun = _VerticalRunLengths(ink)
-
     h, w = ink.shape
 
     minRuleLen = max(50, int(textH * 3.5))
@@ -365,42 +259,41 @@ def RemoveRuleLines(ink, textH, illum=None):
     ruleThk = float(np.median(vRun[longH])) if longH.any() else 2.0
     thkCut = max(4, int(ruleThk * 1.8))
 
+    # vertical-rule-specific thickness (CV-only branch, kept from the
+    # original CV implementation -- FP does not have this extra case)
+    minRuleLenV = max(50, int(textH * 3.5))
+    longV = (vRun >= minRuleLenV)
+    vThk = float(np.median(hRun[longV])) if longV.any() else 2.0
+    vThkCut = max(4, int(vThk * 1.8))
+
     candH = (hRun >= max(20, int(textH * 0.8))) & (vRun <= thkCut)
     ruleH = _ChainLongStructures(candH, minSpan=w * 0.6, axis=0, textH=textH,
                                  thk=thkCut, lo=w * 0.15, hi=w * 0.85, illum=illum)
 
-    longV = vRun >= max(60, int(textH * 4.0))
-    vThk = max(4, int((float(np.median(hRun[longV])) if longV.any() else 2.0) * 1.8))
-    candV = (vRun >= max(20, int(textH * 0.8))) & (hRun <= vThk)
+    candV = (vRun >= max(20, int(textH * 0.8))) & (hRun <= vThkCut)
     ruleV = _ChainLongStructures(candV, minSpan=h * 0.45, axis=1, textH=textH,
-                                 thk=vThk, lo=h * 0.2, hi=h * 0.8, illum=illum)
+                                 thk=vThkCut, lo=h * 0.2, hi=h * 0.8, illum=illum)
 
     ruleMask = ruleH | ruleV
-    ruleMask = cv2.dilate(ruleMask.astype(np.uint8), np.ones((2, 2), np.uint8)).astype(bool)
-    ruleMask &= ((vRun <= thkCut + 2) | (hRun <= vThk + 2))
+    ruleMask = cv2.dilate(ruleMask.astype(np.uint8), np.ones((2, 2), np.uint8)) > 0
+    ruleMask &= ((vRun <= thkCut + 2) | (hRun <= thkCut + 2))
     return ink & ~ruleMask, ruleMask
 
 
-def _ChainLongStructures(cand, minSpan, axis, textH, thk, lo=None, hi=None,
-                         illum=None):
-    """Group thin candidate stubs into chains along `axis` (0=horizontal).
-    A chain whose total extent exceeds minSpan is a rule/margin line: all its
-    stubs are removed.  Handles rules broken by handwriting crossing them,
-    plus sloped/curved rules that defeat single-run length tests."""
-    n, labels, stats, cents = cv2.connectedComponentsWithStats(
-        cand.astype(np.uint8), connectivity=8)
+def _ChainLongStructures(cand, minSpan, axis, textH, thk, lo=None, hi=None, illum=None):
+    n, labels, stats, centroids = cv2.connectedComponentsWithStats(cand.astype(np.uint8), connectivity=8)
     if n <= 1:
         return np.zeros_like(cand)
     comps = []
     for i in range(1, n):
-        x, y, wc, hc, area = stats[i]
-        d = dict(id=i, x=int(x), y=int(y), w=int(wc), h=int(hc),
-                 cx=float(cents[i][0]), cy=float(cents[i][1]))
+        x, y, w, h, area = stats[i]
+        cx, cy = centroids[i]
+        d = dict(id=i, x=int(x), y=int(y), w=int(w), h=int(h), cx=float(cx), cy=float(cy))
         if illum is not None:
-            sub = labels[y:y + hc, x:x + wc] == i
-            d['dark'] = 255.0 - float(np.median(illum[y:y + hc, x:x + wc][sub]))
+            sub = labels[y:y + h, x:x + w] == i
+            d['dark'] = 255.0 - float(np.median(illum[y:y + h, x:x + w][sub]))
         comps.append(d)
-    if axis == 1:  # work in transposed coords for vertical chains
+    if axis == 1:
         for c in comps:
             c['x'], c['y'], c['w'], c['h'] = c['y'], c['x'], c['h'], c['w']
             c['cx'], c['cy'] = c['cy'], c['cx']
@@ -417,8 +310,6 @@ def _ChainLongStructures(cand, minSpan, axis, textH, thk, lo=None, hi=None,
             slopeAllow = thk * 2 + 0.08 * max(0, gap) + 0.04 * (a['w'] + b['w'])
             if dy > slopeAllow:
                 continue
-            # darkness gate: a dark pen stroke (diagram edge, underline) must
-            # not chain with much lighter printed rule stubs
             if 'dark' in a and abs(a['dark'] - b['dark']) > 55:
                 continue
             uf.union(i, j)
@@ -445,31 +336,70 @@ def _ChainLongStructures(cand, minSpan, axis, textH, thk, lo=None, hi=None,
     return keep[labels]
 
 
+def RemoveEdgeComponents(ink, pageMask, textH):
+    cols = np.nonzero(pageMask.any(axis=0))[0]
+    if len(cols) == 0:
+        return ink
+    mx1, mx2 = int(cols.min()), int(cols.max())
+    w = ink.shape[1]
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(ink.astype(np.uint8), connectivity=8)
+    if n <= 1:
+        return ink
+    keep = np.ones(n, bool)
+    for i in range(1, n):
+        x, y, cw, ch, area = stats[i]
+        if cw >= w * 0.15:
+            continue
+        touchL = x <= mx1 + 8
+        touchR = x + cw >= mx2 - 8
+        if touchL or touchR:
+            keep[i] = False
+    keep[0] = False
+    return keep[labels] & ink
+
+
+def BreakRuleNetworks(ink, textH):
+    h, w = ink.shape
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(ink.astype(np.uint8), connectivity=8)
+    if n <= 1:
+        return ink
+    kill = np.zeros_like(ink)
+    for i in range(1, n):
+        x, y, cw, ch, area = stats[i]
+        big = (ch > h * 0.5 and cw > w * 0.5) or (ch > h * 0.25 and cw > w * 0.6)
+        if not big:
+            continue
+        if area / float(ch * cw) > 0.055:
+            continue
+        kill |= (labels == i)
+    if not kill.any():
+        return ink
+    hRun = _HorizontalRunLengths(kill)
+    vRun = _VerticalRunLengths(kill)
+    thin = ((hRun >= textH) & (vRun <= 6)) | ((vRun >= textH) & (hRun <= 6))
+    return ink & ~(kill & thin)
+
+
 def FilterFaintComponents(ink, illum):
-    """Printed notebook rules, bleed-through and shadows are much FAINTER than
-    pen ink.  Split component darkness contrasts with a 1D Otsu and keep only
-    the dark cluster -- but only if the two clusters are well separated
-    (a clean page with uniformly dark ink must not lose its lightest word)."""
-    n, labels, stats, _ = cv2.connectedComponentsWithStats(
-        ink.astype(np.uint8), connectivity=8)
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(ink.astype(np.uint8), connectivity=8)
     if n <= 2:
         return ink
     darkness = np.zeros(n, np.float64)
     for i in range(1, n):
-        x, y, w, h = stats[i, 0], stats[i, 1], stats[i, 2], stats[i, 3]
-        sub = labels[y:y + h, x:x + w] == i
-        vals = illum[y:y + h, x:x + w][sub]
-        darkness[i] = 255.0 - float(np.percentile(vals, 25))  # contrast
+        x, y, cw, ch, area = stats[i]
+        sub = labels[y:y + ch, x:x + cw] == i
+        vals = illum[y:y + ch, x:x + cw][sub]
+        darkness[i] = 255.0 - float(np.percentile(vals, 25))
 
     d = darkness[1:]
     lo, hi = np.percentile(d, 10), np.percentile(d, 90)
-    if hi - lo < 60:          # uniformly-inked page: nothing to filter
+    if hi - lo < 60:
         return ink
     thr = _Otsu1D(d)
     if thr <= lo or thr >= hi:
         return ink
-    keep = np.zeros(n, bool)
-    keep[1:] = darkness[1:] >= thr
+    keep = darkness >= thr
+    keep[0] = False
     return keep[labels]
 
 
@@ -495,55 +425,45 @@ def _Otsu1D(values, bins=64):
 
 
 # ---------------------------------------------------------------------------
-# Stage 7: components + MESS scoring
+# Components + MESS scoring
 # ---------------------------------------------------------------------------
 def ComponentStats(ink):
-    n, labels, stats, cents = cv2.connectedComponentsWithStats(
-        ink.astype(np.uint8), connectivity=8)
+    n, labels, stats, centroids = cv2.connectedComponentsWithStats(ink.astype(np.uint8), connectivity=8)
     comps = []
     for i in range(1, n):
         x, y, w, h, area = stats[i]
+        cx, cy = centroids[i]
         comps.append(dict(id=i, x=int(x), y=int(y), w=int(w), h=int(h),
-                          area=int(area), cx=float(cents[i][0]), cy=float(cents[i][1])))
+                          area=int(area), cx=float(cx), cy=float(cy)))
     return labels, comps
 
 
 def EstimateTextHeight(comps):
-    """Robust typical glyph-cluster height: median of mid-sized comp heights.
-    Excludes extreme-aspect comps (rule/margin line fragments)."""
     hs = np.array([c['h'] for c in comps
                    if c['area'] >= 30 and c['w'] < max(1, c['h']) * 12],
                   dtype=np.float64)
     if len(hs) == 0:
         return 30.0
     med = float(np.median(hs))
-    # refine: median of heights within [0.3, 3]x of first estimate
     sel = hs[(hs > med * 0.3) & (hs < med * 3.0)]
     return float(np.median(sel)) if len(sel) else med
 
 
 def ScoreComponentMess(comp, labels, textH):
-    """Per-component diagram-ness score in [0,1].
-
-    Driven by the LARGEST single enclosed hole, relative to the page's glyph
-    scale: a hand-drawn box/circle traps ONE hole many times larger than a
-    letter counter or an underline pocket -- total hole ratio can't tell a
-    heading with an underline from a diagram, but largest-hole-size can.
-    Secondary signal: very wide + very sparse strokes (open line-art like a
-    long thin rod that never closes a loop)."""
     x, y, w, h = comp['x'], comp['y'], comp['w'], comp['h']
     sub = (labels[y:y + h, x:x + w] == comp['id'])
     area = comp['area']
 
-    padded = np.zeros((h + 2, w + 2), bool)
-    padded[1:-1, 1:-1] = sub
-    filled = _FillHoles(padded)
-    holesMask = filled & ~padded
+    padded = np.zeros((h + 2, w + 2), np.uint8)
+    padded[1:-1, 1:-1] = sub.astype(np.uint8)
+    filled = _FillHoles(padded > 0)
+    holesMask = filled & ~(padded > 0)
     maxHole = 0.0
     if holesMask.any():
         nh, hl = cv2.connectedComponents(holesMask.astype(np.uint8), connectivity=4)
         if nh > 1:
-            maxHole = float(np.bincount(hl.ravel())[1:].max())
+            areas = np.bincount(hl.ravel())[1:]
+            maxHole = float(areas.max())
     holeUnits = maxHole / max(1.0, textH * textH)
     holes = max(0.0, min(1.0, (holeUnits - 0.7) / 0.8))
 
@@ -555,22 +475,8 @@ def ScoreComponentMess(comp, labels, textH):
 
 
 # ---------------------------------------------------------------------------
-# Stage 8: line grouping
+# Line grouping (identical logic to the FP engine)
 # ---------------------------------------------------------------------------
-def EstimateLinePitch(proj, textH):
-    """Dominant line spacing via autocorrelation of the row projection.
-    Falls back to textH * 1.7 when no clear periodicity exists."""
-    p = proj - proj.mean()
-    ac = np.correlate(p, p, mode='full')[len(p) - 1:]
-    lo, hi = max(6, int(textH * 0.8)), min(len(ac) - 1, int(textH * 4.0))
-    if hi <= lo + 2:
-        return textH * 1.7
-    seg = ac[lo:hi]
-    if seg.max() <= 0:
-        return textH * 1.7
-    return float(lo + int(np.argmax(seg)))
-
-
 class _UnionFind:
     def __init__(self, n):
         self.p = list(range(n))
@@ -594,7 +500,6 @@ def _CompMask(labels, c):
 
 
 def _LineCurve(comps):
-    """Piecewise-linear y(x) through area-weighted centroids, x-sorted."""
     pts = sorted(((c['cx'], c['cy'], c['area']) for c in comps))
     xs = np.array([p[0] for p in pts])
     ys = np.array([p[1] for p in pts])
@@ -614,27 +519,11 @@ def _CurveY(curve, x):
 
 
 def GroupLines(ink, labels, comps, textH, imgH):
-    """Chain-based line building (robust to skew/curvature/perspective):
-
-    1. MESS comps found by hole/sparsity scoring, grouped into blocks;
-       comps inside a block's bbox are absorbed into it.
-    2. CORE text comps (ordinary glyph height) are chained left-to-right:
-       link two comps when horizontally adjacent and vertically aligned.
-       Chains follow the actual slope of each written line.
-    3. Chains that overlap in x at the same local y merge; each chain gets a
-       local baseline CURVE y(x).
-    4. Leftover comps: small marks join the nearest curve; interline-touching
-       tall comps are split pixel-wise between the curves they span.
-    """
-    # ---- 1. mess
     for c in comps:
         c['mess'] = ScoreComponentMess(c, labels, textH)
     messCand = [c for c in comps if c['mess'] >= 0.5
                 and c['area'] > textH * textH * 0.8 and c['h'] > textH * 1.2]
 
-    # NEIGHBOUR VETO: a candidate embedded in a row of ordinary glyphs is a
-    # heading letter-cluster (e.g. big underlined title chars whose underline
-    # pockets mimic diagram holes), not a diagram.
     def _NeighborVeto(c):
         neigh = []
         for o in comps:
@@ -654,13 +543,9 @@ def GroupLines(ink, labels, comps, textH, imgH):
                 neigh.append(o)
         if len(neigh) < 3:
             return False
-        # 75th percentile: capitals/ascenders set a line's true glyph scale;
-        # the median gets dragged down by lowercase x-height comps
         refH = float(np.percentile([o['h'] for o in neigh], 75))
         return c['h'] <= 1.9 * refH
 
-    # a decisive closed-shape score (a clean drawn box) overrides the veto --
-    # small drawing parts often have other drawing fragments beside them
     messComps = [c for c in messCand if c['mess'] >= 0.85 or not _NeighborVeto(c)]
 
     messBlocks = []
@@ -682,11 +567,6 @@ def GroupLines(ink, labels, comps, textH, imgH):
     messIds = {c['id'] for c in messComps}
     textComps = [c for c in comps if c['id'] not in messIds]
 
-    # CORE bbox per block: bbox of the block's TALL COLUMNS -- columns where
-    # the ink's vertical spread exceeds a glyph height, i.e. actual drawn
-    # shapes.  A thin stroke (underline / squiggle / lone rail) running from
-    # under a heading into the drawing must not let the block's bbox swallow
-    # the heading text beside it.
     for b in messBlocks:
         cx1 = cy1 = 10 ** 9
         cx2 = cy2 = -1
@@ -718,8 +598,6 @@ def GroupLines(ink, labels, comps, textH, imgH):
                 return b
         return None
 
-    # ---- 2. chain core comps.  Wide stroke-thin comps (underlines) never
-    # seed or join chains directly -- they attach to the line above later.
     core = [c for c in textComps
             if 0.3 * textH <= c['h'] <= 1.8 * textH and c['area'] >= textH * 1.2
             and not UnderlineLike(c, textH, labels)]
@@ -735,7 +613,7 @@ def GroupLines(ink, labels, comps, textH, imgH):
             dy = abs(b['cy'] - a['cy'])
             if dy > textH * 0.75:
                 continue
-            if gap < -a['w'] * 0.6:   # mostly overlapping in x: same word bits
+            if gap < -a['w'] * 0.6:
                 gap = 0
             cost = max(0, gap) + 3.0 * dy
             if bestCost is None or cost < bestCost:
@@ -748,7 +626,6 @@ def GroupLines(ink, labels, comps, textH, imgH):
         chains.setdefault(uf.find(i), []).append(c)
     chainList = [dict(comps=cs) for cs in chains.values()]
 
-    # ---- 3. merge chains sharing the same local y
     def chainSpan(ch):
         return (min(c['x'] for c in ch['comps']),
                 max(c['x'] + c['w'] for c in ch['comps']))
@@ -766,7 +643,6 @@ def GroupLines(ink, labels, comps, textH, imgH):
                 bx1, bx2 = chainSpan(b)
                 o1, o2 = max(ax1, bx1), min(ax2, bx2)
                 if o2 <= o1:
-                    # disjoint in x: allow merge if the nearer curve ends line up
                     xq = (o1 + o2) / 2.0
                     dy = abs(_CurveY(a['curve'], xq) - _CurveY(b['curve'], xq))
                     if dy < textH * 0.55:
@@ -788,9 +664,6 @@ def GroupLines(ink, labels, comps, textH, imgH):
     for ch in chainList:
         ch['curve'] = _LineCurve(ch['comps'])
 
-    # ---- 3b. pitch-aware second merge: fragments split off a line (a word
-    # written higher/lower than its neighbours) sit closer than a whole line
-    # pitch, so use the page's own measured pitch as the yardstick.
     centers = sorted(float(np.mean(ch['curve'][1])) for ch in chainList)
     gaps = [b - a for a, b in zip(centers, centers[1:]) if b - a > textH * 0.5]
     pitch = float(np.median(gaps)) if gaps else textH * 1.8
@@ -827,23 +700,24 @@ def GroupLines(ink, labels, comps, textH, imgH):
     for ch in chainList:
         ch['curve'] = _LineCurve(ch['comps'])
 
-    # ---- 3c. demote weak chains (scribble fragments, stray marks): they must
-    # either look like a real line or be clearly isolated on their own band.
-    survivors, demoted = [], []
-    for ch in chainList:
+    def _ChainStats(ch):
         cs = ch['comps']
         width = max(c['x'] + c['w'] for c in cs) - min(c['x'] for c in cs)
-        strong = len(cs) >= 3 or (width >= 3.0 * textH and
-                                  sum(c['area'] for c in cs) >= 2.0 * textH * textH)
+        return len(cs), width, sum(c['area'] for c in cs)
+
+    survivors = []
+    for ch in chainList:
+        nc, width, area = _ChainStats(ch)
+        strong = nc >= 3 or (width >= 3.0 * textH and area >= 2.0 * textH * textH)
         if not strong:
             myY = float(np.mean(ch['curve'][1]))
             nearest = min((abs(float(np.mean(o['curve'][1])) - myY)
                            for o in chainList if o is not ch), default=1e9)
-            strong = nearest > pitch * 0.8   # isolated band: keep (e.g. page numbers)
-        (survivors if strong else demoted).append(ch)
+            strong = nearest > pitch * 0.8
+        if strong:
+            survivors.append(ch)
     chainList = survivors
 
-    # ---- 4. leftovers
     def nearestChain(x, y, maxDy):
         best, bestDy = None, maxDy
         for ch in chainList:
@@ -863,11 +737,10 @@ def GroupLines(ink, labels, comps, textH, imgH):
         if id(c) in assignedIds:
             continue
         if UnderlineLike(c, textH, labels):
-            # an underline belongs to the words ABOVE it
             best, bestDy = None, textH * 1.5
             for ch in chainList:
                 cy = _CurveY(ch['curve'], c['cx'])
-                dy = c['cy'] - cy      # positive: underline below the line
+                dy = c['cy'] - cy
                 if -0.2 * textH < dy < bestDy:
                     bestDy, best = dy, ch
             if best is not None:
@@ -885,7 +758,6 @@ def GroupLines(ink, labels, comps, textH, imgH):
             elif ch is not None:
                 ch['comps'].append(c)
             continue
-        # tall interline-touching comp: split pixel-wise between nearest curves
         sub = _CompMask(labels, c)
         ys, xs = np.nonzero(sub)
         gx, gy = xs + c['x'], ys + c['y']
@@ -909,7 +781,6 @@ def GroupLines(ink, labels, comps, textH, imgH):
             if part['area'] >= 8:
                 ch['comps'].append(part)
 
-    # ---- 5. finalize lines
     textLines = []
     for ch in chainList:
         cs = ch['comps']
@@ -917,8 +788,6 @@ def GroupLines(ink, labels, comps, textH, imgH):
         maxH = max(c['h'] for c in cs)
         if totalArea < textH * textH * 0.35 or maxH < textH * 0.35:
             continue
-        # solid-blob mark filter: stray stamps/stars = 1-3 compact high-fill
-        # blobs and nothing glyph-like
         fills = [c['area'] / max(1.0, c['w'] * c['h']) for c in cs]
         width = max(c['x'] + c['w'] for c in cs) - min(c['x'] for c in cs)
         if len(cs) <= 3 and min(fills) > 0.45 and width < textH * 3.5:
@@ -927,8 +796,6 @@ def GroupLines(ink, labels, comps, textH, imgH):
                               yc=float(np.average([c['cy'] for c in cs],
                                                   weights=[c['area'] for c in cs]))))
 
-    # ---- 6. merge mess blocks that belong to ONE drawing: overlapping in x
-    # with no text line running between them vertically.
     lineCenters = sorted(l['yc'] for l in textLines)
     mergedBlocks = True
     while mergedBlocks:
@@ -947,9 +814,6 @@ def GroupLines(ink, labels, comps, textH, imgH):
                 a['comps'] += b['comps']
                 a['y1'], a['y2'] = min(a['y1'], b['y1']), max(a['y2'], b['y2'])
                 a['x1'], a['x2'] = min(a['x1'], b['x1']), max(a['x2'], b['x2'])
-                # core bbox: only genuine drawing comps define it -- an
-                # underline/squiggle-only block must not extend it over
-                # neighbouring heading text
                 if a['hasCore'] and b['hasCore']:
                     a['cy1'], a['cy2'] = min(a['cy1'], b['cy1']), max(a['cy2'], b['cy2'])
                     a['cx1'], a['cx2'] = min(a['cx1'], b['cx1']), max(a['cx2'], b['cx2'])
@@ -962,8 +826,6 @@ def GroupLines(ink, labels, comps, textH, imgH):
             if mergedBlocks:
                 break
 
-    # ---- 5b. a "text line" living mostly INSIDE a mess block's bbox is part
-    # of the drawing (hatching, axis labels), not a line of prose
     keptLines = []
     for l in textLines:
         cs = l['comps']
@@ -990,37 +852,26 @@ def GroupLines(ink, labels, comps, textH, imgH):
 
 
 # ---------------------------------------------------------------------------
-# Stage 9: rendering + ordering
+# Rendering + ordering
 # ---------------------------------------------------------------------------
 def RenderLine(gray, labels, comps, pad=6, inkRaw=None, deskew=False):
-    """Render one line onto a white canvas from its own ink.
-
-    * inkRaw: raw binarized ink (before rule removal / faint filtering) with
-      thin-horizontal runs stripped.  Pixels of it adjacent to the line's own
-      strokes are re-included, so stroke bottoms / descender tips shaved off
-      by earlier cleanup come back, while rule slivers stay out (the recovery
-      kernel is tall and narrow).
-    * deskew: rotate the crop by the line's own fitted slope so a line that
-      still rises/falls after the global page deskew comes out level.
-    """
-    x1 = min(c['x'] for c in comps) - pad
-    y1 = min(c['y'] for c in comps) - pad
-    x2 = max(c['x'] + c['w'] for c in comps) + pad
-    y2 = max(c['y'] + c['h'] for c in comps) + pad
-    x1, y1 = max(0, x1), max(0, y1)
-    x2, y2 = min(gray.shape[1], x2), min(gray.shape[0], y2)
+    x1 = max(0, min(c['x'] for c in comps) - pad)
+    y1 = max(0, min(c['y'] for c in comps) - pad)
+    x2 = min(gray.shape[1], max(c['x'] + c['w'] for c in comps) + pad)
+    y2 = min(gray.shape[0], max(c['y'] + c['h'] for c in comps) + pad)
 
     mask = np.zeros((y2 - y1, x2 - x1), bool)
     for c in comps:
-        sy, sx = slice(c['y'] - y1, c['y'] - y1 + c['h']), slice(c['x'] - x1, c['x'] - x1 + c['w'])
+        sy = slice(c['y'] - y1, c['y'] - y1 + c['h'])
+        sx = slice(c['x'] - x1, c['x'] - x1 + c['w'])
         if 'pixmask' in c:
             mask[sy, sx] |= c['pixmask']
         else:
             mask[sy, sx] |= (labels[c['y']:c['y'] + c['h'], c['x']:c['x'] + c['w']] == c['id'])
 
-    mask = cv2.dilate(mask.astype(np.uint8), np.ones((3, 3), np.uint8)).astype(bool)
+    mask = cv2.dilate(mask.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
     if inkRaw is not None:
-        near = cv2.dilate(mask.astype(np.uint8), np.ones((9, 3), np.uint8)).astype(bool)
+        near = cv2.dilate(mask.astype(np.uint8), np.ones((9, 3), np.uint8)) > 0
         mask |= (near & inkRaw[y1:y2, x1:x2])
 
     crop = np.full(mask.shape, 255, np.uint8)
@@ -1037,9 +888,7 @@ def RenderLine(gray, labels, comps, pad=6, inkRaw=None, deskew=False):
             margin = int(abs(np.tan(np.radians(angle))) * w / 2) + 4
             padded = np.full((h + 2 * margin, w), 255, np.uint8)
             padded[margin:margin + h] = crop
-            M = cv2.getRotationMatrix2D((w / 2.0, padded.shape[0] / 2.0), angle, 1.0)
-            rot = cv2.warpAffine(padded, M, (w, padded.shape[0]),
-                                 flags=cv2.INTER_LINEAR, borderValue=255)
+            rot = Rotate(padded, angle, fill=255)
             ys, xs = np.nonzero(rot < 250)
             if len(ys):
                 a = max(0, ys.min() - pad)
@@ -1060,16 +909,13 @@ def ProcessPage(imgPath):
 
     angle = EstimateSkew(ink0)
     if abs(angle) >= 0.15:
-        rgb = Rotate(rgb, angle, fill=(255, 255, 255))
+        rgb = Rotate(rgb, angle, fill=255)
         pageMask = Rotate(pageMask.astype(np.uint8), angle, isMask=True).astype(bool)
         gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
         illum = CorrectIllumination(gray)
         ink0 = BinarizeInk(illum, pageMask) & ~RedInkMask(rgb)
         ink0 = RemoveSpeckles(ink0)
 
-    # crop-time recovery source: raw ink (before the faint filter and rule
-    # removal) minus thin-horizontal runs, so shaved stroke bottoms come back
-    # into the crops without re-admitting rule slivers
     hR, vR = _HorizontalRunLengths(ink0), _VerticalRunLengths(ink0)
     inkRaw = ink0 & ~((hR >= 10) & (vR <= 4))
 
@@ -1080,9 +926,7 @@ def ProcessPage(imgPath):
     roughH = EstimateTextHeight(roughComps)
 
     ink, ruleMask = RemoveRuleLines(ink0, roughH, illum=illum)
-    # second pass: with the bulk of the rules gone, run lengths recompute and
-    # previously-shielded stubs (thick spots, crossings) become removable
-    ink, _rm2 = RemoveRuleLines(ink, roughH, illum=illum)
+    ink, ruleMask2 = RemoveRuleLines(ink, roughH, illum=illum)
     ink = RemoveSpeckles(ink, minSize=12)
     ink = BreakRuleNetworks(ink, roughH)
     ink = RemoveSpeckles(ink, minSize=12)
@@ -1095,8 +939,6 @@ def ProcessPage(imgPath):
     items += [dict(tag='MESS', yc=b['yc'], comps=b['comps'],
                    y1=b['y1'], y2=b['y2']) for b in messBlocks]
     items.sort(key=lambda it: it['yc'])
-    # reading order: a heading written at the TOP of its diagram's y-range is
-    # read before the diagram, even if the diagram's centre sits barely higher
     for k in range(len(items) - 1):
         a, b = items[k], items[k + 1]
         if a['tag'] == 'MESS' and b['tag'] == 'TEXT' and a['y1'] <= b['yc'] <= a['y2']:
@@ -1104,7 +946,6 @@ def ProcessPage(imgPath):
 
     results = []
     preview = Image.fromarray(rgb.copy())
-    from PIL import ImageDraw
     drawObj = ImageDraw.Draw(preview)
     for order, it in enumerate(items):
         crop, bbox = RenderLine(gray, labels, it['comps'], inkRaw=inkRaw,
@@ -1119,3 +960,104 @@ def ProcessPage(imgPath):
                 nText=sum(1 for r in results if r['tag'] == 'TEXT'),
                 nMess=sum(1 for r in results if r['tag'] == 'MESS'))
     return results, preview, meta
+
+
+# ---------------------------------------------------------------------------
+# Self-test harness (was NonDatasetSegmenterTest.py -- folded in here so the
+# CV engine is fully self-contained in one file)
+# ---------------------------------------------------------------------------
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+IMAGES_DIR = os.path.join(SCRIPT_DIR, 'NOGIT', 'NonDatasetImages')
+OUTPUT_DIR = os.path.join(SCRIPT_DIR, 'NOGIT', 'NonDatasetTestOutput', 'cv')
+
+
+def ReadLabels(imgPath):
+    labelPath = os.path.splitext(imgPath)[0] + '_labels.txt'
+    if not os.path.exists(labelPath):
+        return None
+    rows = []
+    with open(labelPath, encoding='utf-8') as f:
+        for ln in f:
+            ln = ln.rstrip('\n')
+            if not ln.strip():
+                continue
+            parts = ln.split('\t', 1)
+            rows.append(parts[1] if len(parts) == 2 else ln)
+    return rows
+
+
+def Score(detected, labelRows):
+    expTags = ['MESS' if r.strip() == 'MESS' else 'TEXT' for r in labelRows]
+    detTags = [r['tag'] for r in detected]
+    n = max(len(expTags), len(detTags))
+    match = sum(1 for i in range(min(len(expTags), len(detTags))) if expTags[i] == detTags[i])
+    return (match / n if n else 1.0), expTags, detTags
+
+
+def _RunOnImage(imgPath):
+    name = os.path.splitext(os.path.basename(imgPath))[0]
+    results, preview, meta = ProcessPage(imgPath)
+
+    previewDir = os.path.join(OUTPUT_DIR, 'previews')
+    cropDir = os.path.join(OUTPUT_DIR, 'crops', name)
+    modelDir = os.path.join(OUTPUT_DIR, 'crops_model', name)
+    for d in (previewDir, cropDir, modelDir):
+        os.makedirs(d, exist_ok=True)
+    preview.save(os.path.join(previewDir, name + '_preview.png'))
+
+    for r in results:
+        fname = f"line_{r['order']:02d}_{r['tag']}.png"
+        img = Image.fromarray(r['raw_crop'])
+        img.save(os.path.join(cropDir, fname))
+        g = img.convert('L')
+        s = min(INPUT_W / g.width, INPUT_H / g.height)
+        g = g.resize((max(1, int(g.width * s)), max(1, int(g.height * s))), Image.Resampling.BILINEAR)
+        canvas = Image.new('L', (INPUT_W, INPUT_H), 255)
+        canvas.paste(g, (0, (INPUT_H - g.height) // 2))
+        canvas.save(os.path.join(modelDir, fname))
+
+    report = dict(page=name, detected=len(results),
+                  detected_mess=sum(1 for r in results if r['tag'] == 'MESS'),
+                  skew_deg=round(meta.get('skew', 0.0), 2),
+                  text_height_px=round(meta.get('textH', 0.0), 1))
+
+    labels = ReadLabels(imgPath)
+    if labels is None:
+        print(f"{name}: no label file -- segmented {len(results)} boxes (no accuracy score)")
+        return report
+
+    acc, expTags, detTags = Score(results, labels)
+    report.update(expected=len(expTags), expected_mess=expTags.count('MESS'), accuracy=round(acc, 4))
+    print(f"{name}: acc={acc*100:.1f}%  expected {len(expTags)} rows ({expTags.count('MESS')} MESS) | "
+          f"detected {len(detTags)} ({detTags.count('MESS')} MESS) | skew={report['skew_deg']}deg")
+    if acc < 1.0:
+        for i in range(max(len(expTags), len(detTags))):
+            e = expTags[i] if i < len(expTags) else '--'
+            d = detTags[i] if i < len(detTags) else '--'
+            if e != d:
+                lbl = labels[i][:50] if i < len(labels) else ''
+                print(f"   {i:2d}  exp={e:4s} det={d:4s}  {lbl}   <<< MISMATCH")
+    return report
+
+
+def RunAll():
+    imagePaths = sorted(p for ext in ('*.png', '*.jpg', '*.jpeg', '*.JPG', '*.JPEG')
+                        for p in glob.glob(os.path.join(IMAGES_DIR, ext)))
+    if not imagePaths:
+        print(f'No images found in {IMAGES_DIR}')
+        return []
+    reports = [_RunOnImage(p) for p in imagePaths]
+    scored = [r['accuracy'] for r in reports if 'accuracy' in r]
+    if scored:
+        print(f'== OVERALL: {100*sum(scored)/len(scored):.1f}% ==')
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    with open(os.path.join(OUTPUT_DIR, 'report.json'), 'w', encoding='utf-8') as f:
+        json.dump(reports, f, indent=2)
+    print(f"\nPreviews:    {os.path.join(OUTPUT_DIR, 'previews')}")
+    print(f"Crops:       {os.path.join(OUTPUT_DIR, 'crops')}")
+    print(f"Model crops: {os.path.join(OUTPUT_DIR, 'crops_model')}")
+    return reports
+
+
+if __name__ == '__main__':
+    RunAll()
