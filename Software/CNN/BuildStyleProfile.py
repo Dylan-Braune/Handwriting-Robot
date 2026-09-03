@@ -670,6 +670,39 @@ def _ClassOk(ch, top, bot):
     return True
 
 
+def _ResampleN(poly, n):
+    p = np.asarray(poly, np.float64)
+    if len(p) < 2:
+        return np.zeros((n, 2))
+    seg = np.hypot(*np.diff(p, axis=0).T)
+    cum = np.concatenate([[0.0], np.cumsum(seg)])
+    if cum[-1] < 1e-9:
+        return np.repeat(p[:1], n, axis=0)
+    t = np.linspace(0.0, cum[-1], n)
+    return np.stack([np.interp(t, cum, p[:, 0]), np.interp(t, cum, p[:, 1])], 1)
+
+
+def _DenoisedPrototype(variants, minN=4, N=44):
+    """Robust median of an author's single-stroke variants of one letter,
+    each oriented left-to-right and arc-length resampled. Returns a polyline
+    (list of [x, y]) or None if there are too few one-stroke variants."""
+    one = [g for g in variants if len(g['strokes']) == 1]
+    if len(one) < minN:
+        return None
+    S = []
+    for g in one:
+        s = g['strokes'][0]
+        s = s if s[0][0] <= s[-1][0] else s[::-1]
+        S.append(_ResampleN(s, N))
+    A = np.stack(S)
+    med = np.median(A, axis=0)
+    dev = np.sqrt(((A - med) ** 2).sum(-1)).mean(1)
+    keep = A[dev <= np.percentile(dev, 80)]
+    proto = np.median(keep, axis=0)
+    proto[:, 0] -= proto[:, 0].min()
+    return [[round(float(x), 3), round(float(y), 3)] for x, y in proto]
+
+
 def _PenLength(g):
     """Total centerline length of a glyph, in x-heights."""
     tot = 0.0
@@ -964,6 +997,25 @@ def BuildAuthorProfile(authorId, parsed, refs=None, prior=None,
         good.sort(key=lambda g: abs(g['width'] - wRef) / max(0.2, wRef) +
                   abs((g['top'] - g['bot']) - hMed) / max(0.2, hMed))
         lib2[ch] = good[:MAX_VARIANTS_PER_CHAR]
+
+    # denoised prototypes: for a letter the author writes in one stroke,
+    # the robust median of their own aligned variants cancels the ~random
+    # cut noise and recovers their true letterform. Prepended (so synthesis
+    # prefers it) only where it measurably beats the raw variants.
+    for ch, vs in lib2.items():
+        proto = _DenoisedPrototype(vs)
+        if proto is None:
+            continue
+        pd = _PriorScore({'strokes': [proto]}, ch, prior)
+        rawPd = float(np.median([g.get('priorD', 0.5) for g in vs]))
+        if pd < rawPd - 0.03 and pd < 0.26:
+            xs = [p[0] for p in proto]
+            ys = [p[1] for p in proto]
+            g0 = dict(vs[0])
+            g0.update(strokes=[proto], priorD=round(pd, 4), denoised=True,
+                      width=round(max(xs) - min(xs), 3),
+                      top=round(max(ys), 3), bot=round(min(ys), 3))
+            lib2[ch] = [g0] + vs
 
     refs = refs or [st['ref'] for _, st in parsed if 'ref' in st]
     prof = dict(
