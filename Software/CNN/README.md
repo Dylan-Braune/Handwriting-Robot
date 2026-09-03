@@ -46,12 +46,31 @@ and legibility-scoring tool. None of this touches `TrainText.py` or its weights.
 
 | File | Role |
 |---|---|
-| `BuildStyleProfile.py` | Builds a per-author **style profile** from `Data/Datasets/IAMpages10`: CTC forced alignment → per-character x-spans, Zhang-Suen skeleton → ordered glyph polylines (several variants each), plus measured style params (slant, x-height, advances, word spacing, stroke width, connectedness). Fitted on non-holdout pages → `NOGIT/StyleProfiles10/<author>.json`. |
-| `SynthesizeHandwriting.py` | Arbitrary text + a profile → a **pen trajectory** (ordered polylines with pen-up/pen-down structure). Cursive ligatures for connected hands, per-instance jitter + baseline drift. `SynthesizeLegible` does best-of-N scored by the frozen text reader. |
+| `BuildStyleProfile.py` | Builds a per-author **style profile** from `Data/Datasets/IAMpages10`: CTC forced alignment → per-character x-spans, Zhang-Suen skeleton → ordered glyph polylines (several variants each), plus a **denoised prototype** per letter (robust per-stroke median of the author's own aligned variants -- cancels the ~random cut noise) and measured style params (slant, x-height, advances, word spacing, connectedness). Fitted on non-holdout pages → `NOGIT/StyleProfiles10/<author>.json`. |
+| `SynthesizeHandwriting.py` | Text + profile → a **pen trajectory**. Every glyph is one of the author's own variants **unless** it is a poorly-formed extraction, in which case it is swapped for the hand-drawn single-stroke **print anchor** (`_FB`, reshaped to the author's slant/size). The `legibility` λ ∈ [0,1] (default `DEFAULT_LEGIBILITY = 0.65`) sets how eagerly that swap happens. `SynthesizeLegible` does best-of-N scored by the frozen reader, then a **repair pass** that pins any still-unreadable letters to the anchor. |
 | `WriteGCode.py` | Trajectory → **G-code**, a **step/direction schedule**, and a plotter-preview raster. `SimulateAndCompare` rasterizes the emitted G-code and checks it against the trajectory. **All machine calibration is the `GantryConfig` dataclass at the top of this file** (see below). |
-| `WriteAsAuthor.py` | **End-to-end entry point**: `python WriteAsAuthor.py "Hello world" 3` → profile → trajectory → preview + G-code + steps + simulation check, into `NOGIT/WriteJobs/<author>/`. |
-| `VerifyRewrite.py` | "Right words, right hand?" -- synthesizes novel sentences, asks `TrainAuthor`'s model who wrote them and `TrainText`'s model what they say, both directly and through the full G-code round-trip. Also supplies the frozen-reader helpers `SynthesizeLegible` calls. |
-| `EvaluateStyle.py` | Style-fidelity measurement: writer-ID accuracy on synthesized lines (target ≥ 85%), per-feature error vs the real hand, side-by-side comparison sheets. Dependency of `VerifyRewrite`. |
+| `WriteAsAuthor.py` | **End-to-end entry point**: `python WriteAsAuthor.py "Hello world" 3` → profile → trajectory → preview + G-code + steps + simulation check, into `NOGIT/WriteJobs/<author>/`. Uniform ink. |
+| `EvaluateLegibility.py` | The headline metric. ~40 present-day sentences that appear nowhere in IAM, each synthesized and read back by the frozen recognizer (case-insensitive char + word accuracy) and identified by the shape-only writer-ID model, direct and through the emitted G-code. `--sweep` / `--tune` / `--legible`. |
+| `VerifyRewrite.py` | Older "right words, right hand" check on 6 fixed novel sentences; also supplies the frozen-reader helpers `SynthesizeLegible` calls. |
+| `VerifyShapeStyle.py`, `TrainAuthorShape.py` | The **shape-only** writer-ID model (real lines stroke-normalised to one constant pen width -- the domain the gantry actually produces; the ink-weight model collapses to ~12% there). Trained model scores 98.9% on the authors' real held-out crops, so it is the honest style judge. |
+| `EvaluateStyle.py` | Per-feature style error vs the real hand + side-by-side sheets. |
+
+### Uniform ink
+
+The gantry writes every author with one pen, so ink weight is not a style
+channel it can reproduce. `RenderTrajectory(uniformInk=True)` (the default)
+draws every author at one constant stroke width. The legacy ink-density
+matching is still reachable with `uniformInk=False` for comparison only.
+
+### Where it stands (novel text, uniform ink, full delivery path, 10 authors)
+
+`char ~86% / word ~48%` legibility, `~38%` shape-only style match. Split by
+hand: print / lightly-joined authors reach ~90% char and keep their
+character; the heavily cursive hands (151, 153, 154, 155) are pulled close
+to plain print to stay readable -- their extracted glyph libraries are too
+noisy to be both legible and distinctive, and fixing that needs a rework of
+the cursive line-segmentation cuts in `ExtractLineGlyphs` (a separate project
+on the reading side, not a synthesis knob).
 
 ### Where the machine calibration lives
 
