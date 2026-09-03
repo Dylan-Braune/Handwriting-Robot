@@ -4,7 +4,7 @@ can tell which of two conflicting copies (e.g. after a git stash/pull
 conflict) actually matches your real training progress, instead of
 guessing from filenames or timestamps.
 
-Works on either file produced by train_paper_cnn_bilstm_ctc.py:
+Works on either file produced by TrainText.py:
   - *_checkpoint.pt  -- a full dict with epoch/best_val_loss/patience_counter/
                         restart_count/etc.
   - *_best.pt        -- just a raw model state_dict (no metadata to print,

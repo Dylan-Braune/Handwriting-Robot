@@ -4,7 +4,7 @@ folder, alongside its _labels.txt, so you can test the trained model
 against pages it has genuinely never trained on.
 
 Uses the EXACT same selection rule as IAMLineDatasetRaw in
-train_paper_cnn_bilstm_ctc.py: the last labeled page of any author with at
+TrainText.py: the last labeled page of any author with at
 least MIN_PAGES_FOR_HOLDOUT labeled pages. That means the pages this script
 exports are precisely the ones val loss/val char-accuracy were computed
 against during training -- not a freshly-chosen, possibly-different sample.
@@ -22,10 +22,10 @@ import sys
 from pathlib import Path
 
 # This file lives in Diagnostics/, one level deeper than Software/CNN/ --
-# FullLineBoxMaker.py stays up there, so it's no longer on sys.path by
+# ExtractIAMLines.py stays up there, so it's no longer on sys.path by
 # default (Python only auto-adds the running script's OWN directory).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from FullLineBoxMaker import ReadLabelLines
+from ExtractIAMLines import ReadLabelLines
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 NOGIT_DIR = SCRIPT_DIR.parent / "NOGIT"
@@ -33,7 +33,7 @@ DEFAULT_DATA_DIR = SCRIPT_DIR.parents[2] / "Data" / "Datasets" / "IAMpages671"
 DEFAULT_OUT_DIR = NOGIT_DIR / "holdout_test_pages"
 
 # Must match IAMLineDatasetRaw's min_pages_for_holdout default in
-# train_paper_cnn_bilstm_ctc.py -- if you ever change one, change both.
+# TrainText.py -- if you ever change one, change both.
 MIN_PAGES_FOR_HOLDOUT = 3
 
 
@@ -77,7 +77,7 @@ def main():
         exported += 1
 
     print(f"[Export] Exported {exported} held-out page(s) (+ their labels) to:\n  {out_dir.resolve()}")
-    print("[Export] These are the exact same pages train_paper_cnn_bilstm_ctc.py computes val loss/accuracy "
+    print("[Export] These are the exact same pages TrainText.py computes val loss/accuracy "
           "against -- the model has never trained on a single line from any of them.")
 
 

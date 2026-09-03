@@ -1,10 +1,10 @@
 """
-synthesize_handwriting.py -- text + author ID -> pen trajectory in the
+SynthesizeHandwriting.py -- text + author ID -> pen trajectory in the
 author's handwriting style.
 
-Consumes the profiles built by style_profile.py (glyph prototype library +
+Consumes the profiles built by BuildStyleProfile.py (glyph prototype library +
 measured style parameters) and emits an ordered list of polylines with
-explicit pen-up/pen-down structure, in millimetres, ready for gcode_writer.py.
+explicit pen-up/pen-down structure, in millimetres, ready for WriteGCode.py.
 
 How a word is built:
   * every character is realised from one of the author's stored VARIANTS of
@@ -43,7 +43,7 @@ from PIL import Image, ImageDraw, ImageFilter
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from style_profile import LoadProfile, PROFILE_DIR   # noqa: F401
+from BuildStyleProfile import LoadProfile, PROFILE_DIR   # noqa: F401
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
@@ -560,7 +560,7 @@ def StyleCalibration(profile, mmPerXh=4.0, pxPerMm=18.0):
     key = (profile.get('authorId'), round(mmPerXh, 3), round(pxPerMm, 3))
     if key in _STYLE_CAL:
         return _STYLE_CAL[key]
-    import style_profile as _SP
+    import BuildStyleProfile as _SP
     ref = (profile.get('slantMeasRef'), profile.get('ascMeasRef'),
            profile.get('descMeasRef'))
     cal = dict(shearDelta=0.0, ascK=1.0, descK=1.0)
@@ -719,7 +719,7 @@ def _MatchInkDensity(traj, pxPerMm, padMm, startPx, target, mm,
     width. And it has to be on this line rather than a fixed probe,
     because density also depends on how much text the line holds -- a
     short line stretched to the fixed input width has fatter letters."""
-    from train_paper_cnn_bilstm_ctc import resize_line_image_fixed
+    from TrainText import resize_line_image_fixed
 
     hi = max(3, int(0.55 * mm * pxPerMm))
     cache = {}
@@ -785,13 +785,13 @@ def SynthesizeLegible(text, profile, nTries=6, mmPerXh=4.0, lineWidthMm=180.0,
     if reader is None:
         try:
             import torch
-            import verify_end_to_end as _V
+            import VerifyRewrite as _V
             device = device or torch.device('cpu')
             reader = _V.LoadTextModel(device)
         except Exception:
             return SynthesizeText(text, profile, mmPerXh=mmPerXh, seed=seed,
                                   lineWidthMm=lineWidthMm, jitter=jitter)
-    import verify_end_to_end as _V
+    import VerifyRewrite as _V
 
     base = 0 if seed is None else int(seed)
     best, bestScore = None, -1.0

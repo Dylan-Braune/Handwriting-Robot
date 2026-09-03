@@ -7,7 +7,7 @@ real handwritten lines into one detected region during label regeneration,
 and the whole run of printed words got dumped into a single line label.
 
 Training already filters these out automatically (see MAX_SAFE_LABEL_CHARS
-in train_paper_cnn_bilstm_ctc.py), so this isn't required before training --
+in TrainText.py), so this isn't required before training --
 it's for finding and understanding which specific pages are affected, in
 case you want to inspect/re-check their line segmentation later.
 

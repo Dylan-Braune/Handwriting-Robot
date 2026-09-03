@@ -1,5 +1,5 @@
 """
-verify_end_to_end.py -- does the robot's output say the RIGHT WORDS in the
+VerifyRewrite.py -- does the robot's output say the RIGHT WORDS in the
 RIGHT HAND, on text the system has never seen?
 
 Two independent questions, both answered on NOVEL sentences that appear
@@ -7,9 +7,9 @@ nowhere in IAM (so neither the style profiles, the writer-ID model, nor the
 text recognizer can have memorised them):
 
   1. WRITER ID  -- is synthesized author X recognised as author X?
-     (train_author_classifier.py's 10-author model)
+     (TrainAuthor.py's 10-author model)
   2. TEXT       -- does the frozen text recognizer read back the sentence
-     that was requested?  (train_paper_cnn_bilstm_ctc.py, used for
+     that was requested?  (TrainText.py, used for
      inference only, never modified)
 
 Both are also measured through the FULL MACHINE PATH: trajectory -> G-code
@@ -22,7 +22,7 @@ each author's REAL held-out lines. That is the ceiling synthesis competes
 against, not 100%.
 
 Run:
-    python verify_end_to_end.py
+    python VerifyRewrite.py
 """
 
 import os
@@ -35,11 +35,11 @@ from PIL import Image, ImageDraw
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import gcode_writer as GW
-import style_profile as SP
-import synthesize_handwriting as SY
-import evaluate_style as ES
-from train_paper_cnn_bilstm_ctc import (
+import WriteGCode as GW
+import BuildStyleProfile as SP
+import SynthesizeHandwriting as SY
+import EvaluateStyle as ES
+from TrainText import (
     CHARSET, PaperCRNN, decode_ctc, levenshtein, IAMLineDatasetRaw,
     _decode_png, resize_line_image_fixed, tensor_from_resized,
 )

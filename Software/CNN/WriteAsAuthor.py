@@ -1,22 +1,22 @@
 """
-write_as_author.py -- END-TO-END entry point for the writing side.
+WriteAsAuthor.py -- END-TO-END entry point for the writing side.
 
     text string + author (1-10)
-        -> style profile (built once by style_profile.py, reused from disk)
+        -> style profile (built once by BuildStyleProfile.py, reused from disk)
         -> pen trajectory in that author's handwriting
         -> preview image + plotter preview
         -> G-code file + step/direction schedule
         -> simulation check (does the emitted G-code redraw the trajectory?)
 
 Usage (interactive -- just run it):
-    python write_as_author.py
+    python WriteAsAuthor.py
 
 Or scripted:
-    python write_as_author.py "Hello world" 3
-    python write_as_author.py "Hello world" 151        (author id also works)
+    python WriteAsAuthor.py "Hello world" 3
+    python WriteAsAuthor.py "Hello world" 151        (author id also works)
 
 All machine constants (steps/mm, bed size, feeds, pen pulse timing) live in
-gcode_writer.GantryConfig -- see the header of that file.
+WriteGCode.GantryConfig -- see the header of that file.
 """
 
 import os
@@ -25,8 +25,8 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import gcode_writer as GW
-import synthesize_handwriting as SY
+import WriteGCode as GW
+import SynthesizeHandwriting as SY
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 OUT_DIR = SCRIPT_DIR / "NOGIT" / "WriteJobs"
@@ -50,7 +50,7 @@ def Run(text, authorToken, mmPerXh=4.0, seed=None, jobName=None,
         cfg=None, outDir=None, legibilityTries=4):
     profiles = SY.LoadAllProfiles()
     if not profiles:
-        raise SystemExit("No style profiles found -- run style_profile.py first.")
+        raise SystemExit("No style profiles found -- run BuildStyleProfile.py first.")
     author = ResolveAuthor(profiles, authorToken)
     prof = profiles[author]
     cfg = cfg or GW.GantryConfig()

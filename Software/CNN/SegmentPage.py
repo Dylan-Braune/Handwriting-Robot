@@ -1,7 +1,7 @@
 """
-NonDatasetSegmenterFP2.py -- improved first-principles page segmenter.
+SegmentPage.py -- improved first-principles page segmenter.
 
-Builds ON TOP of NonDatasetSegmenterFP (the baseline engine): every
+Builds ON TOP of SegmentPageCore (the baseline engine): every
 primitive and pipeline stage that already works is imported from there;
 this file adds/overrides only the stages the six-page test set showed to
 be weak. Scores 100% strict 1:1 ordered TEXT/MESS tag match on all six
@@ -87,7 +87,7 @@ What is new versus the baseline:
      BELOW back to the text it underlines.
 
 Run directly (numpy + PIL only, no OpenCV anywhere):
-    python NonDatasetSegmenterFP2.py
+    python SegmentPage.py
 Outputs go to NOGIT/NonDatasetTestOutput/fp2/ (previews, per-line crops,
 model-format crops, exactly like the baseline's fp/ output).
 """
@@ -97,8 +97,8 @@ import glob
 import numpy as np
 from PIL import Image, ImageDraw
 
-import fp_ops as F
-import NonDatasetSegmenterFP as base
+import RawImageOps as F
+import SegmentPageCore as base
 
 
 # ---------------------------------------------------------------------------

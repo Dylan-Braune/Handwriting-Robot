@@ -1,5 +1,5 @@
 """
-evaluate_style.py -- does the synthesized handwriting actually look like the
+EvaluateStyle.py -- does the synthesized handwriting actually look like the
 author it claims to be?
 
 Three independent measurements, all on HELD-OUT text (the profiles are
@@ -18,7 +18,7 @@ fitted to):
      below, per author, for visual judgement.
 
 Run:
-    python evaluate_style.py
+    python EvaluateStyle.py
 """
 
 import json
@@ -32,10 +32,10 @@ from PIL import Image, ImageDraw
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import style_profile as SP
-import synthesize_handwriting as SY
-from train_author_classifier import AuthorClassifierCNN
-from train_paper_cnn_bilstm_ctc import (
+import BuildStyleProfile as SP
+import SynthesizeHandwriting as SY
+from TrainAuthor import AuthorClassifierCNN
+from TrainText import (
     IAMLineDatasetRaw, _decode_png, resize_line_image_fixed,
     tensor_from_resized,
 )
@@ -222,7 +222,7 @@ def MachineDistort(traj, cfg, rng, backlashMm=0.15, jitterMm=0.05):
       * small random positioning noise per move.
     Returns a NEW trajectory; re-running writer-ID on it measures the
     digital -> physical style loss directly."""
-    import synthesize_handwriting as _SY
+    import SynthesizeHandwriting as _SY
     qx, qy = 1.0 / cfg.stepsPerMmX, 1.0 / cfg.stepsPerMmY
     out = []
     for s in traj.strokes:
@@ -254,7 +254,7 @@ def EvaluatePhysical(mmPerXh=4.0, pxPerMm=18.0, nSeeds=2,
     """Writer-ID accuracy on machine-distorted trajectories -- the estimate
     of what survives once the gantry actually draws it."""
     import random
-    import gcode_writer as GW
+    import WriteGCode as GW
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model, mapping, idxToAuthor = LoadAuthorModel(device)
     profiles = SY.LoadAllProfiles()

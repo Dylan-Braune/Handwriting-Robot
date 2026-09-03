@@ -1,5 +1,5 @@
 """
-gcode_writer.py -- pen trajectory -> G-code, step/direction schedule, and a
+WriteGCode.py -- pen trajectory -> G-code, step/direction schedule, and a
 plotter-preview raster, for the Handwriting-Robot gantry.
 
 === HARDWARE CONFIG -- EDIT THESE FOR YOUR MACHINE ===================

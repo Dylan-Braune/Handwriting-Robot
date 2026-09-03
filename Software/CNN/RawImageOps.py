@@ -1,10 +1,10 @@
 """
-fp_ops.py -- first-principles image operations in pure numpy.
+RawImageOps.py -- first-principles image operations in pure numpy.
 
 Every operation the segmentation pipeline needs, implemented from scratch:
 no OpenCV, no scipy, no PIL processing (PIL is used elsewhere ONLY to decode
 and encode image files).  This is the maths layer for
-NonDatasetSegmenterFP.py.
+SegmentPageCore.py.
 
 Implementations chosen for clarity + vectorized numpy speed:
   * Box sums via 2D cumulative-sum tables -> O(1) per pixel for any window.

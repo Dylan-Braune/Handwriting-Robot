@@ -1,5 +1,5 @@
 """
-NonDatasetSegmenterFP.py -- first-principles (numpy + PIL only, no OpenCV/scipy)
+SegmentPageCore.py -- first-principles (numpy + PIL only, no OpenCV/scipy)
 page -> line segmenter for personal (non-IAM) handwriting photos, plus its
 own test harness. Run this file directly to test it against the sample
 pages in NOGIT/NonDatasetImages/.
@@ -19,10 +19,10 @@ import os
 import numpy as np
 from PIL import Image, ImageDraw, ImageOps
 
-import fp_ops as F
+import RawImageOps as F
 
 TARGET_LONG_SIDE = 2400
-INPUT_H, INPUT_W = 64, 640  # keep in sync with train_paper_cnn_bilstm_ctc.py
+INPUT_H, INPUT_W = 64, 640  # keep in sync with TrainText.py
 
 
 # ---------------------------------------------------------------------------

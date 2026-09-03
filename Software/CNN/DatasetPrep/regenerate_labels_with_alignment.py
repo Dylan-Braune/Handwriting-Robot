@@ -706,7 +706,7 @@ def main():
         print(f"\n[Regenerate] Verification bundles saved to:\n  {review_dir}")
         print("[Regenerate] IMPORTANT: line_image_cache/ (if it already exists) does not need rebuilding "
               "for label text changes -- only IAMLineDatasetRaw's fresh re-read of _labels.txt does, which "
-              "happens automatically on your next training run. See train_paper_cnn_bilstm_ctc.py.")
+              "happens automatically on your next training run. See TrainText.py.")
     else:
         print("\n[Regenerate] Dry run only -- no files were changed. Re-run without --dry-run to apply.")
 

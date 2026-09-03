@@ -10,17 +10,17 @@ computed, so you can see exactly how the model does on handwriting it has
 never trained on.
 
 Reuses the exact same model class, preprocessing, and CTC decode function
-as training (imported directly from train_paper_cnn_bilstm_ctc.py), so
+as training (imported directly from TrainText.py), so
 what you see here is a true reflection of what training/validation
 measured -- not a separate reimplementation that could quietly drift out
 of sync with it.
 
 Usage:
-    python classify_page.py
+    python ClassifyText.py
     Just run it -- no flags. It prompts for everything it needs: the image
     (or folder of images) to transcribe, whether the page is an IAM
     Sentence Database scan or your own page (e.g. a photo of ruled
-    notebook paper -- picking "personal" uses NonDatasetSegmenterFP's
+    notebook paper -- picking "personal" uses SegmentPage's
     component/chain-based segmenter instead of the IAM-specific line
     splitter, see transcribe_page's docstring), and which weights file to
     load. Blank answers fall back to sensible defaults (shown in each
@@ -32,9 +32,9 @@ from pathlib import Path
 import torch
 from PIL import Image
 
-from FullLineBoxMaker import ExtractLinePatches, ReadLabelLines
-import NonDatasetSegmenterFP2 as PersonalSegmenter
-from train_paper_cnn_bilstm_ctc import (
+from ExtractIAMLines import ExtractLinePatches, ReadLabelLines
+import SegmentPage as PersonalSegmenter
+from TrainText import (
     CHARSET,
     PaperCRNN,
     decode_ctc,
@@ -67,7 +67,7 @@ def transcribe_page(model, img_path, device, is_dataset=True, crops_dir=None):
     the SAME ExtractLinePatches call the training image cache uses.
 
     is_dataset=False: personal/non-IAM page (e.g. a photo of your own ruled
-    notebook paper) -- uses NonDatasetSegmenterFP.ProcessPage instead of
+    notebook paper) -- uses SegmentPage.ProcessPage instead of
     ExtractLinePatches' older periodicity-based splitter. That's the
     first-principles component/chain-based segmenter that scores 100%
     (strict ordered TEXT/MESS match) against the labelled pages in
@@ -123,7 +123,7 @@ def process_image(model, img_path, device, is_dataset=True, crops_root=None):
     predictions = transcribe_page(model, img_path, device, is_dataset=is_dataset, crops_dir=crops_dir)
     ground_truth = ReadLabelLines(str(img_path))
     if not is_dataset:
-        # NonDatasetSegmenterFP's predictions only cover TEXT-tagged regions
+        # SegmentPage's predictions only cover TEXT-tagged regions
         # (MESS/diagram regions are skipped, see transcribe_page) -- drop the
         # label file's MESS placeholder rows so indices line back up 1:1
         # with what was actually predicted.

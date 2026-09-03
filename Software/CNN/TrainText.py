@@ -63,7 +63,7 @@ Data augmentation (Section 4.2 + Table 3 -- their best "combined" recipe):
 WHAT REUSES YOUR EXISTING PIPELINE
 ------------------------------------
 Line segmentation and label alignment are NOT reimplemented here. This
-script calls the exact same FullLineBoxMaker.ExtractLinePatches /
+script calls the exact same ExtractIAMLines.ExtractLinePatches /
 ReadLabelLines functions your other scripts use, over the same
 IAMpages671 page images + hand/OCR-verified *_labels.txt files. The only
 difference is which crop it keeps: ExtractLinePatches already returns each
@@ -79,7 +79,7 @@ NOT REPLICATED (out of scope / needs infra this repo doesn't have)
   - Test-time augmentation (Section 5).
 
 Usage:
-    python train_paper_cnn_bilstm_ctc.py
+    python TrainText.py
 """
 
 import argparse
@@ -101,7 +101,7 @@ from PIL import Image
 from scipy.ndimage import gaussian_filter, map_coordinates
 from torch.utils.data import DataLoader, Dataset
 
-from FullLineBoxMaker import ExtractLinePatches, ReadLabelLines
+from ExtractIAMLines import ExtractLinePatches, ReadLabelLines
 
 if os.name == "nt":
     pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
@@ -330,7 +330,7 @@ def _decode_png(png_bytes):
 # splitting it out: regenerating/correcting label text NEVER requires
 # re-running line segmentation or re-encoding images. Only rerun/rebuild
 # THIS cache if the segmentation code itself changes (e.g. a change to
-# FullLineBoxMaker's line-detection logic) -- not when labels change.
+# ExtractIAMLines's line-detection logic) -- not when labels change.
 #
 # Built with expectedLineCount=None / labelLines=None on purpose, so the
 # detected line boundaries never depend on any particular label file's
@@ -980,7 +980,7 @@ def main():
     # a crash's traceback only goes to stderr, which was never being written
     # to the .log file -- so a run could die with no visible explanation
     # anywhere except a terminal window you may not still have open.
-    logger = DualLogger(str(script_dir / "train_paper_cnn_bilstm_ctc.log"))
+    logger = DualLogger(str(script_dir / "TrainText.log"))
     sys.stdout = logger
     sys.stderr = logger
 

@@ -1,5 +1,5 @@
 """
-train_author_classifier.py
+TrainAuthor.py
 
 Writer identification, trained as its OWN focused model rather than bolted
 back onto the text recognizer as a second output head.
@@ -22,7 +22,7 @@ ctc.py) matches how the writer-ID literature actually does it too (e.g.
 arXiv:2009.04877, a dedicated single-task writer-ID CNN, not a joint model).
 
 WHY THIS SHOULD BE MORE ACCURATE THAN THE OLD RUN even before considering
-the split: it reuses train_paper_cnn_bilstm_ctc.py's IAMLineDatasetRaw,
+the split: it reuses TrainText.py's IAMLineDatasetRaw,
 i.e. the CURRENT line segmentation + label alignment (regenerate_labels_
 with_alignment.py's output), not the old pytesseract-labelled, periodicity-
 segmented data the 2024 joint run trained on. Better inputs, easier task,
@@ -38,7 +38,7 @@ notice pen-stroke shape as a side effect of learning to read handwriting
 arXiv:1712.07923) so it's a reasonable head start rather than training a
 CNN from nothing on a fairly small 10-author dataset.
 
-Does NOT modify train_paper_cnn_bilstm_ctc.py -- only imports from it.
+Does NOT modify TrainText.py -- only imports from it.
 """
 
 import os
@@ -52,7 +52,7 @@ from torch.utils.data import DataLoader, Dataset
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from train_paper_cnn_bilstm_ctc import (
+from TrainText import (
     IAMLineDatasetRaw,
     PaperCRNN,
     _decode_png,
@@ -74,7 +74,7 @@ WEIGHTS_DIR = SCRIPT_DIR / "NOGIT" / "weights"
 # return an author index per sample -- the base class already tracks
 # author_folders/author_to_idx and a page_key of "author_id/filename.png"
 # per sample, it just never surfaced the index through __getitem__ because
-# train_paper_cnn_bilstm_ctc.py never needed it.
+# TrainText.py never needed it.
 # -----------------------------------------------------------------------------
 class AuthorLabeledView(Dataset):
     def __init__(self, base: IAMLineDatasetRaw, indices, is_train):
@@ -259,7 +259,7 @@ def train(dataDir, cacheDir, numEpochs, batchSize, learningRate, initFromTextWei
 
 
 if __name__ == "__main__":
-    print("=== train_author_classifier.py ===")
+    print("=== TrainAuthor.py ===")
     dataDir = input(f"IAM 10-author dataset path (blank = {DEFAULT_DATA_DIR}): ").strip() or str(DEFAULT_DATA_DIR)
     cacheDir = input(f"Line-image cache dir (blank = {DEFAULT_CACHE_DIR}): ").strip() or str(DEFAULT_CACHE_DIR)
 

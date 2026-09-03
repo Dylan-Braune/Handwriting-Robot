@@ -6,7 +6,7 @@ you trust any loss number that comes out of an actual training run.
 Run it with the SAME --max-pages / --cache-dir you trained with, e.g.:
     python verify_training_pipeline.py --max-pages 100
 
-Reuses the real classes from train_paper_cnn_bilstm_ctc.py directly (same
+Reuses the real classes from TrainText.py directly (same
 folder), so it is checking the EXACT code path training uses -- not a
 reimplementation that could drift out of sync with it.
 
@@ -39,11 +39,11 @@ from pathlib import Path
 import torch
 
 # This file lives in Diagnostics/, one level deeper than Software/CNN/ --
-# train_paper_cnn_bilstm_ctc.py stays up there, so it's no longer on
+# TrainText.py stays up there, so it's no longer on
 # sys.path by default (Python only auto-adds the running script's OWN
 # directory).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from train_paper_cnn_bilstm_ctc import (
+from TrainText import (
     CHARSET,
     CHAR_TO_IDX,
     IDX_TO_CHAR,

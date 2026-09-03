@@ -1,5 +1,5 @@
 """
-style_profile.py -- per-author handwriting style extraction for the
+BuildStyleProfile.py -- per-author handwriting style extraction for the
 Handwriting-Robot's WRITING side.
 
 From each of the 10 target authors' pages (Data/Datasets/IAMpages10) this
@@ -26,7 +26,7 @@ trainers), so synthesis can be evaluated on text it never saw, and are
 saved to NOGIT/StyleProfiles10/<author>.json for reuse.
 
 Run directly to build all 10 profiles:
-    python style_profile.py
+    python BuildStyleProfile.py
 """
 
 import json
@@ -40,8 +40,8 @@ from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import fp_ops as F
-from train_paper_cnn_bilstm_ctc import (
+import RawImageOps as F
+from TrainText import (
     CHAR_TO_IDX,
     CHARSET,
     IAMLineDatasetRaw,
@@ -806,7 +806,7 @@ def RenderRefStats(gray):
     and ink density are part of a hand's style, and the writer-ID model is
     sensitive to them, so synthesis has to reproduce these -- not just the
     letter shapes."""
-    from train_paper_cnn_bilstm_ctc import resize_line_image_fixed
+    from TrainText import resize_line_image_fixed
     pil = Image.fromarray(gray).convert('L')
     a = np.array(resize_line_image_fixed(pil), dtype=np.float32)
     # Paper is not white and ink is not black on a real scan: the crops the
