@@ -332,30 +332,60 @@ _SIMILAR = {'I': 'l', 'O': '0', 'l': 'I', '0': 'O', 'o': '0', ';': ':',
             '"': "'", '!': 'l'}
 
 
+CORE_CURSIVE_CONN = 0.55           # at/above this the anchor is joined script
+
+
 def _CoreGlyph(ch, profile):
-    """The legible print letterform for `ch`, reshaped to this author's
-    ascender/descender reach (slant + jitter are applied later)."""
-    b = _BaselineGlyph(ch, profile, printOnly=True)
-    return None if b is None else (b[0], b[1], 0.0)
+    """The legible anchor letterform for `ch`, reshaped to this author.
+
+    A connected hand (measured connectedness >= CORE_CURSIVE_CONN) gets the
+    JOINED cursive skeleton -- entry/exit at connection height so the joins
+    read -- so its output still looks like joined script, not print. A
+    disconnected hand gets the upright print skeleton. Either way it is
+    scaled to the author's ascender/descender reach; slant, spacing and the
+    joins themselves are applied later.
+
+    Returns (strokes, advance, lead, isCursive)."""
+    cursive = float(profile.get('connectedness', 0.0)) >= CORE_CURSIVE_CONN
+    b = _BaselineGlyph(ch, profile, printOnly=not cursive)
+    return None if b is None else (b[0], b[1], 0.0, cursive)
+
+
+# priorD is cosine distance from the cross-author consensus letter. The
+# per-author distributions (measured) sit at p50 ~= 0.22-0.33, p90 ~= 0.32-0.47
+# -- i.e. most of an author's stored letterforms are "atypical" simply
+# because that IS their hand, not because they are broken. So the glyph
+# swap is now rare: keep the author's own letter unless it is genuinely
+# unresolvable, and fix legibility through LAYOUT (slant cap, join control,
+# spacing) and the empirical repair pass instead. This keeps each hand
+# recognisable.
+_GLYPH_CLEAN = 0.12        # priorD at/below which the author's letter is a
+                          # clean example -- keep it
+_GLYPH_GARBAGE = 0.55      # at/above this it is replaced regardless of lam
 
 
 def _SwapProb(lam, priorD):
-    """P(draw this glyph from the legible print anchor instead of the
-    author's own hand). Rises with the legibility dial `lam` and with how
-    far the author's prototype sits from a well-formed letter (`priorD`).
-    lam 0 -> never; lam 1 -> always."""
+    """P(replace this glyph with the style-aware anchor letterform).
+
+    The anchor now carries the author's own slant, size, spacing and (for a
+    connected hand) joins, so swapping a malformed extracted glyph for it is
+    a *clean version of the same hand*, not a loss of style. Only the
+    author's genuinely clean extracted letters (priorD <= _GLYPH_CLEAN) are
+    preferentially kept."""
+    d = float(priorD)
+    if d >= _GLYPH_GARBAGE:
+        return 1.0
     if lam <= 1e-3:
         return 0.0
-    if lam >= 1.0 - 1e-3:
-        return 1.0
-    return lam ** max(0.12, 1.0 - 2.2 * float(priorD))
+    bad = float(np.clip((d - _GLYPH_CLEAN) / 0.25, 0.0, 1.0))
+    return float(np.clip(lam * (0.2 + 0.9 * bad), 0.0, 1.0))
 
 
-def _GlyphSource(profile, ch, rng, prevExitY=None, lam=0.0):
+def _GlyphSource(profile, ch, rng, prevExitY=None, lam=0.0, forceCore=False):
     """Returns (strokes, advance, lead, source). Uses one of the author's
-    own variants, unless `lam` / a malformed prototype / no clean sample
-    sends this glyph to the legible print anchor instead. Then their other
-    case or a similar letter; finally the built-in font."""
+    own variants, unless the prototype is unresolvable, `forceCore` is set
+    (repair pass), or -- rarely -- `_SwapProb` fires. Then their other case
+    or a similar letter; finally the built-in font."""
     lib = profile['glyphs']
     adv = profile.get('letterAdvance', {})
 
@@ -404,23 +434,23 @@ def _GlyphSource(profile, ch, rng, prevExitY=None, lam=0.0):
 
     if ch in lib and lib[ch]:
         cands = lib[ch]
-        okCands = [g for g in cands
-                   if g.get('priorD', 0.0) <= _PRIOR_REJECT]
-        g = pick(okCands or cands)
+        # rank by priorD, take the most well-formed the author actually wrote
+        ranked = sorted(cands, key=lambda g: g.get('priorD', 0.5))
+        g = pick(ranked)
         d = float(g.get('priorD', 0.5))
         core = _CoreGlyph(ch, profile)
-        # no clean own sample at all -> the letter would be unresolvable, so
-        # the print anchor stands in whatever the dial says
-        if core is not None and (not okCands or rng.random() < _SwapProb(lam, d)):
+        if core is not None and (forceCore
+                                 or rng.random() < _SwapProb(lam, d)):
             return core[0], core[1], core[2], 'core'
         s, a, lead = pack(g)
         return s, a, lead, 'own'
     for alt in (ch.swapcase(), _SIMILAR.get(ch, '')):
         if alt and alt in lib and lib[alt]:
             core = _CoreGlyph(ch, profile)
-            if core is not None and rng.random() < _SwapProb(lam, 0.3):
+            if core is not None and (forceCore
+                                     or rng.random() < _SwapProb(lam, 0.4)):
                 return core[0], core[1], core[2], 'core'
-            g = pick(lib[alt])
+            g = pick(sorted(lib[alt], key=lambda x: x.get('priorD', 0.5)))
             if alt == ch.swapcase() and ch.isupper():
                 # borrow the lowercase shape, grown to capital height
                 k = profile.get('ascender', 1.7) / max(0.6, g['top'] or 1.0)
@@ -526,9 +556,19 @@ def SynthesizeText(text, profile, mmPerXh=4.0, seed=None, lineWidthMm=180.0,
     cal = _cal if _cal is not None else (
         StyleCalibration(profile, mmPerXh) if USE_STYLE_CALIBRATION
         else dict(shearDelta=0.0, ascK=1.0, descK=1.0))
-    slant = (math.tan(math.radians(profile.get('slantDeg', 0.0)))
-             + cal['shearDelta'])
+    slantDeg = profile.get('slantDeg', 0.0)
+    # legibility caps the lean of the AUTHOR's own glyphs on a soft curve
+    # (45deg at lam 0 -> ~26deg at lam 1); the print anchor is capped harder
+    # (CORE_SLANT_CAP_DEG) further down. A 40deg author hand stays visibly
+    # slanted, just not to the point where ascenders ramp off their cell.
+    authorSlantCap = 45.0 - 19.0 * float(np.clip(legibility, 0.0, 1.0))
+    slantDeg = float(np.clip(slantDeg, -authorSlantCap, authorSlantCap))
+    slant = math.tan(math.radians(slantDeg)) + cal['shearDelta']
     conn = float(profile.get('connectedness', 0.0))
+    # legibility thins out the cursive joins (tangled joins are the main
+    # thing that makes a connected hand unreadable) without removing them --
+    # a connected author still writes visibly connected at lam 0.65.
+    connEff = conn * (1.0 - 0.6 * float(np.clip(legibility, 0.0, 1.0)))
     wordGap = float(profile.get('wordSpaceXh', 1.2))
     ascender = float(profile.get('ascender', 1.7))
     descender = float(profile.get('descender', -0.6))
@@ -569,27 +609,33 @@ def SynthesizeText(text, profile, mmPerXh=4.0, seed=None, lineWidthMm=180.0,
         prevExit = None
         prevBodyMaxX = None
         prevSrc = None
+        prevCoreCursive = False
         for ci, ch in enumerate(word):
             lam = legibility
+            forceCore = False
             if perCharLam:
-                lam = max(lam, float(perCharLam.get(vpos, 0.0)))
+                pc = float(perCharLam.get(vpos, 0.0))
+                lam = max(lam, pc)
+                forceCore = pc >= 0.999
             vpos += 1
             wantEntryY = None
-            if conn >= 0.35 and ci > 0 and prevExit is not None and \
+            if connEff >= 0.2 and ci > 0 and prevExit is not None and \
                     ch.isalpha() and word[ci - 1].isalpha():
                 wantEntryY = (prevExit[1] - penY) / xh - drift
             gStrokes, adv, lead, src = _GlyphSource(profile, ch, rng,
                                                     prevExitY=wantEntryY,
-                                                    lam=lam)
+                                                    lam=lam, forceCore=forceCore)
             usage[src] = usage.get(src, 0) + 1
             if not gStrokes:
                 penX += adv * xh
                 continue
             isCore = (src == 'core')
-            # the print anchor is a designed-legible shape: don't re-stretch
-            # its proportions, don't shear it past readability, don't wobble
-            # it as hard as an extracted glyph -- each of those re-introduces
-            # the ambiguity it is there to remove
+            coreCursive = isCore and conn >= CORE_CURSIVE_CONN
+            # the anchor is a designed-legible shape: don't re-stretch its
+            # proportions or wobble it as hard as an extracted glyph -- that
+            # re-introduces the ambiguity it is there to remove. It DOES keep
+            # the author's lean (a joined hand is meant to slant), just
+            # capped so ascenders don't ramp off the cell.
             if not isCore:
                 gStrokes = _ApplyCal(gStrokes, cal)
             jf = CORE_JITTER_FRAC if isCore else 1.0
@@ -597,9 +643,10 @@ def SynthesizeText(text, profile, mmPerXh=4.0, seed=None, lineWidthMm=180.0,
             glyphSlant = slant
             glyphDrift = drift
             if isCore:
-                cap = math.tan(math.radians(CORE_SLANT_CAP_DEG))
+                capDeg = 30.0 if coreCursive else CORE_SLANT_CAP_DEG
+                cap = math.tan(math.radians(capDeg))
                 glyphSlant = max(-cap, min(cap, slant))
-                glyphDrift = 0.25 * drift
+                glyphDrift = (0.5 if coreCursive else 0.25) * drift
             # slow drift of the baseline within a line (a real hand wanders)
             driftV = 0.85 * driftV + rng.gauss(0.0, driftAmp * 0.35)
             drift = float(np.clip(drift + driftV, -0.25, 0.25))
@@ -636,12 +683,17 @@ def SynthesizeText(text, profile, mmPerXh=4.0, seed=None, lineWidthMm=180.0,
             # component width came out far too large and the number of
             # separate ink pieces far too low, which is exactly the geometry
             # a nearest-author matcher keys on.
-            # a print-anchor glyph on either side of the pair is meant to be
-            # read as a separate letter -- never join through it
+            # Join through a pair when: both glyphs are the author's own
+            # extracted forms, OR both are the cursive anchor (a connected
+            # hand keeps writing connected even through the cleaned-up
+            # letters). A PRINT anchor glyph is always read as a separate
+            # letter -- never join through it.
+            bothOwn = not isCore and prevSrc != 'core'
+            bothCursiveCore = coreCursive and prevCoreCursive
             joinable = (ci > 0 and prevExit is not None
                         and ch.isalpha() and word[ci - 1].isalpha()
-                        and not isCore and prevSrc != 'core'
-                        and rng.random() < min(conn, JOIN_PROB_CAP))
+                        and (bothOwn or bothCursiveCore)
+                        and rng.random() < min(connEff, JOIN_PROB_CAP))
             if joinable:
                 chain += _Ligature(prevExit, body[0], xh, rng)
                 chain += body
@@ -654,6 +706,7 @@ def SynthesizeText(text, profile, mmPerXh=4.0, seed=None, lineWidthMm=180.0,
                     flush(extra)
             prevBodyMaxX = max(p[0] for p in body)
             prevSrc = src
+            prevCoreCursive = coreCursive
             penX += adv * xh
         flush(chain)
         penX += wordGap * xh * (0.85 + 0.3 * rng.random())
