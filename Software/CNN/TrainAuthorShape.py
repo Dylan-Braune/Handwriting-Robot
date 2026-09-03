@@ -1,7 +1,7 @@
 """
-train_author_shape.py -- writer identification from SHAPE ALONE.
+TrainAuthorShape.py -- writer identification from SHAPE ALONE.
 
-WHY THIS EXISTS. The 10-author model in train_author_classifier.py reaches
+WHY THIS EXISTS. The 10-author model in TrainAuthor.py reaches
 100% on real held-out pages, but it turns out to lean almost entirely on
 ink weight: redraw the same real lines with every author's ink reduced to a
 centreline and re-inked at one constant width, and that model collapses to
@@ -19,12 +19,12 @@ letterforms and connection habits -- the things the robot actually
 reproduces. It is the honest yardstick for physical style accuracy.
 
 Same weight format as the other two author models, so evaluate_style.py and
-verify_end_to_end.py can load it interchangeably.
+VerifyRewrite.py can load it interchangeably.
 
-Does NOT modify train_paper_cnn_bilstm_ctc.py or train_author_classifier.py.
+Does NOT modify TrainText.py or TrainAuthor.py.
 
 Run:
-    python train_author_shape.py
+    python TrainAuthorShape.py
 """
 
 import os
@@ -39,10 +39,10 @@ from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import fp_ops as F
-import style_profile as SP
-from train_author_classifier import AuthorClassifierCNN
-from train_paper_cnn_bilstm_ctc import (
+import RawImageOps as F
+import BuildStyleProfile as SP
+from TrainAuthor import AuthorClassifierCNN
+from TrainText import (
     IAMLineDatasetRaw, _decode_png, augment_line_image,
     resize_line_image_fixed, tensor_from_resized,
 )

@@ -1018,68 +1018,6 @@ def LoadProfile(authorId):
 
 
 RAW_DIR = SCRIPT_DIR / "NOGIT" / "GlyphCache10"
-LEGIBLE_CORE_PATH = SCRIPT_DIR / "NOGIT" / "LegibleCore10.json"
-
-
-def BuildLegibleCore(rawLibs, prior, keepFrac=0.35, minPool=8):
-    """DISCARDED APPROACH, kept for the record. The medoid of every author's
-    best-formed real variants per character reads back at only ~76% char /
-    ~39% word through the frozen recognizer -- the consensus of a messy
-    cursive letter is still messy. SynthesizeHandwriting uses the hand-drawn
-    single-stroke print font `_FB` as its legibility anchor instead (~96% /
-    ~84%). Not called by BuildAll; run by hand if you want to revisit it.
-
-    One clean, style-neutral letterform per character: the medoid of the
-    best-formed variants pooled across ALL ten authors.
-
-    This is what synthesis blends an author's own (sometimes malformed)
-    letterform toward when legibility must be guaranteed. It is a REAL
-    handwritten shape -- an actual variant, not an average, so multi-stroke
-    letters stay intact -- chosen to be the one most typical of what every
-    hand agrees the letter looks like. Stored in the same normalized frame
-    as a glyph variant (origin at the left of the ink, baseline y=0, y up,
-    1.0 = x-height), so `SynthesizeHandwriting._BlendGlyph` can interpolate
-    toward it directly."""
-    byChar = {}
-    for lib in rawLibs.values():
-        for ch, vs in lib.items():
-            byChar.setdefault(ch, []).extend(vs)
-
-    core = {}
-    for ch, vs in byChar.items():
-        good = [g for g in vs
-                if 'strokes' in g and 0.05 < g.get('width', 0) < 3.0
-                and (g['top'] - g['bot']) > 0.25 and len(g['strokes']) <= 5
-                and _ClassOk(ch, g['top'], g['bot'])
-                and _PenLength(g) >= MIN_PEN_LEN
-                and _LongestStroke(g) >= MIN_LONGEST_STROKE]
-        if len(good) < minPool:
-            continue
-        good.sort(key=lambda g: _PriorScore(g, ch, prior))
-        pool = good[:max(minPool, int(round(keepFrac * len(good))))]
-        grids = [(_ShapeGrid(g), g) for g in pool]
-        grids = [(v, g) for v, g in grids if v is not None]
-        if len(grids) < 3:
-            continue
-        G = np.stack([v for v, _ in grids])
-        D = np.abs(G[:, None, :] - G[None, :, :]).sum(-1)
-        med = grids[int(np.argmin(D.sum(1)))][1]
-        adv = float(np.median([g['advance'] for g in pool]))
-        core[ch] = dict(
-            strokes=[[[round(x, 3), round(y, 3)] for (x, y) in s]
-                     for s in med['strokes']],
-            advance=round(adv, 3),
-            lead=round(float(med.get('lead', 0.0)), 3),
-            width=round(float(med.get('width', adv)), 3),
-            entryY=round(float(med.get('entryY', 0.3)), 3),
-            exitY=round(float(med.get('exitY', 0.3)), 3),
-            nPool=len(pool))
-    LEGIBLE_CORE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(LEGIBLE_CORE_PATH, 'w', encoding='utf-8') as f:
-        json.dump(core, f)
-    print("  legible core: %d characters (%s)"
-          % (len(core), ''.join(sorted(core))))
-    return core
 
 
 def BuildAll(maxLinesPerAuthor=None, useCache=True):

@@ -1,23 +1,23 @@
 """
-verify_shape_style.py -- style accuracy the way the GANTRY will be judged.
+VerifyShapeStyle.py -- style accuracy the way the GANTRY will be judged.
 
 The robot writes every author with the same pen at a constant stroke width,
 so ink density is not a style channel it can reproduce. Measuring against a
 writer-ID model that leans on ink weight therefore flatters the result: the
-model in train_author_classifier.py scores 100% on real pages but only
+model in TrainAuthor.py scores 100% on real pages but only
 11-16% on those same pages once every author is re-inked at one width
 (chance is 10%) -- it reads the pen, not the hand.
 
-This script uses the SHAPE-ONLY model (train_author_shape.py), and puts
+This script uses the SHAPE-ONLY model (TrainAuthorShape.py), and puts
 synthesized handwriting through exactly the same stroke normalization that
 model was trained on, so both sides are judged on geometry alone: slant,
 proportions, spacing, letterforms, connections.
 
-Everything is measured on NOVEL sentences (see verify_end_to_end.py) that
+Everything is measured on NOVEL sentences (see VerifyRewrite.py) that
 appear nowhere in IAM, and also through the emitted G-code.
 
 Run:
-    python verify_shape_style.py
+    python VerifyShapeStyle.py
 """
 
 import os
@@ -29,13 +29,13 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import gcode_writer as GW
-import style_profile as SP
-import synthesize_handwriting as SY
-import train_author_shape as SH
-import verify_end_to_end as V
-from train_author_classifier import AuthorClassifierCNN
-from train_paper_cnn_bilstm_ctc import (
+import WriteGCode as GW
+import BuildStyleProfile as SP
+import SynthesizeHandwriting as SY
+import TrainAuthorShape as SH
+import VerifyRewrite as V
+from TrainAuthor import AuthorClassifierCNN
+from TrainText import (
     IAMLineDatasetRaw, _decode_png, resize_line_image_fixed,
     tensor_from_resized,
 )

@@ -69,8 +69,7 @@ def Run(text, authorToken, mmPerXh=4.0, seed=None, jobName=None,
     down, up = traj.PenTravelMm()
 
     previewPath = outDir / "synth_preview.png"
-    SY.RenderTrajectory(traj, pxPerMm=9.0, profile=prof,
-                        uniformInk=True).save(previewPath)
+    SY.RenderTrajectory(traj, pxPerMm=9.0, profile=prof).save(previewPath)
 
     gcodePath = outDir / "job.gcode"
     gRes = GW.WriteGcode(traj, cfg, gcodePath, title=f"author {author}")
@@ -83,10 +82,6 @@ def Run(text, authorToken, mmPerXh=4.0, seed=None, jobName=None,
     print(f"\n=== Wrote '{text[:60]}{'...' if len(text) > 60 else ''}' "
           f"as author {author} ===")
     print(f"  glyph sources     : {traj.meta['glyphSources']}")
-    print(f"  legibility        : blend lambda {traj.meta.get('legibilityLambda', 0.0):.2f}, "
-          f"reads {traj.meta.get('legibilityScore', 0.0) * 100:.0f}% "
-          f"(repair rounds {traj.meta.get('repairRounds', 0)}, "
-          f"{traj.meta.get('repairedChars', 0)} chars pinned)")
     print(f"  strokes           : {len(traj.strokes)} "
           f"(pen-down {down:.0f} mm, pen-up travel {up:.0f} mm)")
     print(f"  style             : slant {prof['slantDeg']:+.1f} deg, "

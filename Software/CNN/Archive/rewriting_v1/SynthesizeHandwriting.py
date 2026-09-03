@@ -220,44 +220,6 @@ _CURSIVE = {
 
 _FB_ADV = 1.0
 
-# ---------------------------------------------------------------------------
-# Uniform pen. The gantry writes every author with ONE physical pen at a
-# constant stroke width, so ink weight / density is not a style channel it
-# can reproduce. When UNIFORM_INK is on, every author is rendered at the
-# same width (expressed in x-heights so it is resolution-independent, and
-# matched to TrainAuthorShape.PEN_WIDTH_XH so the shape-only writer-ID model
-# sees the same normalization it was trained on) and the per-author
-# inkFracRef / strokeWidthXh / inkCoreLevel fields are ignored.
-# ---------------------------------------------------------------------------
-UNIFORM_INK = True
-UNIFORM_PEN_WIDTH_XH = 0.11         # bold enough for a real pen, and a hair
-                                  # more legible than 0.14 (probe: +2pt char)
-UNIFORM_SOFT_FRAC = 0.30            # blur radius as a fraction of strokePx
-
-# Legibility guards (tested in phase 3; no-ops at these defaults so the
-# pre-legibility baseline is unchanged).
-JOIN_PROB_CAP = 1.0                # cap the per-pair cursive-join probability
-CORE_SLANT_CAP_DEG = 22.0          # print-anchor glyphs are never sheared past
-                                  # this -- a 40deg shear makes even a clean
-                                  # letterform collide and ramp illegibly
-CORE_JITTER_FRAC = 0.15           # print-anchor glyphs barely wobble
-COLLISION_MIN_GAP_XH = 0.05        # force this much clear space (x-h) between
-                                  # a glyph's ink and the previous glyph's
-
-# Legibility anchor.
-#
-# Tested (EvaluateLegibility sweep + font probe): a data-driven "legible
-# core" -- the cross-author medoid of every real extracted variant per
-# character -- reads back at only ~76% char / ~39% word, no better than the
-# raw author hands, because the consensus of a messy cursive letter is still
-# a messy cursive letter. The hand-drawn single-stroke PRINT font `_FB`
-# reads at ~96% char / ~84% word. So `_FB` (reshaped to each author's
-# ascender/descender/slant by `_BaselineGlyph`) is the legibility anchor,
-# and `legibility` in [0, 1] is the probability -- biased by how malformed
-# the author's own prototype is -- that a glyph is drawn from it instead of
-# the author's hand. lam 0 = pure author (pre-legibility behaviour),
-# lam 1 = everything printed.
-
 # A stored prototype further than this (cosine distance) from the
 # cross-author letter prototype is treated as unusable -- a fragment, or a
 # cut that swallowed a neighbour. Set from the measured distribution of
@@ -266,18 +228,17 @@ COLLISION_MIN_GAP_XH = 0.05        # force this much clear space (x-h) between
 _PRIOR_REJECT = 0.25
 
 
-def _BaselineGlyph(ch, profile, printOnly=False):
-    """Generic legible letterform, re-proportioned into the author's own
-    style (scaled to their ascender/descender reach; the author's slant and
-    jitter are applied later by SynthesizeText).
+def _BaselineGlyph(ch, profile):
+    """Generic letterform, re-proportioned into the author's own style.
 
-    The single-stroke PRINT font `_FB` reads back at ~96% char / ~84% word
-    through the frozen recognizer -- far clearer than any extracted glyph --
-    so it is the legibility anchor. `printOnly=True` forces it; otherwise a
-    cursive author keeps the joined `_CURSIVE` skeleton (89% / 62%) for a
-    letter that merely never got a clean sample."""
+    Cursive authors get the joined skeleton (entry and exit at connection
+    height, so the join actually reads); everyone else gets the print one.
+    Either way the shape is scaled to the author's ascender and descender
+    reach, so it is their proportions on a legible skeleton -- the point of
+    having rules rather than only stored examples when a letter never got a
+    clean sample from ~10 pages."""
     conn = float(profile.get('connectedness', 0.0))
-    src = _CURSIVE if (conn >= 0.5 and not printOnly) else _FB
+    src = _CURSIVE if conn >= 0.5 else _FB
     key = ch if ch in src else ch.lower()
     if key not in src:
         return None
@@ -332,30 +293,10 @@ _SIMILAR = {'I': 'l', 'O': '0', 'l': 'I', '0': 'O', 'o': '0', ';': ':',
             '"': "'", '!': 'l'}
 
 
-def _CoreGlyph(ch, profile):
-    """The legible print letterform for `ch`, reshaped to this author's
-    ascender/descender reach (slant + jitter are applied later)."""
-    b = _BaselineGlyph(ch, profile, printOnly=True)
-    return None if b is None else (b[0], b[1], 0.0)
-
-
-def _SwapProb(lam, priorD):
-    """P(draw this glyph from the legible print anchor instead of the
-    author's own hand). Rises with the legibility dial `lam` and with how
-    far the author's prototype sits from a well-formed letter (`priorD`).
-    lam 0 -> never; lam 1 -> always."""
-    if lam <= 1e-3:
-        return 0.0
-    if lam >= 1.0 - 1e-3:
-        return 1.0
-    return lam ** max(0.12, 1.0 - 2.2 * float(priorD))
-
-
-def _GlyphSource(profile, ch, rng, prevExitY=None, lam=0.0):
-    """Returns (strokes, advance, lead, source). Uses one of the author's
-    own variants, unless `lam` / a malformed prototype / no clean sample
-    sends this glyph to the legible print anchor instead. Then their other
-    case or a similar letter; finally the built-in font."""
+def _GlyphSource(profile, ch, rng, prevExitY=None):
+    """Returns (strokes, advance, entry, exit, source). Prefers one of the
+    author's own variants; then their other case / a visually similar
+    letter scaled to fit; then the built-in fallback font."""
     lib = profile['glyphs']
     adv = profile.get('letterAdvance', {})
 
@@ -404,22 +345,23 @@ def _GlyphSource(profile, ch, rng, prevExitY=None, lam=0.0):
 
     if ch in lib and lib[ch]:
         cands = lib[ch]
+        # A prototype far from what the letter looks like across all ten
+        # hands is a fragment or a bad cut. Writing it produces a shape no
+        # reader can resolve, so the generic cursive/print skeleton is used
+        # instead -- reshaped below by this author's own slant, size and
+        # proportions, so the letter is still written in their style.
         okCands = [g for g in cands
                    if g.get('priorD', 0.0) <= _PRIOR_REJECT]
-        g = pick(okCands or cands)
-        d = float(g.get('priorD', 0.5))
-        core = _CoreGlyph(ch, profile)
-        # no clean own sample at all -> the letter would be unresolvable, so
-        # the print anchor stands in whatever the dial says
-        if core is not None and (not okCands or rng.random() < _SwapProb(lam, d)):
-            return core[0], core[1], core[2], 'core'
-        s, a, lead = pack(g)
+        if okCands:
+            s, a, lead = pack(pick(okCands))
+            return s, a, lead, 'own'
+        base = _BaselineGlyph(ch, profile)
+        if base is not None:
+            return base[0], base[1], 0.0, 'baseline'
+        s, a, lead = pack(pick(cands))
         return s, a, lead, 'own'
     for alt in (ch.swapcase(), _SIMILAR.get(ch, '')):
         if alt and alt in lib and lib[alt]:
-            core = _CoreGlyph(ch, profile)
-            if core is not None and rng.random() < _SwapProb(lam, 0.3):
-                return core[0], core[1], core[2], 'core'
             g = pick(lib[alt])
             if alt == ch.swapcase() and ch.isupper():
                 # borrow the lowercase shape, grown to capital height
@@ -429,9 +371,6 @@ def _GlyphSource(profile, ch, rng, prevExitY=None, lam=0.0):
                 return s, a, lead, 'case'
             s, a, lead = pack(g)
             return s, a, lead, 'similar'
-    core = _CoreGlyph(ch, profile)
-    if core is not None:
-        return core[0], core[1], core[2], 'core'
     key = ch.lower() if ch.lower() in _FB else ch
     if key in _FB:
         strokes = [list(map(tuple, s)) for s in _FB[key]]
@@ -477,47 +416,8 @@ def _Resample(poly, step):
     return list(zip(x.tolist(), y.tolist()))
 
 
-def _ResampleN(poly, n):
-    """Arc-length resample to exactly `n` points -- so two shapes can be
-    blended vertex-for-vertex."""
-    p = np.asarray(poly, np.float64)
-    if len(p) == 0:
-        return []
-    if len(p) == 1:
-        return [tuple(p[0])] * n
-    seg = np.hypot(*np.diff(p, axis=0).T)
-    cum = np.concatenate([[0.0], np.cumsum(seg)])
-    if cum[-1] < 1e-9:
-        return [tuple(p[0])] * n
-    t = np.linspace(0.0, cum[-1], n)
-    return list(zip(np.interp(t, cum, p[:, 0]).tolist(),
-                    np.interp(t, cum, p[:, 1]).tolist()))
-
-
-def _BlendGlyph(aStrokes, cStrokes, lam):
-    """Interpolate the author's letterform toward the legible-core letterform
-    in the upright x-height frame. lam 0 = pure author, 1 = pure core.
-
-    Strokes are matched by index (both libraries store strokes sorted
-    left-to-right). If the stroke counts differ the shapes are not
-    vertex-comparable, so the core is taken whole once it is the majority
-    (lam >= 0.5) and the author kept otherwise."""
-    if lam <= 1e-3 or not cStrokes:
-        return aStrokes
-    cS = [list(map(tuple, s)) for s in cStrokes]
-    if lam >= 1.0 - 1e-3 or len(aStrokes) != len(cS):
-        return cS if lam >= 0.5 else aStrokes
-    out = []
-    for sa, sc in zip(aStrokes, cS):
-        m = max(len(sa), len(sc), 2)
-        ra, rc = _ResampleN(sa, m), _ResampleN(sc, m)
-        out.append([((1 - lam) * xa + lam * xc, (1 - lam) * ya + lam * yc)
-                    for (xa, ya), (xc, yc) in zip(ra, rc)])
-    return out
-
-
 def SynthesizeText(text, profile, mmPerXh=4.0, seed=None, lineWidthMm=180.0,
-                   jitter=0.5, legibility=0.0, perCharLam=None, _cal=None):
+                   jitter=0.5, _cal=None):
     """text -> Trajectory (mm, y up, origin at first baseline).
 
     mmPerXh: physical size of one x-height. lineWidthMm: wrap width."""
@@ -545,7 +445,6 @@ def SynthesizeText(text, profile, mmPerXh=4.0, seed=None, lineWidthMm=180.0,
     drift = 0.0
     driftV = 0.0
     usage = {}
-    vpos = 0                         # index into text.replace('\n',' '), for perCharLam
 
     def flush(chain):
         if len(chain) >= 2:
@@ -558,7 +457,6 @@ def SynthesizeText(text, profile, mmPerXh=4.0, seed=None, lineWidthMm=180.0,
             lineIdx += 1
             penX = 0.0
             penY = -lineIdx * lineStep
-            vpos += 1
             continue
         wWidth = _WordWidth(word, profile) * xh
         if penX > 1e-6 and penX + wWidth > lineWidthMm:
@@ -567,60 +465,31 @@ def SynthesizeText(text, profile, mmPerXh=4.0, seed=None, lineWidthMm=180.0,
             penY = -lineIdx * lineStep
         chain = []                  # current pen-down polyline
         prevExit = None
-        prevBodyMaxX = None
-        prevSrc = None
         for ci, ch in enumerate(word):
-            lam = legibility
-            if perCharLam:
-                lam = max(lam, float(perCharLam.get(vpos, 0.0)))
-            vpos += 1
             wantEntryY = None
             if conn >= 0.35 and ci > 0 and prevExit is not None and \
                     ch.isalpha() and word[ci - 1].isalpha():
                 wantEntryY = (prevExit[1] - penY) / xh - drift
             gStrokes, adv, lead, src = _GlyphSource(profile, ch, rng,
-                                                    prevExitY=wantEntryY,
-                                                    lam=lam)
+                                                    prevExitY=wantEntryY)
             usage[src] = usage.get(src, 0) + 1
             if not gStrokes:
                 penX += adv * xh
                 continue
-            isCore = (src == 'core')
-            # the print anchor is a designed-legible shape: don't re-stretch
-            # its proportions, don't shear it past readability, don't wobble
-            # it as hard as an extracted glyph -- each of those re-introduces
-            # the ambiguity it is there to remove
-            if not isCore:
-                gStrokes = _ApplyCal(gStrokes, cal)
-            jf = CORE_JITTER_FRAC if isCore else 1.0
-            gStrokes = _Jitter(gStrokes, rng, ampP * jf, ampR * jf, ampS * jf)
-            glyphSlant = slant
-            glyphDrift = drift
-            if isCore:
-                cap = math.tan(math.radians(CORE_SLANT_CAP_DEG))
-                glyphSlant = max(-cap, min(cap, slant))
-                glyphDrift = 0.25 * drift
+            gStrokes = _ApplyCal(gStrokes, cal)
+            gStrokes = _Jitter(gStrokes, rng, ampP, ampR, ampS)
             # slow drift of the baseline within a line (a real hand wanders)
             driftV = 0.85 * driftV + rng.gauss(0.0, driftAmp * 0.35)
             drift = float(np.clip(drift + driftV, -0.25, 0.25))
 
-            def place(px):
-                out = []
-                for stk in gStrokes:
-                    out.append([(px + (lead + x + glyphSlant * y) * xh,
-                                 penY + (y + glyphDrift) * xh) for (x, y) in stk])
-                return out
-
-            placed = place(penX)
-            # collision guard: if this glyph's ink would land on top of the
-            # previous glyph's body, push it (and the pen) right until there
-            # is a clear gap.
-            if COLLISION_MIN_GAP_XH is not None and prevBodyMaxX is not None:
-                curMinX = min(p[0] for s in placed for p in s)
-                need = prevBodyMaxX + COLLISION_MIN_GAP_XH * xh - curMinX
-                if need > 0:
-                    penX += need
-                    placed = place(penX)
+            placed = []
+            for stk in gStrokes:
+                q = []
+                for (x, y) in stk:
+                    X = penX + (lead + x + slant * y) * xh
+                    Y = penY + (y + drift) * xh
+                    q.append((X, Y))
+                placed.append(q)
 
             # the BODY stroke (widest in x) is what carries the cursive
             # connection; dots, crossbars and accents are separate pen-downs
@@ -636,12 +505,9 @@ def SynthesizeText(text, profile, mmPerXh=4.0, seed=None, lineWidthMm=180.0,
             # component width came out far too large and the number of
             # separate ink pieces far too low, which is exactly the geometry
             # a nearest-author matcher keys on.
-            # a print-anchor glyph on either side of the pair is meant to be
-            # read as a separate letter -- never join through it
             joinable = (ci > 0 and prevExit is not None
                         and ch.isalpha() and word[ci - 1].isalpha()
-                        and not isCore and prevSrc != 'core'
-                        and rng.random() < min(conn, JOIN_PROB_CAP))
+                        and rng.random() < conn)
             if joinable:
                 chain += _Ligature(prevExit, body[0], xh, rng)
                 chain += body
@@ -652,12 +518,9 @@ def SynthesizeText(text, profile, mmPerXh=4.0, seed=None, lineWidthMm=180.0,
             for k2, extra in enumerate(placed):
                 if k2 != bodyI:
                     flush(extra)
-            prevBodyMaxX = max(p[0] for p in body)
-            prevSrc = src
             penX += adv * xh
         flush(chain)
         penX += wordGap * xh * (0.85 + 0.3 * rng.random())
-        vpos += 1               # the space between words
 
     meta = dict(author=profile.get('authorId'), mmPerXh=mmPerXh,
                 nStrokes=len(strokes), glyphSources=usage,
@@ -807,34 +670,20 @@ def _Draw(traj, pxPerMm, padMm, strokePx, paper=255, ink=0, softPx=0.0):
 
 
 def RenderTrajectory(traj, pxPerMm=8.0, padMm=None, strokePx=None,
-                     profile=None, size=None, matchInk=True, uniformInk=None):
+                     profile=None, size=None, matchInk=True):
     """Render as a training-style crop (black ink, white paper).
 
-    With `uniformInk` (default `UNIFORM_INK`) every author is drawn at one
-    constant stroke width -- what the single-pen gantry actually produces,
-    and the domain the shape-only writer-ID model is trained on. The
-    per-author ink fields are ignored.
-
-    With `uniformInk=False` the legacy behaviour is used: stroke WEIGHT is
-    treated as style and, when the profile carries the author's measured ink
-    density (`inkFracRef`), the width is searched to reproduce it."""
+    Stroke WEIGHT is part of a hand's style and the writer-ID model is very
+    sensitive to it, so when the profile carries the author's measured ink
+    density (`inkFracRef`, taken from their real pages through the same
+    preprocessing) the stroke width is calibrated to reproduce it instead
+    of being guessed from the skeleton-length estimate."""
     prof = profile or {}
     mm = traj.meta.get('mmPerXh', 4.0)
-    if uniformInk is None:
-        uniformInk = UNIFORM_INK
     if padMm is None:
         # padding proportional to the writing, not a fixed slab: a fixed
         # pad inflates the crop height and skews the line's aspect ratio
         padMm = 0.18 * mm
-
-    if uniformInk:
-        sp = strokePx or max(1, int(round(UNIFORM_PEN_WIDTH_XH * mm * pxPerMm)))
-        img = _Draw(traj, pxPerMm, padMm, sp, paper=255, ink=0,
-                    softPx=UNIFORM_SOFT_FRAC * max(1.0, sp))
-        if size is not None:
-            img = img.resize(size, Image.Resampling.BILINEAR)
-        return img
-
     if strokePx is None:
         sw = prof.get('strokeWidthXh', 0.12)
         strokePx = max(1, int(round(sw * mm * pxPerMm)))
@@ -919,66 +768,20 @@ if __name__ == '__main__':
 # ---------------------------------------------------------------------------
 # Legibility-first synthesis
 # ---------------------------------------------------------------------------
-REPAIR_ROUNDS = 3          # targeted re-draw passes after best-of-N
-REPAIR_WORST_K = 3         # characters pinned to the legible core per round
-
-
-def _LineLogProbs(reader, img, device):
-    """(T, C) log-probs from the frozen recognizer for one line image."""
-    import torch
-    from TrainText import resize_line_image_fixed, tensor_from_resized
-    t = tensor_from_resized(resize_line_image_fixed(img)).unsqueeze(0).to(device)
-    with torch.no_grad():
-        return reader(t)[:, 0, :].cpu().numpy()
-
-
-def _WeakChars(reader, img, device, visible):
-    """Visible-text positions the recognizer is least sure about, worst
-    first. Uses CTC forced alignment against the intended text and scores
-    each character by its own class log-prob over its assigned frames."""
-    try:
-        from BuildStyleProfile import CtcForcedAlign
-        from TrainText import CHAR_TO_IDX
-    except Exception:
-        return []
-    lp = _LineLogProbs(reader, img, device)
-    res = CtcForcedAlign(lp, visible)
-    if res is None:
-        return []
-    align, _conf = res
-    keptPos = [j for j, c in enumerate(visible) if c in CHAR_TO_IDX]
-    scored = []
-    for i, (c, sp) in enumerate(align):
-        if i >= len(keptPos) or not c.strip():
-            continue
-        if sp is None:
-            scored.append((-1e9, keptPos[i]))
-        else:
-            scored.append((float(lp[sp[0]:sp[1], CHAR_TO_IDX[c]].mean()),
-                           keptPos[i]))
-    scored.sort()
-    return [pos for _s, pos in scored]
-
-
 def SynthesizeLegible(text, profile, nTries=6, mmPerXh=4.0, lineWidthMm=180.0,
                       jitter=0.5, seed=0, reader=None, device=None,
-                      pxPerMm=18.0, legibility=None, repair=True):
-    """Best-of-N in the author's style, then a targeted repair pass.
+                      pxPerMm=18.0):
+    """Draw the line several times and keep the one that READS best.
 
-    1. draw the line `nTries` times (same library + measured parameters,
-       different variant/jitter draws) at the author's blend level
-       `legibility` (defaults to profile['legibilityLambda']), keep the one
-       the frozen recognizer reads best;
-    2. repair: find the characters the recognizer still cannot read, pin
-       just those to the legible core (lam = 1) and re-draw, keep if it
-       reads better. Repeat up to REPAIR_ROUNDS times.
+    Every candidate is a legitimate rendering in this author's style -- the
+    same library, the same measured parameters, differing only in which
+    variant each letter drew and how the jitter fell. Choosing the clearest
+    of them therefore costs no style fidelity, it just avoids the unlucky
+    combinations where two ambiguous letterforms land side by side.
 
-    Every candidate is a real rendering in this hand -- step 2 only cleans
-    up the few letters that were unreadable, it does not restyle the line.
-    Falls back to a single plain synthesis if the recognizer is missing.
+    Scored with the frozen text recognizer (inference only). Falls back to
+    a single plain synthesis if the recognizer is unavailable.
     """
-    if legibility is None:
-        legibility = float(profile.get('legibilityLambda', 0.0))
     if reader is None:
         try:
             import torch
@@ -987,51 +790,21 @@ def SynthesizeLegible(text, profile, nTries=6, mmPerXh=4.0, lineWidthMm=180.0,
             reader = _V.LoadTextModel(device)
         except Exception:
             return SynthesizeText(text, profile, mmPerXh=mmPerXh, seed=seed,
-                                  lineWidthMm=lineWidthMm, jitter=jitter,
-                                  legibility=legibility)
+                                  lineWidthMm=lineWidthMm, jitter=jitter)
     import VerifyRewrite as _V
-    visible = text.replace('\n', ' ')
-
-    def score(traj):
-        img = RenderTrajectory(traj, pxPerMm=pxPerMm, profile=profile,
-                               uniformInk=True)
-        got = _V.ReadText(reader, img, device)
-        return _V.CharAcc(got, visible), img
 
     base = 0 if seed is None else int(seed)
-    best, bestTraj, bestImg = -1.0, None, None
+    best, bestScore = None, -1.0
     for k in range(max(1, nTries)):
-        traj = SynthesizeText(text, profile, mmPerXh=mmPerXh,
-                              seed=base + 977 * k, lineWidthMm=lineWidthMm,
-                              jitter=jitter, legibility=legibility)
-        sc, img = score(traj)
-        if sc > best:
-            best, bestTraj, bestImg = sc, traj, img
-        if best >= 0.99:
+        traj = SynthesizeText(text, profile, mmPerXh=mmPerXh, seed=base + 977 * k,
+                              lineWidthMm=lineWidthMm, jitter=jitter)
+        img = RenderTrajectory(traj, pxPerMm=pxPerMm, profile=profile)
+        got = _V.ReadText(reader, img, device)
+        score = _V.CharAcc(got, text.replace('\n', ' '))
+        if score > bestScore:
+            best, bestScore = traj, score
+        if bestScore >= 0.97:
             break
-
-    perChar = {}
-    rounds = 0
-    if repair:
-        for rounds in range(1, REPAIR_ROUNDS + 1):
-            if best >= 0.995:
-                break
-            weak = _WeakChars(reader, bestImg, device, visible)
-            weak = [p for p in weak if p not in perChar][:REPAIR_WORST_K]
-            if not weak:
-                break
-            for p in weak:
-                perChar[p] = 1.0
-            cand = SynthesizeText(text, profile, mmPerXh=mmPerXh, seed=base,
-                                  lineWidthMm=lineWidthMm, jitter=jitter,
-                                  legibility=legibility, perCharLam=perChar)
-            sc, img = score(cand)
-            if sc > best:
-                best, bestTraj, bestImg = sc, cand, img
-
-    bestTraj.meta['legibilityScore'] = round(float(best), 3)
-    bestTraj.meta['legibilityTries'] = k + 1
-    bestTraj.meta['legibilityLambda'] = round(float(legibility), 3)
-    bestTraj.meta['repairRounds'] = rounds
-    bestTraj.meta['repairedChars'] = len(perChar)
-    return bestTraj
+    best.meta['legibilityScore'] = round(float(bestScore), 3)
+    best.meta['legibilityTries'] = k + 1
+    return best
