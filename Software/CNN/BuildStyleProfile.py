@@ -59,6 +59,11 @@ PROFILE_DIR = SCRIPT_DIR / "NOGIT" / "StyleProfiles10"
 
 MAX_VARIANTS_PER_CHAR = 12
 
+# Drop lines whose CTC forced alignment scored below this percentile of the
+# author's own lines -- their character boundaries (and the glyphs cut at
+# them) are not trustworthy. Higher = fewer but cleaner glyphs.
+ALIGN_CONF_PCT = 25
+
 # variant fragment gates (0 disables)
 MIN_PEN_LEN = 1.05
 MIN_LONGEST_STROKE = 0.55
@@ -682,25 +687,65 @@ def _ResampleN(poly, n):
     return np.stack([np.interp(t, cum, p[:, 0]), np.interp(t, cum, p[:, 1])], 1)
 
 
-def _DenoisedPrototype(variants, minN=4, N=44):
-    """Robust median of an author's single-stroke variants of one letter,
-    each oriented left-to-right and arc-length resampled. Returns a polyline
-    (list of [x, y]) or None if there are too few one-stroke variants."""
-    one = [g for g in variants if len(g['strokes']) == 1]
-    if len(one) < minN:
+def _AlignStroke(s, N):
+    """resample one stroke to N points, oriented left-to-right, loops rolled
+    to start at the leftmost point."""
+    s = np.asarray(s, float)
+    if len(s) < 2:
         return None
-    S = []
-    for g in one:
-        s = g['strokes'][0]
-        s = s if s[0][0] <= s[-1][0] else s[::-1]
-        S.append(_ResampleN(s, N))
-    A = np.stack(S)
-    med = np.median(A, axis=0)
-    dev = np.sqrt(((A - med) ** 2).sum(-1)).mean(1)
-    keep = A[dev <= np.percentile(dev, 80)]
-    proto = np.median(keep, axis=0)
-    proto[:, 0] -= proto[:, 0].min()
-    return [[round(float(x), 3), round(float(y), 3)] for x, y in proto]
+    if float(np.hypot(*(s[0] - s[-1]))) < 0.30 and len(s) >= 4:
+        i0 = int(np.argmin(s[:, 0]))
+        s = np.concatenate([s[i0:], s[:i0 + 1]])
+    elif s[0, 0] > s[-1, 0]:
+        s = s[::-1]
+    return _ResampleN(s, N)
+
+
+def _DenoisedPrototype(variants, minN=4, N=44):
+    """Robust median of an author's variants of one letter, per stroke.
+
+    Groups variants by stroke count, takes the modal group, orders each
+    variant's strokes left-to-right, and takes the trimmed median of every
+    stroke across variants. Loops are rolled to a common start. Returns
+    list-of-strokes (each a list of [x, y]) or None if too few consistent
+    variants. Cut noise is roughly random, so this recovers the author's
+    true letterform without leaving their style."""
+    by_nc = {}
+    for g in variants:
+        if all(len(s) >= 2 for s in g['strokes']):
+            by_nc.setdefault(len(g['strokes']), []).append(g)
+    if not by_nc:
+        return None
+    nc = max(by_nc, key=lambda k: len(by_nc[k]))
+    group = by_nc[nc]
+    if len(group) < minN or nc > 4:
+        return None
+    stacks = [[] for _ in range(nc)]
+    for g in group:
+        ss = sorted(g['strokes'], key=lambda s: min(p[0] for p in s))
+        ok = True
+        for i, s in enumerate(ss):
+            a = _AlignStroke(s, N)
+            if a is None:
+                ok = False
+                break
+            stacks[i].append(a)
+        if not ok:
+            for st in stacks:
+                if st:
+                    st.pop()
+    proto = []
+    for st in stacks:
+        if len(st) < minN:
+            return None
+        A = np.stack(st)
+        med = np.median(A, axis=0)
+        dev = np.sqrt(((A - med) ** 2).sum(-1)).mean(1)
+        A = A[dev <= np.percentile(dev, 80)]
+        proto.append(np.median(A, axis=0))
+    x0 = min(float(s[:, 0].min()) for s in proto)
+    return [[[round(float(x - x0), 3), round(float(y), 3)] for x, y in s]
+            for s in proto]
 
 
 def _PenLength(g):
@@ -926,7 +971,8 @@ def BuildAuthorProfile(authorId, parsed, refs=None, prior=None,
     confs = [st['alignConf'] for _, st in parsed]
     # only trust char boundaries from lines the recognizer actually read:
     # a badly-aligned line yields glyphs cut at the wrong places
-    confCut = float(np.percentile(confs, 25)) if len(confs) >= 8 else -1e9
+    confCut = (float(np.percentile(confs, ALIGN_CONF_PCT))
+               if len(confs) >= 8 else -1e9)
 
     for glyphs, stats in parsed:
         if stats['alignConf'] < confCut:
@@ -998,21 +1044,22 @@ def BuildAuthorProfile(authorId, parsed, refs=None, prior=None,
                   abs((g['top'] - g['bot']) - hMed) / max(0.2, hMed))
         lib2[ch] = good[:MAX_VARIANTS_PER_CHAR]
 
-    # denoised prototypes: for a letter the author writes in one stroke,
-    # the robust median of their own aligned variants cancels the ~random
-    # cut noise and recovers their true letterform. Prepended (so synthesis
-    # prefers it) only where it measurably beats the raw variants.
+    # denoised prototype: the robust per-stroke median of an author's own
+    # aligned variants of a letter cancels the ~random cut noise and
+    # recovers their true letterform. Prepended (so synthesis prefers it)
+    # only where it measurably beats the raw variants on priorD.
     for ch, vs in lib2.items():
         proto = _DenoisedPrototype(vs)
         if proto is None:
             continue
-        pd = _PriorScore({'strokes': [proto]}, ch, prior)
+        pd = _PriorScore({'strokes': proto}, ch, prior)
         rawPd = float(np.median([g.get('priorD', 0.5) for g in vs]))
         if pd < rawPd - 0.03 and pd < 0.26:
-            xs = [p[0] for p in proto]
-            ys = [p[1] for p in proto]
+            pts = [p for s in proto for p in s]
+            xs = [p[0] for p in pts]
+            ys = [p[1] for p in pts]
             g0 = dict(vs[0])
-            g0.update(strokes=[proto], priorD=round(pd, 4), denoised=True,
+            g0.update(strokes=proto, priorD=round(pd, 4), denoised=True,
                       width=round(max(xs) - min(xs), 3),
                       top=round(max(ys), 3), bot=round(min(ys), 3))
             lib2[ch] = [g0] + vs

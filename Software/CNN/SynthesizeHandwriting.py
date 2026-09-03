@@ -381,13 +381,19 @@ def _SwapProb(lam, priorD):
     return float(np.clip(lam * (0.2 + 0.9 * bad), 0.0, 1.0))
 
 
-def _GlyphSource(profile, ch, rng, prevExitY=None, lam=0.0, forceCore=False):
+def _GlyphSource(profile, ch, rng, prevExitY=None, lam=0.0, forceCore=False,
+                 forcePrint=False):
     """Returns (strokes, advance, lead, source). Uses one of the author's
     own variants, unless the prototype is unresolvable, `forceCore` is set
-    (repair pass), or -- rarely -- `_SwapProb` fires. Then their other case
-    or a similar letter; finally the built-in font."""
+    (repair pass -> style-aware anchor), `forcePrint` is set (repair pass on
+    a letter still unreadable in the cursive anchor -> upright print), or --
+    rarely -- `_SwapProb` fires."""
     lib = profile['glyphs']
     adv = profile.get('letterAdvance', {})
+    if forcePrint:
+        b = _BaselineGlyph(ch, profile, printOnly=True)
+        if b is not None:
+            return b[0], b[1], 0.0, 'core'
 
     def pack(g, k=1.0):
         strokes = [[(x * k, y * k) for (x, y) in s] for s in g['strokes']]
@@ -612,11 +618,12 @@ def SynthesizeText(text, profile, mmPerXh=4.0, seed=None, lineWidthMm=180.0,
         prevCoreCursive = False
         for ci, ch in enumerate(word):
             lam = legibility
-            forceCore = False
+            forceCore = forcePrint = False
             if perCharLam:
                 pc = float(perCharLam.get(vpos, 0.0))
-                lam = max(lam, pc)
+                lam = max(lam, min(pc, 1.0))
                 forceCore = pc >= 0.999
+                forcePrint = pc >= 1.9
             vpos += 1
             wantEntryY = None
             if connEff >= 0.2 and ci > 0 and prevExit is not None and \
@@ -624,7 +631,8 @@ def SynthesizeText(text, profile, mmPerXh=4.0, seed=None, lineWidthMm=180.0,
                 wantEntryY = (prevExit[1] - penY) / xh - drift
             gStrokes, adv, lead, src = _GlyphSource(profile, ch, rng,
                                                     prevExitY=wantEntryY,
-                                                    lam=lam, forceCore=forceCore)
+                                                    lam=lam, forceCore=forceCore,
+                                                    forcePrint=forcePrint)
             usage[src] = usage.get(src, 0) + 1
             if not gStrokes:
                 penX += adv * xh
@@ -1070,10 +1078,16 @@ def SynthesizeLegible(text, profile, nTries=6, mmPerXh=4.0, lineWidthMm=180.0,
             if best >= 0.995:
                 break
             weak = _WeakChars(reader, bestImg, device, visible)
-            weak = [p for p in weak if p not in perChar][:REPAIR_WORST_K]
-            if not weak:
+            # only the SINGLE worst still-pinned character escalates to
+            # upright print (last resort); new weak characters get the
+            # style-aware anchor
+            escalate = [p for p in weak[:1] if perChar.get(p, 0.0) == 1.0]
+            fresh = [p for p in weak if p not in perChar][:REPAIR_WORST_K]
+            if not escalate and not fresh:
                 break
-            for p in weak:
+            for p in escalate:
+                perChar[p] = 2.0
+            for p in fresh:
                 perChar[p] = 1.0
             cand = SynthesizeText(text, profile, mmPerXh=mmPerXh, seed=base,
                                   lineWidthMm=lineWidthMm, jitter=jitter,
