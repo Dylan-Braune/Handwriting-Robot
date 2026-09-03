@@ -739,7 +739,25 @@ def _DenoisedPrototype(variants, minN=4, N=44):
         if len(st) < minN:
             return None
         A = np.stack(st)
+        # two iterations of "align each variant to the running mean by a
+        # small x-shift, re-mean" -- for a heavy cursive hand the cut lands
+        # at a different point in the letter each time, so a plain median
+        # smears; shifting each curve to best-match the mean first sharpens
+        # the prototype for exactly the authors that need it most
         med = np.median(A, axis=0)
+        for _ in range(2):
+            shifted = []
+            for c in A:
+                best, bestd = c, 1e9
+                for dx in np.linspace(-0.22, 0.22, 9):
+                    cc = c.copy()
+                    cc[:, 0] += dx
+                    d = float(np.hypot(*(cc - med).T).mean())
+                    if d < bestd:
+                        bestd, best = d, cc
+                shifted.append(best)
+            A = np.stack(shifted)
+            med = np.median(A, axis=0)
         dev = np.sqrt(((A - med) ** 2).sum(-1)).mean(1)
         A = A[dev <= np.percentile(dev, 80)]
         proto.append(np.median(A, axis=0))
@@ -1054,7 +1072,7 @@ def BuildAuthorProfile(authorId, parsed, refs=None, prior=None,
             continue
         pd = _PriorScore({'strokes': proto}, ch, prior)
         rawPd = float(np.median([g.get('priorD', 0.5) for g in vs]))
-        if pd < rawPd - 0.03 and pd < 0.26:
+        if pd < rawPd - 0.02 and pd < 0.32:
             pts = [p for s in proto for p in s]
             xs = [p[0] for p in pts]
             ys = [p[1] for p in pts]

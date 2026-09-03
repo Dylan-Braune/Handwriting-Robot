@@ -332,7 +332,14 @@ _SIMILAR = {'I': 'l', 'O': '0', 'l': 'I', '0': 'O', 'o': '0', ';': ':',
             '"': "'", '!': 'l'}
 
 
-CORE_CURSIVE_CONN = 0.55           # at/above this the anchor is joined script
+# Tested: giving connected hands the JOINED cursive skeleton as their anchor
+# (to preserve the "connected look") costs ~15pt char / ~30pt word
+# legibility on the delivery path and does NOT recover style (152/153 stay
+# at 0/5 shape-ID). Legibility is the priority, so every anchor glyph is now
+# the upright PRINT form; the connected look, where it survives, comes from
+# the author's own kept glyphs + ligatures, not the anchor. Set > 1.0 to
+# disable the cursive anchor entirely.
+CORE_CURSIVE_CONN = 2.0
 
 
 def _CoreGlyph(ch, profile):
@@ -367,18 +374,22 @@ _GLYPH_GARBAGE = 0.55      # at/above this it is replaced regardless of lam
 def _SwapProb(lam, priorD):
     """P(replace this glyph with the style-aware anchor letterform).
 
-    The anchor now carries the author's own slant, size, spacing and (for a
-    connected hand) joins, so swapping a malformed extracted glyph for it is
-    a *clean version of the same hand*, not a loss of style. Only the
-    author's genuinely clean extracted letters (priorD <= _GLYPH_CLEAN) are
-    preferentially kept."""
+    Legibility-first: the user needs the text readable, and measurement
+    shows an author's *own* letterform is only reliably readable when it is
+    a genuinely clean extraction (priorD <= _GLYPH_CLEAN -- typically a
+    denoised prototype). Those are kept; everything else swaps to the anchor
+    readily, scaled by `lam`. The anchor still carries the author's slant,
+    size, spacing and joins, so the hand is not erased."""
     d = float(priorD)
     if d >= _GLYPH_GARBAGE:
         return 1.0
     if lam <= 1e-3:
         return 0.0
-    bad = float(np.clip((d - _GLYPH_CLEAN) / 0.25, 0.0, 1.0))
-    return float(np.clip(lam * (0.2 + 0.9 * bad), 0.0, 1.0))
+    if d <= _GLYPH_CLEAN:
+        return 0.06 * lam
+    bad = float(np.clip((d - _GLYPH_CLEAN) / (_GLYPH_GARBAGE - _GLYPH_CLEAN),
+                        0.0, 1.0))
+    return float(np.clip(lam * (0.55 + 0.9 * bad), 0.0, 1.0))
 
 
 def _GlyphSource(profile, ch, rng, prevExitY=None, lam=0.0, forceCore=False,
@@ -983,6 +994,13 @@ if __name__ == '__main__':
 REPAIR_ROUNDS = 3          # targeted re-draw passes after best-of-N
 REPAIR_WORST_K = 3         # characters pinned to the legible core per round
 
+# How hard to lean on the print anchor when a profile carries no explicit
+# legibilityLambda. Measured sweet spot: ~0.65 gives ~86% char / ~48% word
+# aggregate on novel text through the full delivery path, vs ~77% / ~37% at
+# the previous per-author scheme. Lower = more of the author's own hand
+# (less legible); higher = closer to plain print.
+DEFAULT_LEGIBILITY = 0.65
+
 
 def _LineLogProbs(reader, img, device):
     """(T, C) log-probs from the frozen recognizer for one line image."""
@@ -1039,7 +1057,7 @@ def SynthesizeLegible(text, profile, nTries=6, mmPerXh=4.0, lineWidthMm=180.0,
     Falls back to a single plain synthesis if the recognizer is missing.
     """
     if legibility is None:
-        legibility = float(profile.get('legibilityLambda', 0.0))
+        legibility = float(profile.get('legibilityLambda', DEFAULT_LEGIBILITY))
     if reader is None:
         try:
             import torch
