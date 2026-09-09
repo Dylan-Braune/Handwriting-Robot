@@ -1,0 +1,27 @@
+0	ERP Prac 2
+1	Overview /Recap
+2	1. What we are trying to do.
+3	- target moves in 2D, at every timestep, true state is:
+4	xk = [x, xdot, y, ydot]^T (position & velocity in both axes)
+5	- state estimation is combining what you expect the target to
+6	do (motion model), and with what the sensor tells you
+7	(measurement) to get the best possible guess of the true state
+8	- Kalman filter is the tool for doing this optimally, but only
+9	under specific conditions - understanding exactly what
+10	conditions is the whole point of Prac 2
+11	2. Linear Kalman filter
+12	2 steps repeated at every timestep:
+13	- Predict: use motion model to guess where target is now, before
+14	looking at new measurement:
+15	x_k|k-1 = F x_k-1|k-1 ,  P_k|k-1 = F P_k-1|k-1 F^T + Q
+16	F is constant velocity model (position updates by velocity x time)
+17	Q is how much uncertainty you inject each step because target
+18	might accelerate.
+19	- Update: correct that guess using new measurements.
+20	K_k = P_k|k-1 H^T (H P_k|k-1 H^T + R)^-1,
+21	K is the Kalman gain - decides how much to trust new measurement vs.
+22	your prediction, based on relative uncertainties (Q vs. R)
+23	x_k|k = x_k|k-1 + K_k (z_k - H x_k|k-1)
+24	Why this is "optimal": If your model of the world (F, Q, H, R)
+25	exactly matches reality, and everything is linear and Gaussian,
+26	this is proveably the minimum-variance unbiased estimator - if

@@ -1,9 +1,6 @@
 # Software/CNN -- pipeline overview
 
-The top level holds only the files needed for the four real activities,
-renamed so the name says what the file does. Everything else lives in
-[`Archive/`](Archive/README.md).
-
+The top level holds only the files needed to run the three workflows.
 Data flows through **three groups**:
 
 ```
@@ -95,7 +92,7 @@ hardware number.
 
 ---
 
-## Supporting folders (unchanged)
+## Supporting folders
 
 - `DatasetPrep/` -- one-time tools that generated the `_labels.txt` files the
   trainers read. Not on the live path.
@@ -103,23 +100,23 @@ hardware number.
   (`inspect_checkpoint.py`, `verify_training_pipeline.py`,
   `export_holdout_pages.py`).
 - `Transfers/NonDatasetImages/` -- sample photographed pages + label files.
-- `Archive/` -- retired / experimental files, see its own README.
-- `NOGIT/` -- weights, caches, style profiles, write jobs (gitignored).
+- `TestsForReport/` -- run history (not tracked). One folder per test:
+  the exact `Code/` used, the input pages, the `classify_crops/` output,
+  the weights, and a `TestNValues.txt` transcript.
+- `NOGIT/` -- weights, caches, style profiles, run outputs (gitignored).
+  Kept: `weights/` (text recogniser + resume checkpoint + two writer-ID
+  models), `StyleProfiles10/` (the 10 built author profiles),
+  `GlyphCache10/` (skeleton-extraction cache so a `BuildStyleProfile.py`
+  re-tune is a ~2 min re-filter), `holdout_test_pages/` (`ClassifyText`'s
+  default input). `line_cache_authors10/` regenerates from
+  `Data/Datasets/IAMpages10` on first run.
 
-## Rename map (old → new)
+## Reproduce the workflows
 
-| Old | New |
-|---|---|
-| `FullLineBoxMaker.py` | `ExtractIAMLines.py` |
-| `train_paper_cnn_bilstm_ctc.py` | `TrainText.py` |
-| `train_author_classifier.py` | `TrainAuthor.py` |
-| `classify_page.py` | `ClassifyText.py` |
-| `NonDatasetSegmenterFP2.py` | `SegmentPage.py` |
-| `NonDatasetSegmenterFP.py` | `SegmentPageCore.py` |
-| `fp_ops.py` | `RawImageOps.py` |
-| `style_profile.py` | `BuildStyleProfile.py` |
-| `synthesize_handwriting.py` | `SynthesizeHandwriting.py` |
-| `gcode_writer.py` | `WriteGCode.py` |
-| `write_as_author.py` | `WriteAsAuthor.py` |
-| `verify_end_to_end.py` | `VerifyRewrite.py` |
-| `evaluate_style.py` | `EvaluateStyle.py` |
+```
+python ClassifyText.py                       # transcribe a page (interactive)
+python WriteAsAuthor.py "some text" 153       # -> NOGIT/WriteJobs/153/
+python BuildStyleProfile.py                   # rebuild the 10 author profiles
+python EvaluateLegibility.py                  # headline rewriting metric
+python TrainText.py                           # (re)train the text recogniser
+```
