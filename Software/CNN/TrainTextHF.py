@@ -193,6 +193,20 @@ def train(config, device):
         print(f"[Resume] from epoch {ckpt['epoch']}, resuming at {start_epoch} "
               f"(best_val_loss={best_val_loss:.4f}, patience={patience_counter}, "
               f"restarts={restart_count}, lr={optimizer.param_groups[0]['lr']:.6f}).")
+    elif config.get("init_from"):
+        # Warm start from an already-trained recogniser (same architecture and
+        # charset) instead of random init. Nothing about the data changes --
+        # this only saves the epochs that would be spent relearning generic
+        # stroke features, which matters a lot without a GPU.
+        src = Path(config["init_from"])
+        if src.exists():
+            sd = torch.load(src, map_location=device, weights_only=False)
+            if isinstance(sd, dict) and "model_state_dict" in sd:
+                sd = sd["model_state_dict"]
+            model.load_state_dict(sd)
+            print(f"[Init] warm-started from {src.name}")
+        else:
+            print(f"[Init] {src} not found -- training from scratch")
 
     max_epochs = config["epochs"]
     early_stop_patience = config["early_stop_patience"]
@@ -346,6 +360,11 @@ def parse_args():
                    help="Ignore any existing checkpoint and start fresh.")
     p.add_argument("--cache-dir", default=str(DEFAULT_HF_CACHE),
                    help="Where HuggingFace caches the downloaded dataset.")
+    p.add_argument("--init-from", default=None,
+                   help="Warm-start model weights from an existing checkpoint "
+                        "of the same architecture (e.g. the page-trained "
+                        "paper_cnn_bilstm_ctc_best.pt). Only used when there "
+                        "is no HF checkpoint to resume from.")
     return p.parse_args()
 
 
@@ -369,6 +388,7 @@ def main():
         "eval_every": args.eval_every,
         "max_restarts": args.max_restarts,
         "resume": not args.no_resume,
+        "init_from": args.init_from,
     }
 
     if args.eval_only:

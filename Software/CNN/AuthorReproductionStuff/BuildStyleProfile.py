@@ -39,6 +39,9 @@ import torch
 from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# the shared modules (RawImageOps, TrainText, SegmentPage, ExtractIAMLines)
+# live one level up in Software/CNN
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import RawImageOps as F
 from TrainText import (
@@ -52,10 +55,10 @@ from TrainText import (
 )
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-DATA_DIR = SCRIPT_DIR.parents[1] / "Data" / "Datasets" / "IAMpages10"
-CACHE_DIR = SCRIPT_DIR / "NOGIT" / "line_cache_authors10"
-TEXT_WEIGHTS = SCRIPT_DIR / "NOGIT" / "weights" / "paper_cnn_bilstm_ctc_best.pt"
-PROFILE_DIR = SCRIPT_DIR / "NOGIT" / "StyleProfiles10"
+DATA_DIR = SCRIPT_DIR.parents[2] / "Data" / "Datasets" / "IAMpages10"
+CACHE_DIR = SCRIPT_DIR.parent / "NOGIT" / "line_cache_authors10"
+TEXT_WEIGHTS = SCRIPT_DIR.parent / "NOGIT" / "weights" / "paper_cnn_bilstm_ctc_best.pt"
+PROFILE_DIR = SCRIPT_DIR.parent / "NOGIT" / "StyleProfiles10"
 
 MAX_VARIANTS_PER_CHAR = 12
 
@@ -650,7 +653,11 @@ def ExtractLineGlyphs(gray, text, model, device):
             connL=connL, connR=connR)
 
     stats = dict(slant=slant, xh=xh, alignConf=conf,
-                 strokeW=inkArea / max(1.0, skelLenTotal))
+                 strokeW=inkArea / max(1.0, skelLenTotal),
+                 # the territory each character was actually cut from, kept
+                 # so the cuts can be drawn back onto the page and checked
+                 cuts=[(int(i), ch, float(left), float(right))
+                       for (i, ch, left, right, _ax0, _ax1) in cuts])
     return glyphs, stats
 
 
@@ -701,7 +708,7 @@ def _AlignStroke(s, N):
     return _ResampleN(s, N)
 
 
-def _DenoisedPrototype(variants, minN=4, N=44):
+def _DenoisedPrototype(variants, minN=3, N=44):
     """Robust median of an author's variants of one letter, per stroke.
 
     Groups variants by stroke count, takes the modal group, orders each
@@ -718,7 +725,7 @@ def _DenoisedPrototype(variants, minN=4, N=44):
         return None
     nc = max(by_nc, key=lambda k: len(by_nc[k]))
     group = by_nc[nc]
-    if len(group) < minN or nc > 4:
+    if len(group) < minN or nc > 5:
         return None
     stacks = [[] for _ in range(nc)]
     for g in group:
@@ -764,6 +771,32 @@ def _DenoisedPrototype(variants, minN=4, N=44):
     x0 = min(float(s[:, 0].min()) for s in proto)
     return [[[round(float(x - x0), 3), round(float(y), 3)] for x, y in s]
             for s in proto]
+
+
+def SmoothStroke(pts, step=0.055, passes=2):
+    """Take the pixel-grid staircase out of a traced centreline.
+
+    Thinning snaps the skeleton to integer pixels, so at a 33px x-height a
+    diagonal stroke is stored as a run of 0.6px zigzags (measured: median
+    turn angle between segments 8.9 deg, 90th percentile 59.5 deg). That is
+    an artefact of the raster, not something the writer did. Resample to an
+    even spacing, then average each point with its neighbours, holding the
+    endpoints fixed so the letter keeps its extent and its join points."""
+    p = np.asarray(pts, np.float64)
+    if len(p) < 3:
+        return [[round(float(x), 3), round(float(y), 3)] for x, y in p]
+    seg = np.hypot(*np.diff(p, axis=0).T)
+    cum = np.concatenate([[0.0], np.cumsum(seg)])
+    total = float(cum[-1])
+    if total < 1e-6:
+        return [[round(float(x), 3), round(float(y), 3)] for x, y in p]
+    n = max(3, int(round(total / step)) + 1)
+    t = np.linspace(0.0, total, n)
+    q = np.stack([np.interp(t, cum, p[:, 0]), np.interp(t, cum, p[:, 1])], 1)
+    for _ in range(passes):
+        inner = 0.25 * q[:-2] + 0.5 * q[1:-1] + 0.25 * q[2:]
+        q = np.vstack([q[:1], inner, q[-1:]])
+    return [[round(float(x), 3), round(float(y), 3)] for x, y in q]
 
 
 def _PenLength(g):
@@ -1060,22 +1093,75 @@ def BuildAuthorProfile(authorId, parsed, refs=None, prior=None,
         good = _ConsensusFilter(good)
         good.sort(key=lambda g: abs(g['width'] - wRef) / max(0.2, wRef) +
                   abs((g['top'] - g['bot']) - hMed) / max(0.2, hMed))
-        lib2[ch] = good[:MAX_VARIANTS_PER_CHAR]
+        good = good[:MAX_VARIANTS_PER_CHAR]
+        # the same de-staircasing on the variants themselves -- at a low
+        # anchor level these ARE the output, so the raster zigzag would be
+        # drawn as if the writer's hand shook
+        for g in good:
+            g['strokes'] = [SmoothStroke(s) for s in g['strokes']]
+        lib2[ch] = good
 
     # denoised prototype: the robust per-stroke median of an author's own
     # aligned variants of a letter cancels the ~random cut noise and
     # recovers their true letterform. Prepended (so synthesis prefers it)
     # only where it measurably beats the raw variants on priorD.
+    # The author's own anchor, built two ways so synthesis can choose:
+    #   idealMedoid -- the single REAL variant most typical of their own set.
+    #                  An actual thing they wrote, so a multi-stroke letter
+    #                  keeps its structure intact.
+    #   idealGlyphs -- the per-stroke median of their variants. Smoother,
+    #                  but averaging can blur a letter whose variants differ
+    #                  in how the strokes are arranged.
+    medoid = {}
+    for ch, vs in lib2.items():
+        grids = [(_ShapeGrid(g), g) for g in vs]
+        grids = [(v, g) for v, g in grids if v is not None]
+        if len(grids) < 2:
+            continue
+        G = np.stack([v for v, _ in grids])
+        D = np.abs(G[:, None, :] - G[None, :, :]).sum(-1)
+        med = grids[int(np.argmin(D.sum(1)))][1]
+        medoid[ch] = dict(
+            strokes=[SmoothStroke(s) for s in med['strokes']],
+            priorD=round(float(med.get('priorD', 0.5)), 4),
+            advance=round(float(med.get('advance', 0.9)), 3),
+            lead=round(float(med.get('lead', 0.0)), 3),
+            width=round(float(med.get('width', 0.9)), 3),
+            top=round(float(med.get('top', 1.0)), 3),
+            bot=round(float(med.get('bot', 0.0)), 3),
+            entryY=round(float(med.get('entryY', 0.3)), 3),
+            exitY=round(float(med.get('exitY', 0.3)), 3),
+            nPool=len(vs))
+
+    ideal = {}
     for ch, vs in lib2.items():
         proto = _DenoisedPrototype(vs)
         if proto is None:
             continue
         pd = _PriorScore({'strokes': proto}, ch, prior)
         rawPd = float(np.median([g.get('priorD', 0.5) for g in vs]))
+        pts = [p for s in proto for p in s]
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        # THE AUTHOR'S OWN IDEAL LETTERFORM. The same robust median, but kept
+        # as this writer's personal anchor rather than as one more variant:
+        # synthesis can then clean a letter up toward how THEY form it
+        # instead of toward a generic alphabet, which is what stops every
+        # author's substituted letters coming out as the same shape.
+        # `priorD` is recorded so synthesis can tell whether this ideal is
+        # actually a recognisable letter -- averaging twelve malformed cuts
+        # gives a tidy shape that is still the wrong letter, and those have
+        # to fall through to the generic anchor.
+        ideal[ch] = dict(
+            strokes=[SmoothStroke(s) for s in proto], priorD=round(pd, 4),
+            advance=round(float(np.median([g['advance'] for g in vs])), 3),
+            lead=round(float(np.median([g.get('lead', 0.0) for g in vs])), 3),
+            width=round(max(xs) - min(xs), 3),
+            top=round(max(ys), 3), bot=round(min(ys), 3),
+            entryY=round(float(np.median([g.get('entryY', 0.3) for g in vs])), 3),
+            exitY=round(float(np.median([g.get('exitY', 0.3) for g in vs])), 3),
+            nPool=len(vs))
         if pd < rawPd - 0.02 and pd < 0.32:
-            pts = [p for s in proto for p in s]
-            xs = [p[0] for p in pts]
-            ys = [p[1] for p in pts]
             g0 = dict(vs[0])
             g0.update(strokes=proto, priorD=round(pd, 4), denoised=True,
                       width=round(max(xs) - min(xs), 3),
@@ -1115,6 +1201,8 @@ def BuildAuthorProfile(authorId, parsed, refs=None, prior=None,
                        for ch, v in advances.items()},
         nLines=len(xhs),
         glyphs=lib2,
+        idealGlyphs=ideal,
+        idealMedoid=medoid,
     )
     if verbose:
         nVar = sum(len(v) for v in lib2.values())
@@ -1134,8 +1222,8 @@ def LoadProfile(authorId):
         return json.load(f)
 
 
-RAW_DIR = SCRIPT_DIR / "NOGIT" / "GlyphCache10"
-LEGIBLE_CORE_PATH = SCRIPT_DIR / "NOGIT" / "LegibleCore10.json"
+RAW_DIR = SCRIPT_DIR.parent / "NOGIT" / "GlyphCache10"
+LEGIBLE_CORE_PATH = SCRIPT_DIR.parent / "NOGIT" / "LegibleCore10.json"
 
 
 def BuildLegibleCore(rawLibs, prior, keepFrac=0.35, minPool=8):

@@ -24,12 +24,13 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import WriteGCode as GW
 import SynthesizeHandwriting as SY
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-OUT_DIR = SCRIPT_DIR / "NOGIT" / "WriteJobs"
+OUT_DIR = SCRIPT_DIR.parent / "NOGIT" / "WriteJobs"
 
 
 def ResolveAuthor(profiles, token):

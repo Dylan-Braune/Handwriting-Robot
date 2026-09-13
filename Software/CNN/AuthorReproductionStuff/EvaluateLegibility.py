@@ -41,6 +41,7 @@ import torch
 from PIL import Image, ImageDraw
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import SynthesizeHandwriting as SY
 import WriteGCode as GW
@@ -49,7 +50,7 @@ import VerifyShapeStyle as VS
 import TrainAuthorShape as SH
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-OUT_DIR = SCRIPT_DIR / "NOGIT" / "LegibilityEval"
+OUT_DIR = SCRIPT_DIR.parent / "NOGIT" / "LegibilityEval"
 
 # ~40 present-day sentences, none from IAM. Varied bigrams, digits,
 # punctuation, capitalisation, and the awkward pairs (rn/cl/vv/mm/ee...).

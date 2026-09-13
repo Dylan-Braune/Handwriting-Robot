@@ -28,6 +28,7 @@ import numpy as np
 import torch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import WriteGCode as GW
 import BuildStyleProfile as SP
@@ -41,8 +42,8 @@ from TrainText import (
 )
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-SHAPE_WEIGHTS = SCRIPT_DIR / "NOGIT" / "weights" / "author_shape_10_weights.pt"
-OUT_DIR = SCRIPT_DIR / "NOGIT" / "ShapeEval"
+SHAPE_WEIGHTS = SCRIPT_DIR.parent / "NOGIT" / "weights" / "author_shape_10_weights.pt"
+OUT_DIR = SCRIPT_DIR.parent / "NOGIT" / "ShapeEval"
 
 
 def LoadShapeModel(device):

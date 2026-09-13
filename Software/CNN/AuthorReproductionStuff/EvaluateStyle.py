@@ -31,6 +31,7 @@ import torch
 from PIL import Image, ImageDraw
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import BuildStyleProfile as SP
 import SynthesizeHandwriting as SY
@@ -43,10 +44,10 @@ from TrainText import (
 SCRIPT_DIR = Path(__file__).resolve().parent
 # prefer the fully fine-tuned model when it exists, otherwise the fast
 # frozen-backbone one -- both are saved in the same format
-_W1 = SCRIPT_DIR / "NOGIT" / "weights" / "author_classifier_10_weights.pt"
-_W2 = SCRIPT_DIR / "NOGIT" / "weights" / "author_fast_10_weights.pt"
+_W1 = SCRIPT_DIR.parent / "NOGIT" / "weights" / "author_classifier_10_weights.pt"
+_W2 = SCRIPT_DIR.parent / "NOGIT" / "weights" / "author_fast_10_weights.pt"
 AUTHOR_WEIGHTS = _W1 if _W1.exists() else _W2
-OUT_DIR = SCRIPT_DIR / "NOGIT" / "StyleEval"
+OUT_DIR = SCRIPT_DIR.parent / "NOGIT" / "StyleEval"
 
 
 def LoadAuthorModel(device):

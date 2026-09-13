@@ -42,6 +42,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from BuildStyleProfile import LoadProfile, PROFILE_DIR   # noqa: F401
 
@@ -230,8 +231,9 @@ _FB_ADV = 1.0
 # inkFracRef / strokeWidthXh / inkCoreLevel fields are ignored.
 # ---------------------------------------------------------------------------
 UNIFORM_INK = True
-UNIFORM_PEN_WIDTH_XH = 0.11         # bold enough for a real pen, and a hair
-                                  # more legible than 0.14 (probe: +2pt char)
+UNIFORM_PEN_WIDTH_XH = 0.085        # thinner than the old 0.11: on a joined
+                                  # hand a heavy stroke fills in the small
+                                  # loops of e/o/a and they read as blobs
 UNIFORM_SOFT_FRAC = 0.30            # blur radius as a fraction of strokePx
 
 # Legibility guards (tested in phase 3; no-ops at these defaults so the
@@ -298,7 +300,10 @@ def _BaselineGlyph(ch, profile, printOnly=False):
     return strokes, adv
 
 # how many of a character's stored variants are eligible per instance
-_ELIGIBLE_VARIANTS = 2
+# Widened from 2: with only the top two eligible, one unlucky prototype
+# dominated a letter everywhere it appeared in a line. Five gives the
+# selector room to avoid a bad one while still favouring the typical forms.
+_ELIGIBLE_VARIANTS = 5
 
 
 class Trajectory:
@@ -332,14 +337,25 @@ _SIMILAR = {'I': 'l', 'O': '0', 'l': 'I', '0': 'O', 'o': '0', ';': ':',
             '"': "'", '!': 'l'}
 
 
-# Tested: giving connected hands the JOINED cursive skeleton as their anchor
-# (to preserve the "connected look") costs ~15pt char / ~30pt word
-# legibility on the delivery path and does NOT recover style (152/153 stay
-# at 0/5 shape-ID). Legibility is the priority, so every anchor glyph is now
-# the upright PRINT form; the connected look, where it survives, comes from
-# the author's own kept glyphs + ligatures, not the anchor. Set > 1.0 to
-# disable the cursive anchor entirely.
-CORE_CURSIVE_CONN = 2.0
+# A connected hand (measured connectedness at or above this) gets the JOINED
+# cursive skeleton as its anchor, so a substituted letter can still connect
+# to its neighbours.
+#
+# This was previously set above 1.0 to disable the cursive anchor entirely,
+# on the evidence that it cost char/word legibility as scored by the frozen
+# recogniser. Judged by eye instead, that trade reads very differently: an
+# upright PRINT anchor cannot be joined through at all, so every substituted
+# letter also broke the joins on both sides of it, and a 94%-joined hand
+# came out as separate letters. Set > 1.0 to disable again.
+CORE_CURSIVE_CONN = 0.5
+
+# How much `legibility` is allowed to thin out the author's own join rate.
+# ZERO: a writer's join rate is a measured property of their hand, not a
+# quality knob. Coupling it to `legibility` meant a writer who joins 94% of
+# their letter pairs only joined 57% of them at legibility 0.65, so raising
+# legibility silently converted cursive hands into print ones -- the joins
+# are most of what makes those hands recognisable.
+JOIN_LEGIBILITY_COUPLING = 0.0
 
 
 def _CoreGlyph(ch, profile):
@@ -352,8 +368,27 @@ def _CoreGlyph(ch, profile):
     scaled to the author's ascender/descender reach; slant, spacing and the
     joins themselves are applied later.
 
-    Returns (strokes, advance, lead, isCursive)."""
+    Returns (strokes, advance, lead, isCursive).
+
+    Preference order:
+      1. the AUTHOR'S OWN ideal for this letter -- the robust median of
+         their own variants (`idealGlyphs`, built by BuildStyleProfile).
+         This is the same cleaning-up the generic anchor provides, but
+         toward how THEY form the letter, so a substituted letter is still
+         theirs. Only used when that ideal is a recognisable letter:
+         averaging a dozen malformed cuts gives a tidy shape that is still
+         the wrong letter, which is why `priorD` gates it.
+      2. the generic joined-cursive or upright-print skeleton, as before.
+    """
     cursive = float(profile.get('connectedness', 0.0)) >= CORE_CURSIVE_CONN
+    src = (profile.get('idealMedoid') if IDEAL_SOURCE == 'medoid'
+           else profile.get('idealGlyphs')) or {}
+    own = src.get(ch)
+    if own and float(own.get('priorD', 1.0)) <= IDEAL_ANCHOR_MAX_PRIORD:
+        strokes = [[tuple(p) for p in s] for s in own['strokes']]
+        adv = max(float(own.get('advance', 0.9)),
+                  float(own.get('lead', 0.0)) + float(own.get('width', 0.9)) + 0.04)
+        return strokes, adv, float(own.get('lead', 0.0)), cursive
     b = _BaselineGlyph(ch, profile, printOnly=not cursive)
     return None if b is None else (b[0], b[1], 0.0, cursive)
 
@@ -366,6 +401,26 @@ def _CoreGlyph(ch, profile):
 # unresolvable, and fix legibility through LAYOUT (slant cap, join control,
 # spacing) and the empirical repair pass instead. This keeps each hand
 # recognisable.
+# How far the author's OWN ideal letterform may sit from the cross-author
+# idea of that letter and still be used as their anchor. Above this the
+# writer simply never produced a recognisable version of the letter (every
+# extracted copy was a bad cut), so the generic skeleton has to stand in.
+IDEAL_ANCHOR_MAX_PRIORD = 0.30
+
+# Which per-author anchor to use: 'medoid' = the single most typical REAL
+# variant they wrote (intact, nothing averaged); 'median' = the per-stroke
+# median of their variants (smoother, but averaging can blur a letter whose
+# variants arrange their strokes differently).
+IDEAL_SOURCE = 'medoid'
+
+# How `legibility` applies. False = the original all-or-nothing swap, where
+# each letter instance is either wholly theirs or wholly the anchor. True =
+# interpolate the two shapes vertex by vertex, so a setting of 0.4 really is
+# 40% of the way toward the anchor rather than a 40% chance of replacing the
+# letter outright. Uses _BlendGlyph, which was written for this and never
+# wired up.
+BLEND_TOWARD_ANCHOR = False
+
 _GLYPH_CLEAN = 0.12        # priorD at/below which the author's letter is a
                           # clean example -- keep it
 _GLYPH_GARBAGE = 0.55      # at/above this it is replaced regardless of lam
@@ -392,8 +447,38 @@ def _SwapProb(lam, priorD):
     return float(np.clip(lam * (0.55 + 0.9 * bad), 0.0, 1.0))
 
 
+# EXPERIMENT (round 1, direction B): at a word start there is no previous
+# letter to join from, but a glyph cut out of joined writing still carries
+# the tail of that join, which then reads as an extra letter ("over" ->
+# "cver"). Off by default so the baseline is unchanged.
+CLEAN_WORD_START = False
+
+
+def _PenLen(s):
+    p = np.asarray(s, np.float64)
+    return float(np.hypot(*np.diff(p, axis=0).T).sum()) if len(p) > 1 else 0.0
+
+
+def _StripEntryStroke(strokes):
+    """Drop a short leading stroke lying BESIDE the letter body -- an
+    inherited join tail. A crossbar runs across the body, not beside it, so
+    it is left alone."""
+    if len(strokes) < 2:
+        return strokes
+    s0 = strokes[0]
+    if _PenLen(s0) > 0.8:
+        return strokes
+    restX = [p[0] for s in strokes[1:] for p in s]
+    if not restX:
+        return strokes
+    bodyX0 = min(restX)
+    xs0 = [p[0] for p in s0]
+    outside = sum(1 for x in xs0 if x <= bodyX0 + 0.05) / float(len(xs0))
+    return strokes[1:] if outside >= 0.6 else strokes
+
+
 def _GlyphSource(profile, ch, rng, prevExitY=None, lam=0.0, forceCore=False,
-                 forcePrint=False):
+                 forcePrint=False, freeEntry=False):
     """Returns (strokes, advance, lead, source). Uses one of the author's
     own variants, unless the prototype is unresolvable, `forceCore` is set
     (repair pass -> style-aware anchor), `forcePrint` is set (repair pass on
@@ -408,6 +493,8 @@ def _GlyphSource(profile, ch, rng, prevExitY=None, lam=0.0, forceCore=False,
 
     def pack(g, k=1.0):
         strokes = [[(x * k, y * k) for (x, y) in s] for s in g['strokes']]
+        if CLEAN_WORD_START and freeEntry and g.get('connL'):
+            strokes = _StripEntryStroke(strokes)
         # the variant's OWN advance, never the character median: a wide
         # variant advanced by a narrow median would collide with the next
         # letter (and vice versa, leaving a hole)
@@ -460,6 +547,12 @@ def _GlyphSource(profile, ch, rng, prevExitY=None, lam=0.0, forceCore=False,
                                  or rng.random() < _SwapProb(lam, d)):
             return core[0], core[1], core[2], 'core'
         s, a, lead = pack(g)
+        if BLEND_TOWARD_ANCHOR and core is not None and lam > 1e-3:
+            # pull this instance partway toward the anchor rather than
+            # leaving it untouched: a letter that is only slightly malformed
+            # gets tidied instead of either surviving broken or being
+            # replaced outright
+            s = _BlendGlyph(s, core[0], min(1.0, lam * (0.35 + 1.3 * d)))
         return s, a, lead, 'own'
     for alt in (ch.swapcase(), _SIMILAR.get(ch, '')):
         if alt and alt in lib and lib[alt]:
@@ -564,7 +657,7 @@ def _BlendGlyph(aStrokes, cStrokes, lam):
 
 
 def SynthesizeText(text, profile, mmPerXh=4.0, seed=None, lineWidthMm=180.0,
-                   jitter=0.5, legibility=0.0, perCharLam=None, _cal=None):
+                   jitter=0.15, legibility=0.0, perCharLam=None, _cal=None):
     """text -> Trajectory (mm, y up, origin at first baseline).
 
     mmPerXh: physical size of one x-height. lineWidthMm: wrap width."""
@@ -585,7 +678,8 @@ def SynthesizeText(text, profile, mmPerXh=4.0, seed=None, lineWidthMm=180.0,
     # legibility thins out the cursive joins (tangled joins are the main
     # thing that makes a connected hand unreadable) without removing them --
     # a connected author still writes visibly connected at lam 0.65.
-    connEff = conn * (1.0 - 0.6 * float(np.clip(legibility, 0.0, 1.0)))
+    connEff = conn * (1.0 - JOIN_LEGIBILITY_COUPLING
+                      * float(np.clip(legibility, 0.0, 1.0)))
     wordGap = float(profile.get('wordSpaceXh', 1.2))
     ascender = float(profile.get('ascender', 1.7))
     descender = float(profile.get('descender', -0.6))
@@ -643,7 +737,8 @@ def SynthesizeText(text, profile, mmPerXh=4.0, seed=None, lineWidthMm=180.0,
             gStrokes, adv, lead, src = _GlyphSource(profile, ch, rng,
                                                     prevExitY=wantEntryY,
                                                     lam=lam, forceCore=forceCore,
-                                                    forcePrint=forcePrint)
+                                                    forcePrint=forcePrint,
+                                                    freeEntry=(ci == 0))
             usage[src] = usage.get(src, 0) + 1
             if not gStrokes:
                 penX += adv * xh
@@ -979,7 +1074,7 @@ if __name__ == '__main__':
     text = sys.argv[1] if len(sys.argv) > 1 else \
         'The quick brown fox jumps over the lazy dog'
     profs = LoadAllProfiles()
-    outDir = SCRIPT_DIR / 'NOGIT' / 'SynthPreview'
+    outDir = SCRIPT_DIR.parent / 'NOGIT' / 'SynthPreview'
     outDir.mkdir(parents=True, exist_ok=True)
     for a, prof in profs.items():
         traj = SynthesizeText(text, prof, seed=1)

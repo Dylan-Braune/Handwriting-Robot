@@ -38,6 +38,7 @@ import torch.nn as nn
 from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import RawImageOps as F
 import BuildStyleProfile as SP
@@ -48,11 +49,11 @@ from TrainText import (
 )
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-DATA_DIR = SCRIPT_DIR.parents[1] / "Data" / "Datasets" / "IAMpages10"
-CACHE_DIR = SCRIPT_DIR / "NOGIT" / "line_cache_authors10"
-TEXT_WEIGHTS = SCRIPT_DIR / "NOGIT" / "weights" / "paper_cnn_bilstm_ctc_best.pt"
-NORM_CACHE = SCRIPT_DIR / "NOGIT" / "shape_norm_cache.pkl"
-OUT_WEIGHTS = SCRIPT_DIR / "NOGIT" / "weights" / "author_shape_10_weights.pt"
+DATA_DIR = SCRIPT_DIR.parents[2] / "Data" / "Datasets" / "IAMpages10"
+CACHE_DIR = SCRIPT_DIR.parent / "NOGIT" / "line_cache_authors10"
+TEXT_WEIGHTS = SCRIPT_DIR.parent / "NOGIT" / "weights" / "paper_cnn_bilstm_ctc_best.pt"
+NORM_CACHE = SCRIPT_DIR.parent / "NOGIT" / "shape_norm_cache.pkl"
+OUT_WEIGHTS = SCRIPT_DIR.parent / "NOGIT" / "weights" / "author_shape_10_weights.pt"
 
 # One pen for everybody. Expressed relative to the line's own x-height so
 # the normalization is resolution-independent.

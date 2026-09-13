@@ -1,0 +1,749 @@
+diff --git a/Software/CNN/AuthorReproductionStuff/BuildStyleProfile.py b/Software/CNN/AuthorReproductionStuff/BuildStyleProfile.py
+index 3689c37..60d6a41 100644
+--- a/Software/CNN/AuthorReproductionStuff/BuildStyleProfile.py
++++ b/Software/CNN/AuthorReproductionStuff/BuildStyleProfile.py
+@@ -39,6 +39,9 @@ import torch
+ from PIL import Image
+ 
+ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
++# the shared modules (RawImageOps, TrainText, SegmentPage, ExtractIAMLines)
++# live one level up in Software/CNN
++sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ 
+ import RawImageOps as F
+ from TrainText import (
+@@ -52,10 +55,10 @@ from TrainText import (
+ )
+ 
+ SCRIPT_DIR = Path(__file__).resolve().parent
+-DATA_DIR = SCRIPT_DIR.parents[1] / "Data" / "Datasets" / "IAMpages10"
+-CACHE_DIR = SCRIPT_DIR / "NOGIT" / "line_cache_authors10"
+-TEXT_WEIGHTS = SCRIPT_DIR / "NOGIT" / "weights" / "paper_cnn_bilstm_ctc_best.pt"
+-PROFILE_DIR = SCRIPT_DIR / "NOGIT" / "StyleProfiles10"
++DATA_DIR = SCRIPT_DIR.parents[2] / "Data" / "Datasets" / "IAMpages10"
++CACHE_DIR = SCRIPT_DIR.parent / "NOGIT" / "line_cache_authors10"
++TEXT_WEIGHTS = SCRIPT_DIR.parent / "NOGIT" / "weights" / "paper_cnn_bilstm_ctc_best.pt"
++PROFILE_DIR = SCRIPT_DIR.parent / "NOGIT" / "StyleProfiles10"
+ 
+ MAX_VARIANTS_PER_CHAR = 12
+ 
+@@ -417,15 +420,18 @@ def _TrimLigatureTails(strokes, lowY=0.42, minKeep=0.18):
+     near-horizontal carrier stroke hanging off each side. Trim the leading
+     and trailing run of points that stays below `lowY` x-heights AND keeps
+     moving monotonically outward -- that is the connector, not the letter.
+-    Returns (trimmedStrokes, entryPoint, exitPoint)."""
++    Returns (trimmedStrokes, entryPoint, exitPoint, tails), where `tails`
++    are the removed connector pieces themselves -- the author's own join
++    geometry, which synthesis uses instead of inventing one generic curve
++    for all ten writers."""
+     if not strokes:
+-        return strokes, (0.0, 0.0), (0.0, 0.0)
++        return strokes, (0.0, 0.0), (0.0, 0.0), []
+     allPts = [p for s in strokes for p in s]
+     entry, exitPt = strokes[0][0], strokes[-1][-1]
+     xs = [p[0] for p in allPts]
+     span = max(xs) - min(xs)
+     if span <= 1e-6:
+-        return strokes, entry, exitPt
++        return strokes, entry, exitPt, []
+ 
+     def runLen(s, maxSlope=0.7):
+         """How many leading points form a low, outward-running carrier. A
+@@ -440,24 +446,26 @@ def _TrimLigatureTails(strokes, lowY=0.42, minKeep=0.18):
+             i += 1
+         return i
+ 
+-    out = []
++    out, tails = [], []
+     for k, s in enumerate(strokes):
+         t = list(s)
+         if k == 0:
+             i = runLen(t)
+             if i and (t[-1][0] - t[i][0]) > minKeep * span:
++                tails.append(t[:i + 1])
+                 t = t[i:]
+         if k == len(strokes) - 1 and len(t) >= 2:
+             # the exit connector leaves to the right, so on the REVERSED
+             # walk its x decreases -- mirror x to reuse the same test
+             r = runLen([(-x, y) for (x, y) in t[::-1]])
+             if r and (t[len(t) - 1 - r][0] - t[0][0]) > minKeep * span:
++                tails.append(t[len(t) - 1 - r:])
+                 t = t[:len(t) - r]
+         if len(t) >= 2:
+             out.append(t)
+     if not out:
+-        return strokes, entry, exitPt
+-    return out, out[0][0], out[-1][-1]
++        return strokes, entry, exitPt, []
++    return out, out[0][0], out[-1][-1], [t for t in tails if len(t) >= 2]
+ 
+ 
+ def _SpanInk(ink, x0, x1):
+@@ -555,6 +563,7 @@ def ExtractLineGlyphs(gray, text, model, device):
+ 
+     glyphs = [None] * len(charXs)
+     inkArea = float(ink.sum())
++    ligSamples = []
+ 
+     # Skeletonize the WHOLE line once and cut the traced centerlines at the
+     # territory boundaries. Thinning each column slice separately (the
+@@ -623,10 +632,30 @@ def ExtractLineGlyphs(gray, text, model, device):
+         # arrives with half a connector stuck on each side. Trim those to
+         # the letter BODY and remember where the pen entered/left, so the
+         # synthesizer draws exactly one connector of its own choosing.
+-        norm, entry, exitPt = _TrimLigatureTails(norm)
++        norm, entry, exitPt, tails = _TrimLigatureTails(norm)
+         if not norm:
+             glyphs[i] = None
+             continue
++        # The author's own join shape, kept rather than discarded: for a
++        # heavily joined hand the connectors are a large share of all the
++        # ink on the page, so replacing them with one generic curve erases
++        # much of what makes that hand theirs. Summarised as sag (how far
++        # the connector bows away from the straight line between its ends,
++        # in x-heights, signed: positive = dips below) and run length.
++        ligs = []
++        for t in tails:
++            (ax, ay), (bx, by) = t[0], t[-1]
++            L = float(np.hypot(bx - ax, by - ay))
++            if L < 0.05:
++                continue
++            dev = 0.0
++            for (px, py) in t:
++                # signed perpendicular offset from the chord
++                cross = ((bx - ax) * (py - ay) - (by - ay) * (px - ax)) / L
++                if abs(cross) > abs(dev):
++                    dev = cross
++            ligs.append((round(L, 3), round(float(dev), 3)))
++        ligSamples.extend(ligs)
+         # Align in the frame the glyph will be DRAWN in. The stored shape is
+         # de-slanted (upright) so jitter/scaling behave sensibly, but the
+         # synthesizer re-applies the shear -- so the origin must be chosen
+@@ -650,7 +679,8 @@ def ExtractLineGlyphs(gray, text, model, device):
+             connL=connL, connR=connR)
+ 
+     stats = dict(slant=slant, xh=xh, alignConf=conf,
+-                 strokeW=inkArea / max(1.0, skelLenTotal))
++                 strokeW=inkArea / max(1.0, skelLenTotal),
++                 ligs=ligSamples)
+     return glyphs, stats
+ 
+ 
+@@ -875,6 +905,33 @@ def PriorFilter(variants, ch, prior, keepFrac=0.7, minKeep=3):
+     return scored[:k]
+ 
+ 
++def SelfConsensus(variants):
++    """Median shape descriptor of ONE author's own variants of one letter --
++    i.e. "how this writer forms this letter", learned only from themselves.
++
++    The cross-author prior (`_LETTER_PRIOR`) answers a different question:
++    "is this recognisably the letter at all", which is the right test for
++    REJECTING a broken cut but the wrong one for CHOOSING between good
++    variants -- ranking by it picks whichever of the author's letterforms
++    is closest to everyone else's, i.e. their least characteristic one."""
++    grids = [g for g in (_ShapeGrid(v) for v in variants) if g is not None]
++    if len(grids) < 2:
++        return None
++    proto = np.median(np.vstack(grids), axis=0)
++    n = float(np.linalg.norm(proto))
++    return proto / n if n > 1e-9 else None
++
++
++def _SelfScore(g, proto):
++    """Cosine distance from this variant to the author's own consensus."""
++    if proto is None:
++        return None
++    grid = _ShapeGrid(g)
++    if grid is None:
++        return None
++    return float(1.0 - np.dot(grid, proto))
++
++
+ def _ConsensusFilter(variants, keepFrac=0.75):
+     """Drop variants whose shape disagrees with the character's medoid --
+     this is what removes glyphs contaminated by a neighbouring letter."""
+@@ -896,7 +953,11 @@ def _ConsensusFilter(variants, keepFrac=0.75):
+ # ---------------------------------------------------------------------------
+ # Author profile aggregation
+ # ---------------------------------------------------------------------------
+-def RenderRefStats(gray):
++_ASC_CHARS = set('bdfhklt') | set('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789')
++_DESC_CHARS = set('gjpqy')
++
++
++def RenderRefStats(gray, text=None):
+     """How the author's REAL line looks once put through the classifier's
+     own preprocessing (aspect-squashed to INPUT_H x INPUT_W). Stroke weight
+     and ink density are part of a hand's style, and the writer-ID model is
+@@ -917,7 +978,7 @@ def RenderRefStats(gray):
+                paperLevel=float(np.median(bright)) if bright.size else 255.0,
+                inkLevel=float(np.median(dark)) if dark.size else 40.0,
+                midFrac=float(((a >= 128) & (a < 200)).mean()),
+-               wordGap=np.nan, heightXh=np.nan)
++               wordGap=np.nan, heightXh=np.nan, pitch=np.nan)
+     # Word spacing measured from the real ink gaps rather than from the
+     # recognizer's territory for the space character: CTC gives a space a
+     # narrow slice (there is nothing to see there), which badly
+@@ -946,8 +1007,31 @@ def RenderRefStats(gray):
+             # same way they will be measured on the synthesized render so
+             # the two are directly comparable and can be calibrated
+             out['slantMeas'] = float(EstimateSlantDeg(ink))
+-            out['ascMeas'] = float(base - ys.min()) / xh
+-            out['descMeas'] = float(base - ys.max()) / xh
++            # Only measure a reach on a line that actually contains a letter
++            # with that reach. Taking the median over every line drags the
++            # descender reference toward zero, because most lines have no
++            # descender at all -- measured on author 384, that put the
++            # reference at -0.59 where their real descender lines reach
++            # -1.2..-1.5, so the calibration was actively SHORTENING their
++            # descenders and erasing one of the strongest writer signatures.
++            hasAsc = text is None or any(c in _ASC_CHARS for c in text)
++            hasDesc = text is None or any(c in _DESC_CHARS for c in text)
++            if hasAsc:
++                out['ascMeas'] = float(base - ys.min()) / xh
++            if hasDesc:
++                out['descMeas'] = float(base - ys.max()) / xh
++            # Letter PITCH: x-heights of line width per character. This is
++            # how tightly the writer packs their hand, and it is the single
++            # geometric property the writer-ID judge is most exposed to --
++            # it squashes every line to a fixed 64x640, so a line that runs
++            # wider per character than the author's real ones comes out
++            # horizontally compressed, with every letter too narrow and the
++            # lean too shallow, regardless of how right the letterforms are.
++            if text:
++                xs2 = np.nonzero(col)[0]
++                if xs2.size:
++                    out['pitch'] = (float(xs2.max() - xs2.min() + 1) / xh
++                                    / max(1, len(text)))
+     return out
+ 
+ 
+@@ -960,7 +1044,7 @@ def ExtractAuthorRaw(authorId, lineItems, model, device):
+         glyphs, stats = ExtractLineGlyphs(gray, text, model, device)
+         if glyphs is not None:
+             stats = dict(stats)
+-            stats['ref'] = RenderRefStats(gray)
++            stats['ref'] = RenderRefStats(gray, text)
+             parsed.append((glyphs, stats))
+     return parsed
+ 
+@@ -992,12 +1076,17 @@ def BuildAuthorProfile(authorId, parsed, refs=None, prior=None,
+     confCut = (float(np.percentile(confs, ALIGN_CONF_PCT))
+                if len(confs) >= 8 else -1e9)
+ 
++    ligLens, ligSags = [], []
+     for glyphs, stats in parsed:
+         if stats['alignConf'] < confCut:
+             continue
+         slants.append(stats['slant'])
+         xhs.append(stats['xh'])
+         strokeWs.append(stats['strokeW'] / max(1.0, stats['xh']))
++        for (L, dev) in stats.get('ligs', ()):
++            if 0.05 < L < 2.5:
++                ligLens.append(L)
++                ligSags.append(dev)
+         for k, g in enumerate(glyphs):
+             if g is None:
+                 continue
+@@ -1058,8 +1147,22 @@ def BuildAuthorProfile(authorId, parsed, refs=None, prior=None,
+             # shape is trustworthy or the cursive baseline should stand in
+             g['priorD'] = round(_PriorScore(g, ch, prior), 4)
+         good = _ConsensusFilter(good)
+-        good.sort(key=lambda g: abs(g['width'] - wRef) / max(0.2, wRef) +
+-                  abs((g['top'] - g['bot']) - hMed) / max(0.2, hMed))
++        # Rank by how well each variant represents THIS author's own hand.
++        # The previous ranking was by closeness to the median width/height,
++        # which is a bounding-box test: a mangled cut with the right box
++        # ranked top, and synthesis then re-ranked by the CROSS-author prior,
++        # which actively prefers the author's least distinctive letterforms.
++        # Ranking against the writer's own consensus is what picks a
++        # well-formed AND characteristic letter, which is the same variant
++        # both metrics want. Box closeness only breaks ties now.
++        proto = SelfConsensus(good)
++        boxKey = lambda g: (abs(g['width'] - wRef) / max(0.2, wRef) +
++                            abs((g['top'] - g['bot']) - hMed) / max(0.2, hMed))
++        for g in good:
++            sd = _SelfScore(g, proto)
++            if sd is not None:
++                g['selfD'] = round(sd, 4)
++        good.sort(key=lambda g: (g.get('selfD', 1.0), boxKey(g)))
+         lib2[ch] = good[:MAX_VARIANTS_PER_CHAR]
+ 
+     # denoised prototype: the robust per-stroke median of an author's own
+@@ -1080,6 +1183,9 @@ def BuildAuthorProfile(authorId, parsed, refs=None, prior=None,
+             g0.update(strokes=proto, priorD=round(pd, 4), denoised=True,
+                       width=round(max(xs) - min(xs), 3),
+                       top=round(max(ys), 3), bot=round(min(ys), 3))
++            # it inherited vs[0]'s selfD, which belongs to a different shape
++            sd0 = _SelfScore(g0, SelfConsensus(vs))
++            g0['selfD'] = round(sd0, 4) if sd0 is not None else 0.0
+             lib2[ch] = [g0] + vs
+ 
+     refs = refs or [st['ref'] for _, st in parsed if 'ref' in st]
+@@ -1103,6 +1209,10 @@ def BuildAuthorProfile(authorId, parsed, refs=None, prior=None,
+         if refs else None,
+         descMeasRef=round(float(np.nanmedian([r['descMeas'] for r in refs])), 3)
+         if refs else None,
++        pitchRef=(round(float(np.nanmedian([r.get('pitch', np.nan)
++                                            for r in refs])), 4)
++                  if refs and not all(np.isnan(r.get('pitch', np.nan))
++                                      for r in refs) else None),
+ 
+         slantDeg=round(float(np.median(slants)), 2),
+         xHeightPx=round(float(np.median(xhs)), 1),
+@@ -1111,6 +1221,12 @@ def BuildAuthorProfile(authorId, parsed, refs=None, prior=None,
+         descender=round(float(np.median(descRatios)) if descRatios else -0.6, 2),
+         wordSpaceXh=round(_MedianWordGap(refs, spaceAdvs), 2),
+         connectedness=round(connPairs / max(1, adjPairs), 3),
++        # the author's own join geometry, measured off the connector pieces
++        # the cut separated from each letter (sag is signed, in x-heights,
++        # relative to the straight line between the connector's two ends)
++        ligLen=round(float(np.median(ligLens)), 3) if ligLens else None,
++        ligSag=round(float(np.median(ligSags)), 3) if ligSags else None,
++        ligSagSd=round(float(np.std(ligSags)), 3) if len(ligSags) > 4 else None,
+         letterAdvance={ch: round(float(np.median(v)), 3)
+                        for ch, v in advances.items()},
+         nLines=len(xhs),
+@@ -1134,8 +1250,8 @@ def LoadProfile(authorId):
+         return json.load(f)
+ 
+ 
+-RAW_DIR = SCRIPT_DIR / "NOGIT" / "GlyphCache10"
+-LEGIBLE_CORE_PATH = SCRIPT_DIR / "NOGIT" / "LegibleCore10.json"
++RAW_DIR = SCRIPT_DIR.parent / "NOGIT" / "GlyphCache10"
++LEGIBLE_CORE_PATH = SCRIPT_DIR.parent / "NOGIT" / "LegibleCore10.json"
+ 
+ 
+ def BuildLegibleCore(rawLibs, prior, keepFrac=0.35, minPool=8):
+@@ -1245,7 +1361,7 @@ def BuildAll(maxLinesPerAuthor=None, useCache=True):
+         # reference render stats come straight from the real line images,
+         # so they cost nothing and never depend on the extraction cache
+         refs = [RenderRefStats(np.array(_decode_png(s['image_png'])
+-                                        .convert('L')))
++                                        .convert('L')), s['text'])
+                 for s in byAuthor[a][:maxLinesPerAuthor]]
+         allParsed[a] = (parsed, refs)
+ 
+diff --git a/Software/CNN/AuthorReproductionStuff/EvaluateLegibility.py b/Software/CNN/AuthorReproductionStuff/EvaluateLegibility.py
+index 6de95f3..0cf8698 100644
+--- a/Software/CNN/AuthorReproductionStuff/EvaluateLegibility.py
++++ b/Software/CNN/AuthorReproductionStuff/EvaluateLegibility.py
+@@ -41,6 +41,7 @@ import torch
+ from PIL import Image, ImageDraw
+ 
+ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
++sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ 
+ import SynthesizeHandwriting as SY
+ import WriteGCode as GW
+@@ -49,7 +50,7 @@ import VerifyShapeStyle as VS
+ import TrainAuthorShape as SH
+ 
+ SCRIPT_DIR = Path(__file__).resolve().parent
+-OUT_DIR = SCRIPT_DIR / "NOGIT" / "LegibilityEval"
++OUT_DIR = SCRIPT_DIR.parent / "NOGIT" / "LegibilityEval"
+ 
+ # ~40 present-day sentences, none from IAM. Varied bigrams, digits,
+ # punctuation, capitalisation, and the awkward pairs (rn/cl/vv/mm/ee...).
+diff --git a/Software/CNN/AuthorReproductionStuff/EvaluateStyle.py b/Software/CNN/AuthorReproductionStuff/EvaluateStyle.py
+index bec09c3..46103cc 100644
+--- a/Software/CNN/AuthorReproductionStuff/EvaluateStyle.py
++++ b/Software/CNN/AuthorReproductionStuff/EvaluateStyle.py
+@@ -31,6 +31,7 @@ import torch
+ from PIL import Image, ImageDraw
+ 
+ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
++sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ 
+ import BuildStyleProfile as SP
+ import SynthesizeHandwriting as SY
+@@ -43,10 +44,10 @@ from TrainText import (
+ SCRIPT_DIR = Path(__file__).resolve().parent
+ # prefer the fully fine-tuned model when it exists, otherwise the fast
+ # frozen-backbone one -- both are saved in the same format
+-_W1 = SCRIPT_DIR / "NOGIT" / "weights" / "author_classifier_10_weights.pt"
+-_W2 = SCRIPT_DIR / "NOGIT" / "weights" / "author_fast_10_weights.pt"
++_W1 = SCRIPT_DIR.parent / "NOGIT" / "weights" / "author_classifier_10_weights.pt"
++_W2 = SCRIPT_DIR.parent / "NOGIT" / "weights" / "author_fast_10_weights.pt"
+ AUTHOR_WEIGHTS = _W1 if _W1.exists() else _W2
+-OUT_DIR = SCRIPT_DIR / "NOGIT" / "StyleEval"
++OUT_DIR = SCRIPT_DIR.parent / "NOGIT" / "StyleEval"
+ 
+ 
+ def LoadAuthorModel(device):
+diff --git a/Software/CNN/AuthorReproductionStuff/SynthesizeHandwriting.py b/Software/CNN/AuthorReproductionStuff/SynthesizeHandwriting.py
+index 36d0046..122fb6d 100644
+--- a/Software/CNN/AuthorReproductionStuff/SynthesizeHandwriting.py
++++ b/Software/CNN/AuthorReproductionStuff/SynthesizeHandwriting.py
+@@ -42,6 +42,7 @@ import numpy as np
+ from PIL import Image, ImageDraw, ImageFilter
+ 
+ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
++sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ 
+ from BuildStyleProfile import LoadProfile, PROFILE_DIR   # noqa: F401
+ 
+@@ -451,8 +452,12 @@ def _GlyphSource(profile, ch, rng, prevExitY=None, lam=0.0, forceCore=False,
+ 
+     if ch in lib and lib[ch]:
+         cands = lib[ch]
+-        # rank by priorD, take the most well-formed the author actually wrote
+-        ranked = sorted(cands, key=lambda g: g.get('priorD', 0.5))
++        # Rank by distance to the AUTHOR'S OWN consensus for this letter, not
++        # to the cross-author prototype: the prior answers "is this the
++        # letter at all" (the right reject test, still used by _SwapProb
++        # below) but ranking by it puts the author's least distinctive
++        # letterform first, which is the one that carries no style.
++        ranked = sorted(cands, key=lambda g: g.get('selfD', g.get('priorD', 0.5)))
+         g = pick(ranked)
+         d = float(g.get('priorD', 0.5))
+         core = _CoreGlyph(ch, profile)
+@@ -467,7 +472,8 @@ def _GlyphSource(profile, ch, rng, prevExitY=None, lam=0.0, forceCore=False,
+             if core is not None and (forceCore
+                                      or rng.random() < _SwapProb(lam, 0.4)):
+                 return core[0], core[1], core[2], 'core'
+-            g = pick(sorted(lib[alt], key=lambda x: x.get('priorD', 0.5)))
++            g = pick(sorted(lib[alt],
++                            key=lambda x: x.get('selfD', x.get('priorD', 0.5))))
+             if alt == ch.swapcase() and ch.isupper():
+                 # borrow the lowercase shape, grown to capital height
+                 k = profile.get('ascender', 1.7) / max(0.6, g['top'] or 1.0)
+@@ -572,7 +578,8 @@ def SynthesizeText(text, profile, mmPerXh=4.0, seed=None, lineWidthMm=180.0,
+     xh = float(mmPerXh)
+     cal = _cal if _cal is not None else (
+         StyleCalibration(profile, mmPerXh) if USE_STYLE_CALIBRATION
+-        else dict(shearDelta=0.0, ascK=1.0, descK=1.0))
++        else dict(shearDelta=0.0, ascK=1.0, descK=1.0, advK=1.0))
++    advK = float(cal.get('advK', 1.0))
+     slantDeg = profile.get('slantDeg', 0.0)
+     # legibility caps the lean of the AUTHOR's own glyphs on a soft curve
+     # (45deg at lam 0 -> ~26deg at lam 1); the print anchor is capped harder
+@@ -587,6 +594,8 @@ def SynthesizeText(text, profile, mmPerXh=4.0, seed=None, lineWidthMm=180.0,
+     # a connected author still writes visibly connected at lam 0.65.
+     connEff = conn * (1.0 - 0.6 * float(np.clip(legibility, 0.0, 1.0)))
+     wordGap = float(profile.get('wordSpaceXh', 1.2))
++    ligSag = profile.get('ligSag')
++    ligSagSd = profile.get('ligSagSd')
+     ascender = float(profile.get('ascender', 1.7))
+     descender = float(profile.get('descender', -0.6))
+     lineStep = (ascender - descender + 0.85) * xh
+@@ -714,7 +723,8 @@ def SynthesizeText(text, profile, mmPerXh=4.0, seed=None, lineWidthMm=180.0,
+                         and (bothOwn or bothCursiveCore)
+                         and rng.random() < min(connEff, JOIN_PROB_CAP))
+             if joinable:
+-                chain += _Ligature(prevExit, body[0], xh, rng)
++                chain += _Ligature(prevExit, body[0], xh, rng,
++                                   sagXh=ligSag, sagSd=ligSagSd)
+                 chain += body
+             else:
+                 flush(chain)
+@@ -726,9 +736,9 @@ def SynthesizeText(text, profile, mmPerXh=4.0, seed=None, lineWidthMm=180.0,
+             prevBodyMaxX = max(p[0] for p in body)
+             prevSrc = src
+             prevCoreCursive = coreCursive
+-            penX += adv * xh
++            penX += adv * xh * advK
+         flush(chain)
+-        penX += wordGap * xh * (0.85 + 0.3 * rng.random())
++        penX += wordGap * xh * advK * (0.85 + 0.3 * rng.random())
+         vpos += 1               # the space between words
+ 
+     meta = dict(author=profile.get('authorId'), mmPerXh=mmPerXh,
+@@ -772,36 +782,78 @@ def StyleCalibration(profile, mmPerXh=4.0, pxPerMm=18.0):
+     import BuildStyleProfile as _SP
+     ref = (profile.get('slantMeasRef'), profile.get('ascMeasRef'),
+            profile.get('descMeasRef'))
+-    cal = dict(shearDelta=0.0, ascK=1.0, descK=1.0)
++    cal = dict(shearDelta=0.0, ascK=1.0, descK=1.0, advK=1.0)
+     if None in ref or any(r != r for r in ref):
+         _STYLE_CAL[key] = cal
+         return cal
+     slantRef, ascRef, descRef = ref
++    pitchRef = profile.get('pitchRef')
+     sample = ('the quick brown fox jumps over lazy dogs and by half past '
+               'eight it kept flying quietly')
+     for _ in range(3):
+-        traj = SynthesizeText(sample, profile, mmPerXh=mmPerXh, seed=17,
+-                              lineWidthMm=10_000.0, jitter=0.0, _cal=cal)
+-        img = RenderTrajectory(traj, pxPerMm=pxPerMm, profile=profile)
+-        ink = _SP.BinarizeLine(np.array(img))
+-        band = _SP.CoreBand(ink)
+-        if band is None or not ink.any():
+-            break
+-        top, base = band
+-        xh = float(base - top)
+-        if xh < 4:
++        # Measure under the SAME jitter the delivered render uses. Probing
++        # with jitter=0 measured a line this synthesizer never actually
++        # produces: the per-glyph rotation/scale wobble widens the measured
++        # ascender reach, so a calibration fitted without it converged to
++        # "no correction needed" while the shipped render still ran tall.
++        # Averaged over a few seeds so the wobble itself does not become the
++        # signal being chased.
++        meas = []
++        for probeSeed in (17, 101, 613):
++            traj = SynthesizeText(sample, profile, mmPerXh=mmPerXh,
++                                  seed=probeSeed, lineWidthMm=10_000.0,
++                                  _cal=cal)
++            img = RenderTrajectory(traj, pxPerMm=pxPerMm, profile=profile)
++            ink = _SP.BinarizeLine(np.array(img))
++            band = _SP.CoreBand(ink)
++            if band is None or not ink.any():
++                continue
++            top, base = band
++            xh = float(base - top)
++            if xh < 4:
++                continue
++            ys = np.nonzero(ink.any(axis=1))[0]
++            xs2 = np.nonzero(ink.any(axis=0))[0]
++            meas.append((float(_SP.EstimateSlantDeg(ink)),
++                         float(base - ys.min()) / xh,
++                         float(base - ys.max()) / xh,
++                         (float(xs2.max() - xs2.min() + 1) / xh
++                          / max(1, len(sample))) if xs2.size else np.nan))
++        if not meas:
+             break
+-        ys = np.nonzero(ink.any(axis=1))[0]
+-        gotSlant = _SP.EstimateSlantDeg(ink)
+-        gotAsc = float(base - ys.min()) / xh
+-        gotDesc = float(base - ys.max()) / xh
++        gotSlant = float(np.median([m[0] for m in meas]))
++        gotAsc = float(np.median([m[1] for m in meas]))
++        gotDesc = float(np.median([m[2] for m in meas]))
++        gotPitch = float(np.nanmedian([m[3] for m in meas]))
++        # Letter pitch. Two mechanisms in the layout can only ever WIDEN a
++        # glyph's advance -- the per-variant floor (lead+width beats a narrow
++        # stored advance) and the collision guard -- so a line drifts wider
++        # per character than the author writes. The writer-ID judge squashes
++        # every line to a fixed 64x640, so that drift reaches it as letters
++        # too narrow and lean too shallow. Correct it the same way as slant:
++        # measure the probe, scale advance to agree.
++        # Letter-pitch correction is measured and reported but NOT applied:
++        # `pitchRef` comes from the author's own lines and the probe is one
++        # fixed sentence, so a large part of any gap is letter COMPOSITION
++        # rather than letter spacing, and "correcting" it injects that error
++        # into the layout. Measured end to end it cost writer-ID both at
++        # full strength (62.5% -> 55.0%) and damped to half (-> 56.2%),
++        # driven almost entirely by author 154 collapsing 87.5% -> 25%.
++        # Left in place, off, because the measurement itself is worth having.
++        advK = 1.0
+         cal = dict(
+             shearDelta=cal['shearDelta'] +
+             math.tan(math.radians(slantRef)) - math.tan(math.radians(gotSlant)),
++            # the reach clips sit wide enough to actually reach a sweeping
++            # cursive descender: the vertical territory cut splits a tail
++            # that swings sideways below the baseline across two cells, so
++            # the stored glyph is much shallower than the author writes and
++            # the correction needed is near 2x, not the 1.6 the old clip gave
+             ascK=float(np.clip(cal['ascK'] * (ascRef - 1.0) /
+-                               max(1e-3, gotAsc - 1.0), 0.5, 1.6)),
++                               max(1e-3, gotAsc - 1.0), 0.4, 2.2)),
+             descK=float(np.clip(cal['descK'] * descRef / min(-1e-3, gotDesc),
+-                                0.5, 1.6)))
++                                0.4, 2.2)),
++            advK=advK)
+     _STYLE_CAL[key] = cal
+     return cal
+ 
+@@ -825,16 +877,36 @@ def _ApplyCal(strokes, cal):
+     return out
+ 
+ 
+-def _Ligature(p0, p1, xh, rng):
++def _Ligature(p0, p1, xh, rng, sagXh=None, sagSd=None):
+     """The carry-across stroke between two joined letters. It sags only in
+     proportion to how far it has to travel -- a fixed dip turns a short
+     join into a loop, which is what makes synthesized cursive look
+-    tangled."""
++    tangled.
++
++    `sagXh` is the author's OWN measured join bow (x-heights, signed:
++    positive bows downward), taken from the connector pieces the extraction
++    separated from each letter. For a hand that joins 90%+ of its letter
++    pairs the connectors are a large share of all the ink, so using one
++    generic curve for every writer throws away much of what identifies
++    them. Falls back to the generic curve when a hand gave no measurable
++    joins."""
+     dx = p1[0] - p0[0]
+     if abs(dx) < 0.06 * xh:
+         return [p0, p1]
+-    sag = min(0.11 * xh, 0.16 * abs(dx)) + rng.gauss(0.0, 0.015 * xh)
+-    mid = ((p0[0] + p1[0]) * 0.5, min(p0[1], p1[1]) - sag)
++    if sagXh is None:
++        sag = min(0.11 * xh, 0.16 * abs(dx)) + rng.gauss(0.0, 0.015 * xh)
++        mid = ((p0[0] + p1[0]) * 0.5, min(p0[1], p1[1]) - sag)
++    else:
++        # scale the author's bow by how far this particular join travels,
++        # against the join length they typically write
++        wob = rng.gauss(0.0, (sagSd or 0.0) * 0.5 * xh)
++        bow = sagXh * xh * min(1.5, abs(dx) / max(0.25 * xh, 1e-6)) + wob
++        mx, my = (p0[0] + p1[0]) * 0.5, (p0[1] + p1[1]) * 0.5
++        # perpendicular to the chord, so the bow is relative to the join's
++        # own direction rather than always straight down
++        L = max(1e-6, math.hypot(p1[0] - p0[0], p1[1] - p0[1]))
++        nx, ny = -(p1[1] - p0[1]) / L, (p1[0] - p0[0]) / L
++        mid = (mx + nx * bow, my + ny * bow)
+     return _Resample([p0, mid, p1], step=0.35)
+ 
+ 
+@@ -979,7 +1051,7 @@ if __name__ == '__main__':
+     text = sys.argv[1] if len(sys.argv) > 1 else \
+         'The quick brown fox jumps over the lazy dog'
+     profs = LoadAllProfiles()
+-    outDir = SCRIPT_DIR / 'NOGIT' / 'SynthPreview'
++    outDir = SCRIPT_DIR.parent / 'NOGIT' / 'SynthPreview'
+     outDir.mkdir(parents=True, exist_ok=True)
+     for a, prof in profs.items():
+         traj = SynthesizeText(text, prof, seed=1)
+diff --git a/Software/CNN/AuthorReproductionStuff/TrainAuthorShape.py b/Software/CNN/AuthorReproductionStuff/TrainAuthorShape.py
+index 1ea2a06..0f51a1f 100644
+--- a/Software/CNN/AuthorReproductionStuff/TrainAuthorShape.py
++++ b/Software/CNN/AuthorReproductionStuff/TrainAuthorShape.py
+@@ -38,6 +38,7 @@ import torch.nn as nn
+ from PIL import Image
+ 
+ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
++sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ 
+ import RawImageOps as F
+ import BuildStyleProfile as SP
+@@ -48,11 +49,11 @@ from TrainText import (
+ )
+ 
+ SCRIPT_DIR = Path(__file__).resolve().parent
+-DATA_DIR = SCRIPT_DIR.parents[1] / "Data" / "Datasets" / "IAMpages10"
+-CACHE_DIR = SCRIPT_DIR / "NOGIT" / "line_cache_authors10"
+-TEXT_WEIGHTS = SCRIPT_DIR / "NOGIT" / "weights" / "paper_cnn_bilstm_ctc_best.pt"
+-NORM_CACHE = SCRIPT_DIR / "NOGIT" / "shape_norm_cache.pkl"
+-OUT_WEIGHTS = SCRIPT_DIR / "NOGIT" / "weights" / "author_shape_10_weights.pt"
++DATA_DIR = SCRIPT_DIR.parents[2] / "Data" / "Datasets" / "IAMpages10"
++CACHE_DIR = SCRIPT_DIR.parent / "NOGIT" / "line_cache_authors10"
++TEXT_WEIGHTS = SCRIPT_DIR.parent / "NOGIT" / "weights" / "paper_cnn_bilstm_ctc_best.pt"
++NORM_CACHE = SCRIPT_DIR.parent / "NOGIT" / "shape_norm_cache.pkl"
++OUT_WEIGHTS = SCRIPT_DIR.parent / "NOGIT" / "weights" / "author_shape_10_weights.pt"
+ 
+ # One pen for everybody. Expressed relative to the line's own x-height so
+ # the normalization is resolution-independent.
+diff --git a/Software/CNN/AuthorReproductionStuff/VerifyRewrite.py b/Software/CNN/AuthorReproductionStuff/VerifyRewrite.py
+index ce5f039..d272bf2 100644
+--- a/Software/CNN/AuthorReproductionStuff/VerifyRewrite.py
++++ b/Software/CNN/AuthorReproductionStuff/VerifyRewrite.py
+@@ -34,6 +34,7 @@ import torch
+ from PIL import Image, ImageDraw
+ 
+ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
++sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ 
+ import WriteGCode as GW
+ import BuildStyleProfile as SP
+@@ -45,8 +46,8 @@ from TrainText import (
+ )
+ 
+ SCRIPT_DIR = Path(__file__).resolve().parent
+-TEXT_WEIGHTS = SCRIPT_DIR / "NOGIT" / "weights" / "paper_cnn_bilstm_ctc_best.pt"
+-OUT_DIR = SCRIPT_DIR / "NOGIT" / "EndToEnd"
++TEXT_WEIGHTS = SCRIPT_DIR.parent / "NOGIT" / "weights" / "paper_cnn_bilstm_ctc_best.pt"
++OUT_DIR = SCRIPT_DIR.parent / "NOGIT" / "EndToEnd"
+ 
+ # Sentences written for this test. Ordinary English, only characters the
+ # recognizer knows, and not drawn from IAM -- so they exercise letter
+diff --git a/Software/CNN/AuthorReproductionStuff/VerifyShapeStyle.py b/Software/CNN/AuthorReproductionStuff/VerifyShapeStyle.py
+index 0f6757a..1162191 100644
+--- a/Software/CNN/AuthorReproductionStuff/VerifyShapeStyle.py
++++ b/Software/CNN/AuthorReproductionStuff/VerifyShapeStyle.py
+@@ -28,6 +28,7 @@ import numpy as np
+ import torch
+ 
+ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
++sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ 
+ import WriteGCode as GW
+ import BuildStyleProfile as SP
+@@ -41,8 +42,8 @@ from TrainText import (
+ )
+ 
+ SCRIPT_DIR = Path(__file__).resolve().parent
+-SHAPE_WEIGHTS = SCRIPT_DIR / "NOGIT" / "weights" / "author_shape_10_weights.pt"
+-OUT_DIR = SCRIPT_DIR / "NOGIT" / "ShapeEval"
++SHAPE_WEIGHTS = SCRIPT_DIR.parent / "NOGIT" / "weights" / "author_shape_10_weights.pt"
++OUT_DIR = SCRIPT_DIR.parent / "NOGIT" / "ShapeEval"
+ 
+ 
+ def LoadShapeModel(device):
+diff --git a/Software/CNN/AuthorReproductionStuff/WriteAsAuthor.py b/Software/CNN/AuthorReproductionStuff/WriteAsAuthor.py
+index df5c9ce..f2e52d7 100644
+--- a/Software/CNN/AuthorReproductionStuff/WriteAsAuthor.py
++++ b/Software/CNN/AuthorReproductionStuff/WriteAsAuthor.py
+@@ -24,12 +24,13 @@ import sys
+ from pathlib import Path
+ 
+ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
++sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ 
+ import WriteGCode as GW
+ import SynthesizeHandwriting as SY
+ 
+ SCRIPT_DIR = Path(__file__).resolve().parent
+-OUT_DIR = SCRIPT_DIR / "NOGIT" / "WriteJobs"
++OUT_DIR = SCRIPT_DIR.parent / "NOGIT" / "WriteJobs"
+ 
+ 
+ def ResolveAuthor(profiles, token):
+diff --git a/Software/CNN/AuthorReproductionStuff/WriteGCode.py b/Software/CNN/AuthorReproductionStuff/WriteGCode.py
+index 2b08aad..ccbc573 100644
+--- a/Software/CNN/AuthorReproductionStuff/WriteGCode.py
++++ b/Software/CNN/AuthorReproductionStuff/WriteGCode.py
+@@ -43,6 +43,7 @@ import numpy as np
+ from PIL import Image, ImageDraw
+ 
+ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
++sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ 
+ SCRIPT_DIR = Path(__file__).resolve().parent
+ 
+diff --git a/Software/CNN/TrainTextHF.py b/Software/CNN/TrainTextHF.py
+index 5a73948..f90eb75 100644
+--- a/Software/CNN/TrainTextHF.py
++++ b/Software/CNN/TrainTextHF.py
+@@ -193,6 +193,20 @@ def train(config, device):
+         print(f"[Resume] from epoch {ckpt['epoch']}, resuming at {start_epoch} "
+               f"(best_val_loss={best_val_loss:.4f}, patience={patience_counter}, "
+               f"restarts={restart_count}, lr={optimizer.param_groups[0]['lr']:.6f}).")
++    elif config.get("init_from"):
++        # Warm start from an already-trained recogniser (same architecture and
++        # charset) instead of random init. Nothing about the data changes --
++        # this only saves the epochs that would be spent relearning generic
++        # stroke features, which matters a lot without a GPU.
++        src = Path(config["init_from"])
++        if src.exists():
++            sd = torch.load(src, map_location=device, weights_only=False)
++            if isinstance(sd, dict) and "model_state_dict" in sd:
++                sd = sd["model_state_dict"]
++            model.load_state_dict(sd)
++            print(f"[Init] warm-started from {src.name}")
++        else:
++            print(f"[Init] {src} not found -- training from scratch")
+ 
+     max_epochs = config["epochs"]
+     early_stop_patience = config["early_stop_patience"]
+@@ -346,6 +360,11 @@ def parse_args():
+                    help="Ignore any existing checkpoint and start fresh.")
+     p.add_argument("--cache-dir", default=str(DEFAULT_HF_CACHE),
+                    help="Where HuggingFace caches the downloaded dataset.")
++    p.add_argument("--init-from", default=None,
++                   help="Warm-start model weights from an existing checkpoint "
++                        "of the same architecture (e.g. the page-trained "
++                        "paper_cnn_bilstm_ctc_best.pt). Only used when there "
++                        "is no HF checkpoint to resume from.")
+     return p.parse_args()
+ 
+ 
+@@ -369,6 +388,7 @@ def main():
+         "eval_every": args.eval_every,
+         "max_restarts": args.max_restarts,
+         "resume": not args.no_resume,
++        "init_from": args.init_from,
+     }
+ 
+     if args.eval_only:

@@ -34,6 +34,7 @@ import torch
 from PIL import Image, ImageDraw
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import WriteGCode as GW
 import BuildStyleProfile as SP
@@ -45,8 +46,8 @@ from TrainText import (
 )
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-TEXT_WEIGHTS = SCRIPT_DIR / "NOGIT" / "weights" / "paper_cnn_bilstm_ctc_best.pt"
-OUT_DIR = SCRIPT_DIR / "NOGIT" / "EndToEnd"
+TEXT_WEIGHTS = SCRIPT_DIR.parent / "NOGIT" / "weights" / "paper_cnn_bilstm_ctc_best.pt"
+OUT_DIR = SCRIPT_DIR.parent / "NOGIT" / "EndToEnd"
 
 # Sentences written for this test. Ordinary English, only characters the
 # recognizer knows, and not drawn from IAM -- so they exercise letter
