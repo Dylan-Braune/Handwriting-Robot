@@ -60,6 +60,15 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 DATA_DIR = SCRIPT_DIR.parents[2] / "Data" / "Datasets" / "IAMpages10"
 CACHE_DIR = SCRIPT_DIR.parent / "NOGIT" / "line_cache_authors10"
 TEXT_WEIGHTS = SCRIPT_DIR.parent / "NOGIT" / "weights" / "paper_cnn_bilstm_ctc_best.pt"
+# prefer the HF-trained recogniser (trained on 6480 clean Teklia/IAM-line
+# images, not this project's own ~790 page-segmented ones) if present --
+# measured 77.2%->83.7% mean char accuracy over 145 holdout pages, and
+# critically much better on cursive hands specifically (writer 151: 82.1%
+# -> 95.1%), which is what BOTH the alignment cuts and the legibility
+# judge depend on.
+_hf = SCRIPT_DIR.parent / "NOGIT" / "weights" / "paper_cnn_bilstm_ctc_hf_best.pt"
+if _hf.exists():
+    TEXT_WEIGHTS = _hf
 PROFILE_DIR = SCRIPT_DIR.parent / "NOGIT" / "StyleProfiles10"
 
 MAX_VARIANTS_PER_CHAR = 12

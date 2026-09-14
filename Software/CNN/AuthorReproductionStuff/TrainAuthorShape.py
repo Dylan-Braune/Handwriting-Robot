@@ -52,6 +52,9 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 DATA_DIR = SCRIPT_DIR.parents[2] / "Data" / "Datasets" / "IAMpages10"
 CACHE_DIR = SCRIPT_DIR.parent / "NOGIT" / "line_cache_authors10"
 TEXT_WEIGHTS = SCRIPT_DIR.parent / "NOGIT" / "weights" / "paper_cnn_bilstm_ctc_best.pt"
+_hf = SCRIPT_DIR.parent / "NOGIT" / "weights" / "paper_cnn_bilstm_ctc_hf_best.pt"
+if _hf.exists():
+    TEXT_WEIGHTS = _hf
 NORM_CACHE = SCRIPT_DIR.parent / "NOGIT" / "shape_norm_cache.pkl"
 OUT_WEIGHTS = SCRIPT_DIR.parent / "NOGIT" / "weights" / "author_shape_10_weights.pt"
 

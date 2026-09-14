@@ -47,6 +47,9 @@ from TrainText import (
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 TEXT_WEIGHTS = SCRIPT_DIR.parent / "NOGIT" / "weights" / "paper_cnn_bilstm_ctc_best.pt"
+_hf = SCRIPT_DIR.parent / "NOGIT" / "weights" / "paper_cnn_bilstm_ctc_hf_best.pt"
+if _hf.exists():
+    TEXT_WEIGHTS = _hf
 OUT_DIR = SCRIPT_DIR.parent / "NOGIT" / "EndToEnd"
 
 # Sentences written for this test. Ordinary English, only characters the
