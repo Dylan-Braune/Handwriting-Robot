@@ -51,6 +51,8 @@ from TrainText import (
     PaperCRNN,
     _decode_png,
     resize_line_image_fixed,
+    frame_x_to_pixel,
+    INPUT_WIDTH,
     tensor_from_resized,
 )
 
@@ -536,12 +538,22 @@ def ExtractLineGlyphs(gray, text, model, device):
         off = np.abs(np.arange(a, b) - x) / max(1.0, snapR)
         return float(a + int(np.argmin(win + 0.6 * off)))
 
+    # frame index -> canvas x (t/T*INPUT_WIDTH) -> ORIGINAL pixel x. The
+    # second step used to be a plain "* rawW / T", which was only correct
+    # because resize_line_image_fixed used to stretch the whole line to
+    # fill the canvas exactly. Now that it fits-and-pads instead (see that
+    # function's docstring), the same canvas x can correspond to a
+    # different original x depending on how much of the canvas is real
+    # content vs padding -- frame_x_to_pixel is the actual inverse.
+    origH = gray.shape[0]
     charXs = []
     for ch, sp in align:
         if sp is None:
             charXs.append((ch, None, None))
             continue
-        charXs.append((ch, sp[0] / T * rawW, sp[1] / T * rawW))
+        x0 = frame_x_to_pixel(sp[0] / T * INPUT_WIDTH, rawW, origH)
+        x1 = frame_x_to_pixel(sp[1] / T * INPUT_WIDTH, rawW, origH)
+        charXs.append((ch, x0, x1))
     valid = [(i, c) for i, c in enumerate(charXs) if c[1] is not None]
     centres = [0.5 * (c[1] + c[2]) for _, c in valid]
     cuts = []

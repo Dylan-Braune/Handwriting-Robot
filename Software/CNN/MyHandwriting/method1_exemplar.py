@@ -38,7 +38,8 @@ import _env
 from _env import PAGES_DIR, OUT_DIR, LIB_DIR, TEXT_WEIGHTS
 
 from TrainText import (PaperCRNN, CHARSET, CHAR_TO_IDX, decode_ctc, levenshtein,
-                       resize_line_image_fixed, tensor_from_resized)
+                       resize_line_image_fixed, tensor_from_resized,
+                       frame_x_to_pixel, INPUT_WIDTH)
 import SegmentPage as SEG
 from ExtractIAMLines import ReadLabelLines
 import BuildStyleProfile as SP
@@ -181,8 +182,14 @@ def char_bounds(gray, text, model, device):
         off = np.abs(np.arange(a, b) - x) / max(1.0, snapR)
         return float(a + int(np.argmin(cutCost[a:b] + 0.6 * off)))
 
-    xs = [(ch, None if sp is None else sp[0] / T * rawW,
-           None if sp is None else sp[1] / T * rawW) for ch, sp in align]
+    # see TrainText.frame_x_to_pixel's docstring: resize_line_image_fixed
+    # now fits-and-pads instead of stretching, so a canvas x-coordinate
+    # (t/T*INPUT_WIDTH) no longer maps to original pixel x via a flat
+    # "* rawW/T" -- it depends on how much of the canvas is real content.
+    origH = gray.shape[0]
+    xs = [(ch, None if sp is None else frame_x_to_pixel(sp[0] / T * INPUT_WIDTH, rawW, origH),
+           None if sp is None else frame_x_to_pixel(sp[1] / T * INPUT_WIDTH, rawW, origH))
+          for ch, sp in align]
     valid = [(i, c) for i, c in enumerate(xs) if c[1] is not None]
     if len(valid) < 2:
         return None, None

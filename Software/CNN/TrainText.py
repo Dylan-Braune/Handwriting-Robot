@@ -199,12 +199,48 @@ INPUT_WIDTH = 640
 MAX_SAFE_LABEL_CHARS = int((INPUT_WIDTH // 4) * 0.75)  # 120 at current settings
 
 
-def resize_line_image_fixed(pil_img, height=INPUT_HEIGHT, width=INPUT_WIDTH):
-    """Resize to the fixed training size. Deliberately kept separate from
-    tensor_from_resized() so augmentation can run *after* this and therefore
-    on the small target-size image, not on the raw scan-resolution crop --
-    see the note on augment_line_image() for why that ordering matters."""
-    return pil_img.convert("L").resize((width, height), Image.Resampling.BILINEAR)
+def resize_line_image_fixed(pil_img, height=INPUT_HEIGHT, width=INPUT_WIDTH,
+                            pad_value=255):
+    """Fit the line into the fixed training canvas by UNIFORM scaling plus
+    white padding -- never by squashing width and height independently to
+    hit (640, 64), which is what a plain .resize() to a fixed size does.
+
+    Measured on real line crops: they sit around 14:1 width:height, not the
+    canvas's 10:1, so the old approach scaled height MORE than width (0.48x
+    vs 0.35x on a typical crop) -- every letter came out narrower and taller
+    than the writer actually made it, which is a real distortion of the
+    exact stroke proportions the recognizer (and, via forced alignment,
+    every downstream glyph cut) has to judge.
+
+    Content is scaled by s = min(height/origH, width/origW) -- whichever
+    axis is the binding constraint -- and left-aligned at x=0, vertically
+    centered. Left-alignment matters beyond cosmetics: it's what makes
+    `frame_x_to_pixel` below a correct inverse of this placement, which the
+    forced-alignment cut boundaries depend on."""
+    img = pil_img.convert("L")
+    w, h = img.size
+    if w <= 0 or h <= 0:
+        return Image.new("L", (width, height), pad_value)
+    s = min(height / h, width / w)
+    new_w = max(1, round(w * s))
+    new_h = max(1, round(h * s))
+    resized = img.resize((new_w, new_h), Image.Resampling.BILINEAR)
+    canvas = Image.new("L", (width, height), pad_value)
+    canvas.paste(resized, (0, max(0, (height - new_h) // 2)))
+    return canvas
+
+
+def frame_x_to_pixel(frameX, origW, origH, width=INPUT_WIDTH, height=INPUT_HEIGHT):
+    """Inverse of resize_line_image_fixed's placement, for x only.
+
+    A CTC frame index t maps to canvas x-coordinate frameX = t/T*width
+    (the model's width-only downsampling is uniform). This converts that
+    canvas x back to a pixel x-coordinate in the ORIGINAL, un-resized line
+    image, which is what every forced-alignment cut boundary is expressed
+    in. Must use the exact same scale factor resize_line_image_fixed used,
+    or cuts silently drift once the resize stops being a plain stretch."""
+    s = min(height / max(1, origH), width / max(1, origW))
+    return frameX / max(1e-6, s)
 
 
 def tensor_from_resized(pil_img):
