@@ -154,6 +154,7 @@ def run_config(cfg, train_loader, val_loader, device, epochs, batch_size, max_sa
     t_start = time.time()
     final_char_acc = final_cer = float("nan")
     for epoch in range(start_epoch, epochs + 1):
+        t_epoch = time.time()
         model.train()
         tot, n_ok = 0.0, 0
         for images, targets, target_lengths, _texts in train_loader:
@@ -184,8 +185,8 @@ def run_config(cfg, train_loader, val_loader, device, epochs, batch_size, max_sa
             torch.save(model.state_dict(), best_path)
             saved = " [BEST]"
         print(f"  [{name}] Epoch {epoch:03d}/{epochs} | Train {train_loss:.3f} "
-              f"| Val {val_loss:.3f} | CharAcc {val_char_acc:.2%} | CER {val_cer:.2%}"
-              f"{saved}", flush=True)
+              f"| Val {val_loss:.3f} | CharAcc {val_char_acc:.2%} | CER {val_cer:.2%} "
+              f"| {time.time() - t_epoch:.1f}s/epoch{saved}", flush=True)
 
     dt_min = (time.time() - t_start) / 60.0
     return dict(name=name, status="OK", epochs=epochs, best_val_loss=round(best_val_loss, 4),
@@ -196,14 +197,32 @@ def run_config(cfg, train_loader, val_loader, device, epochs, batch_size, max_sa
                optimizer=cfg["optimizer"], error="")
 
 
-def main(epochs_per_config=50, batch_size=64, max_samples=None,
+def main(config_name=None, epochs_per_config=40, batch_size=64, max_samples=1500,
         cache_dir=str(DEFAULT_HF_CACHE)):
+    names = [c["name"] for c in CONFIGS]
+    if config_name is None:
+        print("No --config given. Pick ONE of the following and re-run with "
+              "--config <name>:\n")
+        for c in CONFIGS:
+            done = " (already completed)" if already_done(c["name"]) else ""
+            print(f"  {c['name']:<16} {c}{done}")
+        return
+    if config_name not in names:
+        print(f"Unknown config {config_name!r}. Choices: {names}")
+        return
+    cfg = next(c for c in CONFIGS if c["name"] == config_name)
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[Device] {device}")
-    print(f"[Sweep] {len(CONFIGS)} configs x {epochs_per_config} epochs each\n")
+    print(f"[Sweep] running ONE config: {cfg}\n"
+          f"[Sweep] {epochs_per_config} epochs, max_samples={max_samples}\n")
     WEIGHTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    # data loaded ONCE, reused for every config -- only the model/optimiser differ
+    if already_done(cfg["name"]):
+        print(f"[Sweep] {cfg['name']}: already completed (see {LOG_CSV}). "
+              f"Delete its row there if you want to redo it.")
+        return
+
     ds = load_hf(cache_dir)
     train_set = HFLineDataset(ds["train"], is_train=True, max_samples=max_samples)
     val_set = HFLineDataset(ds["validation"], is_train=False, max_samples=max_samples)
@@ -216,35 +235,37 @@ def main(epochs_per_config=50, batch_size=64, max_samples=None,
                             pin_memory=is_cuda)
     print(f"train lines: {len(train_set)}   val lines: {len(val_set)}\n")
 
-    for cfg in CONFIGS:
-        if already_done(cfg["name"]):
-            print(f"[Sweep] {cfg['name']}: already completed, skipping")
-            continue
-        print(f"\n=== {cfg['name']} === {cfg}")
-        try:
-            row = run_config(cfg, train_loader, val_loader, device,
-                             epochs_per_config, batch_size, max_samples)
-        except Exception as e:
-            print(f"[Sweep] {cfg['name']} FAILED: {e}")
-            traceback.print_exc()
-            row = dict(name=cfg["name"], status="FAILED", epochs=epochs_per_config,
-                      best_val_loss="", final_char_acc="", final_cer="", minutes="",
-                      lr=cfg["lr"], lstm_hidden=cfg["lstm_hidden"],
-                      lstm_layers=cfg["lstm_layers"], conv_width_mult=cfg["conv_width_mult"],
-                      dropout=cfg["dropout"], weight_decay=cfg["weight_decay"],
-                      optimizer=cfg["optimizer"], error=str(e)[:200])
-        append_log(row)
-        print(f"[Sweep] {cfg['name']} -> {row['status']}  (logged to {LOG_CSV})")
-
-    print(f"\n[Sweep] all configs attempted. Results: {LOG_CSV}")
+    print(f"\n=== {cfg['name']} ===")
+    try:
+        row = run_config(cfg, train_loader, val_loader, device,
+                         epochs_per_config, batch_size, max_samples)
+    except Exception as e:
+        print(f"[Sweep] {cfg['name']} FAILED: {e}")
+        traceback.print_exc()
+        row = dict(name=cfg["name"], status="FAILED", epochs=epochs_per_config,
+                  best_val_loss="", final_char_acc="", final_cer="", minutes="",
+                  lr=cfg["lr"], lstm_hidden=cfg["lstm_hidden"],
+                  lstm_layers=cfg["lstm_layers"], conv_width_mult=cfg["conv_width_mult"],
+                  dropout=cfg["dropout"], weight_decay=cfg["weight_decay"],
+                  optimizer=cfg["optimizer"], error=str(e)[:200])
+    append_log(row)
+    print(f"\n[Sweep] {cfg['name']} -> {row['status']}  (logged to {LOG_CSV})")
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--epochs-per-config", type=int, default=50)
+    ap.add_argument("--config", default=None,
+                    help="which single config to run (see the printed list "
+                         "if you omit this)")
+    ap.add_argument("--epochs-per-config", type=int, default=40)
     ap.add_argument("--batch-size", type=int, default=64)
-    ap.add_argument("--max-samples", type=int, default=None)
+    ap.add_argument("--max-samples", type=int, default=1500,
+                    help="training lines to use (Teklia/IAM-line has no "
+                         "author labels, so this trims total DATA SIZE, not "
+                         "a writer count). Pass 0 for the full 6480 lines, "
+                         "once you know which config is worth the extra time")
     ap.add_argument("--cache-dir", default=str(DEFAULT_HF_CACHE))
     args = ap.parse_args()
-    main(epochs_per_config=args.epochs_per_config, batch_size=args.batch_size,
+    main(config_name=args.config, epochs_per_config=args.epochs_per_config,
+        batch_size=args.batch_size,
         max_samples=args.max_samples, cache_dir=args.cache_dir)
