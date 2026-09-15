@@ -674,29 +674,43 @@ def conv_block(in_ch, out_ch, n_layers):
 
 
 class PaperCRNN(nn.Module):
-    def __init__(self, num_classes, lstm_hidden=256, lstm_layers=2):
+    def __init__(self, num_classes, lstm_hidden=256, lstm_layers=2,
+                 conv_width_mult=1.0, dropout=0.0):
+        """conv_width_mult and dropout are NEW, both default to exactly the
+        original paper's architecture (1x width, no dropout) so every
+        existing caller (BuildStyleProfile, ClassifyText, VerifyRewrite,
+        ...) is unaffected. Added for TrainTextHF_Sweep.py's architecture
+        search -- conv_width_mult scales all three conv stages' channel
+        counts together (32/64/128 * mult, rounded), dropout applies
+        between BiLSTM layers (only has an effect when lstm_layers > 1,
+        same as PyTorch's own nn.LSTM dropout semantics) and after each
+        conv stage."""
         super().__init__()
+        w1 = max(4, round(32 * conv_width_mult))
+        w2 = max(8, round(64 * conv_width_mult))
+        w3 = max(16, round(128 * conv_width_mult))
 
         # Stage 1: 2 conv layers @ 32 filters, then 2x2 max-pool.
-        self.stage1 = conv_block(1, 32, n_layers=2)
+        self.stage1 = conv_block(1, w1, n_layers=2)
         self.pool1 = nn.MaxPool2d(2, 2)
 
         # Stage 2: 4 conv layers @ 64 filters, then 2x2 max-pool.
-        self.stage2 = conv_block(32, 64, n_layers=4)
+        self.stage2 = conv_block(w1, w2, n_layers=4)
         self.pool2 = nn.MaxPool2d(2, 2)
 
         # Stage 3: 6 conv layers @ 128 filters, no further pooling.
-        self.stage3 = conv_block(64, 128, n_layers=6)
+        self.stage3 = conv_block(w2, w3, n_layers=6)
+        self.conv_dropout = nn.Dropout2d(dropout) if dropout > 0 else nn.Identity()
 
         # Collapse whatever height remains into a single row.
         self.height_pool = nn.AdaptiveMaxPool2d((1, None))
 
         self.sequence = nn.LSTM(
-            input_size=128,
+            input_size=w3,
             hidden_size=lstm_hidden,
             num_layers=lstm_layers,
             bidirectional=True,
-            dropout=0.0,  # paper: "without any dropout applied"
+            dropout=dropout if lstm_layers > 1 else 0.0,  # paper default: no dropout
             batch_first=False,
         )
         self.text_head = nn.Linear(lstm_hidden * 2, num_classes)
@@ -704,9 +718,9 @@ class PaperCRNN(nn.Module):
     def forward(self, x):
         x = self.pool1(self.stage1(x))
         x = self.pool2(self.stage2(x))
-        x = self.stage3(x)
-        x = self.height_pool(x)          # (B, 128, 1, W)
-        x = x.squeeze(2).permute(2, 0, 1)  # (W, B, 128)
+        x = self.conv_dropout(self.stage3(x))
+        x = self.height_pool(x)          # (B, W3, 1, W)
+        x = x.squeeze(2).permute(2, 0, 1)  # (W, B, W3)
         seq, _ = self.sequence(x)
         logits = self.text_head(seq)
         return nn.functional.log_softmax(logits, dim=2)
