@@ -197,7 +197,7 @@ def run_config(cfg, train_loader, val_loader, device, epochs, batch_size, max_sa
                optimizer=cfg["optimizer"], error="")
 
 
-def main(config_name=None, epochs_per_config=40, batch_size=64, max_samples=1500,
+def main(config_name=None, epochs_per_config=40, batch_size=64, max_samples=0,
         cache_dir=str(DEFAULT_HF_CACHE)):
     names = [c["name"] for c in CONFIGS]
     if config_name is None:
@@ -259,11 +259,11 @@ if __name__ == "__main__":
                          "if you omit this)")
     ap.add_argument("--epochs-per-config", type=int, default=40)
     ap.add_argument("--batch-size", type=int, default=64)
-    ap.add_argument("--max-samples", type=int, default=1500,
-                    help="training lines to use (Teklia/IAM-line has no "
-                         "author labels, so this trims total DATA SIZE, not "
-                         "a writer count). Pass 0 for the full 6480 lines, "
-                         "once you know which config is worth the extra time")
+    ap.add_argument("--max-samples", type=int, default=0,
+                    help="training lines to use, 0 = full 6480 (default). "
+                         "Teklia/IAM-line has no author labels, so this trims "
+                         "total DATA SIZE, not a writer count -- pass a "
+                         "smaller number for a quick low-signal smoke test")
     ap.add_argument("--cache-dir", default=str(DEFAULT_HF_CACHE))
     args = ap.parse_args()
     main(config_name=args.config, epochs_per_config=args.epochs_per_config,
