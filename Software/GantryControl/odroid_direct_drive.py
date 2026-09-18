@@ -42,9 +42,42 @@ wire falling off a limit switch reads as "not triggered" and the estop
 silently stops protecting that axis. Not changing this since it's your
 explicit spec, just flagging it as something to weigh.
 
+GCODE
+    `g <path>` runs a G-code file, one line at a time, standard-fashion:
+    each move is executed and completed before the next line is read (no
+    lookahead/blending). Supports the subset this project's own
+    WriteGCode.py emits, plus enough of the standard dialect to run other
+    simple files:
+        G0 / G1  X.. Y.. F..    linear move (G0/G1 both just move here --
+                                 there's no separate "rapid" positioning
+                                 mode on this hardware, F sets feed rate
+                                 in mm/min and persists until changed)
+        G2 / G3  X.. Y.. I.. J.. F..   clockwise / counter-clockwise arc,
+                                 centre at (current + I, current + J) --
+                                 the standard arc format. Interpolated into
+                                 small linear segments (this hardware has
+                                 no native arc mode, same as every other
+                                 move in this file).
+        G4 P..                  dwell for P seconds (end-stops still
+                                 checked throughout, same as everywhere)
+        G90 / G91               absolute / relative positioning
+        G20 / G21               inches / millimetres
+        M3                      pen DOWN (matches WriteGCode.py's
+                                 penDownCode)
+        M5                      pen UP (matches WriteGCode.py's penUpCode)
+        M2 / M30                program end
+    Feed rate (F, mm/min) sets how fast each move actually runs, converted
+    to a per-step delay the same way motion_planner.py does (distance /
+    feed = time, divided across however many steps that move needs) --
+    not a fixed demo speed like RPM/CIRCLE mode use. An end-stop trip
+    aborts the remaining file immediately (checked before every line and
+    inside every move, same priority as everywhere else in this script)
+    and requires 'r' to clear before anything else will run, same as always.
+
 Commands (via stdin, same as before):
     <number>   RPM mode at that RPM (0 = stop)
     c          circle demo mode
+    g <path>   run a G-code file (see GCODE above)
     u          pen up
     d          pen down
     r          clear a tripped emergency stop (only works if every
@@ -52,6 +85,7 @@ Commands (via stdin, same as before):
     q          quit
 """
 import math
+import re
 import sys
 import threading
 import time
@@ -126,7 +160,7 @@ def triggered_endstop():
     return None
 
 
-def bresenham_move(dx, dy):
+def bresenham_move(dx, dy, step_delay_s=CIRCLE_STEP_DELAY_S):
     """Steps BOTH axes from the current position by (dx, dy) steps, using
     the same Bresenham interpolation motion_planner.py/motion_executor.ino
     use for straight moves -- every step actually needed gets issued (not
@@ -134,7 +168,12 @@ def bresenham_move(dx, dy):
     match the commanded shape instead of lagging into cut corners. Global
     current_x_steps/current_y_steps are updated as it goes. Returns early
     (without finishing the segment) if an end-stop trips mid-move -- the
-    outer loop's own check handles latching the emergency-stop state."""
+    outer loop's own check handles latching the emergency-stop state.
+
+    step_delay_s: per-step pulse HIGH time. Defaults to the fixed CIRCLE
+    demo value; G-code moves pass a feed-rate-derived delay instead (see
+    _gcode_linear_move) so a slow F word actually draws slowly rather
+    than always running at this hardcoded rate."""
     global current_x_steps, current_y_steps
     ax, ay = abs(dx), abs(dy)
     sx = 1 if dx >= 0 else -1
@@ -144,7 +183,7 @@ def bresenham_move(dx, dy):
 
     def pulse(step_pin):
         req.set_value(step_pin, Value.ACTIVE)
-        time.sleep(CIRCLE_STEP_DELAY_S)
+        time.sleep(step_delay_s)
         req.set_value(step_pin, Value.INACTIVE)
 
     if ax >= ay:
@@ -205,14 +244,196 @@ def set_pen(target_up, timeout_s=1.0):
     return reached
 
 
+# ---------------------------------------------------------------------------
+# G-code: parse one line at a time, execute it completely, move on -- no
+# lookahead/blending, matching how this simple a controller can honestly
+# run a file. See the module docstring's GCODE section for the supported
+# command subset.
+# ---------------------------------------------------------------------------
+GCODE_MIN_FEED_MM_S = 0.1     # floor so a stray F0 doesn't divide by zero
+_GCODE_WORD_RE = re.compile(r'([A-Za-z])\s*(-?[0-9]*\.?[0-9]+)')
+
+
+def parse_gcode_line(raw):
+    """One line -> (command, {letter: value}) or None for blank/comment
+    lines. Comments are ';' to end of line or anything in parentheses,
+    same as every common G-code dialect. Assumes one G/M word per line
+    (what WriteGCode.py and virtually every simple gcode generator emit);
+    the first G or M word found becomes the command, every other letter
+    is a parameter."""
+    line = raw.split(';', 1)[0]
+    line = re.sub(r'\([^)]*\)', '', line).strip()
+    if not line:
+        return None
+    cmd, params = None, {}
+    for letter, num in _GCODE_WORD_RE.findall(line):
+        letter = letter.upper()
+        val = float(num)
+        if cmd is None and letter in ('G', 'M'):
+            cmd = f"{letter}{int(val)}"
+        else:
+            params[letter] = val
+    return (cmd, params) if cmd else None
+
+
+def _gcode_linear_move(target_x_mm, target_y_mm, feed_mm_min):
+    """Moves to an ABSOLUTE mm position. Step delta is computed from
+    absolute mm->step rounding referenced to the CURRENT actual step
+    count (not accumulated from a separately-tracked float), so repeated
+    small moves can't drift the way naively summing deltas would --
+    same principle motion_planner.py's carry-forward rounding protects
+    against. Per-step delay comes from the feed rate, not a fixed demo
+    speed, so a slow F word really does draw slowly."""
+    x0_mm = current_x_steps / STEPS_PER_MM
+    y0_mm = current_y_steps / STEPS_PER_MM
+    dist_mm = math.hypot(target_x_mm - x0_mm, target_y_mm - y0_mm)
+    target_x_steps = round(target_x_mm * STEPS_PER_MM)
+    target_y_steps = round(target_y_mm * STEPS_PER_MM)
+    dx_steps = target_x_steps - current_x_steps
+    dy_steps = target_y_steps - current_y_steps
+    if dx_steps == 0 and dy_steps == 0:
+        return
+    major_steps = max(abs(dx_steps), abs(dy_steps), 1)
+    feed_mm_s = max(feed_mm_min / 60.0, GCODE_MIN_FEED_MM_S)
+    time_s = dist_mm / feed_mm_s
+    step_delay_s = max(time_s / major_steps, CIRCLE_STEP_DELAY_S)
+    bresenham_move(dx_steps, dy_steps, step_delay_s=step_delay_s)
+
+
+def _gcode_arc_move(x0_mm, y0_mm, x1_mm, y1_mm, i_mm, j_mm, clockwise, feed_mm_min):
+    """Standard G2/G3 arc: centre is (start + I, start + J). No native arc
+    mode on this hardware (same as every other move here), so this
+    interpolates the arc into short linear segments and runs each one
+    through _gcode_linear_move -- consistent feed-rate timing, consistent
+    end-stop checking, no separate code path to keep in sync."""
+    cx, cy = x0_mm + i_mm, y0_mm + j_mm
+    radius = math.hypot(i_mm, j_mm)
+    if radius < 1e-6:
+        _gcode_linear_move(x1_mm, y1_mm, feed_mm_min)
+        return
+    start_angle = math.atan2(y0_mm - cy, x0_mm - cx)
+    end_angle = math.atan2(y1_mm - cy, x1_mm - cx)
+    if clockwise:
+        while end_angle >= start_angle:
+            end_angle -= 2.0 * math.pi
+    else:
+        while end_angle <= start_angle:
+            end_angle += 2.0 * math.pi
+    angle_span = end_angle - start_angle
+    arc_len_mm = abs(angle_span) * radius
+    n_segments = max(4, int(arc_len_mm / 0.4))   # ~0.4mm chord length
+    for k in range(1, n_segments + 1):
+        if triggered_endstop() is not None:
+            return
+        a = start_angle + angle_span * (k / n_segments)
+        _gcode_linear_move(cx + radius * math.cos(a), cy + radius * math.sin(a), feed_mm_min)
+
+
+def run_gcode_file(path):
+    """Runs a G-code file to completion, or until an end-stop aborts it.
+    Sets the global estop state (not just a local return) so the rest of
+    the script -- the main loop's own check, the 'r' command -- reacts to
+    an abort exactly the same way it reacts to any other trigger."""
+    global estopped, tripped_switch
+    try:
+        with open(path, 'r') as f:
+            lines = f.readlines()
+    except OSError as e:
+        print(f"Couldn't open '{path}': {e}")
+        return
+
+    abs_mode = True
+    feed_mm_min = 900.0    # matches WriteGCode.py's drawFeedMmMin default
+    cur_x_mm = current_x_steps / STEPS_PER_MM
+    cur_y_mm = current_y_steps / STEPS_PER_MM
+    print(f"Running G-code: {path} ({len(lines)} lines)")
+
+    for lineno, raw in enumerate(lines, 1):
+        hit = triggered_endstop()
+        if hit is not None:
+            if not estopped:
+                estopped = True
+                tripped_switch = hit
+                print(f"\n!!! EMERGENCY STOP -- end-stop {hit} triggered !!!")
+            print(f"G-code job ABORTED at line {lineno}.")
+            return
+        if estopped:
+            print(f"G-code job ABORTED at line {lineno} -- already emergency-stopped.")
+            return
+
+        parsed = parse_gcode_line(raw)
+        if parsed is None:
+            continue
+        cmd, p = parsed
+
+        if cmd in ("G0", "G1"):
+            if "F" in p:
+                feed_mm_min = p["F"]
+            if abs_mode:
+                target_x = p.get("X", cur_x_mm)
+                target_y = p.get("Y", cur_y_mm)
+            else:
+                target_x = cur_x_mm + p.get("X", 0.0)
+                target_y = cur_y_mm + p.get("Y", 0.0)
+            _gcode_linear_move(target_x, target_y, feed_mm_min)
+            cur_x_mm, cur_y_mm = target_x, target_y
+
+        elif cmd in ("G2", "G3"):
+            if "F" in p:
+                feed_mm_min = p["F"]
+            if abs_mode:
+                target_x = p.get("X", cur_x_mm)
+                target_y = p.get("Y", cur_y_mm)
+            else:
+                target_x = cur_x_mm + p.get("X", 0.0)
+                target_y = cur_y_mm + p.get("Y", 0.0)
+            _gcode_arc_move(cur_x_mm, cur_y_mm, target_x, target_y,
+                            p.get("I", 0.0), p.get("J", 0.0), cmd == "G2", feed_mm_min)
+            cur_x_mm, cur_y_mm = target_x, target_y
+
+        elif cmd == "G4":
+            deadline = time.time() + p.get("P", 0.0)
+            while time.time() < deadline:
+                if triggered_endstop() is not None:
+                    break
+                time.sleep(0.005)
+
+        elif cmd == "G90":
+            abs_mode = True
+        elif cmd == "G91":
+            abs_mode = False
+        elif cmd == "G20":
+            print(f"[Line {lineno}] G20 (inches) seen -- this interpreter assumes "
+                  f"mm throughout; values will be used as-is, NOT converted.")
+        elif cmd == "G21":
+            pass
+
+        elif cmd == "M3":
+            if not set_pen(False):
+                print(f"[Line {lineno}] Pen-down did not confirm -- continuing anyway.")
+        elif cmd == "M5":
+            if not set_pen(True):
+                print(f"[Line {lineno}] Pen-up did not confirm -- continuing anyway.")
+        elif cmd in ("M2", "M30"):
+            print(f"[Line {lineno}] Program end ({cmd}).")
+            return
+
+        else:
+            print(f"[Line {lineno}] Skipping unsupported command: {cmd}")
+
+    print(f"G-code job '{path}' complete.")
+
+
 def input_listener():
     global current_mode, target_rpm, running, theta, current_x_steps, current_y_steps
     global estopped, tripped_switch, circle_radius_mm, circle_radius_steps
 
     while running:
-        cmd = sys.stdin.readline().strip().lower()
-        if not cmd:
+        raw_cmd = sys.stdin.readline().strip()
+        if not raw_cmd:
             continue
+        cmd = raw_cmd.lower()   # only for matching single-letter commands --
+                                 # a 'g' filename keeps its original case below
 
         if cmd == "q":
             running = False
@@ -251,6 +472,19 @@ def input_listener():
             current_mode = "CIRCLE"
             theta, current_x_steps, current_y_steps = 0.0, 0, 0
             print(f"Mode: Circle (radius {circle_radius_mm} mm)")
+        elif cmd == "g" or cmd.startswith("g "):
+            if estopped:
+                print("Cannot start a G-code job while emergency-stopped -- clear with 'r' first.")
+                continue
+            path = raw_cmd[1:].strip()   # original case preserved, unlike `cmd`
+            if not path:
+                print("Usage: g <path-to-gcode-file>")
+                continue
+            current_mode = "GCODE"   # main loop idles while this thread drives the moves itself
+            run_gcode_file(path)
+            if not estopped:
+                current_mode = "RPM"
+                target_rpm = 0.0
         else:
             try:
                 target_rpm = float(cmd)
@@ -294,7 +528,8 @@ req = gpiod.request_lines(
 calculate_delay(target_rpm)
 
 threading.Thread(target=input_listener, daemon=True).start()
-print("Ready. Commands: 'c' (circle), [number] (RPM/stop), 'u'/'d' (pen), 'r' (clear estop), 'q' (quit)")
+print("Ready. Commands: 'c' (circle), 'g <file>' (run G-code), [number] (RPM/stop), "
+      "'u'/'d' (pen), 'r' (clear estop), 'q' (quit)")
 
 try:
     while running:
@@ -348,6 +583,12 @@ try:
                 # and what makes the reached radius match the commanded
                 # one instead of chronically undershooting it.
                 bresenham_move(target_x - current_x_steps, target_y - current_y_steps)
+
+        elif current_mode == "GCODE":
+            # The input_listener thread runs the whole file itself (see
+            # the 'g' command) and drives the pins directly -- this loop
+            # just idles so it never ALSO tries to step in the meantime.
+            time.sleep(0.01)
 
 finally:
     req.set_value(STEP1_PIN, Value.INACTIVE)
