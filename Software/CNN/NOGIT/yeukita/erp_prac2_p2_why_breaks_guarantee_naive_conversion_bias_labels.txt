@@ -1,0 +1,27 @@
+0	3. Why Prac 2 breaks the guarantee:
+1	- sensor doesn't measure x and y directly. It measures range r
+2	and bearing beta:
+3	x = r cos(beta),   y = r sin(beta)
+4	This is nonlinear. The Kalman filter requires a linear measurement
+5	equation (z = Hx + v). . . have 2 options: run a nonlinear filter
+6	(EKF/UKF), or convert the polar measurement into Cartesian
+7	coordinates first, and then use a normal linear KF on the converted
+8	measurement - my research is on the second approach CMKF family
+9	4. Naive conversion and why it is biased.
+10	- take noisy rm, betam and compute:
+11	xm = rm cos(betam),  ym = rm sin(betam)
+12	this seems fine but isn't - cosine and sine are nonlinear functions of
+13	a random variable, and the expectation of a nonlinear function of a
+14	random variable is not the function of the expectation
+15	E[cos(betam)] != cos(E[betam])
+16	betam = betatrue + noise. When you average cos(betam) over many noise
+17	realisations, the noise does not cancel out symmetrically because cosine
+18	curves - averaging pulls result slightly towards zero. This means xm, ym
+19	computed this way are BIASED - systematically off, not just noisy.
+20	Feed biased measurement into a KF and you get a biased state estimate,
+21	no matter how good the filter math is.
+22	5. UCM - fixing that bias
+23	- fixed w/ a compensation factor
+24	- since bias shrinks by a predictable amount (related to sigma_B),
+25	you can multiply by the inverse of that shrinkage.
+26	xm^u = e^(sigma_B^2/2) rm cos(betam)

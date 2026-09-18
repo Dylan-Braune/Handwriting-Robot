@@ -1,0 +1,26 @@
+0	-> The actual test:
+1	1. Set up the hypotheses: testing whether algorithm1 is better than
+2	algorithm 2, where "better" means lower cost.
+3	H0: Delta <= 0 - algorithm 1 is NOT better than algorithm 2 (no real
+4	improvement)
+5	H1: Delta > 0 - algorithm 1 is better than algorithm 2
+6	2. Compute the sample mean & standard error of the differences:
+7	Delta_bar = (1/N) sum_{i=1}^{N} Delta_i
+8	sigma_Delta = sqrt[ (1/N^2) sum_{i=1}^{N} (Delta_i - Delta_bar)^2 ]
+9	Delta_bar is just "on average, how much better was algorithm one across
+10	all runs" and sigma_Delta is "how much noise/uncertainty is in that
+11	average" - it shrinks as you add more MC runs
+12	3. Form the test statistic:
+13	This is "how many standard errors away from zero is the average difference"
+14	if the improvement is real and consistent, this no. will be large. If it's
+15	just noise, it will hover near zero.
+16	4. Compare against threshold mu_0 from the normal distr. upper tail:
+17	mu_0 = 1.64 for 5% sig. level
+18	mu_0 = 2.33 for 1% sig. level.
+19	If mu > mu_0, you accept H1 - alg 1 is statistically significantly better.
+20	If not, you don't have enough evidence, because it properly accounts
+21	for correlation b/t the 2 filters' runs.
+22	-> Table
+23	- extend "one test stat per single timestep" to "one test stat averaged over
+24	a whole interval of time steps [k, l]"
+25	- averaged over both runs and time window. 8 August 2026

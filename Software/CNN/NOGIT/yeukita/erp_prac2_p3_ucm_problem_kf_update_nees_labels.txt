@@ -1,0 +1,30 @@
+0	6. The problem UCM still has - and why DUCM still exists
+1	- To run KF update, also need Rp - the covariance of your converted
+2	measurement error. The natural thing is to compute this using
+3	the measurement you received (rm, Bm).
+4	- subtlety: Rp computed this way is not independent of measurement
+5	noise - it is a function of the very noise it is supposed to describe.
+6	- When xp (which depends on Pp) is ... blah blah
+7	7. Where my research model comes in
+8	- both derivations (UCM and DUCM) assume range noise & bearing
+9	noise are statistically independent of each other. My research introduces
+10	a correlation coeff. p between them -
+11	Sigma = [ sigma_r^2 , p sigma_r sigma_B
+12	p sigma_r sigma_B , sigma_B^2 ]
+13	- My hypothesis: DUCM's decorrelation step, which was derived
+14	assuming independence, might be more fragile to this violation than
+15	UCM's - because DUCM's whole fix relies on a specific independence
+16	property that p != 0 directly attacks.
+17	8. How do I know if any of this actually works? (Verification theory)
+18	- RMSE answers: how far off is my estimate, on average -> it only tells
+19	you about accuracy
+20	- NEES answers: is my filter's own confidence (reported covariance P)
+21	trustworthy?   ANEES - consistency
+22	NEES = (xtrue - xhat)^T P^-1 (xtrue - xhat)
+23	Why does this have a known distribution? Because if the filter is
+24	truly consistent - its errors really are Gaussian with covariance P
+25	- then this expression is exactly the sum of squares of nx standard
+26	normal variables, which by definition follows a chi-sq. distr. with
+27	nx degrees of freedom. So NEES gives you a statistical test, not just
+28	a number: if NEES values are wildly outside chi-sq. bounds - filter is
+29	lying about its uncertainty, even if RMSE looks fine.

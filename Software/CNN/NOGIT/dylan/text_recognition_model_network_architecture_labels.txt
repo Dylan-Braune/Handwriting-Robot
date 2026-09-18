@@ -1,0 +1,27 @@
+0	threshold pass is run purely to recovery extra
+1	pixels for rendering: any weak-threshold pixel
+2	within a small dilation-based proximity of
+3	a strong threshold pixel is included in the crop,
+4	so a line doesn't come out looking artificially
+5	thin or broken.
+6	Text-recognition model: architecture, training, and inference
+7	1. Network architecture
+8	The recognition model is a hybrid convolutional-
+9	recurrent model. The input is a single-channel line
+10	image resized to a fixed height and width. It passes
+11	through three convolutional stages, each stack of
+12	three convolutions followed by batch
+13	normalization and a ReLU nonlinearity, with channel
+14	counts increasing 1 to 32 to 64 to 128 across the
+15	three stages (12 layers in total). A 2 by 2 max-pool
+16	follows the first and second stages only, halving
+17	both spatial dimensions each time. An adaptive
+18	max-pool collapses whatever height remains down
+19	to exactly one row.
+20	The sequence is fed into a two-layer
+21	bidirectional LSTM with hidden size 256 per
+22	direction. At each timestep the forward and
+23	backward hidden states are concatenated into a
+24	single-dimensional vector, which is passed through
+25	a single layer projecting to N+1 logits, followed
+26	by a log-softmax to produce a probability

@@ -1,0 +1,27 @@
+0	* New status bits:
+1	- valid bit: A 1-bit signal for every cache line to indicate if the data
+2	currently stored is valid or just garbage
+3	- dirty bit - track if CPU has modified data in cache that has
+4	not been saved to RAM yet
+5	- hit miss signal - tells CPU whether it can proceed or wait for
+6	slower P1 RAM to provide data.
+7	# Word select
+8	-> P1 - used to toggle bit full word, upper nibble, lower nibble
+9	access.
+10	P2 also needs this, but now integrated into cache output multiplexing
+11	rather than acting as primary bank-enable signals.
+12	1. Storage array
+13	8x8x1 chips (x8) form one bank
+14	- Capacity: 8 chips x 64 bits = 512 bits (64 bytes)
+15	- Organisation: chips arranged in parallel. All 8 chips receive the same
+16	address and write enable signals.
+17	- Result: everytime an address is provided, array outputs 8 bits (1 byte)
+18	Since a cache line is 4 bytes, it takes 4 locations in array to store
+19	one "line"
+20	2. Inputs from CPU
+21	- Index (4 bits) - goes to address pins of mem chips to correct line
+22	- tag (2 or 4) - goes to comparator
+23	- word offset (2 bits) - goes to output multiplexer to pick specific byte from
+24	line
+25	- control signals: Read/Write (from CPU) and word select (to handle nibble/byte
+26	request from P1).

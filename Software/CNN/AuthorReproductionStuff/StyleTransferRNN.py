@@ -88,40 +88,95 @@ MM_PER_XH = 4.0         # matches the mmPerXh SynthesizeText is called with
 # ---------------------------------------------------------------------------
 # Trajectory <-> fixed-length (dx, dy) sequence, arc-length resampled
 # ---------------------------------------------------------------------------
-def _resample_arclength(points, n):
-    """points: (M,2) absolute xy. Returns (n,2), evenly spaced by arc length."""
+JUMP_WEIGHT = 0.03   # how much a pen-up transition counts toward arc length,
+                      # relative to real ink -- see _resample_arclength
+
+
+def _resample_arclength(points, n, eos=None):
+    """points: (M,2) absolute xy. Returns (n,2), evenly spaced by arc length.
+    If eos (M,) pen-lift flags are given, also returns an (n,) eos array:
+    for every original point flagged as a stroke break, the NEAREST
+    resampled index is flagged too -- so pen lifts survive resampling
+    instead of being silently smoothed away into one continuous line.
+
+    Pen-UP transitions (the straight jump from the end of one stroke to
+    the start of the next -- e.g. the gap between letters or words) are
+    downweighted to JUMP_WEIGHT of their real Euclidean length before the
+    arc-length budget is computed. Without this, those jumps (often
+    several x-heights for word gaps, vs a fraction of an x-height for
+    actual letter ink) dominate total arc length and most of the fixed
+    N_POINTS budget ends up sampling pen-up travel instead of ink --
+    confirmed empirically: without this fix, trained output collapsed to
+    a near-flat line, matching what you'd get if letter shape was
+    drowned out by inter-word jumps in the training targets."""
     p = np.asarray(points, np.float64)
     if len(p) < 2:
-        return np.repeat(p[:1] if len(p) else np.zeros((1, 2)), n, axis=0)
+        out = np.repeat(p[:1] if len(p) else np.zeros((1, 2)), n, axis=0)
+        return (out, np.zeros(n, np.float32)) if eos is not None else out
     seg = np.hypot(*np.diff(p, axis=0).T)
+    if eos is not None:
+        is_jump = np.asarray(eos, np.float64)[:-1] > 0.5   # segment after an eos point
+        seg = np.where(is_jump, seg * JUMP_WEIGHT, seg)
     cum = np.concatenate([[0.0], np.cumsum(seg)])
     total = float(cum[-1])
     if total < 1e-9:
-        return np.repeat(p[:1], n, axis=0)
+        out = np.repeat(p[:1], n, axis=0)
+        return (out, np.zeros(n, np.float32)) if eos is not None else out
     t = np.linspace(0.0, total, n)
     x = np.interp(t, cum, p[:, 0])
     y = np.interp(t, cum, p[:, 1])
-    return np.stack([x, y], axis=1)
+    out = np.stack([x, y], axis=1)
+    if eos is None:
+        return out
+    eos = np.asarray(eos, np.float64)
+    out_eos = np.zeros(n, np.float32)
+    # Mark EVERY resampled point that falls inside a pen-up jump segment as
+    # a break (a downweighted jump can still span more than one resampled
+    # step for a wide word gap, and any point left unmarked inside it gets
+    # drawn as a spurious connecting line), AND ALSO mark the single
+    # nearest resampled point to each original break distance -- a very
+    # short/narrow jump can be downweighted to less than one resampling
+    # step wide, so no point ever lands strictly inside it, but the two
+    # samples straddling it still need a flag between them or they get
+    # drawn connected across the gap.
+    if len(is_jump):
+        seg_idx = np.clip(np.searchsorted(cum, t, side="right") - 1, 0, len(is_jump) - 1)
+        out_eos[is_jump[seg_idx]] = 1.0
+    break_dists = cum[eos > 0.5]
+    if len(break_dists):
+        idx = np.clip(np.searchsorted(t, break_dists), 0, n - 1)
+        out_eos[idx] = 1.0
+    out_eos[-1] = 1.0
+    return out, out_eos
 
 
 def trajectory_to_xy(traj, scale):
-    """Trajectory (mm, list of pen-down polylines) -> one flat (M,2) absolute
-    xy array in x-height units, strokes concatenated in order. Pen lifts
-    between strokes are NOT represented here -- resampling to a fixed
-    length treats the whole line as one continuous arc-length curve, which
-    is enough for this network's job (it only ever outputs a shape
-    adjustment, not stroke-lift decisions -- those stay whatever the
-    anchor's own library-derived join logic already decided)."""
-    pts = [p for s in traj.strokes for p in s]
+    """Trajectory (mm, list of pen-down polylines) -> a flat (M,2) absolute
+    xy array in x-height units plus an (M,) eos array marking the last
+    point of each pen-down stroke (i.e. where the anchor itself lifts the
+    pen) -- strokes are concatenated in order for the arc-length resample,
+    but the lift points are preserved so rendering can still show real
+    gaps between letters/words instead of one unbroken cursive line. The
+    network's OWN job stays just the shape warp; where to lift the pen is
+    always the anchor's already-correct decision, never learned."""
+    pts, eos = [], []
+    for s in traj.strokes:
+        if len(s) < 1:
+            continue
+        for p in s:
+            pts.append(p)
+            eos.append(0.0)
+        eos[-1] = 1.0
     if len(pts) < 2:
-        return None
-    return np.asarray(pts, np.float64) / scale
+        return None, None
+    return np.asarray(pts, np.float64) / scale, np.asarray(eos, np.float32)
 
 
 def stroke_seq_to_xy(seq):
-    """extract_line_strokes()-style (dx,dy,eos) deltas -> absolute (M,2)."""
+    """extract_line_strokes()-style (dx,dy,eos) deltas -> absolute (M,2) plus
+    the same (M,) eos column, for symmetric real-line rendering."""
     abs_xy = np.cumsum(seq[:, :2], axis=0)
-    return abs_xy
+    return abs_xy, seq[:, 2]
 
 
 def build_cache(force=False):
@@ -147,10 +202,10 @@ def build_cache(force=False):
                                          lineWidthMm=100_000.0, legibility=1.0)
             except Exception:
                 continue
-            anchor_xy = trajectory_to_xy(traj, MM_PER_XH)
+            anchor_xy, anchor_eos = trajectory_to_xy(traj, MM_PER_XH)
             if anchor_xy is None:
                 continue
-            target_xy = stroke_seq_to_xy(r["stroke"])
+            target_xy, target_eos = stroke_seq_to_xy(r["stroke"])
             if len(target_xy) < 2:
                 continue
             # anchor absolute position starts wherever SynthesizeText's
@@ -158,10 +213,11 @@ def build_cache(force=False):
             # network only ever has to learn SHAPE, not absolute placement
             anchor_xy = anchor_xy - anchor_xy[0]
             target_xy = target_xy - target_xy[0]
-            a_rs = _resample_arclength(anchor_xy, N_POINTS)
-            t_rs = _resample_arclength(target_xy, N_POINTS)
+            a_rs, a_eos_rs = _resample_arclength(anchor_xy, N_POINTS, eos=anchor_eos)
+            t_rs, _ = _resample_arclength(target_xy, N_POINTS, eos=target_eos)
             out_rows.append(dict(text=text, anchor=a_rs.astype(np.float32),
                                  target=t_rs.astype(np.float32),
+                                 anchor_eos=a_eos_rs.astype(np.float32),
                                  is_holdout=r["is_holdout"]))
         with open(out_path, "wb") as f:
             pickle.dump(out_rows, f)
@@ -205,25 +261,37 @@ def collate(batch):
 # one step at a time the way RNNHandwriting.py's text-conditioned model does.
 # ---------------------------------------------------------------------------
 class StyleTransferRNN(nn.Module):
+    """Predicts a RESIDUAL correction on top of the anchor's own deltas,
+    not a full replacement -- pred = anchor_deltas + out(h). The anchor is
+    already a perfectly legible, correctly-spelled trajectory, so the
+    network's job narrows to "how much lighter/heavier/tighter/looser is
+    this author's stroke shape than the generic anchor" rather than having
+    to reconstruct pen dynamics from nothing. Zero-initializing the output
+    layer means the model starts as an exact identity (pure anchor) and
+    only grows a style deviation as training finds one -- so an
+    undertrained network degrades gracefully back toward the anchor's
+    already-correct, always-legible shape instead of toward noise."""
     def __init__(self, n_writers, hidden=128, layers=2, writer_dim=32):
         super().__init__()
         self.writer_embed = nn.Embedding(n_writers, writer_dim)
         self.lstm = nn.LSTM(2 + writer_dim, hidden, num_layers=layers,
                             batch_first=True, bidirectional=True)
         self.out = nn.Linear(2 * hidden, 2)
+        nn.init.zeros_(self.out.weight)
+        nn.init.zeros_(self.out.bias)
 
     def forward(self, anchor_deltas, writer_idx):
         B, T, _ = anchor_deltas.shape
         wemb = self.writer_embed(writer_idx).unsqueeze(1).expand(-1, T, -1)
         x = torch.cat([anchor_deltas, wemb], dim=-1)
         h, _ = self.lstm(x)
-        return self.out(h)                      # predicted (dx, dy) deltas
+        return anchor_deltas + self.out(h)      # anchor + learned style residual
 
 
 # ---------------------------------------------------------------------------
 # Training
 # ---------------------------------------------------------------------------
-def train(epochs=100, batch_size=16, lr=1e-3, hidden=128, layers=2):
+def train(epochs=100, batch_size=16, lr=1e-3, hidden=128, layers=2, pos_weight=1.0):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[Device] {device}")
     writers = sorted(p.stem for p in PAIR_CACHE_DIR.glob("*.pkl"))
@@ -258,7 +326,17 @@ def train(epochs=100, batch_size=16, lr=1e-3, hidden=128, layers=2):
     def run_batch(writers_b, anchors, targets, train_mode):
         writers_b, anchors, targets = writers_b.to(device), anchors.to(device), targets.to(device)
         pred = model(anchors, writers_b)
-        loss = F.smooth_l1_loss(pred, targets)
+        delta_loss = F.smooth_l1_loss(pred, targets)
+        # Per-step delta loss alone lets small, locally-plausible errors
+        # accumulate through the cumsum reconstruction into large absolute
+        # drift over 400 integration steps -- confirmed directly: a model
+        # that achieved LOW delta loss on a training example still
+        # rendered as an illegible scribble, because cumsum(pred) had
+        # drifted far from cumsum(targets) despite each individual step
+        # looking fine in isolation. This term penalizes that drift
+        # directly, on the actual rendered path, not just its derivative.
+        pos_loss = F.smooth_l1_loss(torch.cumsum(pred, dim=1), torch.cumsum(targets, dim=1))
+        loss = delta_loss + pos_weight * pos_loss
         if train_mode:
             opt.zero_grad()
             loss.backward()
@@ -327,18 +405,22 @@ def sample(text, writer_id, device=None):
     prof = profiles[writer_id]
     traj = SY.SynthesizeText(text, prof, mmPerXh=MM_PER_XH, seed=0,
                              lineWidthMm=100_000.0, legibility=1.0)
-    anchor_xy = trajectory_to_xy(traj, MM_PER_XH)
+    anchor_xy, anchor_eos = trajectory_to_xy(traj, MM_PER_XH)
     anchor_xy = anchor_xy - anchor_xy[0]
-    a_rs = _resample_arclength(anchor_xy, N_POINTS)
+    a_rs, a_eos_rs = _resample_arclength(anchor_xy, N_POINTS, eos=anchor_eos)
     anchor_d = np.diff(a_rs, axis=0, prepend=a_rs[:1]).astype(np.float32)
 
     w_idx = torch.tensor([writers.index(writer_id)], device=device)
     pred_d = model(torch.from_numpy(anchor_d).unsqueeze(0).to(device), w_idx)
     pred_xy = np.cumsum(pred_d[0].cpu().numpy(), axis=0)
-    return pred_xy, a_rs
+    return pred_xy, a_rs, a_eos_rs
 
 
-def render_xy(xy, px_per_xh=40, pad=20):
+def render_xy(xy, eos=None, px_per_xh=40, pad=20):
+    """Render a (dx,dy)-derived polyline. When `eos` (per-point pen-lift
+    flags) is given, breaks the drawn line at those points instead of
+    drawing one unbroken stroke -- the network only ever predicts shape,
+    the anchor's own lift points decide where letters/words separate."""
     xs, ys = xy[:, 0] * px_per_xh, -xy[:, 1] * px_per_xh
     W = int(xs.max() - xs.min()) + 2 * pad
     H = int(ys.max() - ys.min()) + 2 * pad
@@ -346,7 +428,23 @@ def render_xy(xy, px_per_xh=40, pad=20):
     d = ImageDraw.Draw(im)
     x0, y0 = xs.min() - pad, ys.min() - pad
     pts = list(zip((xs - x0).tolist(), (ys - y0).tolist()))
-    d.line(pts, fill=0, width=2, joint="curve")
+    if eos is None:
+        d.line(pts, fill=0, width=2, joint="curve")
+        return im
+    chain = [pts[0]]
+    for i in range(1, len(pts)):
+        # check the break BEFORE adding point i to the chain -- otherwise
+        # the closing draw call includes point i, drawing a spurious line
+        # straight across the pen-lift gap to the next stroke (this is
+        # exactly what was producing the connecting lines between words).
+        if eos[i - 1] > 0.5:
+            if len(chain) >= 2:
+                d.line(chain, fill=0, width=2, joint="curve")
+            chain = [pts[i]]
+        else:
+            chain.append(pts[i])
+    if len(chain) >= 2:
+        d.line(chain, fill=0, width=2, joint="curve")
     return im
 
 
@@ -359,6 +457,9 @@ if __name__ == "__main__":
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--hidden", type=int, default=128)
     ap.add_argument("--layers", type=int, default=2)
+    ap.add_argument("--pos-weight", type=float, default=1.0,
+                    help="weight on the integrated-path (cumsum) loss term, "
+                         "which controls absolute drift -- see run_batch")
     ap.add_argument("--sample", default=None)
     ap.add_argument("--writer", default=None)
     ap.add_argument("--out", default="styletransfer_sample.png")
@@ -369,13 +470,13 @@ if __name__ == "__main__":
     if args.build_cache:
         build_cache(force=args.force_cache)
     elif args.sample:
-        pred_xy, anchor_xy = sample(args.sample, args.writer)
-        im = render_xy(pred_xy)
+        pred_xy, anchor_xy, anchor_eos = sample(args.sample, args.writer)
+        im = render_xy(pred_xy, eos=anchor_eos)
         im.save(args.out)
         print(f"-> {args.out}  {im.size}")
         if args.compare:
-            aim = render_xy(anchor_xy)
+            aim = render_xy(anchor_xy, eos=anchor_eos)
             aim.save(Path(args.out).with_stem(Path(args.out).stem + "_anchor"))
     else:
         train(epochs=args.epochs, batch_size=args.batch_size, lr=args.lr,
-              hidden=args.hidden, layers=args.layers)
+              hidden=args.hidden, layers=args.layers, pos_weight=args.pos_weight)

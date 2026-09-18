@@ -1,0 +1,26 @@
+0	-> Why I can't just compare # two means directly
+1	- Naive comparison techniques (just checking if confidence intervals
+2	around each filter's mean overlap) are FLAWED because UCM and
+3	DUCM aren't independent of each other
+4	- in my setup, both filters are fed the exact same simulated measurement
+5	sequence in each run -> TO REMOVE NOISE FROM CONFOUNDING THE
+6	COMPARISON -> BUT it means the 2 filters' per-run errors are
+7	correlated w/ each other
+8	- can't treat them as 2 separate independent samples and compare
+9	their means w/ a normal two-sample test - the shared randomness
+10	would corrupt the comparison
+11	* LOOK AT DIFFERENCE NOT RAW VALUES
+12	- Instead of comparing C^(1) against C^(2) directly, the OT works w/ the
+13	per-run difference:
+14	Delta_i = C_i^(2) - C_i^(1)
+15	where C_i^(j) is just "whatever cost/error metric you're measuring
+16	for filter j on run i" - eg. squared position error, NEES for UCM
+17	vs. DUCM on a single run
+18	- how it fixes the correlation problem: even though C_i^(1) and C_i^(2) are
+19	correlated w/ each other w/i a run (same measurement noise realisation),
+20	the difference Delta_i from run i is independent of Delta_k from a different
+21	run k, because diff runs use fresh, independent random noise. So
+22	you end up w/ N independent samples (Delta_1, Delta_2, ..., Delta_N) but you can
+23	do ordinary statistics on.
+24	8 August 2026
+25	17

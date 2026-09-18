@@ -1,0 +1,30 @@
+0	5. Line Grouping
+1	Each surviving ink blob is treated as a connected
+2	component with a bounding box and centroid.
+3	Components in a plausible single-line size range
+4	are chained left to right. The next candidate to its
+5	right is chosen by minimising a cost that
+6	combines the horizontal gap between them and
+7	vertical deviation. Chains that end up close
+8	together in their local vertical position across
+9	shared horizontal span get merged, since a single
+10	line is often split into multiple chains by a stray
+11	gap. Dots, ascenders, descenders of multi-line
+12	components are assigned afterward by finding the
+13	nearest lines locally-fitted baseline curve.
+14	Diagram vs. text separation
+15	Each component is scored for how "diagram-like"
+16	it is by two independent tests: filling any
+17	enclosed holes in its shape and measuring the area
+18	of the largest single hole relative to the square of
+19	the estimated text height. A second test is used
+20	to separate components that are very wide, moderately
+21	tall, and sparsely filled with ink. Components that
+22	score high on either test get flagged as non
+23	text blocks.
+24	7. Final Render
+25	For each finalised line or non-text block, a
+26	bounding region is cropped from the original
+27	grayscale page. Because the strict binary ink mask
+28	used for detection can lose the faint edge of a
+29	stroke, a second, deliberately more permissive
