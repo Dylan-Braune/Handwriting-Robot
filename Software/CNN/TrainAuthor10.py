@@ -48,6 +48,17 @@ from TrainAuthor import (
 )
 
 NOGIT_DIR = SCRIPT_DIR / "NOGIT"
+# TrainAuthor.py's own default points at the OLDER, weaker (non-HF) text
+# checkpoint. Prefer the joint Teklia+personal one for the backbone
+# warm-start -- it reads handwriting better in general, which the
+# writer-ID backbone inherits for free (same reasoning as
+# BuildStyleProfile.py's own "prefer the better checkpoint" pattern).
+for _name in ("paper_cnn_bilstm_ctc_joint_best.pt", "paper_cnn_bilstm_ctc_hf_best.pt"):
+    _candidate = NOGIT_DIR / "weights" / _name
+    if _candidate.exists():
+        DEFAULT_TEXT_WEIGHTS = _candidate
+        break
+
 DATASET_AUTHORS = ["150", "151", "152", "153", "384", "551", "552", "588"]
 PERSONAL_AUTHORS = ["yeukita", "dylan"]
 VAL_FRACTION = 0.15
@@ -131,10 +142,12 @@ def main():
 
     lossFn = nn.CrossEntropyLoss()
     optimizer = optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
-    num_epochs = 60
+    num_epochs = int(sys.argv[1]) if len(sys.argv) > 1 else 20
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
+    weights_path = WEIGHTS_DIR / f"{RUN_NAME}_weights.pt"
+    WEIGHTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    best_acc, best_state = 0.0, None
+    best_acc = 0.0
     print("\n" + "=" * 88)
     for epoch in range(1, num_epochs + 1):
         model.train()
@@ -151,27 +164,31 @@ def main():
         scheduler.step()
 
         val_acc, per_author_acc = evaluate(model, valLoader, device, base.author_folders)
+        saved = ""
+        # Save to disk THE MOMENT a new best is found, not just once at the
+        # very end -- this run oscillates a lot epoch to epoch (a small
+        # dataset + a fairly high LR), so the best epoch is rarely the
+        # last one, and stopping early (or a crash) must not lose it.
         if val_acc > best_acc:
             best_acc = val_acc
-            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            torch.save({"model_state_dict": model.state_dict(),
+                       "author_mapping": base.author_to_idx,
+                       "best_val_author_acc": best_acc}, weights_path)
+            saved = " [SAVED]"
 
         print(f"Epoch {epoch:03d}/{num_epochs} | loss {total_loss/max(1,len(trainLoader)):.3f} "
-              f"| val author-acc {val_acc:.3f} (best {best_acc:.3f})", flush=True)
+              f"| val author-acc {val_acc:.3f} (best {best_acc:.3f}){saved}", flush=True)
 
-    if best_state is not None:
-        model.load_state_dict(best_state)
-    final_acc, per_author_acc = evaluate(model, valLoader, device, base.author_folders)
     print("=" * 88)
     print(f"Best val author-accuracy: {best_acc:.3f}")
-    print("Per-author accuracy on held-out lines:")
-    for a, acc in sorted(per_author_acc.items()):
-        print(f"  {a}: {acc:.3f}")
-
-    weights_path = WEIGHTS_DIR / f"{RUN_NAME}_weights.pt"
-    torch.save({"model_state_dict": model.state_dict(),
-               "author_mapping": base.author_to_idx,
-               "best_val_author_acc": best_acc}, weights_path)
-    print(f"\nWeights saved to: {weights_path}")
+    if weights_path.exists():
+        ck = torch.load(weights_path, map_location=device, weights_only=False)
+        model.load_state_dict(ck["model_state_dict"])
+        _, per_author_acc = evaluate(model, valLoader, device, base.author_folders)
+        print("Per-author accuracy (best saved checkpoint):")
+        for a, acc in sorted(per_author_acc.items()):
+            print(f"  {a}: {acc:.3f}")
+    print(f"Weights saved to: {weights_path}")
 
 
 if __name__ == "__main__":

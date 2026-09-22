@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Handwriting Robot — Write</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div id="topbar"></div>
+
+<main>
+  <h1>Write something as an author</h1>
+  <p class="subtitle">Generates the G-code for the gantry to draw the text below, in the chosen author's style.</p>
+
+  <div class="grid">
+    <div class="panel">
+      <h2>1. What to write</h2>
+
+      <label>Text</label>
+      <textarea id="writeText" placeholder="Type the text you want the robot to write...">The gantry writes this sentence for the first time today</textarea>
+
+      <label>Author</label>
+      <select data-author-select id="writeAuthor"></select>
+
+      <label>Quality (candidate draws tried per line)</label>
+      <input type="number" id="nTries" value="20" min="1" max="60" />
+      <p class="hint">Higher = more legible &amp; distinctive, but slower (roughly linear). 20 is a good default; 30 was used for the final measured accuracy numbers on the Model &amp; Style page.</p>
+
+      <div class="btn-row">
+        <button id="generateBtn">Generate G-code</button>
+      </div>
+      <div class="error-banner" id="generateError"></div>
+    </div>
+
+    <div class="panel">
+      <h2>2. Result</h2>
+      <div class="result-box" id="resultBox">
+        <img id="previewImg" class="preview" />
+
+        <div class="stat-row" style="margin-top:14px">
+          <span class="k">Read back as</span>
+          <span class="v" id="rReadBack">—</span>
+        </div>
+        <div class="stat-row">
+          <span class="k">Text accuracy</span>
+          <span class="v" id="rAcc">—</span>
+        </div>
+        <div class="stat-row">
+          <span class="k">G-code lines</span>
+          <span class="v" id="rLines">—</span>
+        </div>
+        <div class="stat-row">
+          <span class="k">Pen pulses</span>
+          <span class="v" id="rPulses">—</span>
+        </div>
+        <div class="stat-row">
+          <span class="k">Synthesis time</span>
+          <span class="v" id="rTime">—</span>
+        </div>
+
+        <div class="btn-row">
+          <a id="downloadLink" download="job.gcode"><button class="secondary">⬇ Download job.gcode</button></a>
+        </div>
+
+        <label style="margin-top:16px">G-code preview (first 40 lines)</label>
+        <pre class="code" id="gcodePreview"></pre>
+
+        <p class="hint" style="margin-top:14px">Gantry live progress updates are not wired up yet — a placeholder for a future version once the gantry reports status back over the network.</p>
+      </div>
+      <p class="hint" id="idlePlaceholder">Generate something to see the G-code and a preview here.</p>
+    </div>
+  </div>
+</main>
+
+<script src="app.js"></script>
+<script>
+renderTopbar("write");
+populateAuthorDropdowns();
+
+const generateBtn = document.getElementById("generateBtn");
+const idlePlaceholder = document.getElementById("idlePlaceholder");
+
+generateBtn.addEventListener("click", async () => {
+  clearError("generateError");
+  const text = document.getElementById("writeText").value.trim();
+  const author = document.getElementById("writeAuthor").value;
+  const nTries = parseInt(document.getElementById("nTries").value || "20", 10);
+
+  if (!text) { showError("generateError", "Enter some text first."); return; }
+  if (!author) { showError("generateError", "No author selected (is the backend connected?)."); return; }
+
+  generateBtn.disabled = true;
+  generateBtn.innerHTML = '<span class="spinner"></span> Generating (this can take a while)...';
+  try {
+    const res = await apiFetch("/api/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, author, nTries }),
+    });
+
+    idlePlaceholder.style.display = "none";
+    document.getElementById("resultBox").classList.add("show");
+    document.getElementById("previewImg").src = absoluteUrl(res.preview_url) + "?t=" + Date.now();
+    document.getElementById("rReadBack").textContent = res.read_back_text;
+    document.getElementById("rAcc").textContent = res.text_accuracy_pct + "%";
+    document.getElementById("rLines").textContent = res.gcode_line_count;
+    document.getElementById("rPulses").textContent = res.pen_pulses;
+    document.getElementById("rTime").textContent = res.synth_seconds + "s";
+
+    const gcodeUrl = absoluteUrl(res.gcode_url);
+    document.getElementById("downloadLink").href = gcodeUrl;
+
+    const gcodeText = await (await fetch(gcodeUrl)).text();
+    document.getElementById("gcodePreview").textContent =
+      gcodeText.split("\n").slice(0, 40).join("\n") + "\n... (download for the full file)";
+  } catch (e) {
+    showError("generateError", e.message);
+  } finally {
+    generateBtn.disabled = false;
+    generateBtn.innerHTML = "Generate G-code";
+  }
+});
+</script>
+</body>
+</html>

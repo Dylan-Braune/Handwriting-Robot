@@ -1,0 +1,27 @@
+0	image is then converted to a binary ink mask using
+1	adaptive thresholding: for each pixel, a local mean is
+2	computed over a surrounding window, and the pixel is
+3	classified as ink if it's darker than the local mean
+4	by more than a fixed margin. A colour-mask
+5	separately flags red/coloured ink so it can be
+6	excluded from the black/blue ink pass, and
+7	small isolated blobs are removed.
+8	3. Deskew
+9	The camera is rarely square to the page, so a
+10	rotation angle is estimated by searching a range
+11	of candidate angles, rotating the binary ink mask
+12	by each candidate, picking the angle that maximises
+13	the variance of that profile. The chosen angle
+14	is applied to the whole page through an affine
+15	rotation before any line grouping happens, since it
+16	assumes horizontal lines. A second pass fixes any
+17	errors from the first one.
+18	4. Rule-line and border cleanup
+19	Ruled notebook lines are detected as long, thin
+20	low-height connected runs (measured through
+21	run-length encoding along each row) and removed
+22	but only after checking that removing them wouldn't
+23	also delete a component that's actually a real hand-
+24	drawn rule. This is done by comparing local ink
+25	darkness, since printed/faint rules are consistently
+26	lighter than pen strokes.

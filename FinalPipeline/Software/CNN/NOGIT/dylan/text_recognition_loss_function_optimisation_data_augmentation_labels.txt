@@ -1,0 +1,26 @@
+0	distribution over characters.
+1	Loss function
+2	Because the model produces T output positions
+3	but doesn't know in advance how many of
+4	those positions correspond to each character.
+5	It is trained with connectionist temporal classification
+6	For a target label sequence y and an output
+7	sequence of length-T alignment, CTC defines
+8	the probability of y as the sum, over every
+9	possible length-T alignment path pi that
+10	collapses (by merging repeated consecutive
+11	symbols and then removing blanks) to y.
+12	This is what allows the model to be trained
+13	from only "this line says X" labels, with no
+14	annotation of where each character sits inside the
+15	image.
+16	Optimisation
+17	Parameters are maintained by keeping a per-parameter
+18	running average of squared gradients v and scales
+19	each update by its inverse square root with an added
+20	weight-decay term for regularisation. A learning-rate
+21	scheduler halves the learning rate whenever validation
+22	loss fails to improve for a fixed number of consecutive
+23	checks, and training stops early once that patience
+24	is exceeded.
+25	Data Handling and augmentation

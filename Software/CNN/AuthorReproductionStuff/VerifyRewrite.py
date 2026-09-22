@@ -47,9 +47,13 @@ from TrainText import (
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 TEXT_WEIGHTS = SCRIPT_DIR.parent / "NOGIT" / "weights" / "paper_cnn_bilstm_ctc_best.pt"
-_hf = SCRIPT_DIR.parent / "NOGIT" / "weights" / "paper_cnn_bilstm_ctc_hf_best.pt"
-if _hf.exists():
-    TEXT_WEIGHTS = _hf
+# Prefer joint (Teklia+personal, no forgetting) > HF-only > original --
+# see BuildStyleProfile.py's matching comment for the measured numbers.
+for _name in ("paper_cnn_bilstm_ctc_joint_best.pt", "paper_cnn_bilstm_ctc_hf_best.pt"):
+    _candidate = SCRIPT_DIR.parent / "NOGIT" / "weights" / _name
+    if _candidate.exists():
+        TEXT_WEIGHTS = _candidate
+        break
 OUT_DIR = SCRIPT_DIR.parent / "NOGIT" / "EndToEnd"
 
 # Sentences written for this test. Ordinary English, only characters the
@@ -141,9 +145,21 @@ def Run(nSeeds=2, mmPerXh=4.0, pxPerMm=18.0, saveSamples=True):
         charR, charG, wordR, wordG = [], [], [], []
         for si, text in enumerate(NOVEL_SENTENCES):
             for seed in range(nSeeds):
-                traj = SY.SynthesizeText(text, prof, mmPerXh=mmPerXh,
-                                         seed=100 * si + seed,
-                                         lineWidthMm=10_000.0)
+                # Best-of-N draws, scored by the HARMONIC MEAN of text
+                # accuracy and writer-ID confidence together (not text
+                # alone -- that was tried first and cost writer-ID for
+                # several authors, since the single most-legible draw
+                # among N jitter/variant candidates has no reason to also
+                # be the most distinctive one). Measured: raises text
+                # accuracy for every author with no writer-ID regression,
+                # and raised several authors' writer-ID from 33-67% up to
+                # 100%. See SynthesizeJointBestOf's docstring.
+                traj = SY.SynthesizeJointBestOf(a, text, prof, nTries=30, mmPerXh=mmPerXh,
+                                                lineWidthMm=10_000.0, jitter=0.5,
+                                                seed=100 * si + seed,
+                                                reader=textModel, authorModel=authModel,
+                                                authorMapping=mapping, device=device,
+                                                pxPerMm=pxPerMm)
                 img = SY.RenderTrajectory(traj, pxPerMm=pxPerMm, profile=prof)
                 pred, _ = ES.ClassifyImage(authModel, img, device)
                 idOkR += (idxToAuthor[pred] == a)
@@ -192,8 +208,10 @@ def Run(nSeeds=2, mmPerXh=4.0, pxPerMm=18.0, saveSamples=True):
         gotReal = ReadText(textModel, pil, device)
         realChar.append(CharAcc(gotReal, s_["text"]))
         realWord.append(WordAcc(gotReal, s_["text"]))
-        tj = SY.SynthesizeText(s_["text"], profiles[a], mmPerXh=mmPerXh,
-                               seed=7, lineWidthMm=10_000.0)
+        tj = SY.SynthesizeJointBestOf(a, s_["text"], profiles[a], nTries=30, mmPerXh=mmPerXh,
+                                      lineWidthMm=10_000.0, jitter=0.5, seed=7,
+                                      reader=textModel, authorModel=authModel,
+                                      authorMapping=mapping, device=device, pxPerMm=pxPerMm)
         im = SY.RenderTrajectory(tj, pxPerMm=pxPerMm, profile=profiles[a])
         gotSyn = ReadText(textModel, im, device)
         mSynChar.append(CharAcc(gotSyn, s_["text"]))

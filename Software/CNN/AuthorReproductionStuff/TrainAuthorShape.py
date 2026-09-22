@@ -21,6 +21,12 @@ reproduces. It is the honest yardstick for physical style accuracy.
 Same weight format as the other two author models, so evaluate_style.py and
 VerifyRewrite.py can load it interchangeably.
 
+Covers the SAME 10-author set as TrainAuthor10.py: the 8 kept dataset
+authors (150,151,152,153,384,551,552,588) plus the 2 personal authors
+(yeukita, dylan) -- personal samples are added via TrainAuthor10's
+add_personal_samples(), so the same PNG-dict format, and the same
+train/holdout split (seed 0, 15%), is shared everywhere in this project.
+
 Does NOT modify TrainText.py or TrainAuthor.py.
 
 Run:
@@ -43,6 +49,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import RawImageOps as F
 import BuildStyleProfile as SP
 from TrainAuthor import AuthorClassifierCNN
+from TrainAuthor10 import add_personal_samples, DATASET_AUTHORS
 from TrainText import (
     IAMLineDatasetRaw, _decode_png, augment_line_image,
     resize_line_image_fixed, tensor_from_resized,
@@ -52,11 +59,19 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 DATA_DIR = SCRIPT_DIR.parents[2] / "Data" / "Datasets" / "IAMpages10"
 CACHE_DIR = SCRIPT_DIR.parent / "NOGIT" / "line_cache_authors10"
 TEXT_WEIGHTS = SCRIPT_DIR.parent / "NOGIT" / "weights" / "paper_cnn_bilstm_ctc_best.pt"
-_hf = SCRIPT_DIR.parent / "NOGIT" / "weights" / "paper_cnn_bilstm_ctc_hf_best.pt"
-if _hf.exists():
-    TEXT_WEIGHTS = _hf
-NORM_CACHE = SCRIPT_DIR.parent / "NOGIT" / "shape_norm_cache.pkl"
-OUT_WEIGHTS = SCRIPT_DIR.parent / "NOGIT" / "weights" / "author_shape_10_weights.pt"
+# Prefer joint (Teklia+personal, no forgetting) > HF-only > original --
+# see BuildStyleProfile.py's matching comment for the measured numbers.
+for _name in ("paper_cnn_bilstm_ctc_joint_best.pt", "paper_cnn_bilstm_ctc_hf_best.pt"):
+    _candidate = SCRIPT_DIR.parent / "NOGIT" / "weights" / _name
+    if _candidate.exists():
+        TEXT_WEIGHTS = _candidate
+        break
+# Renamed (not reusing the old shape_norm_cache.pkl / author_shape_10_weights.pt)
+# because the author set changed -- 154/155 dropped, yeukita/dylan added -- and
+# BuildNormCache() below trusts an existing cache file blindly, so a stale one
+# would silently keep training on the wrong 10 authors.
+NORM_CACHE = SCRIPT_DIR.parent / "NOGIT" / "shape_norm_cache_10new.pkl"
+OUT_WEIGHTS = SCRIPT_DIR.parent / "NOGIT" / "weights" / "author_shape_10new_weights.pt"
 
 # One pen for everybody. Expressed relative to the line's own x-height so
 # the normalization is resolution-independent.
@@ -90,6 +105,10 @@ def BuildNormCache(force=False):
         with open(NORM_CACHE, "rb") as f:
             return pickle.load(f)
     base = IAMLineDatasetRaw(root_dir=str(DATA_DIR), cache_dir=str(CACHE_DIR))
+    before = len(base.samples)
+    base.samples = [s for s in base.samples if s["page_key"].split("/")[0] in DATASET_AUTHORS]
+    print("[Filter] kept %d/%d IAM samples for %s" % (len(base.samples), before, DATASET_AUTHORS))
+    add_personal_samples(base)
     rows = []
     for i, s in enumerate(base.samples):
         g = np.array(_decode_png(s["image_png"]).convert("L"))

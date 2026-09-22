@@ -1,0 +1,28 @@
+0	Line Separation and Preprocessing
+1	The input to this stage is a raw photo of
+2	a handwritten line image, and the output is a set
+3	of individual line images plus a label for each region
+4	as either 'text' or 'non-text' (diagrams, tables,
+5	or sketches). It runs as a fixed sequence
+6	of classical image-processing stages, not a learned
+7	model.
+8	[doodle of a face with a name tag reading "mess"]
+9	1. Page Localisation
+10	The photo is converted to grayscale and Gaussian-
+11	blurred to suppress paper texture and camera noise,
+12	then a global threshold is chosen automatically using
+13	Otsu's: for a candidate threshold t, pixels are split
+14	into a "below" class and an "above" class, and
+15	Otsu's criterion picks the t that maximises the
+16	between-class variance. Combined with a saturation
+17	cap (to exclude coloured background clutter), this
+18	produces a rough "paper vs. not-paper" mask.
+19	Morphological closing and a flood-fill hole-fill (mark
+20	everything reachable from the image border as
+21	background, and anything not reached that's inside
+22	the mask is a hole to be filled.
+23	2. Illumination Correction and Binarisation
+24	Uneven lighting is removed by estimating a smooth
+25	background image via a large-kernel Gaussian blur
+26	of the grayscale page, then dividing the original by
+27	the background estimate and rescaling. The corrected

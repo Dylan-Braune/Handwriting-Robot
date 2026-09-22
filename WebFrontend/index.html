@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Handwriting Robot — Read</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div id="topbar"></div>
+
+<main>
+  <h1>Read a handwritten page</h1>
+  <p class="subtitle">Capture a photo with the Odroid's camera, or upload one — then check it against the text and author you expect.</p>
+
+  <div class="grid">
+    <div class="panel">
+      <h2>1. Get an image</h2>
+
+      <div class="btn-row">
+        <button id="captureBtn">📷 Capture from camera</button>
+        <button id="uploadTriggerBtn" class="secondary">Upload image instead</button>
+      </div>
+      <input type="file" id="fileInput" accept="image/*" style="display:none" />
+
+      <img id="previewImg" class="preview" style="display:none" />
+      <div class="error-banner" id="imageError"></div>
+
+      <label style="margin-top:20px">Expected paragraph text</label>
+      <textarea id="expectedText" placeholder="Type or paste the text this page is supposed to contain..."></textarea>
+
+      <label>Expected author</label>
+      <select data-author-select id="expectedAuthor"></select>
+
+      <div class="btn-row">
+        <button id="classifyBtn" disabled>Classify</button>
+      </div>
+      <div class="error-banner" id="classifyError"></div>
+    </div>
+
+    <div class="panel">
+      <h2>2. Result</h2>
+      <div class="result-box" id="resultBox">
+        <div class="stat-row">
+          <span class="k">Lines detected</span>
+          <span class="v" id="rLines">—</span>
+        </div>
+        <div class="stat-row">
+          <span class="k">Text accuracy</span>
+          <span class="v" id="rTextAcc">—</span>
+        </div>
+        <div class="pct-bar"><div id="rTextAccBar" style="width:0%"></div></div>
+
+        <div class="stat-row" style="margin-top:14px">
+          <span class="k">Classified author</span>
+          <span class="v" id="rAuthor">—</span>
+        </div>
+        <div class="stat-row">
+          <span class="k">Author confidence</span>
+          <span class="v" id="rAuthorConf">—</span>
+        </div>
+        <div class="pct-bar"><div id="rAuthorConfBar" style="width:0%"></div></div>
+
+        <label style="margin-top:16px">Recognized text</label>
+        <pre class="code" id="rText"></pre>
+      </div>
+      <p class="hint" id="idlePlaceholder">Results will appear here after you classify an image.</p>
+    </div>
+  </div>
+</main>
+
+<script src="app.js"></script>
+<script>
+renderTopbar("read");
+populateAuthorDropdowns();
+
+let capturedImageId = null;
+let capturedBlob = null;
+
+const previewImg = document.getElementById("previewImg");
+const classifyBtn = document.getElementById("classifyBtn");
+const idlePlaceholder = document.getElementById("idlePlaceholder");
+
+function enableClassify() {
+  classifyBtn.disabled = !(capturedImageId || capturedBlob);
+}
+
+document.getElementById("captureBtn").addEventListener("click", async () => {
+  clearError("imageError");
+  const btn = document.getElementById("captureBtn");
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Capturing...';
+  try {
+    const res = await apiFetch("/api/camera/capture", { method: "POST" });
+    capturedImageId = res.image_id;
+    capturedBlob = null;
+    previewImg.src = absoluteUrl(res.image_url) + "?t=" + Date.now();
+    previewImg.style.display = "block";
+    enableClassify();
+  } catch (e) {
+    showError("imageError", e.message);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = "📷 Capture from camera";
+  }
+});
+
+document.getElementById("uploadTriggerBtn").addEventListener("click", () => {
+  document.getElementById("fileInput").click();
+});
+
+document.getElementById("fileInput").addEventListener("change", (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  capturedBlob = file;
+  capturedImageId = null;
+  previewImg.src = URL.createObjectURL(file);
+  previewImg.style.display = "block";
+  enableClassify();
+});
+
+classifyBtn.addEventListener("click", async () => {
+  clearError("classifyError");
+  classifyBtn.disabled = true;
+  classifyBtn.innerHTML = '<span class="spinner"></span> Classifying...';
+  try {
+    const form = new FormData();
+    if (capturedBlob) form.append("image", capturedBlob);
+    else if (capturedImageId) form.append("image_id", capturedImageId);
+    form.append("expected_text", document.getElementById("expectedText").value);
+    form.append("expected_author", document.getElementById("expectedAuthor").value);
+
+    const res = await apiFetch("/api/classify", { method: "POST", body: form });
+
+    idlePlaceholder.style.display = "none";
+    document.getElementById("resultBox").classList.add("show");
+    document.getElementById("rLines").textContent = res.lines_detected;
+    document.getElementById("rText").textContent = res.predicted_text;
+
+    const ta = res.text_accuracy_pct;
+    document.getElementById("rTextAcc").textContent = ta === null ? "(no expected text given)" : ta + "%";
+    document.getElementById("rTextAccBar").style.width = (ta || 0) + "%";
+
+    const authorLabel = document.getElementById("rAuthor");
+    authorLabel.textContent = res.predicted_author + (res.author_correct === true ? "  ✓ matches expected" : res.author_correct === false ? "  ✗ expected " + res.expected_author : "");
+    authorLabel.className = "v" + (res.author_correct === true ? " good" : res.author_correct === false ? " bad" : "");
+
+    document.getElementById("rAuthorConf").textContent = res.author_confidence_pct + "%";
+    document.getElementById("rAuthorConfBar").style.width = res.author_confidence_pct + "%";
+  } catch (e) {
+    showError("classifyError", e.message);
+  } finally {
+    classifyBtn.disabled = false;
+    classifyBtn.innerHTML = "Classify";
+  }
+});
+</script>
+</body>
+</html>

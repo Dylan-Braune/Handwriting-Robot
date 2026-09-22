@@ -1,0 +1,25 @@
+0	V=4 sets means 16 lines divided into 4 sets, 4 lines per set (4-way)
+1	- word offset = 2 bits = log2(4)
+2	- set index = 2 bits (to address one of 4 sets, v=4) = log2(4)
+3	- tag = 4 bits (remaining bits)
+4	-> Physical organisation                Col
+5	MESS
+6	Row -> /3
+7	Col -> /3
+8	Write
+9	enable
+10	4-direct-mapped since the cache must store 16 lines, and each line is
+11	4 bytes (32 bits), I need 8 chips in total for the cache
+12	These 8 chips will be arranged in parallel so that they form an 8-bit
+13	wide "data bank". Since each chip has 64 bits, the 8-chip bank provides
+14	64 bytes of total storage - enough for 16 lines of 4 bytes each (16x4=64 bytes)
+15	-> Direct-mapped
+16	- Word offset - 2 bits to select which of the 4 bytes in the line
+17	CPU is asking for
+18	- Line index - 4 bits to choose one of the 16 lines.
+19	- tag - 2 bits to identify which part of 256 byte main memory currently
+20	in cache line.
+21	-> set-associative
+22	- Word offset -
+23	- Set index - 2 bits to choose one of the 4 sets
+24	- tag - multiple blocks in one set. Increased size.

@@ -36,17 +36,27 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import BuildStyleProfile as SP
 import SynthesizeHandwriting as SY
 from TrainAuthor import AuthorClassifierCNN
+from TrainAuthorShape import StrokeNormalize
 from TrainText import (
     IAMLineDatasetRaw, _decode_png, resize_line_image_fixed,
     tensor_from_resized,
 )
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-# prefer the fully fine-tuned model when it exists, otherwise the fast
-# frozen-backbone one -- both are saved in the same format
+# This module judges SYNTHESIZED/gantry-drawn output, never real photos --
+# and the plain ink-aware classifier (author_classifier_10new_weights.pt)
+# was measured to collapse to ~20% on that output (it leans on ink density,
+# which the gantry's constant-width pen cannot reproduce and which vector
+# rendering does not faithfully mimic either -- see TrainAuthorShape.py's
+# docstring for the original finding on the old author set). The
+# stroke-normalized shape-only model has no such dependency and reaches
+# 96.7% on real held-out lines for the new 10-author set, so it is the
+# correct judge here. Old two-tier fallback kept for the pre-shape-model
+# case only.
+_SHAPE = SCRIPT_DIR.parent / "NOGIT" / "weights" / "author_shape_10new_weights.pt"
 _W1 = SCRIPT_DIR.parent / "NOGIT" / "weights" / "author_classifier_10_weights.pt"
 _W2 = SCRIPT_DIR.parent / "NOGIT" / "weights" / "author_fast_10_weights.pt"
-AUTHOR_WEIGHTS = _W1 if _W1.exists() else _W2
+AUTHOR_WEIGHTS = _SHAPE if _SHAPE.exists() else (_W1 if _W1.exists() else _W2)
 OUT_DIR = SCRIPT_DIR.parent / "NOGIT" / "StyleEval"
 
 
@@ -61,6 +71,14 @@ def LoadAuthorModel(device):
 
 
 def ClassifyImage(model, pilImg, device):
+    # AUTHOR_WEIGHTS is the shape-only classifier now: its backbone+head
+    # were calibrated on stroke-normalized (binarize -> skeletonize ->
+    # re-ink at fixed width) lines, never on raw ink, so a raw render or
+    # photo has to go through the SAME transform here or the features it
+    # produces are off-distribution and the prediction is meaningless.
+    normImg = StrokeNormalize(np.array(pilImg.convert("L")))
+    if normImg is not None:
+        pilImg = normImg
     t = tensor_from_resized(resize_line_image_fixed(pilImg)).unsqueeze(0).to(device)
     with torch.no_grad():
         logits = model(t)

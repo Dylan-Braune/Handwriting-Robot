@@ -60,15 +60,22 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 DATA_DIR = SCRIPT_DIR.parents[2] / "Data" / "Datasets" / "IAMpages10"
 CACHE_DIR = SCRIPT_DIR.parent / "NOGIT" / "line_cache_authors10"
 TEXT_WEIGHTS = SCRIPT_DIR.parent / "NOGIT" / "weights" / "paper_cnn_bilstm_ctc_best.pt"
-# prefer the HF-trained recogniser (trained on 6480 clean Teklia/IAM-line
-# images, not this project's own ~790 page-segmented ones) if present --
-# measured 77.2%->83.7% mean char accuracy over 145 holdout pages, and
-# critically much better on cursive hands specifically (writer 151: 82.1%
-# -> 95.1%), which is what BOTH the alignment cuts and the legibility
-# judge depend on.
-_hf = SCRIPT_DIR.parent / "NOGIT" / "weights" / "paper_cnn_bilstm_ctc_hf_best.pt"
-if _hf.exists():
-    TEXT_WEIGHTS = _hf
+# Prefer the best available recogniser, in order:
+#   1) joint (Teklia + personal, warm-started, trained together every
+#      epoch so nothing gets forgotten) -- 94.03%/91.82% char-acc on
+#      clean Teklia val/test AND 89.64% on held-out personal lines,
+#      i.e. strictly better than either of the below on its own domain.
+#   2) HF-trained (6480 clean Teklia/IAM-line images, general handwriting
+#      only) -- measured 77.2%->83.7% mean char accuracy over 145 holdout
+#      pages versus the original below, and much better on cursive hands
+#      specifically (writer 151: 82.1% -> 95.1%).
+#   3) the original, page-segmented-only checkpoint (fallback).
+# This choice feeds BOTH the CTC alignment cuts and the legibility judge.
+for _name in ("paper_cnn_bilstm_ctc_joint_best.pt", "paper_cnn_bilstm_ctc_hf_best.pt"):
+    _candidate = SCRIPT_DIR.parent / "NOGIT" / "weights" / _name
+    if _candidate.exists():
+        TEXT_WEIGHTS = _candidate
+        break
 PROFILE_DIR = SCRIPT_DIR.parent / "NOGIT" / "StyleProfiles10"
 
 MAX_VARIANTS_PER_CHAR = 12
@@ -426,11 +433,27 @@ def EstimateSlantDeg(ink):
 # ---------------------------------------------------------------------------
 # Glyph extraction from one aligned line
 # ---------------------------------------------------------------------------
-def _TrimLigatureTails(strokes, lowY=0.42, minKeep=0.18):
-    """A cursive cut lands mid-ligature, so the glyph arrives with a low,
-    near-horizontal carrier stroke hanging off each side. Trim the leading
-    and trailing run of points that stays below `lowY` x-heights AND keeps
-    moving monotonically outward -- that is the connector, not the letter.
+def _TrimLigatureTails(strokes, connL=True, connR=True, lowY=0.42, minKeep=0.18,
+                       climbY=1.6, climbSlope=2.2):
+    """A cursive cut lands mid-ligature, so the glyph arrives with a
+    carrier stroke hanging off each side, wherever the pen was CONFIRMED
+    (via `connL`/`connR`, the same stroke-crossing test used to measure
+    connectedness) to have been continuously joined to the previous/next
+    letter. Trim the leading/trailing run of points that keeps moving
+    monotonically outward while staying below a height ceiling -- that is
+    the connector, not the letter.
+
+    Two ceilings are tried, in order: the low, near-horizontal `lowY`
+    case (a connector between two ordinary x-height letters), and a
+    taller, steeper `climbY`/`climbSlope` case for a connector climbing
+    into a TALL letter (e.g. "T" into "h") -- a low letter joining a tall
+    one has to climb quickly, which the original single low/gentle
+    threshold never matched, leaving an unmistakable stray diagonal
+    baked into every affected glyph. Only attempted on a side confirmed
+    connected by `connL`/`connR`: a genuine pen-lift before this letter
+    means everything here is this letter's own ink, and guessing at a
+    phantom connector from shape alone risks cutting a real stroke.
+
     Returns (trimmedStrokes, entryPoint, exitPoint)."""
     if not strokes:
         return strokes, (0.0, 0.0), (0.0, 0.0)
@@ -441,15 +464,19 @@ def _TrimLigatureTails(strokes, lowY=0.42, minKeep=0.18):
     if span <= 1e-6:
         return strokes, entry, exitPt
 
-    def runLen(s, maxSlope=0.7):
-        """How many leading points form a low, outward-running carrier. A
-        ligature is low AND nearly horizontal; a letter's own leg is also
-        low but STEEP, so the slope test is what keeps the leg."""
+    def runLen(s, connected, maxHeight, maxSlope):
+        """How many leading points form a low(ish), outward-running
+        carrier. A ligature keeps moving forward and never climbs faster
+        than `maxSlope`; a letter's own leg does too at first, which is
+        why this is only tried on a CONFIRMED join, not guessed from
+        shape alone."""
+        if not connected:
+            return 0
         i = 0
         while i + 1 < len(s):
             dx = s[i + 1][0] - s[i][0]
             dy = s[i + 1][1] - s[i][1]
-            if s[i][1] >= lowY or dx < 0 or abs(dy) > maxSlope * max(dx, 1e-6):
+            if s[i][1] >= maxHeight or dx < 0 or abs(dy) > maxSlope * max(dx, 1e-6):
                 break
             i += 1
         return i
@@ -458,13 +485,14 @@ def _TrimLigatureTails(strokes, lowY=0.42, minKeep=0.18):
     for k, s in enumerate(strokes):
         t = list(s)
         if k == 0:
-            i = runLen(t)
+            i = runLen(t, connL, lowY, 0.7) or runLen(t, connL, climbY, climbSlope)
             if i and (t[-1][0] - t[i][0]) > minKeep * span:
                 t = t[i:]
         if k == len(strokes) - 1 and len(t) >= 2:
             # the exit connector leaves to the right, so on the REVERSED
             # walk its x decreases -- mirror x to reuse the same test
-            r = runLen([(-x, y) for (x, y) in t[::-1]])
+            rev = [(-x, y) for (x, y) in t[::-1]]
+            r = runLen(rev, connR, lowY, 0.7) or runLen(rev, connR, climbY, climbSlope)
             if r and (t[len(t) - 1 - r][0] - t[0][0]) > minKeep * span:
                 t = t[:len(t) - r]
         if len(t) >= 2:
@@ -647,7 +675,7 @@ def ExtractLineGlyphs(gray, text, model, device):
         # arrives with half a connector stuck on each side. Trim those to
         # the letter BODY and remember where the pen entered/left, so the
         # synthesizer draws exactly one connector of its own choosing.
-        norm, entry, exitPt = _TrimLigatureTails(norm)
+        norm, entry, exitPt = _TrimLigatureTails(norm, connL=connL, connR=connR)
         if not norm:
             glyphs[i] = None
             continue

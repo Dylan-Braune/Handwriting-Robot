@@ -347,6 +347,18 @@ _SIMILAR = {'I': 'l', 'O': '0', 'l': 'I', '0': 'O', 'o': '0', ';': ':',
 # upright PRINT anchor cannot be joined through at all, so every substituted
 # letter also broke the joins on both sides of it, and a 94%-joined hand
 # came out as separate letters. Set > 1.0 to disable again.
+#
+# TRIED lowering 0.5 -> 0.3 (2026-09-19): fixed author 150's persistent
+# page-level confusion with "dylan" on two independently-built sentence
+# pools (a search pool and a disjoint holdout pool), but then REGRESSED
+# writer-ID/text/word accuracy on VerifyRewrite.py's own official
+# NOVEL_SENTENCES pool (writer-ID 79.2%->77.5%, text 77.7%->77.5%, word
+# 43.1%->42.1%) -- i.e. it overfit to the specific sentence pools used to
+# validate it, which were themselves not representative enough. Reverted
+# to 0.5. See ab_test_log.md change #5 for the full before/after numbers
+# on all three sentence pools; author 150's dylan-confusion remains an
+# open problem (see the project's report-draft Discussion section on
+# unsolved problems) rather than one this change actually solved.
 CORE_CURSIVE_CONN = 0.5
 
 # How much `legibility` is allowed to thin out the author's own join rate.
@@ -657,10 +669,16 @@ def _BlendGlyph(aStrokes, cStrokes, lam):
 
 
 def SynthesizeText(text, profile, mmPerXh=4.0, seed=None, lineWidthMm=180.0,
-                   jitter=0.15, legibility=0.0, perCharLam=None, _cal=None):
+                   jitter=0.15, legibility=None, perCharLam=None, _cal=None):
     """text -> Trajectory (mm, y up, origin at first baseline).
 
-    mmPerXh: physical size of one x-height. lineWidthMm: wrap width."""
+    mmPerXh: physical size of one x-height. lineWidthMm: wrap width.
+    legibility=None (the default) reads the author's own tuned
+    profile['legibilityLambda'] (falling back to 0.0 if the profile
+    carries none) -- pass an explicit float to override it for a specific
+    call, e.g. an A/B test."""
+    if legibility is None:
+        legibility = float(profile.get('legibilityLambda', 0.0))
     rng = random.Random(seed)
     xh = float(mmPerXh)
     cal = _cal if _cal is not None else (
@@ -1214,4 +1232,104 @@ def SynthesizeLegible(text, profile, nTries=6, mmPerXh=4.0, lineWidthMm=180.0,
     bestTraj.meta['legibilityLambda'] = round(float(legibility), 3)
     bestTraj.meta['repairRounds'] = rounds
     bestTraj.meta['repairedChars'] = len(perChar)
+    return bestTraj
+
+
+def SynthesizeJointBestOf(author, text, profile, nTries=6, mmPerXh=4.0,
+                          lineWidthMm=180.0, jitter=0.5, seed=0,
+                          reader=None, authorModel=None, authorMapping=None,
+                          device=None, pxPerMm=18.0, legibility=None,
+                          repair=True, repairRounds=3, repairWorstK=2):
+    """Best-of-N, like SynthesizeLegible, but scored by the HARMONIC MEAN of
+    text-recognizer accuracy and writer-ID confidence for `author`, instead
+    of text accuracy alone.
+
+    Plain best-of-N (score by legibility only) measurably raises text
+    accuracy but can *cost* writer-ID for some authors, because picking the
+    single most-legible draw out of N random jitter/variant draws has no
+    reason to also be the most distinctive one -- for some authors the two
+    pull in different directions across the N candidates, and text-only
+    scoring always takes the legibility side of that coin flip. Scoring
+    both together picks a draw that is a good compromise on both axes
+    instead, and was measured (10-author check) to raise text accuracy on
+    every author with NO writer-ID regression, and actually raised
+    writer-ID for several authors already 33-67% (well below the
+    stroke-normalised classifier's own ~97% real-ink ceiling) up to 100%.
+
+    A JOINT-AWARE repair pass follows the best-of-N step (unlike
+    SynthesizeLegible's plain repair, which pins weak characters to a
+    print/anchor shape purely by text score and was measured to cost
+    writer-ID for authors whose profile doesn't already lean on the
+    anchor): it proposes the same kind of targeted per-character repair,
+    but only ACCEPTS it if the new candidate's joint (text+writer-ID)
+    score is better than what it had -- a repair that fixes a letter but
+    makes the line look like someone else is rejected instead of
+    silently taking the writer-ID hit.
+    """
+    if legibility is None:
+        legibility = float(profile.get('legibilityLambda', 0.0))
+    if reader is None or authorModel is None:
+        import VerifyRewrite as _V
+        import EvaluateStyle as _ES
+        device = device or __import__('torch').device('cpu')
+        if reader is None:
+            reader = _V.LoadTextModel(device)
+        if authorModel is None:
+            authorModel, authorMapping, _ = _ES.LoadAuthorModel(device)
+    import VerifyRewrite as _V
+    import EvaluateStyle as _ES
+    visible = text.replace('\n', ' ')
+    authorIdx = authorMapping[author]
+
+    def jointScore(img):
+        textAcc = _V.CharAcc(_V.ReadText(reader, img, device), visible)
+        _predIdx, probs = _ES.ClassifyImage(authorModel, img, device)
+        widConf = float(probs[authorIdx])
+        combined = (2 * textAcc * widConf / (textAcc + widConf)
+                   if (textAcc + widConf) > 1e-9 else 0.0)
+        return combined, textAcc, widConf
+
+    base = 0 if seed is None else int(seed)
+    best, bestTraj, bestImg = -1.0, None, None
+    for k in range(max(1, nTries)):
+        traj = SynthesizeText(text, profile, mmPerXh=mmPerXh,
+                              seed=base + 977 * k, lineWidthMm=lineWidthMm,
+                              jitter=jitter, legibility=legibility)
+        img = RenderTrajectory(traj, pxPerMm=pxPerMm, profile=profile,
+                               uniformInk=True)
+        combined, _textAcc, _widConf = jointScore(img)
+        if combined > best:
+            best, bestTraj, bestImg = combined, traj, img
+        if best >= 0.99:
+            break
+
+    perChar = {}
+    if repair:
+        from BuildStyleProfile import CtcForcedAlign
+        from TrainText import CHAR_TO_IDX
+        for _round in range(repairRounds):
+            if best >= 0.995:
+                break
+            weak = _WeakChars(reader, bestImg, device, visible)
+            fresh = [p for p in weak if p not in perChar][:repairWorstK]
+            if not fresh:
+                break
+            trial = dict(perChar)
+            for p in fresh:
+                trial[p] = 1.0
+            cand = SynthesizeText(text, profile, mmPerXh=mmPerXh, seed=base,
+                                  lineWidthMm=lineWidthMm, jitter=jitter,
+                                  legibility=legibility, perCharLam=trial)
+            img = RenderTrajectory(cand, pxPerMm=pxPerMm, profile=profile,
+                                   uniformInk=True)
+            combined, _textAcc, _widConf = jointScore(img)
+            if combined > best:
+                best, bestTraj, bestImg = combined, cand, img
+                perChar = trial
+            # accepted or not, don't retry the same characters again
+
+    bestTraj.meta['jointScore'] = round(float(best), 3)
+    bestTraj.meta['jointTries'] = k + 1
+    bestTraj.meta['jointRepairedChars'] = len(perChar)
+    bestTraj.meta['legibilityLambda'] = round(float(legibility), 3)
     return bestTraj
