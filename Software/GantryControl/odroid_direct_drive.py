@@ -150,13 +150,25 @@ def calculate_delay(rpm):
     step_delay_s = (60.0 / (abs_rpm * STEPS_PER_REV)) / 2.0
 
 
+ENDSTOP_DEBOUNCE_S = 0.002  # real switch stays HIGH; motor-noise spikes don't
+
+
 def triggered_endstop():
     """Returns the name of the first end-stop currently HIGH (triggered),
     or None. Cheap enough (a handful of gpiod reads) to call every loop
-    iteration without meaningfully affecting step timing."""
+    iteration without meaningfully affecting step timing.
+
+    Debounced: a pin must still read ACTIVE after ENDSTOP_DEBOUNCE_S before
+    it's trusted. This only costs time on an actual trigger (rare) -- the
+    common case of "nothing triggered" returns immediately. Added because
+    switching the pen motor without a flyback diode / with no shared
+    ground to the ODROID induces brief noise spikes on these floating
+    input pins; fix that in hardware too, this only masks the symptom."""
     for name, pin in ENDSTOP_PINS.items():
         if req.get_value(pin) == Value.ACTIVE:
-            return name
+            time.sleep(ENDSTOP_DEBOUNCE_S)
+            if req.get_value(pin) == Value.ACTIVE:
+                return name
     return None
 
 
