@@ -10,8 +10,13 @@
 <div id="topbar"></div>
 
 <main>
-  <h1>Write something as an author</h1>
-  <p class="subtitle">Generates the G-code for the gantry to draw the text below, in the chosen author's style.</p>
+  <div class="page-header">
+    <div>
+      <h1>Write something as an author</h1>
+      <p class="subtitle">Generates the G-code for the gantry to draw the text below, in the chosen author's style.</p>
+    </div>
+    <button class="reset-btn" id="resetPageBtn" title="Clear this page back to blank">⟳ Reset</button>
+  </div>
 
   <div class="grid">
     <div class="panel">
@@ -61,7 +66,13 @@
 
         <div class="btn-row">
           <a id="downloadLink" download="job.gcode"><button class="secondary">⬇ Download job.gcode</button></a>
+          <button id="sendToGantryBtn">🖊 Send to gantry</button>
         </div>
+        <div class="stat-row" style="margin-top:10px">
+          <span class="k">Gantry</span>
+          <span class="v" id="gantryStatus">—</span>
+        </div>
+        <div class="error-banner" id="gantryError"></div>
 
         <label style="margin-top:16px">G-code preview (first 40 lines)</label>
         <pre class="code" id="gcodePreview"></pre>
@@ -78,8 +89,91 @@
 renderTopbar("write");
 populateAuthorDropdowns();
 
+const PAGE_KEY = "write";
 const generateBtn = document.getElementById("generateBtn");
+const sendToGantryBtn = document.getElementById("sendToGantryBtn");
 const idlePlaceholder = document.getElementById("idlePlaceholder");
+let lastJobId = null;
+
+function persist(extra = {}) {
+  savePageState(PAGE_KEY, {
+    writeText: document.getElementById("writeText").value,
+    writeAuthor: document.getElementById("writeAuthor").value,
+    nTries: document.getElementById("nTries").value,
+    lastJobId,
+    lastResult: extra.lastResult !== undefined ? extra.lastResult : (persist._lastResult || null),
+  });
+  if (extra.lastResult !== undefined) persist._lastResult = extra.lastResult;
+}
+
+async function showResult(res) {
+  idlePlaceholder.style.display = "none";
+  document.getElementById("resultBox").classList.add("show");
+  document.getElementById("previewImg").src = absoluteUrl(res.preview_url) + "?t=" + Date.now();
+  document.getElementById("rReadBack").textContent = res.read_back_text;
+  document.getElementById("rAcc").textContent = res.text_accuracy_pct + "%";
+  document.getElementById("rLines").textContent = res.gcode_line_count;
+  document.getElementById("rPulses").textContent = res.pen_pulses;
+  document.getElementById("rTime").textContent = res.synth_seconds + "s";
+
+  const gcodeUrl = absoluteUrl(res.gcode_url);
+  document.getElementById("downloadLink").href = gcodeUrl;
+
+  try {
+    const gcodeText = await (await fetch(gcodeUrl)).text();
+    document.getElementById("gcodePreview").textContent =
+      gcodeText.split("\n").slice(0, 40).join("\n") + "\n... (download for the full file)";
+  } catch (_) {
+    document.getElementById("gcodePreview").textContent = "(could not reload gcode preview)";
+  }
+}
+
+function resetPage() {
+  lastJobId = null;
+  persist._lastResult = null;
+  document.getElementById("writeText").value = "";
+  document.getElementById("nTries").value = "20";
+  document.getElementById("resultBox").classList.remove("show");
+  document.getElementById("gantryStatus").textContent = "—";
+  idlePlaceholder.style.display = "block";
+  clearError("generateError");
+  clearError("gantryError");
+}
+
+wireResetButton("resetPageBtn", PAGE_KEY, resetPage);
+
+(function restore() {
+  const s = loadPageState(PAGE_KEY);
+  if (!s) return;
+  if (s.writeText !== undefined) document.getElementById("writeText").value = s.writeText;
+  if (s.nTries) document.getElementById("nTries").value = s.nTries;
+  lastJobId = s.lastJobId || null;
+  if (s.writeAuthor) {
+    const trySet = () => {
+      const sel = document.getElementById("writeAuthor");
+      if ([...sel.options].some(o => o.value === s.writeAuthor)) sel.value = s.writeAuthor;
+      else setTimeout(trySet, 200);
+    };
+    trySet();
+  }
+  if (s.lastResult) showResult(s.lastResult);
+})();
+
+document.getElementById("writeText").addEventListener("input", () => persist());
+document.getElementById("writeAuthor").addEventListener("change", () => persist());
+document.getElementById("nTries").addEventListener("input", () => persist());
+
+async function refreshGantryStatus() {
+  const el = document.getElementById("gantryStatus");
+  try {
+    const res = await apiFetch("/api/gantry/status");
+    el.textContent = res.connected ? "Connected" : "Not connected (running off the Odroid, or not wired up yet)";
+    el.className = "v" + (res.connected ? " good" : "");
+  } catch (e) {
+    el.textContent = "Unknown (backend not reachable)";
+    el.className = "v";
+  }
+}
 
 generateBtn.addEventListener("click", async () => {
   clearError("generateError");
@@ -98,22 +192,10 @@ generateBtn.addEventListener("click", async () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text, author, nTries }),
     });
-
-    idlePlaceholder.style.display = "none";
-    document.getElementById("resultBox").classList.add("show");
-    document.getElementById("previewImg").src = absoluteUrl(res.preview_url) + "?t=" + Date.now();
-    document.getElementById("rReadBack").textContent = res.read_back_text;
-    document.getElementById("rAcc").textContent = res.text_accuracy_pct + "%";
-    document.getElementById("rLines").textContent = res.gcode_line_count;
-    document.getElementById("rPulses").textContent = res.pen_pulses;
-    document.getElementById("rTime").textContent = res.synth_seconds + "s";
-
-    const gcodeUrl = absoluteUrl(res.gcode_url);
-    document.getElementById("downloadLink").href = gcodeUrl;
-
-    const gcodeText = await (await fetch(gcodeUrl)).text();
-    document.getElementById("gcodePreview").textContent =
-      gcodeText.split("\n").slice(0, 40).join("\n") + "\n... (download for the full file)";
+    lastJobId = res.job_id;
+    await showResult(res);
+    persist({ lastResult: res });
+    refreshGantryStatus();
   } catch (e) {
     showError("generateError", e.message);
   } finally {
@@ -121,6 +203,26 @@ generateBtn.addEventListener("click", async () => {
     generateBtn.innerHTML = "Generate G-code";
   }
 });
+
+sendToGantryBtn.addEventListener("click", async () => {
+  clearError("gantryError");
+  if (!lastJobId) { showError("gantryError", "Generate something first."); return; }
+  sendToGantryBtn.disabled = true;
+  sendToGantryBtn.innerHTML = '<span class="spinner"></span> Sending...';
+  try {
+    const res = await apiFetch(`/api/write/${lastJobId}`, { method: "POST" });
+    const el = document.getElementById("gantryStatus");
+    el.textContent = res.message;
+    el.className = "v" + (res.sent ? " good" : res.gantry_connected ? "" : " bad");
+  } catch (e) {
+    showError("gantryError", e.message);
+  } finally {
+    sendToGantryBtn.disabled = false;
+    sendToGantryBtn.innerHTML = "🖊 Send to gantry";
+  }
+});
+
+refreshGantryStatus();
 </script>
 </body>
 </html>

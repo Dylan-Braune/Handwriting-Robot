@@ -10,17 +10,25 @@
 <div id="topbar"></div>
 
 <main>
-  <h1>Read a handwritten page</h1>
-  <p class="subtitle">Capture a photo with the Odroid's camera, or upload one — then check it against the text and author you expect.</p>
+  <div class="page-header">
+    <div>
+      <h1>Read a handwritten page</h1>
+      <p class="subtitle">Capture a photo with the Odroid's camera, or upload one — then check it against the text and author you expect.</p>
+    </div>
+    <button class="reset-btn" id="resetPageBtn" title="Clear this page back to blank">⟳ Reset</button>
+  </div>
 
   <div class="grid">
     <div class="panel">
       <h2>1. Get an image</h2>
 
       <div class="btn-row">
-        <button id="captureBtn">📷 Capture from camera</button>
+        <button id="previewToggleBtn">🎥 Live preview</button>
+        <button id="captureBtn" disabled>📷 Capture</button>
         <button id="uploadTriggerBtn" class="secondary">Upload image instead</button>
       </div>
+      <p class="hint" id="previewHint">Live preview lets you frame the page and wait for autofocus before capturing — the camera is only powered on while this is toggled on.</p>
+      <img id="livePreviewImg" class="preview" style="display:none" />
       <input type="file" id="fileInput" accept="image/*" style="display:none" />
 
       <img id="previewImg" class="preview" style="display:none" />
@@ -74,22 +82,137 @@
 renderTopbar("read");
 populateAuthorDropdowns();
 
+const PAGE_KEY = "read";
 let capturedImageId = null;
 let capturedBlob = null;
+let previewOn = false;
 
 const previewImg = document.getElementById("previewImg");
+const livePreviewImg = document.getElementById("livePreviewImg");
 const classifyBtn = document.getElementById("classifyBtn");
+const captureBtn = document.getElementById("captureBtn");
+const previewToggleBtn = document.getElementById("previewToggleBtn");
 const idlePlaceholder = document.getElementById("idlePlaceholder");
 
 function enableClassify() {
   classifyBtn.disabled = !(capturedImageId || capturedBlob);
 }
 
-document.getElementById("captureBtn").addEventListener("click", async () => {
+function persist(extra = {}) {
+  savePageState(PAGE_KEY, {
+    expectedText: document.getElementById("expectedText").value,
+    expectedAuthor: document.getElementById("expectedAuthor").value,
+    capturedImageId,
+    capturedDataUrl: extra.capturedDataUrl !== undefined ? extra.capturedDataUrl : (persist._lastDataUrl || null),
+    lastResult: extra.lastResult !== undefined ? extra.lastResult : (persist._lastResult || null),
+  });
+  if (extra.capturedDataUrl !== undefined) persist._lastDataUrl = extra.capturedDataUrl;
+  if (extra.lastResult !== undefined) persist._lastResult = extra.lastResult;
+}
+
+function showResult(res) {
+  idlePlaceholder.style.display = "none";
+  document.getElementById("resultBox").classList.add("show");
+  document.getElementById("rLines").textContent = res.lines_detected;
+  document.getElementById("rText").textContent = res.predicted_text;
+
+  const ta = res.text_accuracy_pct;
+  document.getElementById("rTextAcc").textContent = ta === null || ta === undefined ? "(no expected text given)" : ta + "%";
+  document.getElementById("rTextAccBar").style.width = (ta || 0) + "%";
+
+  const authorLabel = document.getElementById("rAuthor");
+  authorLabel.textContent = res.predicted_author + (res.author_correct === true ? "  ✓ matches expected" : res.author_correct === false ? "  ✗ expected " + res.expected_author : "");
+  authorLabel.className = "v" + (res.author_correct === true ? " good" : res.author_correct === false ? " bad" : "");
+
+  document.getElementById("rAuthorConf").textContent = res.author_confidence_pct + "%";
+  document.getElementById("rAuthorConfBar").style.width = res.author_confidence_pct + "%";
+}
+
+function resetPage() {
+  capturedImageId = null;
+  capturedBlob = null;
+  persist._lastDataUrl = null;
+  persist._lastResult = null;
+  document.getElementById("expectedText").value = "";
+  document.getElementById("fileInput").value = "";
+  previewImg.style.display = "none";
+  previewImg.src = "";
+  document.getElementById("resultBox").classList.remove("show");
+  idlePlaceholder.style.display = "block";
   clearError("imageError");
-  const btn = document.getElementById("captureBtn");
-  btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span> Capturing...';
+  clearError("classifyError");
+  enableClassify();
+  stopPreview();
+}
+
+wireResetButton("resetPageBtn", PAGE_KEY, resetPage);
+
+// --- restore saved state on load ---
+(function restore() {
+  const s = loadPageState(PAGE_KEY);
+  if (!s) return;
+  if (s.expectedText) document.getElementById("expectedText").value = s.expectedText;
+  persist._lastDataUrl = s.capturedDataUrl || null;
+  persist._lastResult = s.lastResult || null;
+  if (s.capturedImageId) {
+    capturedImageId = s.capturedImageId;
+    previewImg.src = absoluteUrl(`/api/images/${s.capturedImageId}`);
+    previewImg.style.display = "block";
+  } else if (s.capturedDataUrl) {
+    previewImg.src = s.capturedDataUrl;
+    previewImg.style.display = "block";
+    // Rebuild a real Blob from the saved data URL so Classify still works
+    // without asking the user to re-pick the file.
+    fetch(s.capturedDataUrl).then(r => r.blob()).then(b => { capturedBlob = b; enableClassify(); });
+  }
+  // expectedAuthor is restored once populateAuthorDropdowns() has filled the <select>.
+  if (s.expectedAuthor) {
+    const trySet = () => {
+      const sel = document.getElementById("expectedAuthor");
+      if ([...sel.options].some(o => o.value === s.expectedAuthor)) sel.value = s.expectedAuthor;
+      else setTimeout(trySet, 200);
+    };
+    trySet();
+  }
+  if (s.lastResult) showResult(s.lastResult);
+  enableClassify();
+})();
+
+document.getElementById("expectedText").addEventListener("input", () => persist());
+document.getElementById("expectedAuthor").addEventListener("change", () => persist());
+
+// --- live preview toggle ---
+async function stopPreview() {
+  if (!previewOn) return;
+  previewOn = false;
+  livePreviewImg.style.display = "none";
+  livePreviewImg.src = "";
+  previewToggleBtn.textContent = "🎥 Live preview";
+  try { await apiFetch("/api/camera/preview/stop", { method: "POST" }); } catch (_) {}
+}
+
+previewToggleBtn.addEventListener("click", async () => {
+  clearError("imageError");
+  if (previewOn) { await stopPreview(); return; }
+  previewToggleBtn.disabled = true;
+  try {
+    await apiFetch("/api/camera/preview/start", { method: "POST" });
+    previewOn = true;
+    livePreviewImg.src = absoluteUrl("/api/camera/preview/stream") + "?t=" + Date.now();
+    livePreviewImg.style.display = "block";
+    previewToggleBtn.textContent = "⏹ Stop preview";
+    captureBtn.disabled = false;
+  } catch (e) {
+    showError("imageError", e.message);
+  } finally {
+    previewToggleBtn.disabled = false;
+  }
+});
+
+captureBtn.addEventListener("click", async () => {
+  clearError("imageError");
+  captureBtn.disabled = true;
+  captureBtn.innerHTML = '<span class="spinner"></span> Capturing...';
   try {
     const res = await apiFetch("/api/camera/capture", { method: "POST" });
     capturedImageId = res.image_id;
@@ -97,11 +220,12 @@ document.getElementById("captureBtn").addEventListener("click", async () => {
     previewImg.src = absoluteUrl(res.image_url) + "?t=" + Date.now();
     previewImg.style.display = "block";
     enableClassify();
+    persist({ capturedDataUrl: null });
   } catch (e) {
     showError("imageError", e.message);
   } finally {
-    btn.disabled = false;
-    btn.innerHTML = "📷 Capture from camera";
+    captureBtn.disabled = false;
+    captureBtn.innerHTML = "📷 Capture";
   }
 });
 
@@ -117,6 +241,9 @@ document.getElementById("fileInput").addEventListener("change", (e) => {
   previewImg.src = URL.createObjectURL(file);
   previewImg.style.display = "block";
   enableClassify();
+  const reader = new FileReader();
+  reader.onload = () => persist({ capturedDataUrl: reader.result });
+  reader.readAsDataURL(file);
 });
 
 classifyBtn.addEventListener("click", async () => {
@@ -131,22 +258,8 @@ classifyBtn.addEventListener("click", async () => {
     form.append("expected_author", document.getElementById("expectedAuthor").value);
 
     const res = await apiFetch("/api/classify", { method: "POST", body: form });
-
-    idlePlaceholder.style.display = "none";
-    document.getElementById("resultBox").classList.add("show");
-    document.getElementById("rLines").textContent = res.lines_detected;
-    document.getElementById("rText").textContent = res.predicted_text;
-
-    const ta = res.text_accuracy_pct;
-    document.getElementById("rTextAcc").textContent = ta === null ? "(no expected text given)" : ta + "%";
-    document.getElementById("rTextAccBar").style.width = (ta || 0) + "%";
-
-    const authorLabel = document.getElementById("rAuthor");
-    authorLabel.textContent = res.predicted_author + (res.author_correct === true ? "  ✓ matches expected" : res.author_correct === false ? "  ✗ expected " + res.expected_author : "");
-    authorLabel.className = "v" + (res.author_correct === true ? " good" : res.author_correct === false ? " bad" : "");
-
-    document.getElementById("rAuthorConf").textContent = res.author_confidence_pct + "%";
-    document.getElementById("rAuthorConfBar").style.width = res.author_confidence_pct + "%";
+    showResult(res);
+    persist({ lastResult: res });
   } catch (e) {
     showError("classifyError", e.message);
   } finally {
@@ -154,6 +267,8 @@ classifyBtn.addEventListener("click", async () => {
     classifyBtn.innerHTML = "Classify";
   }
 });
+
+window.addEventListener("beforeunload", stopPreview);
 </script>
 </body>
 </html>

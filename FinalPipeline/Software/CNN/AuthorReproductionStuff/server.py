@@ -25,9 +25,14 @@ Run:
 Endpoints (all JSON in/out unless noted):
     GET  /api/authors                 -- list of authors for the dropdown
     POST /api/camera/capture          -- trigger the camera, returns an image_id
+    POST /api/camera/preview/start    -- open the camera for live framing (toggle ON)
+    POST /api/camera/preview/stop     -- release the camera (toggle OFF)
+    GET  /api/camera/preview/stream   -- multipart/x-mixed-replace MJPEG stream (only while active)
     GET  /api/images/<image_id>       -- serves a previously captured/uploaded image
     POST /api/classify                -- multipart: image (file) or image_id, expected_text, expected_author
     POST /api/generate                -- json: text, author, [nTries] -> gcode + preview
+    POST /api/write/<job_id>          -- sends a generated job's G-code to the physical gantry
+    GET  /api/gantry/status           -- {"connected": bool} -- is a gantry actually attached here?
     GET  /api/gcode/<job_id>          -- serves the raw .gcode file for a generate job
     GET  /api/model_info              -- model specs + measured accuracy
     GET  /api/glyphs/<author>         -- glyph-grid PNG for one author
@@ -42,8 +47,12 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# odroid_direct_drive.py lives in a sibling top-level folder, not under
+# Software/CNN -- add it explicitly rather than moving the gantry code
+# into the CNN tree just for import convenience.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "GantryControl"))
 
-from flask import Flask, request, jsonify, send_file, abort
+from flask import Flask, request, jsonify, send_file, abort, Response
 from flask_cors import CORS
 from PIL import Image
 import torch
@@ -54,8 +63,14 @@ import VerifyRewrite as VR
 import WriteGCode as GW
 import SegmentPage as PS
 import web_render_helpers as WRH
+import camera_capture as CAM
 from TrainAuthor import AuthorClassifierCNN
 from TrainText import resize_line_image_fixed, tensor_from_resized
+
+# odroid_direct_drive.py is safe to import anywhere now (see its own
+# comments) -- gpiod access only happens inside connect(), not at import
+# time, so this doesn't crash on a laptop with no GPIO chip.
+import odroid_direct_drive as GANTRY
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 NOGIT_DIR = SCRIPT_DIR.parent / "NOGIT"
@@ -177,14 +192,51 @@ def api_authors():
 @app.route("/api/camera/capture", methods=["POST"])
 def api_camera_capture():
     try:
-        from camera_capture import capture_image
-        path = capture_image()
+        path = CAM.capture_image()
     except Exception as e:
         return jsonify({"error": f"Camera capture failed: {e}"}), 500
     image_id = uuid.uuid4().hex
     dest = UPLOAD_DIR / f"{image_id}.jpg"
     Image.open(path).convert("RGB").save(dest)
     return jsonify({"image_id": image_id, "image_url": f"/api/images/{image_id}"})
+
+
+# ---------------------------------------------------------------------------
+# Camera LIVE PREVIEW -- a toggle, not an always-on stream. Frame the shot
+# and let autofocus settle while watching this, then hit /api/camera/capture
+# to grab the good frame, then /api/camera/preview/stop. Leaving a USB
+# webcam's sensor running 24/7 for no reason is needless heat/wear even
+# with a heatsink -- this keeps it off except while someone's actively
+# using the Read page's capture flow.
+# ---------------------------------------------------------------------------
+@app.route("/api/camera/preview/start", methods=["POST"])
+def api_camera_preview_start():
+    try:
+        CAM.preview_start()
+    except Exception as e:
+        return jsonify({"error": f"Could not start camera preview: {e}"}), 500
+    return jsonify({"preview_active": True})
+
+
+@app.route("/api/camera/preview/stop", methods=["POST"])
+def api_camera_preview_stop():
+    CAM.preview_stop()
+    return jsonify({"preview_active": False})
+
+
+@app.route("/api/camera/preview/stream", methods=["GET"])
+def api_camera_preview_stream():
+    if not CAM.preview_active():
+        abort(409)  # not started -- call /api/camera/preview/start first
+
+    def _frames():
+        while CAM.preview_active():
+            try:
+                jpeg = CAM.preview_frame_jpeg()
+            except Exception:
+                break
+            yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n")
+    return Response(_frames(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
 
 # ---------------------------------------------------------------------------
@@ -321,6 +373,50 @@ def api_generate():
         "text_accuracy_pct": round(VR.CharAcc(read_back, text) * 100, 1),
         "synth_seconds": round(synth_seconds, 1),
     })
+
+
+@app.route("/api/gantry/status", methods=["GET"])
+def api_gantry_status():
+    if GANTRY.is_connected():
+        return jsonify({"connected": True})
+    try:
+        GANTRY.connect()
+    except GANTRY.GantryNotConnectedError as e:
+        return jsonify({"connected": False, "detail": str(e)})
+    return jsonify({"connected": True})
+
+
+@app.route("/api/write/<job_id>", methods=["POST"])
+def api_write_gcode(job_id):
+    """Sends a previously-generated job's G-code to the physical gantry.
+    On the Odroid with the hardware actually wired up, this really draws.
+    Anywhere else (your laptop, testing), GantryNotConnectedError is
+    caught here and reported as a normal JSON response -- not a 500 --
+    since "no gantry attached" is an expected, everyday state on a dev
+    machine, not a server bug."""
+    safe_id = "".join(c for c in job_id if c.isalnum())
+    gcode_path = JOBS_DIR / safe_id / "job.gcode"
+    if not gcode_path.exists():
+        return jsonify({"error": "Unknown job_id"}), 404
+
+    try:
+        result = GANTRY.write_gcode_file(str(gcode_path))
+    except GANTRY.GantryNotConnectedError as e:
+        return jsonify({
+            "sent": False,
+            "gantry_connected": False,
+            "message": f"Gantry not connected: {e}",
+        }), 200
+
+    if result["estopped"]:
+        return jsonify({
+            "sent": False,
+            "gantry_connected": True,
+            "message": f"Job aborted by end-stop '{result['tripped_switch']}' mid-run. "
+                       "Clear it on the gantry before sending another job.",
+        }), 200
+
+    return jsonify({"sent": True, "gantry_connected": True, "message": "Job completed."})
 
 
 @app.route("/api/gcode/<job_id>", methods=["GET"])

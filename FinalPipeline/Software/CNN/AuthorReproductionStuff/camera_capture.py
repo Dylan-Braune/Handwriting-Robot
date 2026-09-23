@@ -1,21 +1,20 @@
 """
-camera_capture.py -- captures one still image from whatever camera module
-is attached to the Odroid.
+camera_capture.py -- captures one still image from the camera attached to
+whatever machine this runs on (Odroid in production, your laptop for
+testing).
 
-I (the assistant) do not know the exact camera hardware/library on your
-Odroid, so this defaults to shelling out to common Linux camera CLI
-tools (tried in order below) rather than guessing a specific Python
-camera SDK that might not be installed. ADJUST `CAPTURE_COMMANDS` to
-match your actual setup -- e.g. if you're using `picamera2` in Python
-directly, replace `capture_image()`'s body with that library's call
-instead of a subprocess.
+Your plugged-in camera enumerates as a standard USB Video Class (UVC)
+webcam (Windows shows it as "UCB Camera", VID_0BDA -- Realtek, a generic
+UVC chipset), NOT a Raspberry-Pi-style CSI ribbon camera. That means the
+right tool is OpenCV's cv2.VideoCapture, which talks to any UVC device
+through the OS's normal camera driver on BOTH Windows and Linux -- so the
+exact same code path is what you're testing on your laptop right now and
+what runs on the Odroid later, no platform-specific branching needed.
 
 Usage:
-    from camera_capture import capture_image
+    from camera_capture import capture_image, camera_available
     path = capture_image()   # returns a Path to the saved JPEG
 """
-import shutil
-import subprocess
 import time
 from pathlib import Path
 
@@ -23,44 +22,152 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 CAPTURE_DIR = SCRIPT_DIR.parent / "NOGIT" / "CameraCaptures"
 CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
 
-# Tried in order -- first one whose executable exists on PATH is used.
-# {path} is substituted with the output file path.
-CAPTURE_COMMANDS = [
-    # Raspberry Pi / libcamera-based cameras (common on many SBCs, incl.
-    # some Odroid camera modules that provide a libcamera-compatible driver)
-    ["libcamera-still", "-n", "-o", "{path}", "--width", "1920", "--height", "1080"],
-    # Older Raspberry Pi camera stack
-    ["raspistill", "-n", "-o", "{path}"],
-    # Generic USB webcam via fswebcam
-    ["fswebcam", "-r", "1920x1080", "--no-banner", "{path}"],
-]
+# Which /dev/videoN (Linux) or device index (Windows) to open. 0 is "first
+# camera the OS finds" -- if your Odroid has more than one video device
+# (e.g. a webcam AND an onboard HDMI capture chip), change this to the
+# right index. Override via the CAMERA_INDEX env var without editing code.
+import os
+CAMERA_INDEX = int(os.environ.get("CAMERA_INDEX", "0"))
+
+# A UVC webcam's very first frame after opening is often dark/unfocused
+# while its auto-exposure settles -- discard this many frames before
+# keeping one, same fix every OpenCV capture tutorial recommends.
+WARMUP_FRAMES = 5
 
 
-def _find_command():
-    for cmd in CAPTURE_COMMANDS:
-        exe = cmd[0]
-        if shutil.which(exe):
-            return cmd
-    return None
+def camera_available(index=None):
+    """Cheap check: can we actually open and read one frame from the
+    camera? Used by the server to report a clean 'no camera' error
+    instead of a stack trace when testing off the Odroid."""
+    import cv2
+    idx = CAMERA_INDEX if index is None else index
+    cap = cv2.VideoCapture(idx)
+    try:
+        if not cap.isOpened():
+            return False
+        ok, _frame = cap.read()
+        return ok
+    finally:
+        cap.release()
 
 
-def capture_image(timeout=10):
+_preview_cap = None
+_preview_lock = None
+
+
+def _get_lock():
+    global _preview_lock
+    if _preview_lock is None:
+        import threading
+        _preview_lock = threading.Lock()
+    return _preview_lock
+
+
+def preview_start(index=None):
+    """Opens (and keeps open) the camera for live preview streaming. Safe
+    to call repeatedly -- a no-op if already open. Kept separate from
+    capture_image() so a short-lived capture doesn't leave the sensor
+    powered on between uses: the whole point of a start/stop toggle is
+    that the camera only runs while someone's actually looking at the
+    live feed to frame the shot and let autofocus settle, not 24/7."""
+    import cv2
+    global _preview_cap
+    with _get_lock():
+        if _preview_cap is not None:
+            return
+        idx = CAMERA_INDEX if index is None else index
+        cap = cv2.VideoCapture(idx)
+        if not cap.isOpened():
+            cap.release()
+            raise RuntimeError(f"Could not open camera at index {idx} for preview.")
+        _preview_cap = cap
+
+
+def preview_stop():
+    """Releases the preview camera handle. Always call this once you're
+    done framing the shot -- see the module docstring's note on heat."""
+    global _preview_cap
+    with _get_lock():
+        if _preview_cap is not None:
+            _preview_cap.release()
+            _preview_cap = None
+
+
+def preview_active():
+    return _preview_cap is not None
+
+
+def preview_frame_jpeg():
+    """Grabs one frame from the already-open preview camera and returns it
+    JPEG-encoded bytes, for an MJPEG-style streaming endpoint. Raises
+    RuntimeError if preview_start() hasn't been called."""
+    import cv2
+    with _get_lock():
+        if _preview_cap is None:
+            raise RuntimeError("Preview not started -- call preview_start() first.")
+        ok, frame = _preview_cap.read()
+    if not ok:
+        raise RuntimeError("Failed to read a preview frame.")
+    ok, buf = cv2.imencode(".jpg", frame)
+    if not ok:
+        raise RuntimeError("Failed to JPEG-encode preview frame.")
+    return buf.tobytes()
+
+
+def capture_image(timeout=10, index=None):
     """Captures one still image, returns its Path. Raises RuntimeError if
-    no known camera command is available -- in that case, either install
-    one of the tools above, or replace this function's body with a direct
-    call into your camera's own Python SDK (e.g. picamera2)."""
-    cmd_template = _find_command()
-    if cmd_template is None:
+    no camera could be opened/read -- callers (server.py) should catch
+    this and report it as a clean error, not a crash.
+
+    If a live preview is currently open (preview_start()), this grabs the
+    frame from THAT handle instead of opening a second one -- most webcams
+    only allow one process/handle to hold the device at a time, and this
+    is also the intended flow: watch the live preview until autofocus
+    settles on the page, then capture "the good image" from what's
+    already showing, no re-opening/re-warming needed."""
+    import cv2
+
+    with _get_lock():
+        if _preview_cap is not None:
+            ok, frame = _preview_cap.read()
+            if not ok:
+                raise RuntimeError("Failed to read a frame from the open preview.")
+            out_path = CAPTURE_DIR / f"capture_{int(time.time() * 1000)}.jpg"
+            cv2.imwrite(str(out_path), frame)
+            return out_path
+
+    idx = CAMERA_INDEX if index is None else index
+    cap = cv2.VideoCapture(idx)
+    if not cap.isOpened():
+        cap.release()
         raise RuntimeError(
-            "No known camera capture command found on PATH (tried: "
-            f"{[c[0] for c in CAPTURE_COMMANDS]}). Edit camera_capture.py "
-            "to call your actual camera's capture method directly."
+            f"Could not open camera at index {idx}. Is it plugged in, and "
+            "not already in use by another program (close any other app "
+            "using the webcam, e.g. a video call)?"
         )
+
+    deadline = time.time() + timeout
+    frame = None
+    try:
+        for _ in range(WARMUP_FRAMES):
+            if time.time() > deadline:
+                break
+            ok, frame = cap.read()
+            if not ok:
+                frame = None
+    finally:
+        cap.release()
+
+    if frame is None:
+        raise RuntimeError(
+            f"Camera at index {idx} opened but produced no readable frame "
+            "within the timeout."
+        )
+
     out_path = CAPTURE_DIR / f"capture_{int(time.time() * 1000)}.jpg"
-    cmd = [part.format(path=str(out_path)) for part in cmd_template]
-    subprocess.run(cmd, check=True, timeout=timeout, capture_output=True)
+    cv2.imwrite(str(out_path), frame)
     if not out_path.exists():
-        raise RuntimeError(f"Camera command ran but produced no file: {' '.join(cmd)}")
+        raise RuntimeError(f"cv2.imwrite reported no error but wrote no file: {out_path}")
     return out_path
 
 

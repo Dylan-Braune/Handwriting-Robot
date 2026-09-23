@@ -140,6 +140,51 @@ function renderTopbar(activePage) {
   checkBackendStatus();
 }
 
+/* ---------------------------------------------------------------------
+   Per-page state persistence -- so navigating Read -> Stats -> Read
+   doesn't wipe out what you typed/generated. Saved to localStorage (this
+   browser only), keyed per page. Call saveState() after anything the
+   user would be annoyed to lose; call loadState() once on page load
+   before wiring up event listeners; the page provides its own "⟳ Reset"
+   button (see resetButtonHtml()/wireResetButton()) for explicitly
+   clearing it, since persisting forever-by-default needs an escape hatch.
+--------------------------------------------------------------------- */
+function savePageState(pageKey, state) {
+  try {
+    localStorage.setItem("hwrobot_state_" + pageKey, JSON.stringify(state));
+  } catch (_) {
+    // localStorage can throw (quota, private-mode Safari) -- losing
+    // persistence silently is fine, it's a convenience, not correctness.
+  }
+}
+
+function loadPageState(pageKey) {
+  try {
+    const raw = localStorage.getItem("hwrobot_state_" + pageKey);
+    return raw ? JSON.parse(raw) : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function clearPageState(pageKey) {
+  try {
+    localStorage.removeItem("hwrobot_state_" + pageKey);
+  } catch (_) {}
+}
+
+/** Wires a page's "⟳ Reset" button (must already be in the DOM with this
+ * id) to clear this page's saved state and then run the caller's own
+ * onReset() to blank out the visible form/result. */
+function wireResetButton(buttonId, pageKey, onReset) {
+  const btn = document.getElementById(buttonId);
+  if (!btn) return;
+  btn.addEventListener("click", () => {
+    clearPageState(pageKey);
+    onReset();
+  });
+}
+
 function showError(boxId, message) {
   const box = document.getElementById(boxId);
   if (!box) return;
