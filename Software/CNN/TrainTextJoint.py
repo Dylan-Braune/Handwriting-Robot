@@ -71,7 +71,7 @@ from TrainTextHF import HFLineDataset, load_hf, DEFAULT_HF_CACHE
 NOGIT_DIR = SCRIPT_DIR / "NOGIT"
 WEIGHTS_DIR = NOGIT_DIR / "weights"
 NAME = "paper_cnn_bilstm_ctc_joint"
-PERSONAL_AUTHORS = ["yeukita", "dylan", "robert", "owen", "aston", "abhinav"]
+PERSONAL_AUTHORS = ["yeukita", "dylan", "robert", "owen", "abhinav"]
 VAL_FRACTION = 0.15   # same fraction AND seed as TrainTextPersonal.py /
 SPLIT_SEED = 0        # BuildStyleProfile10Authors.py -- same held-out lines everywhere
 

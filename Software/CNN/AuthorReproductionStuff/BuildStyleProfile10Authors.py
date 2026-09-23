@@ -52,7 +52,7 @@ PROFILE_DIR = BSP.PROFILE_DIR      # NOGIT/StyleProfiles10
 PERSONAL_WEIGHTS = NOGIT_DIR / "weights" / "paper_cnn_bilstm_ctc_personal_best.pt"
 
 DATASET_AUTHORS = ["150", "151", "152", "153", "384", "551", "552", "588"]
-PERSONAL_AUTHORS = ["yeukita", "dylan", "robert", "owen", "aston", "abhinav"]
+PERSONAL_AUTHORS = ["yeukita", "dylan", "robert", "owen", "abhinav"]
 VAL_FRACTION = 0.15          # same holdout fraction as TrainTextPersonal.py
 SPLIT_SEED = 0                # same seed too -- same lines held out from both
 

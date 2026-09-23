@@ -60,7 +60,7 @@ for _name in ("paper_cnn_bilstm_ctc_joint_best.pt", "paper_cnn_bilstm_ctc_hf_bes
         break
 
 DATASET_AUTHORS = ["150", "151", "152", "153", "384", "551", "552", "588"]
-PERSONAL_AUTHORS = ["yeukita", "dylan", "robert", "owen", "aston", "abhinav"]
+PERSONAL_AUTHORS = ["yeukita", "dylan", "robert", "owen", "abhinav"]
 VAL_FRACTION = 0.15
 SPLIT_SEED = 0
 RUN_NAME = "author_classifier_10new"
