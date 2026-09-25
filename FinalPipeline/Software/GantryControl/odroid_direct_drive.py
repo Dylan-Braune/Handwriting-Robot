@@ -23,7 +23,8 @@ GCODE SUPPORTED
     M3 / M5                  pen down / pen up
     M2 / M30                 program end
     F sets feed rate (mm/min), persists until changed. An end-stop trip
-    aborts the file and requires 'r' to clear before anything else runs.
+    retracts off the switch (see RETRACT_MM below), aborts the file, and
+    requires 'r' to clear before anything else runs.
 
 CLI COMMANDS (via stdin)
     calibrate   home both axes, measure real steps-per-mm, park at the
@@ -32,7 +33,8 @@ CLI COMMANDS (via stdin)
     c [radius]  circle demo
     g <path>    run a G-code file
     u / d       pen up / down
-    r           clear a tripped emergency stop (never auto-clears)
+    r           clear a tripped emergency stop (never auto-clears, and
+                refuses if a switch is still physically triggered)
     q           quit
 """
 import math
@@ -101,6 +103,11 @@ EDGE_TOLERANCE_MM = 5.0        # kept clear of both switches on both axes
 HOMING_STEP_DELAY_S = 0.0008   # per-step pulse time while homing (both axes)
 HOMING_MAX_STEPS = 200_000     # a switch that never triggers is a fault
 ENDSTOP_DEBOUNCE_S = 0.004     # filters brief noise spikes, not real triggers
+RETRACT_MM = 5.0               # 0.5cm pulled back off a switch on emergency
+                               # stop, so it isn't left latched HIGH -- without
+                               # this, clearing an estop with 'r' still leaves
+                               # the gantry unable to move (the switch reads
+                               # triggered again the instant it's cleared)
 
 calibration = {
     "done": False,
@@ -222,6 +229,58 @@ def axis_dir_value(invert, positive):
     with each other about which pin value means which physical direction."""
     forward = positive != invert   # XOR
     return Value.ACTIVE if forward else Value.INACTIVE
+
+
+# Which way is "away" from each switch, in the same sign convention as
+# current_x_steps/current_y_steps (positive = away from MIN, toward MAX).
+_RETREAT_SIGN = {"X_MIN": +1, "X_MAX": -1, "Y_MIN": +1, "Y_MAX": -1}
+
+
+def _retract_off_switch(hit):
+    """Steps the tripped axis RETRACT_MM back off `hit`, updating the
+    tracked step count as it goes. Stops early (without raising) if a
+    different switch trips during the retract -- that's a real
+    mechanical problem, not something to push through."""
+    global current_x_steps, current_y_steps
+    is_x = hit.startswith("X")
+    sign = _RETREAT_SIGN[hit]
+    dir_pin, step_pin = (DIR1_PIN, STEP1_PIN) if is_x else (DIR2_PIN, STEP2_PIN)
+    invert = INVERT_X if is_x else INVERT_Y
+    steps_per_mm = calibration["steps_per_mm_x"] if is_x else calibration["steps_per_mm_y"]
+    target_steps = max(1, round(RETRACT_MM * steps_per_mm))
+
+    req.set_value(dir_pin, axis_dir_value(invert, sign > 0))
+    moved = 0
+    for _ in range(target_steps):
+        if triggered_endstop(ignore={hit}) is not None:
+            break
+        req.set_value(step_pin, Value.ACTIVE)
+        time.sleep(HOMING_STEP_DELAY_S)
+        req.set_value(step_pin, Value.INACTIVE)
+        time.sleep(HOMING_STEP_DELAY_S)
+        moved += sign
+
+    if is_x:
+        current_x_steps += moved
+    else:
+        current_y_steps += moved
+
+
+def _trigger_emergency_stop(hit):
+    """Latches the emergency-stop state and immediately retracts off the
+    switch that caused it, so it doesn't stay physically triggered (which
+    would otherwise force a manual power-cycle just to move again). Runs
+    at most once per trip -- safe to call from both the main loop and a
+    G-code job, whichever notices the trigger first."""
+    global estopped, tripped_switch
+    if estopped:
+        return
+    estopped, tripped_switch = True, hit
+    req.set_value(STEP1_PIN, Value.INACTIVE)
+    req.set_value(STEP2_PIN, Value.INACTIVE)
+    print(f"\n!!! EMERGENCY STOP -- end-stop {hit} triggered !!! Retracting {RETRACT_MM}mm...")
+    _retract_off_switch(hit)
+    print("Retracted. Clear with 'r' once safe to resume.")
 
 
 def bresenham_move(dx, dy, step_delay_s=CIRCLE_STEP_DELAY_S):
@@ -474,7 +533,6 @@ def run_gcode_file(path):
     """Runs a G-code file to completion or until an end-stop aborts it.
     Refuses to run at all until calibrate() has succeeded this session
     -- checked here so it applies from both the web server and the CLI."""
-    global estopped, tripped_switch
     if not calibration["done"]:
         raise NotCalibratedError("Run calibration ('calibrate') before running a G-code file.")
     try:
@@ -493,10 +551,7 @@ def run_gcode_file(path):
     for lineno, raw in enumerate(lines, 1):
         hit = triggered_endstop()
         if hit is not None:
-            if not estopped:
-                estopped = True
-                tripped_switch = hit
-                print(f"\n!!! EMERGENCY STOP -- end-stop {hit} triggered !!!")
+            _trigger_emergency_stop(hit)
             print(f"G-code job ABORTED at line {lineno}.")
             return
         if estopped:
@@ -687,11 +742,8 @@ if __name__ == "__main__":
 
             hit = triggered_endstop()
             if hit is not None:
-                req.set_value(STEP1_PIN, Value.INACTIVE)
-                req.set_value(STEP2_PIN, Value.INACTIVE)
-                if not estopped:
-                    estopped, tripped_switch, target_rpm = True, hit, 0.0
-                    print(f"\n!!! EMERGENCY STOP -- end-stop {hit} triggered !!!")
+                _trigger_emergency_stop(hit)
+                target_rpm = 0.0
                 time.sleep(0.005)
                 continue
             elif estopped:
