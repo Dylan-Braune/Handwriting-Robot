@@ -714,16 +714,31 @@ class NotCalibratedError(RuntimeError):
 
 
 def _home_axis(step_pin, dir_pin, dir_value, endstop_name):
-    """Steps ONE axis, slowly, in one direction, until its named
-    end-stop triggers. Returns the number of steps taken. Raises if
-    HOMING_MAX_STEPS is reached first -- a real fault (switch not
-    wired, wrong endstop_name, gantry already jammed), not something to
-    loop on forever."""
+    """Steps ONE axis, slowly, in one direction, until an end-stop
+    triggers. Returns the number of steps taken.
+
+    Stops on ANY triggered end-stop, not just the expected one -- and
+    raises immediately if it's the wrong one, instead of continuing to
+    pulse into a switch it doesn't recognise as "success". Checking only
+    for `endstop_name` and ignoring every other trigger was a real bug:
+    if this axis's direction is backwards (wired the other way vs. what
+    dir_value assumes), it drives into the OPPOSITE switch and would
+    have kept grinding against it for up to HOMING_MAX_STEPS before ever
+    stopping. Raises if HOMING_MAX_STEPS is reached with nothing
+    triggering at all -- a real fault (switch not wired), not something
+    to loop on forever."""
     req.set_value(dir_pin, dir_value)
     steps = 0
     while True:
-        if triggered_endstop() == endstop_name:
-            return steps
+        hit = triggered_endstop()
+        if hit is not None:
+            if hit == endstop_name:
+                return steps
+            raise RuntimeError(
+                f"Expected {endstop_name} but {hit} triggered instead -- this axis's "
+                f"direction is probably backwards (wiring or dir_value). Stopped "
+                f"immediately rather than continuing into it."
+            )
         if steps >= HOMING_MAX_STEPS:
             raise RuntimeError(f"{endstop_name} never triggered during homing -- check wiring.")
         req.set_value(step_pin, Value.ACTIVE)
