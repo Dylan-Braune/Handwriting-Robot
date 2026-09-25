@@ -579,6 +579,14 @@ def input_listener():
             if estopped:
                 print("Cannot calibrate while emergency-stopped -- clear with 'r' first.")
                 continue
+            # CALIBRATING mode makes the main loop skip its automatic
+            # emergency-stop reaction (see the main loop below) -- without
+            # this, that reaction fires on every switch calibrate() hits
+            # ON PURPOSE, forcing STEP1_PIN/STEP2_PIN to INACTIVE from a
+            # SEPARATE thread while _step_axis() is mid-pulse on those same
+            # pins. That race corrupted the step count and caused exactly
+            # the confusing, contradictory failures seen during testing.
+            current_mode = "CALIBRATING"
             try:
                 result = calibrate()
                 print(f"Calibrated. steps/mm: X={result['steps_per_mm_x']:.3f} "
@@ -586,6 +594,10 @@ def input_listener():
                       f"{result['usable_width_mm']:.1f} x {result['usable_height_mm']:.1f} mm")
             except RuntimeError as e:
                 print(f"Calibration failed: {e}")
+            finally:
+                if not estopped:
+                    current_mode = "RPM"
+                    target_rpm = 0.0
         elif cmd == "r":
             hit = triggered_endstop()
             if hit is not None:
@@ -874,6 +886,17 @@ if __name__ == "__main__":
             # End-stops ALWAYS win, checked before every single step pulse in
             # either mode -- this is the actual emergency-stop priority the
             # user asked for, not just a polite suggestion to the motors.
+            #
+            # EXCEPT during CALIBRATING: calibrate() (running in the OTHER
+            # thread, input_listener) deliberately drives INTO switches on
+            # purpose and handles that itself in _step_axis(). If this loop
+            # also reacted here, it would force STEP1_PIN/STEP2_PIN to
+            # INACTIVE from a second thread while _step_axis() is mid-pulse
+            # on those same pins -- a real race that corrupted step counts
+            # and caused confusing, contradictory calibration failures.
+            if current_mode == "CALIBRATING":
+                time.sleep(0.01)
+                continue
             hit = triggered_endstop()
             if hit is not None:
                 req.set_value(STEP1_PIN, Value.INACTIVE)
