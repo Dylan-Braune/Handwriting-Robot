@@ -780,7 +780,7 @@ def _step_axis(step_pin, dir_pin, dir_value, stop_when, ignore=frozenset()):
         steps += 1
 
 
-def _calibrate_axis(step_pin, dir_pin, min_name, max_name):
+def _calibrate_axis(step_pin, dir_pin, min_name, max_name, other_axis_names=frozenset()):
     """Direction-agnostic axis calibration: drives one way (arbitrarily
     picked as Value.ACTIVE) until EITHER of this axis's two end-stops
     triggers -- whichever one that turns out to be -- then reverses and
@@ -790,19 +790,27 @@ def _calibrate_axis(step_pin, dir_pin, min_name, max_name):
     by an INVERT_X/INVERT_Y mismatch, a backwards motor wire, or swapped
     switch wires the way the old direction-specific homing could.
 
+    other_axis_names: the OTHER axis's two switch names (e.g. X's, when
+    calibrating Y). If that axis was JUST calibrated, the gantry is
+    still physically resting against whichever switch it ended at, so
+    that switch reads triggered from the very first instant -- ignored
+    here rather than treated as a wiring fault, since it's the other
+    axis's normal resting position, not this axis doing anything wrong.
+
     Returns (first_hit, second_hit, steps_between)."""
     print(f"[calibrate] driving until either {min_name} or {max_name} is activated...")
     first_hit, _ = _step_axis(step_pin, dir_pin, Value.ACTIVE,
-                               stop_when=lambda h: h in (min_name, max_name))
+                               stop_when=lambda h: h in (min_name, max_name),
+                               ignore=other_axis_names)
     print(f"[calibrate] {first_hit} has been activated. Now reversing toward "
           f"{max_name if first_hit == min_name else min_name}...")
     other = max_name if first_hit == min_name else min_name
     # ignore=first_hit: that switch may still read triggered for the
     # first few steps of the reverse move (release lag), which is
-    # expected, not a wiring fault.
+    # expected, not a wiring fault. Same reasoning for other_axis_names.
     second_hit, travel_steps = _step_axis(step_pin, dir_pin, Value.INACTIVE,
                                            stop_when=lambda h: h == other,
-                                           ignore={first_hit})
+                                           ignore={first_hit} | set(other_axis_names))
     print(f"[calibrate] {second_hit} has been activated. {travel_steps} steps measured between the two switches.")
     return first_hit, second_hit, travel_steps
 
@@ -845,7 +853,11 @@ def calibrate():
     current_x_steps = x_travel_steps if x_second == "X_MAX" else 0
 
     print("[calibrate] === Y axis ===")
-    _y_first, y_second, y_travel_steps = _calibrate_axis(STEP2_PIN, DIR2_PIN, "Y_MIN", "Y_MAX")
+    # other_axis_names={"X_MIN","X_MAX"}: X was just calibrated, so the
+    # gantry is still resting against x_second -- that must NOT be
+    # mistaken for a Y-axis wiring fault.
+    _y_first, y_second, y_travel_steps = _calibrate_axis(
+        STEP2_PIN, DIR2_PIN, "Y_MIN", "Y_MAX", other_axis_names={"X_MIN", "X_MAX"})
     current_y_steps = y_travel_steps if y_second == "Y_MAX" else 0
 
     calibration.update({
