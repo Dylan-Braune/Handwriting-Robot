@@ -128,7 +128,7 @@ CHIP_PATH = "/dev/gpiochip0"
 # OTHER way) -- that would mean the actual issue was elsewhere and this
 # made it worse, not better.
 INVERT_X = True
-INVERT_Y = False
+INVERT_Y = True
 DIR1_PIN = 64   # Physical Pin 7 (moved from offset 62 after rewiring)
 STEP1_PIN = 68  # Physical Pin 11
 DIR2_PIN = 81   # Physical Pin 12
@@ -239,6 +239,21 @@ def triggered_endstop():
     return None
 
 
+def _axis_dir_value(invert, positive):
+    """The gpiod Value to send an axis's DIR pin to move in its
+    positive (True) or negative (False) direction, respecting that
+    axis's INVERT_X/INVERT_Y flag. SINGLE SOURCE OF TRUTH for this
+    project's direction convention -- both bresenham_move() (normal
+    drawing) and _home_axis()/calibrate() (homing) call this, so they
+    can never disagree with each other about which pin value drives
+    which physical direction. They used to compute this separately
+    (homing had its own hardcoded Value.INACTIVE/ACTIVE guess) and that
+    mismatch was a real bug: swapping INVERT_X to fix drawing direction
+    did nothing for homing, and vice versa."""
+    forward = positive != invert   # XOR: invert flips which value means "forward"
+    return Value.ACTIVE if forward else Value.INACTIVE
+
+
 def bresenham_move(dx, dy, step_delay_s=CIRCLE_STEP_DELAY_S):
     """Steps BOTH axes from the current position by (dx, dy) steps, using
     the same Bresenham interpolation motion_planner.py/motion_executor.ino
@@ -257,10 +272,8 @@ def bresenham_move(dx, dy, step_delay_s=CIRCLE_STEP_DELAY_S):
     ax, ay = abs(dx), abs(dy)
     sx = 1 if dx >= 0 else -1
     sy = 1 if dy >= 0 else -1
-    dir_x = -sx if INVERT_X else sx
-    dir_y = -sy if INVERT_Y else sy
-    req.set_value(DIR1_PIN, Value.ACTIVE if dir_x > 0 else Value.INACTIVE)
-    req.set_value(DIR2_PIN, Value.ACTIVE if dir_y > 0 else Value.INACTIVE)
+    req.set_value(DIR1_PIN, _axis_dir_value(INVERT_X, sx > 0))
+    req.set_value(DIR2_PIN, _axis_dir_value(INVERT_Y, sy > 0))
 
     def pulse(step_pin):
         req.set_value(step_pin, Value.ACTIVE)
@@ -780,14 +793,19 @@ def calibrate():
     if triggered_endstop() is not None:
         raise RuntimeError(f"Cannot calibrate -- end-stop {tripped_switch} already tripped.")
 
-    _home_axis(STEP1_PIN, DIR1_PIN, Value.INACTIVE, "X_MIN")
+    # Direction values come from the SAME _axis_dir_value() bresenham_move
+    # uses -- MIN is the negative direction, MAX is the positive direction,
+    # exactly like a step delta of dx<0 vs dx>=0 would mean during normal
+    # drawing. This is what fixes the earlier bug where homing used its
+    # own hardcoded guess, independent of INVERT_X/INVERT_Y.
+    _home_axis(STEP1_PIN, DIR1_PIN, _axis_dir_value(INVERT_X, False), "X_MIN")
     current_x_steps = 0
-    x_travel_steps = _home_axis(STEP1_PIN, DIR1_PIN, Value.ACTIVE, "X_MAX")
+    x_travel_steps = _home_axis(STEP1_PIN, DIR1_PIN, _axis_dir_value(INVERT_X, True), "X_MAX")
     current_x_steps = x_travel_steps
 
-    _home_axis(STEP2_PIN, DIR2_PIN, Value.INACTIVE, "Y_MIN")
+    _home_axis(STEP2_PIN, DIR2_PIN, _axis_dir_value(INVERT_Y, False), "Y_MIN")
     current_y_steps = 0
-    y_travel_steps = _home_axis(STEP2_PIN, DIR2_PIN, Value.ACTIVE, "Y_MAX")
+    y_travel_steps = _home_axis(STEP2_PIN, DIR2_PIN, _axis_dir_value(INVERT_Y, True), "Y_MAX")
     current_y_steps = y_travel_steps
 
     calibration.update({
