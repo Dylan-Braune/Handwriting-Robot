@@ -126,7 +126,7 @@ CHIP_PATH = "/dev/gpiochip0"
 # made it worse, not better.
 INVERT_X = True
 INVERT_Y = False
-DIR1_PIN = 62   # Physical Pin 7
+DIR1_PIN = 64   # Physical Pin 7 (moved from offset 62 after rewiring)
 STEP1_PIN = 68  # Physical Pin 11
 DIR2_PIN = 81   # Physical Pin 12
 STEP2_PIN = 69  # Physical Pin 13
@@ -182,7 +182,7 @@ def calculate_delay(rpm):
     step_delay_s = (60.0 / (abs_rpm * STEPS_PER_REV)) / 2.0
 
 
-ENDSTOP_DEBOUNCE_S = 0.002  # real switch stays HIGH; motor-noise spikes don't
+ENDSTOP_DEBOUNCE_S = 0.004  # real switch stays HIGH; motor-noise spikes don't
 
 
 def triggered_endstop():
@@ -263,7 +263,12 @@ def pen_is_up():
     return req.get_value(PEN_SWITCH_PIN) == Value.ACTIVE
 
 
-def set_pen(target_up, timeout_s=1.0):
+PEN_UP_OVERRUN_S = 0.04  # extra run time after the switch first trips, to
+                          # let the pen mechanism finish seating -- tune
+                          # up/down based on how early your switch triggers
+
+
+def set_pen(target_up, timeout_s=3.0):
     """Runs the pen motor only until the switch confirms the target
     state (or `timeout_s` elapses, which means a real fault -- motor
     stalled, switch not wired/triggering -- and is reported, not
@@ -284,6 +289,11 @@ def set_pen(target_up, timeout_s=1.0):
             reached = True
             break
         time.sleep(0.002)
+    if reached and target_up:
+        # Switch trips early on the up stroke -- keep the motor running a
+        # little longer so the pen actually finishes lifting, instead of
+        # cutting power the instant the switch first makes contact.
+        time.sleep(PEN_UP_OVERRUN_S)
     req.set_value(PEN_MOTOR_PIN, Value.INACTIVE)
     if not reached:
         print("Pen move did NOT confirm via switch -- check motor/wiring.")
