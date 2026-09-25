@@ -169,7 +169,10 @@ CIRCLE_STEP_DELAY_S = 0.000002   # per-step pulse HIGH time, same as the old cod
 X_SWITCH_TRAVEL_MM = 204.0
 Y_SWITCH_TRAVEL_MM = 262.0
 EDGE_TOLERANCE_MM = 5.0
-HOMING_STEP_DELAY_S = 0.003   # slower than normal drawing -- gentler contact with the switches
+HOMING_STEP_DELAY_S = 0.0012  # slower than normal drawing -- gentler contact with the switches.
+                              # Lower this further only with caution: too fast risks skipped
+                              # steps (throwing off the measured travel) or a harder impact
+                              # on the switch itself.
 HOMING_MAX_STEPS = 200_000    # safety cap: a switch that never triggers is a fault, not a reason to spin forever
 
 # Populated by calibrate(). Nothing may write to the gantry until
