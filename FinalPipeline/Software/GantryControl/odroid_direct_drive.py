@@ -644,9 +644,18 @@ def input_listener():
                     target_rpm = 0.0
                     print("Mode: Stopped")
                 else:
-                    dir_val = Value.ACTIVE if target_rpm > 0 else Value.INACTIVE
-                    req.set_value(DIR1_PIN, dir_val)
-                    req.set_value(DIR2_PIN, dir_val)
+                    # Route through _axis_dir_value() -- the SAME function
+                    # bresenham_move()/calibrate() use -- so "positive RPM"
+                    # here means the same physical direction as "positive"
+                    # means everywhere else. This used to set both DIR pins
+                    # directly, ignoring INVERT_X/INVERT_Y entirely: a THIRD
+                    # disconnected direction convention, on top of the
+                    # bresenham_move/_home_axis mismatch already fixed --
+                    # meaning a direction observed via a plain RPM test told
+                    # you nothing reliable about what calibrate() or drawing
+                    # would actually do.
+                    req.set_value(DIR1_PIN, _axis_dir_value(INVERT_X, target_rpm > 0))
+                    req.set_value(DIR2_PIN, _axis_dir_value(INVERT_Y, target_rpm > 0))
                     calculate_delay(target_rpm)
                     print(f"Mode: RPM ({target_rpm})")
             except ValueError:
