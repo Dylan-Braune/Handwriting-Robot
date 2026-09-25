@@ -791,8 +791,11 @@ def _calibrate_axis(step_pin, dir_pin, min_name, max_name):
     switch wires the way the old direction-specific homing could.
 
     Returns (first_hit, second_hit, steps_between)."""
+    print(f"[calibrate] driving until either {min_name} or {max_name} is activated...")
     first_hit, _ = _step_axis(step_pin, dir_pin, Value.ACTIVE,
                                stop_when=lambda h: h in (min_name, max_name))
+    print(f"[calibrate] {first_hit} has been activated. Now reversing toward "
+          f"{max_name if first_hit == min_name else min_name}...")
     other = max_name if first_hit == min_name else min_name
     # ignore=first_hit: that switch may still read triggered for the
     # first few steps of the reverse move (release lag), which is
@@ -800,6 +803,7 @@ def _calibrate_axis(step_pin, dir_pin, min_name, max_name):
     second_hit, travel_steps = _step_axis(step_pin, dir_pin, Value.INACTIVE,
                                            stop_when=lambda h: h == other,
                                            ignore={first_hit})
+    print(f"[calibrate] {second_hit} has been activated. {travel_steps} steps measured between the two switches.")
     return first_hit, second_hit, travel_steps
 
 
@@ -836,9 +840,11 @@ def calibrate():
 
     # Direction-agnostic: doesn't need INVERT_X/INVERT_Y to be correct at
     # all, see _calibrate_axis()'s docstring.
+    print("[calibrate] === X axis ===")
     _x_first, x_second, x_travel_steps = _calibrate_axis(STEP1_PIN, DIR1_PIN, "X_MIN", "X_MAX")
     current_x_steps = x_travel_steps if x_second == "X_MAX" else 0
 
+    print("[calibrate] === Y axis ===")
     _y_first, y_second, y_travel_steps = _calibrate_axis(STEP2_PIN, DIR2_PIN, "Y_MIN", "Y_MAX")
     current_y_steps = y_travel_steps if y_second == "Y_MAX" else 0
 
