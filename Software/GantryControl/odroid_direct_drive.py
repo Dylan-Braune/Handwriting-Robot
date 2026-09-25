@@ -154,10 +154,14 @@ STEPS_PER_MM = 80.0
 DEFAULT_CIRCLE_RADIUS_MM = 8.0
 CIRCLE_STEP_DELAY_S = 0.000002   # per-step pulse HIGH time, same as the old code used
 
-# System State
+# System State -- starts STOPPED. target_rpm must default to 0.0: the
+# main loop pulses the motors the instant it sees a nonzero target_rpm,
+# so a nonzero default here would mean the gantry starts moving on its
+# own the moment the script runs, before you've even had a chance to
+# hit an end-stop or emergency-stop it.
 current_mode = "RPM"
-target_rpm = 30.0
-step_delay_s = 0.005
+target_rpm = 0.0
+step_delay_s = 0.0
 running = True
 
 theta = 0.0
