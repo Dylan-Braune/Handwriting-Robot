@@ -738,34 +738,29 @@ class NotCalibratedError(RuntimeError):
     pass
 
 
-def _home_axis(step_pin, dir_pin, dir_value, endstop_name):
-    """Steps ONE axis, slowly, in one direction, until an end-stop
-    triggers. Returns the number of steps taken.
+def _step_axis(step_pin, dir_pin, dir_value, stop_when, ignore=frozenset()):
+    """Steps ONE axis, slowly, with dir_pin held at dir_value, until
+    `stop_when(triggered_name)` returns True for some triggered
+    end-stop. Any OTHER triggered end-stop not in `ignore` is treated as
+    a real fault (crossed axis wiring) and raises immediately. Returns
+    (name_that_stopped_it, steps_taken).
 
-    Stops on ANY triggered end-stop, not just the expected one -- and
-    raises immediately if it's the wrong one, instead of continuing to
-    pulse into a switch it doesn't recognise as "success". Checking only
-    for `endstop_name` and ignoring every other trigger was a real bug:
-    if this axis's direction is backwards (wired the other way vs. what
-    dir_value assumes), it drives into the OPPOSITE switch and would
-    have kept grinding against it for up to HOMING_MAX_STEPS before ever
-    stopping. Raises if HOMING_MAX_STEPS is reached with nothing
-    triggering at all -- a real fault (switch not wired), not something
-    to loop on forever."""
+    This is direction-AGNOSTIC on purpose: it never assumes which
+    physical direction dir_value drives, so a wrong INVERT_X/INVERT_Y or
+    a backwards motor/switch wiring can't make it grind into a switch it
+    doesn't recognise -- it just finds out empirically which switch this
+    direction leads to and reports that back."""
     req.set_value(dir_pin, dir_value)
     steps = 0
     while True:
         hit = triggered_endstop()
         if hit is not None:
-            if hit == endstop_name:
-                return steps
-            raise RuntimeError(
-                f"Expected {endstop_name} but {hit} triggered instead -- this axis's "
-                f"direction is probably backwards (wiring or dir_value). Stopped "
-                f"immediately rather than continuing into it."
-            )
+            if stop_when(hit):
+                return hit, steps
+            if hit not in ignore:
+                raise RuntimeError(f"Unexpected end-stop {hit} triggered -- check wiring (crossed axes?).")
         if steps >= HOMING_MAX_STEPS:
-            raise RuntimeError(f"{endstop_name} never triggered during homing -- check wiring.")
+            raise RuntimeError("No expected end-stop triggered during homing -- check wiring.")
         req.set_value(step_pin, Value.ACTIVE)
         time.sleep(HOMING_STEP_DELAY_S)
         req.set_value(step_pin, Value.INACTIVE)
@@ -773,11 +768,36 @@ def _home_axis(step_pin, dir_pin, dir_value, endstop_name):
         steps += 1
 
 
+def _calibrate_axis(step_pin, dir_pin, min_name, max_name):
+    """Direction-agnostic axis calibration: drives one way (arbitrarily
+    picked as Value.ACTIVE) until EITHER of this axis's two end-stops
+    triggers -- whichever one that turns out to be -- then reverses and
+    drives until the OTHER one triggers, counting the steps between
+    them. Never needs to know in advance which DIR value means "toward
+    MIN"; it discovers that empirically every run, so it can't be broken
+    by an INVERT_X/INVERT_Y mismatch, a backwards motor wire, or swapped
+    switch wires the way the old direction-specific homing could.
+
+    Returns (first_hit, second_hit, steps_between)."""
+    first_hit, _ = _step_axis(step_pin, dir_pin, Value.ACTIVE,
+                               stop_when=lambda h: h in (min_name, max_name))
+    other = max_name if first_hit == min_name else min_name
+    # ignore=first_hit: that switch may still read triggered for the
+    # first few steps of the reverse move (release lag), which is
+    # expected, not a wiring fault.
+    second_hit, travel_steps = _step_axis(step_pin, dir_pin, Value.INACTIVE,
+                                           stop_when=lambda h: h == other,
+                                           ignore={first_hit})
+    return first_hit, second_hit, travel_steps
+
+
 def calibrate():
     """Full calibration sequence -- must be run before any writing job.
 
-    1. Homes X to X_MIN (defines step 0), then drives to X_MAX, counting
-       the real number of steps between the two switches.
+    1. Drives X in an arbitrary direction until EITHER X switch triggers
+       (whichever one that is), then reverses until the OTHER X switch
+       triggers, counting steps between them -- see _calibrate_axis().
+       Doesn't need to know in advance which way is "toward X_MIN".
     2. Same for Y.
     3. Derives the ACTUAL steps-per-mm for each axis from that measured
        step count and the known physical switch-to-switch distance,
@@ -802,20 +822,13 @@ def calibrate():
     if triggered_endstop() is not None:
         raise RuntimeError(f"Cannot calibrate -- end-stop {tripped_switch} already tripped.")
 
-    # Direction values come from the SAME _axis_dir_value() bresenham_move
-    # uses -- MIN is the negative direction, MAX is the positive direction,
-    # exactly like a step delta of dx<0 vs dx>=0 would mean during normal
-    # drawing. This is what fixes the earlier bug where homing used its
-    # own hardcoded guess, independent of INVERT_X/INVERT_Y.
-    _home_axis(STEP1_PIN, DIR1_PIN, _axis_dir_value(INVERT_X, False), "X_MIN")
-    current_x_steps = 0
-    x_travel_steps = _home_axis(STEP1_PIN, DIR1_PIN, _axis_dir_value(INVERT_X, True), "X_MAX")
-    current_x_steps = x_travel_steps
+    # Direction-agnostic: doesn't need INVERT_X/INVERT_Y to be correct at
+    # all, see _calibrate_axis()'s docstring.
+    _x_first, x_second, x_travel_steps = _calibrate_axis(STEP1_PIN, DIR1_PIN, "X_MIN", "X_MAX")
+    current_x_steps = x_travel_steps if x_second == "X_MAX" else 0
 
-    _home_axis(STEP2_PIN, DIR2_PIN, _axis_dir_value(INVERT_Y, False), "Y_MIN")
-    current_y_steps = 0
-    y_travel_steps = _home_axis(STEP2_PIN, DIR2_PIN, _axis_dir_value(INVERT_Y, True), "Y_MAX")
-    current_y_steps = y_travel_steps
+    _y_first, y_second, y_travel_steps = _calibrate_axis(STEP2_PIN, DIR2_PIN, "Y_MIN", "Y_MAX")
+    current_y_steps = y_travel_steps if y_second == "Y_MAX" else 0
 
     calibration.update({
         "done": True,
