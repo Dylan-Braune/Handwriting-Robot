@@ -169,10 +169,11 @@ CIRCLE_STEP_DELAY_S = 0.000002   # per-step pulse HIGH time, same as the old cod
 X_SWITCH_TRAVEL_MM = 204.0
 Y_SWITCH_TRAVEL_MM = 262.0
 EDGE_TOLERANCE_MM = 5.0
-HOMING_STEP_DELAY_S = 0.0012  # slower than normal drawing -- gentler contact with the switches.
-                              # Lower this further only with caution: too fast risks skipped
-                              # steps (throwing off the measured travel) or a harder impact
-                              # on the switch itself.
+HOMING_STEP_DELAY_S = 0.0008  # 1.5x faster than before (was 0.0012s). Shared by BOTH axes --
+                              # X and Y have always run at the identical speed here, so this
+                              # one constant speeds up both equally. Lower further only with
+                              # caution: too fast risks skipped steps (throwing off the
+                              # measured travel) or a harder impact on the switch itself.
 HOMING_MAX_STEPS = 200_000    # safety cap: a switch that never triggers is a fault, not a reason to spin forever
 
 # Populated by calibrate(). Nothing may write to the gantry until
@@ -893,9 +894,15 @@ def write_gcode_file(path):
     }
 
 
+# Bump this string every time this file changes, so it's obvious from the
+# startup print alone whether the Odroid is actually running the latest
+# version -- confusion over stale copies has cost real debugging time.
+CODE_VERSION = "calib-v5-cross-axis-ignore-speed1.5x"
+
 if __name__ == "__main__":
     connect()
     threading.Thread(target=input_listener, daemon=True).start()
+    print(f"[version: {CODE_VERSION}]")
     print("Ready. Commands: 'calibrate' (required before 'g'), 'c' (circle), 'g <file>' (run G-code), [number] (RPM/stop), "
           "'u'/'d' (pen), 'r' (clear estop), 'q' (quit)")
 
