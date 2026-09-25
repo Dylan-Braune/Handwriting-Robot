@@ -102,7 +102,14 @@ Y_SWITCH_TRAVEL_MM = 262.0
 EDGE_TOLERANCE_MM = 5.0        # kept clear of both switches on both axes
 HOMING_STEP_DELAY_S = 0.0008   # per-step pulse time while homing (both axes)
 HOMING_MAX_STEPS = 200_000     # a switch that never triggers is a fault
-ENDSTOP_DEBOUNCE_S = 0.004     # filters brief noise spikes, not real triggers
+ENDSTOP_DEBOUNCE_S = 0.006     # gap between confirmation samples below
+ENDSTOP_CONFIRM_SAMPLES = 3    # a pin must read ACTIVE this many times in a
+                               # row (spaced ENDSTOP_DEBOUNCE_S apart) before
+                               # it's trusted -- a single re-check missed
+                               # electrically-noisy motors (no flyback diode,
+                               # shared ground return) that can hold a switch
+                               # input HIGH for several ms at a time, well
+                               # past a one-shot debounce window
 RETRACT_MM = 5.0               # 0.5cm pulled back off a switch on emergency
                                # stop, so it isn't left latched HIGH -- without
                                # this, clearing an estop with 'r' still leaves
@@ -207,18 +214,32 @@ def triggered_endstop(ignore=frozenset()):
     (e.g. the other axis resting at its own limit) can never hide a
     genuinely different switch further down the scan.
 
-    Debounced: a pin must still read ACTIVE after ENDSTOP_DEBOUNCE_S
-    before it's trusted, filtering brief noise (e.g. from switching the
-    pen motor) without adding real delay to the common "nothing
-    triggered" case."""
+    Debounced: a pin must read ACTIVE on ENDSTOP_CONFIRM_SAMPLES
+    consecutive checks, ENDSTOP_DEBOUNCE_S apart, before it's trusted.
+    A single re-check isn't enough against motor electrical noise, which
+    can hold a pin HIGH for several ms -- longer than one debounce gap.
+    Adds no delay to the common "nothing triggered" case, since the
+    sampling only starts once a pin is seen HIGH at all."""
     for name, pin in ENDSTOP_PINS.items():
         if name in ignore:
             continue
-        if req.get_value(pin) == Value.ACTIVE:
+        if req.get_value(pin) != Value.ACTIVE:
+            continue
+        for _ in range(ENDSTOP_CONFIRM_SAMPLES - 1):
             time.sleep(ENDSTOP_DEBOUNCE_S)
-            if req.get_value(pin) == Value.ACTIVE:
-                return name
+            if req.get_value(pin) != Value.ACTIVE:
+                break
+        else:
+            return name
     return None
+
+
+def _all_triggered_endstops():
+    """Every currently-triggered switch name, unlike triggered_endstop()
+    which stops at the first one. More than one can be genuinely active
+    at once -- e.g. sitting in a corner, or right after homing, where
+    both axes are still resting against the switch they just found."""
+    return [name for name in ENDSTOP_PINS if triggered_endstop(ignore=set(ENDSTOP_PINS) - {name}) == name]
 
 
 def axis_dir_value(invert, positive):
@@ -236,11 +257,14 @@ def axis_dir_value(invert, positive):
 _RETREAT_SIGN = {"X_MIN": +1, "X_MAX": -1, "Y_MIN": +1, "Y_MAX": -1}
 
 
-def _retract_off_switch(hit):
+def _retract_off_switch(hit, ignore=frozenset()):
     """Steps the tripped axis RETRACT_MM back off `hit`, updating the
-    tracked step count as it goes. Stops early (without raising) if a
-    different switch trips during the retract -- that's a real
-    mechanical problem, not something to push through."""
+    tracked step count as it goes. `ignore`: other switches that are
+    expected to still read triggered right now (e.g. the other axis,
+    mid-recovery from a corner) and must not be mistaken for a new
+    fault. Stops early (without raising) if some OTHER, unexpected
+    switch trips during the retract -- that's a real mechanical
+    problem, not something to push through."""
     global current_x_steps, current_y_steps
     is_x = hit.startswith("X")
     sign = _RETREAT_SIGN[hit]
@@ -252,7 +276,7 @@ def _retract_off_switch(hit):
     req.set_value(dir_pin, axis_dir_value(invert, sign > 0))
     moved = 0
     for _ in range(target_steps):
-        if triggered_endstop(ignore={hit}) is not None:
+        if triggered_endstop(ignore={hit} | set(ignore)) is not None:
             break
         req.set_value(step_pin, Value.ACTIVE)
         time.sleep(HOMING_STEP_DELAY_S)
@@ -267,19 +291,24 @@ def _retract_off_switch(hit):
 
 
 def _trigger_emergency_stop(hit):
-    """Latches the emergency-stop state and immediately retracts off the
-    switch that caused it, so it doesn't stay physically triggered (which
-    would otherwise force a manual power-cycle just to move again). Runs
-    at most once per trip -- safe to call from both the main loop and a
-    G-code job, whichever notices the trigger first."""
+    """Latches the emergency-stop state and immediately retracts off
+    every switch currently triggered (not just `hit` -- e.g. a corner
+    hit, or a G-code job aborting right after calibration, can leave
+    both axes resting against a switch at once), so nothing stays
+    physically latched and forces a manual power-cycle just to move
+    again. Runs at most once per trip -- safe to call from both the
+    main loop and a G-code job, whichever notices the trigger first."""
     global estopped, tripped_switch
     if estopped:
         return
     estopped, tripped_switch = True, hit
     req.set_value(STEP1_PIN, Value.INACTIVE)
     req.set_value(STEP2_PIN, Value.INACTIVE)
-    print(f"\n!!! EMERGENCY STOP -- end-stop {hit} triggered !!! Retracting {RETRACT_MM}mm...")
-    _retract_off_switch(hit)
+    all_hits = _all_triggered_endstops() or [hit]
+    print(f"\n!!! EMERGENCY STOP -- end-stop(s) {', '.join(all_hits)} triggered !!! "
+          f"Retracting {RETRACT_MM}mm off each...")
+    for h in all_hits:
+        _retract_off_switch(h, ignore=set(all_hits) - {h})
     print("Retracted. Clear with 'r' once safe to resume.")
 
 
@@ -418,7 +447,12 @@ def calibrate():
     """Homes both axes, derives real steps-per-mm from the measured
     travel and the known switch-to-switch distance, then parks at the
     safe starting corner (EDGE_TOLERANCE_MM in from both switches).
-    Refuses if an end-stop is already tripped."""
+    Refuses if an end-stop is already tripped.
+
+    Each axis is retracted RETRACT_MM off the switch it ends homing on,
+    immediately after that axis finishes -- otherwise it's left resting
+    switch-down, which would trip the main loop's emergency stop the
+    instant calibration mode ends (before the final park move even runs)."""
     global current_x_steps, current_y_steps
 
     if triggered_endstop() is not None:
@@ -427,19 +461,21 @@ def calibrate():
     print("[calibrate] === X axis ===")
     _, x_second, x_travel = _calibrate_axis(STEP1_PIN, DIR1_PIN, "X_MIN", "X_MAX")
     current_x_steps = x_travel if x_second == "X_MAX" else 0
+    calibration["steps_per_mm_x"] = x_travel / X_SWITCH_TRAVEL_MM
+    _retract_off_switch(x_second)
+    print(f"[calibrate] retracted off {x_second}.")
 
     print("[calibrate] === Y axis ===")
     _, y_second, y_travel = _calibrate_axis(
         STEP2_PIN, DIR2_PIN, "Y_MIN", "Y_MAX", other_axis_names={"X_MIN", "X_MAX"})
     current_y_steps = y_travel if y_second == "Y_MAX" else 0
+    calibration["steps_per_mm_y"] = y_travel / Y_SWITCH_TRAVEL_MM
+    _retract_off_switch(y_second)
+    print(f"[calibrate] retracted off {y_second}.")
 
-    calibration.update({
-        "done": True,
-        "steps_per_mm_x": x_travel / X_SWITCH_TRAVEL_MM,
-        "steps_per_mm_y": y_travel / Y_SWITCH_TRAVEL_MM,
-        "usable_width_mm": X_SWITCH_TRAVEL_MM - 2 * EDGE_TOLERANCE_MM,
-        "usable_height_mm": Y_SWITCH_TRAVEL_MM - 2 * EDGE_TOLERANCE_MM,
-    })
+    calibration["done"] = True
+    calibration["usable_width_mm"] = X_SWITCH_TRAVEL_MM - 2 * EDGE_TOLERANCE_MM
+    calibration["usable_height_mm"] = Y_SWITCH_TRAVEL_MM - 2 * EDGE_TOLERANCE_MM
     _gcode_linear_move(0.0, 0.0, feed_mm_min=600.0)  # park at the safe start corner
     return dict(calibration)
 
