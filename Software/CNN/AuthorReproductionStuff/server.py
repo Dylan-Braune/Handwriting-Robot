@@ -31,9 +31,11 @@ Endpoints (all JSON in/out unless noted):
     GET  /api/images/<image_id>       -- serves a previously captured/uploaded image
     POST /api/classify                -- multipart: image (file) or image_id, expected_text, expected_author
     POST /api/generate                -- json: text, author, [nTries] -> gcode + preview
-    POST /api/write/<job_id>          -- sends a generated job's G-code to the physical gantry
-    GET  /api/gantry/status           -- {"connected": bool} -- is a gantry actually attached here?
-    GET  /api/gcode/<job_id>          -- serves the raw .gcode file for a generate job
+    POST /api/gcode/upload            -- multipart: gcode (file), [expected_text] -> same details as /api/generate
+    POST /api/write/<job_id>          -- sends a generated/uploaded job's G-code to the physical gantry
+    GET  /api/gantry/status           -- {"connected", "calibrated", "calibration"} -- gantry state
+    POST /api/gantry/calibrate        -- runs the homing/calibration sequence, required before /api/write
+    GET  /api/gcode/<job_id>          -- serves the raw .gcode file for a generate/upload job
     GET  /api/model_info              -- model specs + measured accuracy
     GET  /api/glyphs/<author>         -- glyph-grid PNG for one author
     GET  /api/samples/<author>        -- list of real sample crops (image URLs + transcriptions)
@@ -377,23 +379,46 @@ def api_generate():
 
 @app.route("/api/gantry/status", methods=["GET"])
 def api_gantry_status():
-    if GANTRY.is_connected():
-        return jsonify({"connected": True})
+    connected = GANTRY.is_connected()
+    if not connected:
+        try:
+            GANTRY.connect()
+            connected = True
+        except GANTRY.GantryNotConnectedError as e:
+            return jsonify({"connected": False, "calibrated": False, "detail": str(e)})
+    return jsonify({
+        "connected": connected,
+        "calibrated": GANTRY.calibration["done"],
+        "calibration": GANTRY.calibration if GANTRY.calibration["done"] else None,
+    })
+
+
+@app.route("/api/gantry/calibrate", methods=["POST"])
+def api_gantry_calibrate():
+    """Runs the full homing/calibration sequence (see calibrate() in
+    odroid_direct_drive.py): finds the real end-stop positions, measures
+    the actual steps-per-mm for each axis, and parks the gantry at the
+    safe starting corner. Must succeed before /api/write will run
+    anything -- the frontend greys out Generate/Upload/Send until this
+    has been called once per server session."""
     try:
         GANTRY.connect()
+        result = GANTRY.calibrate()
     except GANTRY.GantryNotConnectedError as e:
-        return jsonify({"connected": False, "detail": str(e)})
-    return jsonify({"connected": True})
+        return jsonify({"calibrated": False, "message": f"Gantry not connected: {e}"}), 200
+    except RuntimeError as e:
+        return jsonify({"calibrated": False, "message": f"Calibration failed: {e}"}), 200
+    return jsonify({"calibrated": True, "calibration": result})
 
 
 @app.route("/api/write/<job_id>", methods=["POST"])
 def api_write_gcode(job_id):
-    """Sends a previously-generated job's G-code to the physical gantry.
-    On the Odroid with the hardware actually wired up, this really draws.
-    Anywhere else (your laptop, testing), GantryNotConnectedError is
-    caught here and reported as a normal JSON response -- not a 500 --
-    since "no gantry attached" is an expected, everyday state on a dev
-    machine, not a server bug."""
+    """Sends a previously-generated (or uploaded) job's G-code to the
+    physical gantry. On the Odroid with the hardware actually wired up,
+    this really draws. Anywhere else (your laptop, testing), or if
+    calibration hasn't been run yet this session, that's caught here and
+    reported as a normal JSON response -- not a 500 -- since both are
+    expected, everyday states, not server bugs."""
     safe_id = "".join(c for c in job_id if c.isalnum())
     gcode_path = JOBS_DIR / safe_id / "job.gcode"
     if not gcode_path.exists():
@@ -407,6 +432,13 @@ def api_write_gcode(job_id):
             "gantry_connected": False,
             "message": f"Gantry not connected: {e}",
         }), 200
+    except GANTRY.NotCalibratedError as e:
+        return jsonify({
+            "sent": False,
+            "gantry_connected": True,
+            "calibrated": False,
+            "message": f"Calibration required: {e}",
+        }), 200
 
     if result["estopped"]:
         return jsonify({
@@ -417,6 +449,51 @@ def api_write_gcode(job_id):
         }), 200
 
     return jsonify({"sent": True, "gantry_connected": True, "message": "Job completed."})
+
+
+# ---------------------------------------------------------------------------
+# POST /api/gcode/upload   multipart: gcode (file), [expected_text]
+# Lets you test drawing an arbitrary hand-made/downloaded G-code file
+# (pictures, shapes, whatever) through the exact same preview/read-back/
+# send-to-gantry flow as a text-reproduction job.
+# ---------------------------------------------------------------------------
+@app.route("/api/gcode/upload", methods=["POST"])
+def api_gcode_upload():
+    if "gcode" not in request.files or not request.files["gcode"].filename:
+        return jsonify({"error": "Provide a 'gcode' file"}), 400
+    expected_text = (request.form.get("expected_text") or "").strip()
+
+    job_id = uuid.uuid4().hex
+    job_dir = JOBS_DIR / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    gcode_path = job_dir / "job.gcode"
+    request.files["gcode"].save(gcode_path)
+
+    raw_text = gcode_path.read_text(encoding="utf-8", errors="ignore")
+    line_count = sum(1 for line in raw_text.splitlines() if line.strip())
+    pen_pulses = sum(raw_text.count(cmd) for cmd in ("M3", "M5"))
+
+    cfg = GW.GantryConfig()
+    preview_path = job_dir / "preview.png"
+    try:
+        preview_img, _strokes = GW.RenderGcodePreview(str(gcode_path), cfg, path=str(preview_path))
+    except Exception as e:
+        return jsonify({"error": f"Could not parse/render that G-code file: {e}"}), 422
+
+    read_back = VR.ReadText(TEXT_MODEL, preview_img, DEVICE)
+
+    response = {
+        "job_id": job_id,
+        "gcode_url": f"/api/gcode/{job_id}",
+        "preview_url": f"/api/images/job_{job_id}",
+        "gcode_line_count": line_count,
+        "pen_pulses": pen_pulses,
+        "read_back_text": read_back,
+        "text_accuracy_pct": None,
+    }
+    if expected_text:
+        response["text_accuracy_pct"] = round(VR.CharAcc(read_back, expected_text) * 100, 1)
+    return jsonify(response)
 
 
 @app.route("/api/gcode/<job_id>", methods=["GET"])

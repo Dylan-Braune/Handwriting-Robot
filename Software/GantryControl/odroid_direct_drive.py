@@ -75,6 +75,9 @@ GCODE
     and requires 'r' to clear before anything else will run, same as always.
 
 Commands (via stdin, same as before):
+    calibrate  home both axes, measure real steps-per-mm, move to the
+               safe start corner (see CALIBRATION section). Must be run
+               once per session before 'g' will run a file.
     <number>   RPM mode at that RPM (0 = stop)
     c          circle demo mode
     g <path>   run a G-code file (see GCODE above)
@@ -150,9 +153,34 @@ ENDSTOP_PINS = {"X_MIN": X_MIN_PIN, "X_MAX": X_MAX_PIN,
 # Kinematics Configuration
 MICROSTEPS = 16
 STEPS_PER_REV = 200 * MICROSTEPS
-STEPS_PER_MM = 80.0
+STEPS_PER_MM = 80.0   # assumed value ONLY until calibrate() measures the real one
 DEFAULT_CIRCLE_RADIUS_MM = 8.0
 CIRCLE_STEP_DELAY_S = 0.000002   # per-step pulse HIGH time, same as the old code used
+
+# ---------------------------------------------------------------------------
+# Calibration -- measured switch-to-switch travel (button FULLY pressed to
+# button FULLY pressed), from the physical gantry:
+#   X: 204mm fully pressed (first click ~202mm -- switch compliance, not
+#      used directly, see calibrate()'s docstring)
+#   Y: 262mm fully pressed (first click ~259mm)
+# EDGE_TOLERANCE_MM is kept clear of BOTH switches on both axes, so the
+# usable writing area is switch-to-switch minus 2x this value -- exactly
+# your specified 194mm x 252mm (19.4cm x 25.2cm) working area.
+X_SWITCH_TRAVEL_MM = 204.0
+Y_SWITCH_TRAVEL_MM = 262.0
+EDGE_TOLERANCE_MM = 5.0
+HOMING_STEP_DELAY_S = 0.003   # slower than normal drawing -- gentler contact with the switches
+HOMING_MAX_STEPS = 200_000    # safety cap: a switch that never triggers is a fault, not a reason to spin forever
+
+# Populated by calibrate(). Nothing may write to the gantry until
+# calibration["done"] is True -- see write_gcode_file()'s check below.
+calibration = {
+    "done": False,
+    "steps_per_mm_x": STEPS_PER_MM,
+    "steps_per_mm_y": STEPS_PER_MM,
+    "usable_width_mm": X_SWITCH_TRAVEL_MM - 2 * EDGE_TOLERANCE_MM,
+    "usable_height_mm": Y_SWITCH_TRAVEL_MM - 2 * EDGE_TOLERANCE_MM,
+}
 
 # System State -- starts STOPPED. target_rpm must default to 0.0: the
 # main loop pulses the motors the instant it sees a nonzero target_rpm,
@@ -336,6 +364,24 @@ def parse_gcode_line(raw):
     return (cmd, params) if cmd else None
 
 
+def _clamp_to_usable_area(x_mm, y_mm):
+    """Keeps a commanded point inside the calibrated safe working
+    rectangle (0..usable_width_mm, 0..usable_height_mm in the drawing's
+    own coordinate frame, i.e. already inset from both switches by
+    EDGE_TOLERANCE_MM). This is a SECOND line of defence on top of the
+    physical end-stops -- a bad/uploaded G-code file with an out-of-range
+    coordinate gets pulled back into bounds instead of ever reaching a
+    switch. Prints a warning when it actually clamps something, so a
+    genuinely bad file doesn't fail silently."""
+    w, h = calibration["usable_width_mm"], calibration["usable_height_mm"]
+    clamped_x = min(max(x_mm, 0.0), w)
+    clamped_y = min(max(y_mm, 0.0), h)
+    if clamped_x != x_mm or clamped_y != y_mm:
+        print(f"[calibration] clamped out-of-bounds target ({x_mm:.1f}, {y_mm:.1f}) "
+              f"-> ({clamped_x:.1f}, {clamped_y:.1f}) mm")
+    return clamped_x, clamped_y
+
+
 def _gcode_linear_move(target_x_mm, target_y_mm, feed_mm_min):
     """Moves to an ABSOLUTE mm position. Step delta is computed from
     absolute mm->step rounding referenced to the CURRENT actual step
@@ -343,12 +389,20 @@ def _gcode_linear_move(target_x_mm, target_y_mm, feed_mm_min):
     small moves can't drift the way naively summing deltas would --
     same principle motion_planner.py's carry-forward rounding protects
     against. Per-step delay comes from the feed rate, not a fixed demo
-    speed, so a slow F word really does draw slowly."""
-    x0_mm = current_x_steps / STEPS_PER_MM
-    y0_mm = current_y_steps / STEPS_PER_MM
+    speed, so a slow F word really does draw slowly.
+
+    Uses the CALIBRATED steps-per-mm for each axis (not the assumed
+    STEPS_PER_MM constant), and the target is clamped into the safe
+    working area first -- see _clamp_to_usable_area()."""
+    target_x_mm, target_y_mm = _clamp_to_usable_area(target_x_mm, target_y_mm)
+    spmm_x, spmm_y = calibration["steps_per_mm_x"], calibration["steps_per_mm_y"]
+    # EDGE_TOLERANCE_MM offset: mm=0 in the drawing's own frame is NOT the
+    # X_MIN/Y_MIN switch itself, it's already inset from it -- see calibrate().
+    x0_mm = current_x_steps / spmm_x - EDGE_TOLERANCE_MM
+    y0_mm = current_y_steps / spmm_y - EDGE_TOLERANCE_MM
     dist_mm = math.hypot(target_x_mm - x0_mm, target_y_mm - y0_mm)
-    target_x_steps = round(target_x_mm * STEPS_PER_MM)
-    target_y_steps = round(target_y_mm * STEPS_PER_MM)
+    target_x_steps = round((target_x_mm + EDGE_TOLERANCE_MM) * spmm_x)
+    target_y_steps = round((target_y_mm + EDGE_TOLERANCE_MM) * spmm_y)
     dx_steps = target_x_steps - current_x_steps
     dy_steps = target_y_steps - current_y_steps
     if dx_steps == 0 and dy_steps == 0:
@@ -393,8 +447,15 @@ def run_gcode_file(path):
     """Runs a G-code file to completion, or until an end-stop aborts it.
     Sets the global estop state (not just a local return) so the rest of
     the script -- the main loop's own check, the 'r' command -- reacts to
-    an abort exactly the same way it reacts to any other trigger."""
+    an abort exactly the same way it reacts to any other trigger.
+
+    Refuses to run at all if calibrate() hasn't been done this session --
+    checked here (not just in write_gcode_file()) so this applies equally
+    whether a job comes from the web server or from typing 'g <file>' at
+    this script's own command prompt."""
     global estopped, tripped_switch
+    if not calibration["done"]:
+        raise NotCalibratedError("Run calibration ('calibrate' command) before running a G-code file.")
     try:
         with open(path, 'r') as f:
             lines = f.readlines()
@@ -498,6 +559,17 @@ def input_listener():
         if cmd == "q":
             running = False
             break
+        elif cmd == "calibrate":
+            if estopped:
+                print("Cannot calibrate while emergency-stopped -- clear with 'r' first.")
+                continue
+            try:
+                result = calibrate()
+                print(f"Calibrated. steps/mm: X={result['steps_per_mm_x']:.3f} "
+                      f"Y={result['steps_per_mm_y']:.3f}  usable area: "
+                      f"{result['usable_width_mm']:.1f} x {result['usable_height_mm']:.1f} mm")
+            except RuntimeError as e:
+                print(f"Calibration failed: {e}")
         elif cmd == "r":
             hit = triggered_endstop()
             if hit is not None:
@@ -630,14 +702,101 @@ def is_connected():
     return req is not None
 
 
+class NotCalibratedError(RuntimeError):
+    """Raised by write_gcode_file() when calibrate() hasn't been run yet
+    this session. The assumed STEPS_PER_MM constant and switch-travel
+    figures are estimates -- writing before calibrating risks the wrong
+    distance being drawn, or (worse) drifting into a switch over a long
+    job. Calibration must be redone every time the process restarts;
+    it is intentionally NOT persisted to disk, since a mechanical bump
+    between sessions would silently invalidate a saved value."""
+    pass
+
+
+def _home_axis(step_pin, dir_pin, dir_value, endstop_name):
+    """Steps ONE axis, slowly, in one direction, until its named
+    end-stop triggers. Returns the number of steps taken. Raises if
+    HOMING_MAX_STEPS is reached first -- a real fault (switch not
+    wired, wrong endstop_name, gantry already jammed), not something to
+    loop on forever."""
+    req.set_value(dir_pin, dir_value)
+    steps = 0
+    while True:
+        if triggered_endstop() == endstop_name:
+            return steps
+        if steps >= HOMING_MAX_STEPS:
+            raise RuntimeError(f"{endstop_name} never triggered during homing -- check wiring.")
+        req.set_value(step_pin, Value.ACTIVE)
+        time.sleep(HOMING_STEP_DELAY_S)
+        req.set_value(step_pin, Value.INACTIVE)
+        time.sleep(HOMING_STEP_DELAY_S)
+        steps += 1
+
+
+def calibrate():
+    """Full calibration sequence -- must be run before any writing job.
+
+    1. Homes X to X_MIN (defines step 0), then drives to X_MAX, counting
+       the real number of steps between the two switches.
+    2. Same for Y.
+    3. Derives the ACTUAL steps-per-mm for each axis from that measured
+       step count and the known physical switch-to-switch distance,
+       instead of trusting the assumed STEPS_PER_MM constant.
+    4. Moves to the safe starting corner -- EDGE_TOLERANCE_MM in from
+       both switches -- so writing always begins from a known, repeatable
+       position with headroom on every side.
+
+    Refuses to run if an end-stop is already tripped (clear it with 'r'
+    /a fresh connect first) -- calibrating while already jammed against
+    a switch would produce a nonsense measurement.
+
+    NOTE on X/Y_SWITCH_TRAVEL_MM: these use the FULLY-pressed distance,
+    not the ~2mm-earlier "first click" figure -- the switch's own
+    compliance (the bit of give between first contact and full press)
+    is small and roughly constant, so it mostly cancels out between the
+    two ends of the same axis. EDGE_TOLERANCE_MM (5mm, 10x that
+    compliance) is what actually keeps every real move away from the
+    switches, not precision in this constant."""
+    global current_x_steps, current_y_steps
+
+    if triggered_endstop() is not None:
+        raise RuntimeError(f"Cannot calibrate -- end-stop {tripped_switch} already tripped.")
+
+    _home_axis(STEP1_PIN, DIR1_PIN, Value.INACTIVE, "X_MIN")
+    current_x_steps = 0
+    x_travel_steps = _home_axis(STEP1_PIN, DIR1_PIN, Value.ACTIVE, "X_MAX")
+    current_x_steps = x_travel_steps
+
+    _home_axis(STEP2_PIN, DIR2_PIN, Value.INACTIVE, "Y_MIN")
+    current_y_steps = 0
+    y_travel_steps = _home_axis(STEP2_PIN, DIR2_PIN, Value.ACTIVE, "Y_MAX")
+    current_y_steps = y_travel_steps
+
+    calibration.update({
+        "done": True,
+        "steps_per_mm_x": x_travel_steps / X_SWITCH_TRAVEL_MM,
+        "steps_per_mm_y": y_travel_steps / Y_SWITCH_TRAVEL_MM,
+        "usable_width_mm": X_SWITCH_TRAVEL_MM - 2 * EDGE_TOLERANCE_MM,
+        "usable_height_mm": Y_SWITCH_TRAVEL_MM - 2 * EDGE_TOLERANCE_MM,
+    })
+
+    # Move to the safe starting corner (mm=0,0 in the drawing's own
+    # frame), ready for the first real move of a writing job.
+    _gcode_linear_move(0.0, 0.0, feed_mm_min=600.0)
+
+    return dict(calibration)
+
+
 def write_gcode_file(path):
     """One-shot entry point for server.py: connects if needed, runs the
     file, and always leaves the connection open afterward (a Flask process
     stays alive across requests, so there's no need to reconnect every
     time -- call disconnect() yourself at shutdown if you want to release
-    the pins). Raises GantryNotConnectedError if there's no gantry here;
-    callers should catch that specifically to report a clean error instead
-    of a 500."""
+    the pins). Raises GantryNotConnectedError if there's no gantry here,
+    or NotCalibratedError if calibrate() hasn't been run this session --
+    callers should catch both specifically to report a clean error
+    instead of a 500. (The calibration check itself lives in
+    run_gcode_file(), so it applies the same way from the CLI too.)"""
     connect()
     run_gcode_file(path)
     return {
@@ -649,7 +808,7 @@ def write_gcode_file(path):
 if __name__ == "__main__":
     connect()
     threading.Thread(target=input_listener, daemon=True).start()
-    print("Ready. Commands: 'c' (circle), 'g <file>' (run G-code), [number] (RPM/stop), "
+    print("Ready. Commands: 'calibrate' (required before 'g'), 'c' (circle), 'g <file>' (run G-code), [number] (RPM/stop), "
           "'u'/'d' (pen), 'r' (clear estop), 'q' (quit)")
 
     try:

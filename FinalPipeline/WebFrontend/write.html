@@ -18,7 +18,19 @@
     <button class="reset-btn" id="resetPageBtn" title="Clear this page back to blank">⟳ Reset</button>
   </div>
 
-  <div class="grid">
+  <div class="calibration-panel" id="calibrationPanel">
+    <div class="stat-row">
+      <span class="k">Gantry calibration</span>
+      <span class="v" id="calibStatus">Checking...</span>
+    </div>
+    <p class="hint" id="calibHint">The gantry must be calibrated (homes both axes, measures the real steps-per-mm, and parks at a safe start position) before anything below can be used.</p>
+    <div class="btn-row">
+      <button id="calibrateBtn">📐 Calibrate</button>
+    </div>
+    <div class="error-banner" id="calibrateError"></div>
+  </div>
+
+  <div class="grid locked" id="mainGrid">
     <div class="panel">
       <h2>1. What to write</h2>
 
@@ -36,6 +48,15 @@
         <button id="generateBtn">Generate G-code</button>
       </div>
       <div class="error-banner" id="generateError"></div>
+
+      <label style="margin-top:24px">— or test a G-code file directly —</label>
+      <input type="file" id="gcodeFileInput" accept=".gcode,.nc,.txt" />
+      <label style="margin-top:10px">Expected text (optional, only for accuracy %)</label>
+      <input type="text" id="gcodeExpectedText" placeholder="Leave blank for pictures/shapes" />
+      <div class="btn-row">
+        <button id="uploadGcodeBtn" class="secondary">📄 Analyze G-code</button>
+      </div>
+      <div class="error-banner" id="uploadError"></div>
     </div>
 
     <div class="panel">
@@ -111,10 +132,11 @@ async function showResult(res) {
   document.getElementById("resultBox").classList.add("show");
   document.getElementById("previewImg").src = absoluteUrl(res.preview_url) + "?t=" + Date.now();
   document.getElementById("rReadBack").textContent = res.read_back_text;
-  document.getElementById("rAcc").textContent = res.text_accuracy_pct + "%";
+  const acc = res.text_accuracy_pct;
+  document.getElementById("rAcc").textContent = (acc === null || acc === undefined) ? "(no expected text given)" : acc + "%";
   document.getElementById("rLines").textContent = res.gcode_line_count;
   document.getElementById("rPulses").textContent = res.pen_pulses;
-  document.getElementById("rTime").textContent = res.synth_seconds + "s";
+  document.getElementById("rTime").textContent = (res.synth_seconds !== undefined) ? res.synth_seconds + "s" : "(uploaded file, no synthesis)";
 
   const gcodeUrl = absoluteUrl(res.gcode_url);
   document.getElementById("downloadLink").href = gcodeUrl;
@@ -175,6 +197,92 @@ async function refreshGantryStatus() {
   }
 }
 
+// --- calibration gate: everything in #mainGrid stays greyed out (the
+// "locked" class disables pointer events) until calibration succeeds. ---
+const mainGrid = document.getElementById("mainGrid");
+const calibrationPanel = document.getElementById("calibrationPanel");
+const calibStatus = document.getElementById("calibStatus");
+const calibHint = document.getElementById("calibHint");
+const calibrateBtn = document.getElementById("calibrateBtn");
+
+function setCalibrated(calibrated, calibration) {
+  mainGrid.classList.toggle("locked", !calibrated);
+  calibrationPanel.classList.toggle("done", calibrated);
+  if (calibrated && calibration) {
+    calibStatus.textContent = "Calibrated";
+    calibStatus.className = "v good";
+    calibHint.textContent = `steps/mm: X=${calibration.steps_per_mm_x.toFixed(2)} ` +
+      `Y=${calibration.steps_per_mm_y.toFixed(2)}  usable area: ` +
+      `${calibration.usable_width_mm.toFixed(1)} x ${calibration.usable_height_mm.toFixed(1)} mm. ` +
+      `Recalibrate any time if drawings start looking off.`;
+    calibrateBtn.textContent = "📐 Recalibrate";
+  } else {
+    calibStatus.textContent = "Not calibrated";
+    calibStatus.className = "v bad";
+    calibHint.textContent = "The gantry must be calibrated (homes both axes, measures the real steps-per-mm, and parks at a safe start position) before anything below can be used.";
+    calibrateBtn.textContent = "📐 Calibrate";
+  }
+}
+
+async function checkCalibration() {
+  try {
+    const res = await apiFetch("/api/gantry/status");
+    setCalibrated(res.calibrated, res.calibration);
+  } catch (e) {
+    setCalibrated(false, null);
+  }
+}
+
+calibrateBtn.addEventListener("click", async () => {
+  clearError("calibrateError");
+  calibrateBtn.disabled = true;
+  calibrateBtn.innerHTML = '<span class="spinner"></span> Calibrating (homing both axes)...';
+  try {
+    const res = await apiFetch("/api/gantry/calibrate", { method: "POST" });
+    if (res.calibrated) {
+      setCalibrated(true, res.calibration);
+    } else {
+      setCalibrated(false, null);
+      showError("calibrateError", res.message || "Calibration failed.");
+    }
+  } catch (e) {
+    setCalibrated(false, null);
+    showError("calibrateError", e.message);
+  } finally {
+    calibrateBtn.disabled = false;
+    // setCalibrated() already set the right label ("Calibrate" or
+    // "Recalibrate") for whichever outcome just happened.
+  }
+});
+
+const uploadGcodeBtn = document.getElementById("uploadGcodeBtn");
+uploadGcodeBtn.addEventListener("click", async () => {
+  clearError("uploadError");
+  const fileInput = document.getElementById("gcodeFileInput");
+  const file = fileInput.files[0];
+  if (!file) { showError("uploadError", "Choose a .gcode file first."); return; }
+
+  uploadGcodeBtn.disabled = true;
+  uploadGcodeBtn.innerHTML = '<span class="spinner"></span> Analyzing...';
+  try {
+    const form = new FormData();
+    form.append("gcode", file);
+    const expectedText = document.getElementById("gcodeExpectedText").value.trim();
+    if (expectedText) form.append("expected_text", expectedText);
+
+    const res = await apiFetch("/api/gcode/upload", { method: "POST", body: form });
+    lastJobId = res.job_id;
+    await showResult(res);
+    persist({ lastResult: res });
+    refreshGantryStatus();
+  } catch (e) {
+    showError("uploadError", e.message);
+  } finally {
+    uploadGcodeBtn.disabled = false;
+    uploadGcodeBtn.innerHTML = "📄 Analyze G-code";
+  }
+});
+
 generateBtn.addEventListener("click", async () => {
   clearError("generateError");
   const text = document.getElementById("writeText").value.trim();
@@ -223,6 +331,7 @@ sendToGantryBtn.addEventListener("click", async () => {
 });
 
 refreshGantryStatus();
+checkCalibration();
 </script>
 </body>
 </html>
