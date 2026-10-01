@@ -57,17 +57,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "GantryControl"))
 from flask import Flask, request, jsonify, send_file, abort, Response
 from flask_cors import CORS
 from PIL import Image
-import torch
 
 import SynthesizeHandwriting as SY
-import EvaluateStyle as ES
-import VerifyRewrite as VR
 import WriteGCode as GW
 import SegmentPage as PS
 import web_render_helpers as WRH
 import camera_capture as CAM
-from TrainAuthor import AuthorClassifierCNN
-from TrainText import resize_line_image_fixed, tensor_from_resized
+from np_inference.text_model import PaperCRNNNumpy, ReadText, CharAcc
+from np_inference.author_model import AuthorClassifierCNNNumpy, ClassifyImage
 
 # odroid_direct_drive.py is safe to import anywhere now (see its own
 # comments) -- gpiod access only happens inside connect(), not at import
@@ -88,17 +85,19 @@ DEBUG = os.environ.get("WEBAPP_DEBUG", "0") == "1"
 app = Flask(__name__)
 CORS(app)
 
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
 # ---------------------------------------------------------------------------
-# Load every model ONCE at startup, not per-request.
+# Load every model ONCE at startup, not per-request. All three run through
+# np_inference (pure numpy, no torch) -- see that package for the forward
+# pass; these are the same trained .pt weights as before, just no longer
+# executed by a library at inference time.
 # ---------------------------------------------------------------------------
-print(f"[server] device: {DEVICE}")
 print("[server] loading text recognizer...")
-TEXT_MODEL = VR.LoadTextModel(DEVICE)
+TEXT_MODEL = PaperCRNNNumpy()
 
 print("[server] loading stroke-normalised writer-ID classifier (judges synthesis)...")
-SHAPE_AUTHOR_MODEL, SHAPE_MAPPING, SHAPE_IDX2AUTHOR = ES.LoadAuthorModel(DEVICE)
+SHAPE_AUTHOR_MODEL = AuthorClassifierCNNNumpy()
+SHAPE_MAPPING = SHAPE_AUTHOR_MODEL.author_mapping
+SHAPE_IDX2AUTHOR = {v: k for k, v in SHAPE_MAPPING.items()}
 
 print("[server] loading ink-based writer-ID classifier (classifies REAL photos)...")
 _INK_WEIGHTS_CANDIDATES = [
@@ -108,12 +107,9 @@ _INK_WEIGHTS_CANDIDATES = [
 INK_WEIGHTS_PATH = next((p for p in _INK_WEIGHTS_CANDIDATES if p.exists()), None)
 if INK_WEIGHTS_PATH is None:
     raise SystemExit("No ink-based author classifier weights found -- run TrainAuthor10.py first.")
-_ck = torch.load(INK_WEIGHTS_PATH, map_location=DEVICE, weights_only=False)
-INK_MAPPING = _ck["author_mapping"]
+INK_AUTHOR_MODEL = AuthorClassifierCNNNumpy(checkpoint_path=INK_WEIGHTS_PATH)
+INK_MAPPING = INK_AUTHOR_MODEL.author_mapping
 INK_IDX2AUTHOR = {v: k for k, v in INK_MAPPING.items()}
-INK_AUTHOR_MODEL = AuthorClassifierCNN(num_authors=len(INK_MAPPING)).to(DEVICE)
-INK_AUTHOR_MODEL.load_state_dict(_ck["model_state_dict"])
-INK_AUTHOR_MODEL.eval()
 
 print("[server] loading style profiles...")
 PROFILES = SY.LoadAllProfiles()
@@ -162,12 +158,8 @@ def _auth():
 def _classify_ink(pil_line_img):
     """Runs the INK-based classifier on one real line image (NOT the
     stroke-normalised one -- that one is only valid for judging
-    synthesised/machine-rendered output, see EvaluateStyle.py's
-    docstring). Returns (author_id, probs_dict)."""
-    t = tensor_from_resized(resize_line_image_fixed(pil_line_img)).unsqueeze(0).to(DEVICE)
-    with torch.no_grad():
-        probs = torch.softmax(INK_AUTHOR_MODEL(t), dim=1)[0].cpu().numpy()
-    idx = int(probs.argmax())
+    synthesised/machine-rendered output). Returns (author_id, probs_dict)."""
+    idx, probs = ClassifyImage(pil_line_img, INK_AUTHOR_MODEL, apply_stroke_normalize=False)
     return INK_IDX2AUTHOR[idx], {INK_IDX2AUTHOR[i]: float(p) for i, p in enumerate(probs)}
 
 
@@ -294,7 +286,7 @@ def api_classify():
     author_probs_sum = None
     for crop in line_crops:
         pil_line = Image.fromarray(crop).convert("L")
-        predicted_lines.append(VR.ReadText(TEXT_MODEL, pil_line, DEVICE))
+        predicted_lines.append(ReadText(pil_line, TEXT_MODEL))
         _pred_author, probs = _classify_ink(pil_line)
         if author_probs_sum is None:
             author_probs_sum = dict(probs)
@@ -310,7 +302,7 @@ def api_classify():
 
     text_accuracy_pct = None
     if expected_text.strip():
-        text_accuracy_pct = round(VR.CharAcc(predicted_text, expected_text) * 100, 1)
+        text_accuracy_pct = round(CharAcc(predicted_text, expected_text) * 100, 1)
 
     author_correct = None
     if expected_author:
@@ -350,7 +342,7 @@ def api_generate():
         author, text, prof, nTries=n_tries, mmPerXh=4.0,
         lineWidthMm=cfg.boundsMaxXmm - cfg.originXmm - 5,
         reader=TEXT_MODEL, authorModel=SHAPE_AUTHOR_MODEL,
-        authorMapping=SHAPE_MAPPING, device=DEVICE,
+        authorMapping=SHAPE_MAPPING,
     )
     synth_seconds = time.time() - t0
 
@@ -363,7 +355,7 @@ def api_generate():
     preview_path = job_dir / "preview.png"
     SY.RenderTrajectory(traj, pxPerMm=18.0, profile=prof).save(preview_path)
 
-    read_back = VR.ReadText(TEXT_MODEL, Image.open(preview_path), DEVICE)
+    read_back = ReadText(Image.open(preview_path), TEXT_MODEL)
 
     return jsonify({
         "job_id": job_id,
@@ -372,7 +364,7 @@ def api_generate():
         "gcode_line_count": g_res["lines"],
         "pen_pulses": g_res["penPulses"],
         "read_back_text": read_back,
-        "text_accuracy_pct": round(VR.CharAcc(read_back, text) * 100, 1),
+        "text_accuracy_pct": round(CharAcc(read_back, text) * 100, 1),
         "synth_seconds": round(synth_seconds, 1),
     })
 
@@ -480,7 +472,7 @@ def api_gcode_upload():
     except Exception as e:
         return jsonify({"error": f"Could not parse/render that G-code file: {e}"}), 422
 
-    read_back = VR.ReadText(TEXT_MODEL, preview_img, DEVICE)
+    read_back = ReadText(preview_img, TEXT_MODEL)
 
     response = {
         "job_id": job_id,
@@ -492,7 +484,7 @@ def api_gcode_upload():
         "text_accuracy_pct": None,
     }
     if expected_text:
-        response["text_accuracy_pct"] = round(VR.CharAcc(read_back, expected_text) * 100, 1)
+        response["text_accuracy_pct"] = round(CharAcc(read_back, expected_text) * 100, 1)
     return jsonify(response)
 
 
@@ -520,7 +512,7 @@ def api_get_job_preview(job_id):
 @app.route("/api/model_info", methods=["GET"])
 def api_model_info():
     def count_params(model):
-        return sum(p.numel() for p in model.parameters())
+        return sum(arr.size for arr in model.sd.values())
 
     def file_mb(path):
         return round(path.stat().st_size / (1024 * 1024), 2) if path and path.exists() else None
@@ -528,9 +520,9 @@ def api_model_info():
     return jsonify({
         "text_recognizer": {
             "architecture": "CNN-BiLSTM-CTC (PaperCRNN)",
-            "weights_file": VR.TEXT_WEIGHTS.name,
+            "weights_file": TEXT_MODEL.checkpoint_path.name,
             "parameters": count_params(TEXT_MODEL),
-            "file_size_mb": file_mb(VR.TEXT_WEIGHTS),
+            "file_size_mb": file_mb(TEXT_MODEL.checkpoint_path),
             "measured_accuracy": {
                 "general_benchmark_val_pct": 94.03,
                 "general_benchmark_test_pct": 91.82,
@@ -552,9 +544,9 @@ def api_model_info():
         },
         "writer_id_stroke_normalised": {
             "architecture": "CNN classifier, trained on skeletonised/re-inked (ink-density-invariant) input",
-            "weights_file": ES.AUTHOR_WEIGHTS.name,
+            "weights_file": SHAPE_AUTHOR_MODEL.checkpoint_path.name,
             "parameters": count_params(SHAPE_AUTHOR_MODEL),
-            "file_size_mb": file_mb(ES.AUTHOR_WEIGHTS),
+            "file_size_mb": file_mb(SHAPE_AUTHOR_MODEL.checkpoint_path),
             "measured_accuracy": {
                 "real_ink_pct": 96.7,
                 "synthesised_output_pct": 99.2,
@@ -574,7 +566,7 @@ def api_model_info():
                 "measured_via": "VerifyRewrite.py, full official evaluation script",
             },
         },
-        "device": str(DEVICE),
+        "device": "cpu (numpy inference, no ML library at runtime)",
     })
 
 

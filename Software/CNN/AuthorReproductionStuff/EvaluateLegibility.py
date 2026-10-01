@@ -118,6 +118,12 @@ def Evaluate(authors=None, nSent=None, nSeeds=1, lam=None, perAuthorLam=False,
              legible=False, nTries=4):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     reader = VR.LoadTextModel(device)
+    # SynthesizeLegible's own best-of-N scoring now runs the from-scratch
+    # numpy recognizer internally (it's production decision-making, not
+    # measurement) -- loaded once here, not per-call, to avoid re-parsing
+    # the checkpoint on every sentence/seed in the loop below.
+    from np_inference.text_model import PaperCRNNNumpy
+    synthReader = PaperCRNNNumpy()
     shapeModel, mapping, i2a = VS.LoadShapeModel(device)
     profiles = SY.LoadAllProfiles()
     if authors:
@@ -140,7 +146,7 @@ def Evaluate(authors=None, nSent=None, nSeeds=1, lam=None, perAuthorLam=False,
                     traj = SY.SynthesizeLegible(
                         text, prof, nTries=nTries, mmPerXh=mmPerXh,
                         seed=1009 * si + seed, lineWidthMm=10_000.0,
-                        reader=reader, device=device, pxPerMm=pxPerMm,
+                        reader=synthReader, pxPerMm=pxPerMm,
                         legibility=(L if (lam is not None or perAuthorLam)
                                     else None))
                 else:
@@ -282,6 +288,10 @@ def TuneLegibility(lams=(0.35, 0.55, 0.75, 1.0), nSent=10,
     stored lambda matches what WriteAsAuthor actually produces."""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     reader = VR.LoadTextModel(device)
+    # See Evaluate()'s matching comment -- SynthesizeLegible needs its own
+    # from-scratch reader, loaded once, not the torch one above.
+    from np_inference.text_model import PaperCRNNNumpy
+    synthReader = PaperCRNNNumpy()
     profiles = SY.LoadAllProfiles()
     corpus = NOVEL_CORPUS[:nSent]
     chosen = {}
@@ -296,7 +306,7 @@ def TuneLegibility(lams=(0.35, 0.55, 0.75, 1.0), nSent=10,
                         traj = SY.SynthesizeLegible(
                             text, prof, nTries=nTries, mmPerXh=mmPerXh,
                             lineWidthMm=10_000.0, seed=1009 * si + seed,
-                            reader=reader, device=device, pxPerMm=pxPerMm,
+                            reader=synthReader, pxPerMm=pxPerMm,
                             legibility=L)
                     else:
                         traj = SY.SynthesizeText(

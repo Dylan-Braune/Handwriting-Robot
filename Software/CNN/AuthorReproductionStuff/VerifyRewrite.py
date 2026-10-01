@@ -127,6 +127,14 @@ def Run(nSeeds=2, mmPerXh=4.0, pxPerMm=18.0, saveSamples=True):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     textModel = LoadTextModel(device)
     authModel, mapping, idxToAuthor = ES.LoadAuthorModel(device)
+    # SynthesizeJointBestOf's own best-of-N scoring runs the from-scratch
+    # numpy models internally (it's production decision-making, not
+    # measurement) -- loaded once here, separate from the torch models
+    # above which this script uses for its own independent measurement.
+    from np_inference.text_model import PaperCRNNNumpy
+    from np_inference.author_model import AuthorClassifierCNNNumpy
+    synthReader = PaperCRNNNumpy()
+    synthAuthorModel = AuthorClassifierCNNNumpy()
     profiles = SY.LoadAllProfiles()
     cfg = GW.GantryConfig()
     OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -157,8 +165,8 @@ def Run(nSeeds=2, mmPerXh=4.0, pxPerMm=18.0, saveSamples=True):
                 traj = SY.SynthesizeJointBestOf(a, text, prof, nTries=30, mmPerXh=mmPerXh,
                                                 lineWidthMm=10_000.0, jitter=0.5,
                                                 seed=100 * si + seed,
-                                                reader=textModel, authorModel=authModel,
-                                                authorMapping=mapping, device=device,
+                                                reader=synthReader, authorModel=synthAuthorModel,
+                                                authorMapping=mapping,
                                                 pxPerMm=pxPerMm)
                 img = SY.RenderTrajectory(traj, pxPerMm=pxPerMm, profile=prof)
                 pred, _ = ES.ClassifyImage(authModel, img, device)
@@ -210,8 +218,8 @@ def Run(nSeeds=2, mmPerXh=4.0, pxPerMm=18.0, saveSamples=True):
         realWord.append(WordAcc(gotReal, s_["text"]))
         tj = SY.SynthesizeJointBestOf(a, s_["text"], profiles[a], nTries=30, mmPerXh=mmPerXh,
                                       lineWidthMm=10_000.0, jitter=0.5, seed=7,
-                                      reader=textModel, authorModel=authModel,
-                                      authorMapping=mapping, device=device, pxPerMm=pxPerMm)
+                                      reader=synthReader, authorModel=synthAuthorModel,
+                                      authorMapping=mapping, pxPerMm=pxPerMm)
         im = SY.RenderTrajectory(tj, pxPerMm=pxPerMm, profile=profiles[a])
         gotSyn = ReadText(textModel, im, device)
         mSynChar.append(CharAcc(gotSyn, s_["text"]))

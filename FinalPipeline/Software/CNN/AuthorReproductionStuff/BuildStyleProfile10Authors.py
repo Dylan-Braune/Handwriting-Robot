@@ -35,14 +35,14 @@ import sys
 from pathlib import Path
 
 import numpy as np
-import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import SegmentPage as PS
 from ExtractIAMLines import ReadLabelLines
-from TrainText import CHAR_TO_IDX, CHARSET, PaperCRNN
+from TrainText import CHAR_TO_IDX, CHARSET
+from np_inference.text_model import PaperCRNNNumpy
 import BuildStyleProfile as BSP
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -57,7 +57,7 @@ VAL_FRACTION = 0.15          # same holdout fraction as TrainTextPersonal.py
 SPLIT_SEED = 0                # same seed too -- same lines held out from both
 
 
-def build_personal_line_items(author, model, device):
+def build_personal_line_items(author):
     """Segments every photo for one personal author, splits its lines into
     train/holdout (per-page, same convention as TrainTextPersonal.py), and
     returns (train_items, holdout_texts) where train_items is a list of
@@ -81,7 +81,6 @@ def build_personal_line_items(author, model, device):
 
 
 def main():
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     RAW_DIR.mkdir(parents=True, exist_ok=True)
     PROFILE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -104,12 +103,7 @@ def main():
         print(f"[Dataset] {a}: {len(parsed)} lines loaded from cache")
 
     # ---- 2 personal authors: fresh extraction with the personal model ----
-    personal_model = PaperCRNN(num_classes=len(CHARSET) + 1).to(device)
-    sd = torch.load(PERSONAL_WEIGHTS, map_location=device, weights_only=False)
-    if isinstance(sd, dict) and "model_state_dict" in sd:
-        sd = sd["model_state_dict"]
-    personal_model.load_state_dict(sd)
-    personal_model.eval()
+    personal_model = PaperCRNNNumpy(checkpoint_path=PERSONAL_WEIGHTS)
 
     for a in PERSONAL_AUTHORS:
         rawPath = RAW_DIR / f"{a}.pkl"
@@ -118,10 +112,10 @@ def main():
                 parsed = pickle.load(f)
             print(f"[Personal] {a}: {len(parsed)} lines loaded from cache")
         else:
-            train_items, holdout_texts = build_personal_line_items(a, personal_model, device)
+            train_items, holdout_texts = build_personal_line_items(a)
             print(f"[Personal] {a}: {len(train_items)} train lines, "
                   f"{len(holdout_texts)} held out")
-            parsed = BSP.ExtractAuthorRaw(a, train_items, personal_model, device)
+            parsed = BSP.ExtractAuthorRaw(a, train_items, personal_model)
             with open(rawPath, "wb") as f:
                 pickle.dump(parsed, f)
             print(f"[Personal] {a}: {len(parsed)}/{len(train_items)} lines usable after extraction")

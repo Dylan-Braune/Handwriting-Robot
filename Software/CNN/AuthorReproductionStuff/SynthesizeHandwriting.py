@@ -1115,16 +1115,14 @@ REPAIR_WORST_K = 3         # characters pinned to the legible core per round
 DEFAULT_LEGIBILITY = 0.65
 
 
-def _LineLogProbs(reader, img, device):
+def _LineLogProbs(reader, img):
     """(T, C) log-probs from the frozen recognizer for one line image."""
-    import torch
-    from TrainText import resize_line_image_fixed, tensor_from_resized
-    t = tensor_from_resized(resize_line_image_fixed(img)).unsqueeze(0).to(device)
-    with torch.no_grad():
-        return reader(t)[:, 0, :].cpu().numpy()
+    from np_inference.text_model import resize_line_image_fixed, tensor_from_resized
+    t = tensor_from_resized(resize_line_image_fixed(img))
+    return reader.forward(t)[:, 0, :]
 
 
-def _WeakChars(reader, img, device, visible):
+def _WeakChars(reader, img, visible):
     """Visible-text positions the recognizer is least sure about, worst
     first. Uses CTC forced alignment against the intended text and scores
     each character by its own class log-prob over its assigned frames."""
@@ -1133,7 +1131,7 @@ def _WeakChars(reader, img, device, visible):
         from TrainText import CHAR_TO_IDX
     except Exception:
         return []
-    lp = _LineLogProbs(reader, img, device)
+    lp = _LineLogProbs(reader, img)
     res = CtcForcedAlign(lp, visible)
     if res is None:
         return []
@@ -1153,7 +1151,7 @@ def _WeakChars(reader, img, device, visible):
 
 
 def SynthesizeLegible(text, profile, nTries=6, mmPerXh=4.0, lineWidthMm=180.0,
-                      jitter=0.5, seed=0, reader=None, device=None,
+                      jitter=0.5, seed=0, reader=None,
                       pxPerMm=18.0, legibility=None, repair=True):
     """Best-of-N in the author's style, then a targeted repair pass.
 
@@ -1173,22 +1171,20 @@ def SynthesizeLegible(text, profile, nTries=6, mmPerXh=4.0, lineWidthMm=180.0,
         legibility = float(profile.get('legibilityLambda', DEFAULT_LEGIBILITY))
     if reader is None:
         try:
-            import torch
-            import VerifyRewrite as _V
-            device = device or torch.device('cpu')
-            reader = _V.LoadTextModel(device)
+            from np_inference.text_model import PaperCRNNNumpy
+            reader = PaperCRNNNumpy()
         except Exception:
             return SynthesizeText(text, profile, mmPerXh=mmPerXh, seed=seed,
                                   lineWidthMm=lineWidthMm, jitter=jitter,
                                   legibility=legibility)
-    import VerifyRewrite as _V
+    from np_inference.text_model import ReadText, CharAcc
     visible = text.replace('\n', ' ')
 
     def score(traj):
         img = RenderTrajectory(traj, pxPerMm=pxPerMm, profile=profile,
                                uniformInk=True)
-        got = _V.ReadText(reader, img, device)
-        return _V.CharAcc(got, visible), img
+        got = ReadText(img, reader)
+        return CharAcc(got, visible), img
 
     base = 0 if seed is None else int(seed)
     best, bestTraj, bestImg = -1.0, None, None
@@ -1208,7 +1204,7 @@ def SynthesizeLegible(text, profile, nTries=6, mmPerXh=4.0, lineWidthMm=180.0,
         for rounds in range(1, REPAIR_ROUNDS + 1):
             if best >= 0.995:
                 break
-            weak = _WeakChars(reader, bestImg, device, visible)
+            weak = _WeakChars(reader, bestImg, visible)
             # only the SINGLE worst still-pinned character escalates to
             # upright print (last resort); new weak characters get the
             # style-aware anchor
@@ -1238,7 +1234,7 @@ def SynthesizeLegible(text, profile, nTries=6, mmPerXh=4.0, lineWidthMm=180.0,
 def SynthesizeJointBestOf(author, text, profile, nTries=6, mmPerXh=4.0,
                           lineWidthMm=180.0, jitter=0.5, seed=0,
                           reader=None, authorModel=None, authorMapping=None,
-                          device=None, pxPerMm=18.0, legibility=None,
+                          pxPerMm=18.0, legibility=None,
                           repair=True, repairRounds=3, repairWorstK=2):
     """Best-of-N, like SynthesizeLegible, but scored by the HARMONIC MEAN of
     text-recognizer accuracy and writer-ID confidence for `author`, instead
@@ -1268,22 +1264,22 @@ def SynthesizeJointBestOf(author, text, profile, nTries=6, mmPerXh=4.0,
     """
     if legibility is None:
         legibility = float(profile.get('legibilityLambda', 0.0))
-    if reader is None or authorModel is None:
-        import VerifyRewrite as _V
-        import EvaluateStyle as _ES
-        device = device or __import__('torch').device('cpu')
-        if reader is None:
-            reader = _V.LoadTextModel(device)
-        if authorModel is None:
-            authorModel, authorMapping, _ = _ES.LoadAuthorModel(device)
-    import VerifyRewrite as _V
-    import EvaluateStyle as _ES
+    if reader is None:
+        from np_inference.text_model import PaperCRNNNumpy
+        reader = PaperCRNNNumpy()
+    if authorModel is None:
+        from np_inference.author_model import AuthorClassifierCNNNumpy
+        authorModel = AuthorClassifierCNNNumpy()
+    if authorMapping is None:
+        authorMapping = authorModel.author_mapping
+    from np_inference.text_model import ReadText, CharAcc
+    from np_inference.author_model import ClassifyImage
     visible = text.replace('\n', ' ')
     authorIdx = authorMapping[author]
 
     def jointScore(img):
-        textAcc = _V.CharAcc(_V.ReadText(reader, img, device), visible)
-        _predIdx, probs = _ES.ClassifyImage(authorModel, img, device)
+        textAcc = CharAcc(ReadText(img, reader), visible)
+        _predIdx, probs = ClassifyImage(img, authorModel)
         widConf = float(probs[authorIdx])
         combined = (2 * textAcc * widConf / (textAcc + widConf)
                    if (textAcc + widConf) > 1e-9 else 0.0)
@@ -1310,7 +1306,7 @@ def SynthesizeJointBestOf(author, text, profile, nTries=6, mmPerXh=4.0,
         for _round in range(repairRounds):
             if best >= 0.995:
                 break
-            weak = _WeakChars(reader, bestImg, device, visible)
+            weak = _WeakChars(reader, bestImg, visible)
             fresh = [p for p in weak if p not in perChar][:repairWorstK]
             if not fresh:
                 break

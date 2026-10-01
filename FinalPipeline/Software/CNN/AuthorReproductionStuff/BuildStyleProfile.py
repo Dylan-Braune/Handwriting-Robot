@@ -35,7 +35,6 @@ import sys
 from pathlib import Path
 
 import numpy as np
-import torch
 from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -48,11 +47,13 @@ from TrainText import (
     CHAR_TO_IDX,
     CHARSET,
     IAMLineDatasetRaw,
-    PaperCRNN,
     _decode_png,
-    resize_line_image_fixed,
     frame_x_to_pixel,
     INPUT_WIDTH,
+)
+from np_inference.text_model import (
+    PaperCRNNNumpy,
+    resize_line_image_fixed,
     tensor_from_resized,
 )
 
@@ -508,16 +509,14 @@ def _SpanInk(ink, x0, x1):
     return sub
 
 
-def ExtractLineGlyphs(gray, text, model, device):
+def ExtractLineGlyphs(gray, text, model):
     """Returns (glyphInstances, lineStats) or (None, None).
     Each glyph instance: dict(char, strokes(normalized), advance, entryY,
     exitY, connL, connR, hasInk)."""
     rawW = gray.shape[1]
     pil = Image.fromarray(gray)
-    stretched = resize_line_image_fixed(pil)
-    t = tensor_from_resized(stretched).unsqueeze(0).to(device)
-    with torch.no_grad():
-        lp = model(t)[:, 0, :].cpu().numpy()      # (T, C)
+    t = tensor_from_resized(resize_line_image_fixed(pil))
+    lp = model.forward(t)[:, 0, :]      # (T, C)
     res = CtcForcedAlign(lp, text)
     if res is None:
         return None, None
@@ -1033,13 +1032,13 @@ def RenderRefStats(gray):
     return out
 
 
-def ExtractAuthorRaw(authorId, lineItems, model, device):
+def ExtractAuthorRaw(authorId, lineItems, model):
     """Runs the expensive per-line extraction once and returns the raw
     result, so profile FILTERING can be re-tuned without re-skeletonizing
     every page. Cached on disk by BuildAll."""
     parsed = []
     for gray, text in lineItems:
-        glyphs, stats = ExtractLineGlyphs(gray, text, model, device)
+        glyphs, stats = ExtractLineGlyphs(gray, text, model)
         if glyphs is not None:
             stats = dict(stats)
             stats['ref'] = RenderRefStats(gray)
@@ -1352,7 +1351,7 @@ def BuildAll(maxLinesPerAuthor=None, useCache=True):
 
     RAW_DIR.mkdir(parents=True, exist_ok=True)
     PROFILE_DIR.mkdir(parents=True, exist_ok=True)
-    model = device = None
+    model = None
     allParsed = {}
 
     for a in sorted(byAuthor):
@@ -1363,20 +1362,12 @@ def BuildAll(maxLinesPerAuthor=None, useCache=True):
                 parsed = pickle.load(f)
         if parsed is None:
             if model is None:
-                device = torch.device('cuda' if torch.cuda.is_available()
-                                      else 'cpu')
-                model = PaperCRNN(num_classes=len(CHARSET) + 1).to(device)
-                sd = torch.load(TEXT_WEIGHTS, map_location=device,
-                                weights_only=False)
-                if 'model_state_dict' in sd:
-                    sd = sd['model_state_dict']
-                model.load_state_dict(sd)
-                model.eval()
+                model = PaperCRNNNumpy(checkpoint_path=TEXT_WEIGHTS)
             items = []
             for s in byAuthor[a][:maxLinesPerAuthor]:
                 gray = np.array(_decode_png(s['image_png']).convert('L'))
                 items.append((gray, s['text']))
-            parsed = ExtractAuthorRaw(a, items, model, device)
+            parsed = ExtractAuthorRaw(a, items, model)
             with open(rawPath, 'wb') as f:
                 pickle.dump(parsed, f)
         # reference render stats come straight from the real line images,
