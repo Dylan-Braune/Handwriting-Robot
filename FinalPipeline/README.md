@@ -95,12 +95,12 @@ python TrainTextHF.py
 ```
 Trains a CNN-BiLSTM-CTC recognizer on 6,480 clean, professionally
 segmented handwriting lines (Teklia/IAM-line). Writes
-`NOGIT/weights/paper_cnn_bilstm_ctc_hf_best.pt`. Run this once; it
+`weights/paper_cnn_bilstm_ctc_hf_best.pt`. Run this once; it
 doesn't need to be repeated unless you want to retrain from scratch.
 
 ### 2b. Fine-tune on your own handwriting, without forgetting the general case
 ```bash
-python TrainTextJoint.py --init-from NOGIT/weights/paper_cnn_bilstm_ctc_hf_best.pt
+python TrainTextJoint.py --init-from weights/paper_cnn_bilstm_ctc_hf_best.pt
 ```
 This is the **current best** text recognizer training method: it mixes
 your own (personal) handwriting lines into every training epoch
@@ -108,7 +108,7 @@ alongside the general-purpose data (via a weighted sampler), instead of
 fine-tuning on your handwriting alone afterward — plain sequential
 fine-tuning was measured to cause the model to forget general
 handwriting (a real regression that was found and fixed this project).
-Writes `NOGIT/weights/paper_cnn_bilstm_ctc_joint_best.pt` — this is the
+Writes `weights/paper_cnn_bilstm_ctc_joint_best.pt` — this is the
 final checkpoint every other script in this folder automatically prefers
 when it exists.
 
@@ -153,7 +153,7 @@ python TrainAuthor10.py 30
 it typically converges within 10-15). Trains a CNN classifier to tell
 apart the ten authors (eight from the IAM dataset plus your two personal
 ones) from their real, photographed handwriting. Reaches ~100% on real
-ink. Writes `NOGIT/weights/author_classifier_10new_weights.pt`, saving a
+ink. Writes `weights/author_classifier_10new_weights.pt`, saving a
 new best checkpoint every time validation improves (safe to stop early).
 
 **Important limitation, by design:** this classifier leans on ink
@@ -175,7 +175,7 @@ instead: the things a gantry with a single pen *can* actually reproduce.
 Reaches ~97% on real ink and, critically, does not collapse when judging
 machine-rendered output the way the ink-based classifier does (~100%
 real ink but only ~20% on synthesis). Writes
-`NOGIT/weights/author_shape_10new_weights.pt`. **This is the checkpoint
+`weights/author_shape_10new_weights.pt`. **This is the checkpoint
 `EvaluateStyle.py` actually loads.**
 
 ---
@@ -277,7 +277,7 @@ python regenerate_labels_with_alignment.py --num-folders 10 --data-dir "../../..
 # 2. Train the text recognizer
 cd ../
 python TrainTextHF.py
-python TrainTextJoint.py --init-from NOGIT/weights/paper_cnn_bilstm_ctc_hf_best.pt
+python TrainTextJoint.py --init-from weights/paper_cnn_bilstm_ctc_hf_best.pt
 
 # 3. Train both writer-ID classifiers
 python TrainAuthor10.py 30

@@ -25,12 +25,26 @@ Profiles are fitted ONLY on non-holdout pages (same holdout rule as the
 trainers), so synthesis can be evaluated on text it never saw, and are
 saved to NOGIT/StyleProfiles10/<author>.json for reuse.
 
-Run directly to build all 10 profiles:
+This file ALSO builds the extended 10-author set (8 kept IAM dataset
+authors + 2 personal authors, yeukita/dylan): the 8 dataset authors'
+already-cached raw glyph libraries (NOGIT/GlyphCache10/) are loaded
+straight from cache, and the 2 personal authors are segmented with
+SegmentPage.ProcessPage and forced-aligned with the personal fine-tuned
+recognizer (it reads their handwriting far better than the general
+model). Everything downstream (BuildLetterPrior pooling,
+BuildAuthorProfile, JSON output) is the SAME code used for the main
+10-author build above; all profiles land in the same NOGIT/StyleProfiles10/
+directory.
+
+Run directly to build all 10 profiles (original IAM-only pipeline):
     python BuildStyleProfile.py
+Run to (re)build the 8-dataset + 2-personal author set instead:
+    python BuildStyleProfile.py --10authors
 """
 
 import json
 import os
+import random
 import sys
 from pathlib import Path
 
@@ -38,29 +52,36 @@ import numpy as np
 from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-# the shared modules (RawImageOps, TrainText, SegmentPage, ExtractIAMLines)
-# live one level up in Software/CNN
+# the shared modules (TrainText, SegmentPage, ExtractIAMLines) live one
+# level up in Software/CNN
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import RawImageOps as F
-from TrainText import (
-    CHAR_TO_IDX,
-    CHARSET,
-    IAMLineDatasetRaw,
-    _decode_png,
-    frame_x_to_pixel,
-    INPUT_WIDTH,
-)
+import SegmentPage as F
+from ExtractIAMLines import ReadLabelLines
 from np_inference.text_model import (
     PaperCRNNNumpy,
     resize_line_image_fixed,
     tensor_from_resized,
 )
+from ProfileIO import (
+    PROFILE_DIR,
+    LoadProfile,
+    CtcForcedAlign,
+    Skeletonize,
+    BinarizeLine,
+    CoreBand,
+    EstimateSlantDeg,
+)
+from authors_config import (
+    DATASET_AUTHORS, PERSONAL_AUTHORS, VAL_FRACTION, SPLIT_SEED,
+)
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DATA_DIR = SCRIPT_DIR.parents[2] / "Data" / "Datasets" / "IAMpages10"
 CACHE_DIR = SCRIPT_DIR.parent / "NOGIT" / "line_cache_authors10"
-TEXT_WEIGHTS = SCRIPT_DIR.parent / "NOGIT" / "weights" / "paper_cnn_bilstm_ctc_best.pt"
+NOGIT_DIR = SCRIPT_DIR.parent / "NOGIT"
+TEXT_WEIGHTS = SCRIPT_DIR.parent / "weights" / "paper_cnn_bilstm_ctc_best.pt"
+PERSONAL_WEIGHTS = NOGIT_DIR.parent / "weights" / "paper_cnn_bilstm_ctc_personal_best.pt"
 # Prefer the best available recogniser, in order:
 #   1) joint (Teklia + personal, warm-started, trained together every
 #      epoch so nothing gets forgotten) -- 94.03%/91.82% char-acc on
@@ -73,11 +94,10 @@ TEXT_WEIGHTS = SCRIPT_DIR.parent / "NOGIT" / "weights" / "paper_cnn_bilstm_ctc_b
 #   3) the original, page-segmented-only checkpoint (fallback).
 # This choice feeds BOTH the CTC alignment cuts and the legibility judge.
 for _name in ("paper_cnn_bilstm_ctc_joint_best.pt", "paper_cnn_bilstm_ctc_hf_best.pt"):
-    _candidate = SCRIPT_DIR.parent / "NOGIT" / "weights" / _name
+    _candidate = SCRIPT_DIR.parent / "weights" / _name
     if _candidate.exists():
         TEXT_WEIGHTS = _candidate
         break
-PROFILE_DIR = SCRIPT_DIR.parent / "NOGIT" / "StyleProfiles10"
 
 MAX_VARIANTS_PER_CHAR = 12
 
@@ -89,97 +109,6 @@ ALIGN_CONF_PCT = 25
 # variant fragment gates (0 disables)
 MIN_PEN_LEN = 1.05
 MIN_LONGEST_STROKE = 0.55
-
-
-# ---------------------------------------------------------------------------
-# CTC forced alignment (Viterbi over the blank-interleaved label sequence)
-# ---------------------------------------------------------------------------
-def CtcForcedAlign(logProbs, text):
-    """logProbs: (T, C) numpy log-probs. Returns per-char (t0, t1) spans
-    (inclusive-exclusive) of the timesteps Viterbi assigns to each char of
-    `text`, or None if the text can't be aligned."""
-    labels = [CHAR_TO_IDX[c] for c in text if c in CHAR_TO_IDX]
-    if not labels:
-        return None
-    ext = [0]
-    for l in labels:
-        ext += [l, 0]
-    S, T = len(ext), logProbs.shape[0]
-    if T < len(labels):
-        return None
-    NEG = -1e30
-    dp = np.full((T, S), NEG)
-    bp = np.zeros((T, S), np.int32)
-    dp[0, 0] = logProbs[0, ext[0]]
-    if S > 1:
-        dp[0, 1] = logProbs[0, ext[1]]
-    for t in range(1, T):
-        emit = logProbs[t, ext]
-        stay = dp[t - 1]
-        prev1 = np.concatenate(([NEG], dp[t - 1, :-1]))
-        prev2 = np.concatenate(([NEG, NEG], dp[t - 1, :-2]))
-        # skip-transition only allowed onto a non-blank that differs from
-        # the non-blank two back (standard CTC topology)
-        for s in range(S):
-            if s >= 2 and (ext[s] == 0 or ext[s] == ext[s - 2]):
-                prev2[s] = NEG
-        cand = np.stack([stay, prev1, prev2])
-        best = np.argmax(cand, axis=0)
-        dp[t] = cand[best, np.arange(S)] + emit
-        bp[t] = best
-    endS = S - 1 if S == 1 else (S - 1 if dp[T - 1, S - 1] >= dp[T - 1, S - 2] else S - 2)
-    path = np.zeros(T, np.int32)
-    s = endS
-    for t in range(T - 1, -1, -1):
-        path[t] = s
-        s -= bp[t, s]
-    spans = []
-    for ci in range(len(labels)):
-        sIdx = 1 + 2 * ci
-        ts = np.nonzero(path == sIdx)[0]
-        if len(ts) == 0:
-            spans.append(None)
-        else:
-            spans.append((int(ts[0]), int(ts[-1]) + 1))
-    kept = [c for c in text if c in CHAR_TO_IDX]
-    # mean per-frame log-prob along the chosen path: low means the model
-    # never really recognised this line, so its char boundaries (and any
-    # glyphs cut from them) are not trustworthy
-    conf = float(np.mean([logProbs[t, ext[path[t]]] for t in range(T)]))
-    return list(zip(kept, spans)), conf
-
-
-# ---------------------------------------------------------------------------
-# Skeletonization (Zhang-Suen thinning, vectorized numpy)
-# ---------------------------------------------------------------------------
-def Skeletonize(mask):
-    img = mask.astype(np.uint8).copy()
-
-    def neighbours(P):
-        p = np.pad(P, 1)
-        return (p[:-2, 1:-1], p[:-2, 2:], p[1:-1, 2:], p[2:, 2:],
-                p[2:, 1:-1], p[2:, :-2], p[1:-1, :-2], p[:-2, :-2])
-
-    changed = True
-    while changed:
-        changed = False
-        for step in (0, 1):
-            P2, P3, P4, P5, P6, P7, P8, P9 = neighbours(img)
-            ring = [P2, P3, P4, P5, P6, P7, P8, P9, P2]
-            B = sum(ring[:8])
-            A = sum(((ring[k] == 0) & (ring[k + 1] == 1)).astype(np.uint8)
-                    for k in range(8))
-            if step == 0:
-                c1 = (P2 * P4 * P6) == 0
-                c2 = (P4 * P6 * P8) == 0
-            else:
-                c1 = (P2 * P4 * P8) == 0
-                c2 = (P2 * P6 * P8) == 0
-            cond = (img == 1) & (B >= 2) & (B <= 6) & (A == 1) & c1 & c2
-            if cond.any():
-                img[cond] = 0
-                changed = True
-    return img.astype(bool)
 
 
 # ---------------------------------------------------------------------------
@@ -339,99 +268,6 @@ def SimplifyPolyline(poly, eps=0.6):
 
 
 # ---------------------------------------------------------------------------
-# Line-level measurements
-# ---------------------------------------------------------------------------
-def BinarizeLine(gray, stripRules=True, closeGaps=True):
-    """gray: uint8 numpy (ink dark). Returns bool ink mask.
-
-    Underlines and ruled-paper lines are removed: a stroke that runs
-    horizontally for far longer than a letter is wide while staying only a
-    pen-width thick is a rule, not handwriting. Leaving them in poisons
-    everything downstream -- they glue every letter together (so the hand
-    measures as fully cursive), drag the slant estimate toward horizontal,
-    and paste a bar across every extracted glyph."""
-    thr = F.OtsuThresholdValue(gray)
-    ink = gray < thr
-    if stripRules and ink.any():
-        h = ink.shape[0]
-        hRun = _HRun(ink)
-        vRun = _HRun(ink.T).T
-        rule = (hRun >= max(24, int(1.1 * h))) & (vRun <= max(3, int(0.12 * h)))
-        if rule.any():
-            # keep the crossing points of real strokes: only drop rule
-            # pixels that no vertical stroke passes through
-            ink = ink & ~(rule & (vRun <= max(3, int(0.12 * h))))
-    if closeGaps and ink.any():
-        # A light, fast hand lays down thin strokes that the scan breaks
-        # into pieces; skeletonizing those gives letter fragments instead
-        # of letters (worst on tall thin strokes: h, l, t). A small closing
-        # rejoins a hairline break without merging neighbouring letters --
-        # the kernel is a fraction of the stroke pitch, not a fixed size.
-        h = ink.shape[0]
-        k = int(np.clip(round(0.045 * h), 2, 4))
-        ink = F.Close(ink, k, k)
-    labels, n = F.LabelComponents(ink, connectivity=8)
-    if n:
-        areas = np.bincount(labels.ravel())
-        keep = areas >= 6
-        keep[0] = False
-        ink = keep[labels]
-    return ink
-
-
-def _HRun(mask):
-    """Horizontal run length at every pixel (same idea as the segmenter's
-    helper, kept local so this module stays self-contained)."""
-    h, w = mask.shape
-    a = mask.astype(np.int32)
-    starts = np.zeros_like(a)
-    starts[:, 0] = a[:, 0]
-    starts[:, 1:] = (a[:, 1:] == 1) & (a[:, :-1] == 0)
-    runId = np.cumsum(starts.reshape(-1)).reshape(h, w)
-    runId[a == 0] = 0
-    if runId.max() == 0:
-        return np.zeros_like(a)
-    counts = np.bincount(runId.reshape(-1))
-    counts[0] = 0
-    return counts[runId]
-
-
-def CoreBand(ink):
-    """Baseline / topline of the x-height band from the horizontal ink
-    profile (rows with >= 45% of peak density)."""
-    prof = ink.sum(axis=1).astype(np.float64)
-    if prof.max() <= 0:
-        return None
-    rows = np.nonzero(prof >= 0.45 * prof.max())[0]
-    top, base = int(rows[0]), int(rows[-1])
-    if base - top < 3:
-        return None
-    return top, base
-
-
-def EstimateSlantDeg(ink):
-    """Shear-search: the slant is the shear that makes vertical strokes
-    vertical, i.e. maximizes the sharpness of the column projection.
-
-    Sign convention (verified against a synthetically sheared test image):
-    POSITIVE = the normal forward/rightward lean, so de-slanting a glyph is
-    `x -= tan(slant) * y` with y measured up from the baseline."""
-    ys, xs = np.nonzero(ink)
-    if len(xs) < 50:
-        return 0.0
-    yc = ys.mean()
-    best, bestScore = 0.0, -1.0
-    for deg in np.arange(-45, 45.5, 1.5):
-        sh = np.tan(np.radians(deg))
-        xsh = (xs + (ys - yc) * -sh).astype(np.int64)
-        prof = np.bincount(xsh - xsh.min())
-        score = float((prof.astype(np.float64) ** 2).sum())
-        if score > bestScore:
-            bestScore, best = score, float(deg)
-    return -best
-
-
-# ---------------------------------------------------------------------------
 # Glyph extraction from one aligned line
 # ---------------------------------------------------------------------------
 def _TrimLigatureTails(strokes, connL=True, connR=True, lowY=0.42, minKeep=0.18,
@@ -503,16 +339,16 @@ def _TrimLigatureTails(strokes, connL=True, connR=True, lowY=0.42, minKeep=0.18,
     return out, out[0][0], out[-1][-1]
 
 
-def _SpanInk(ink, x0, x1):
-    sub = np.zeros_like(ink)
-    sub[:, max(0, x0):min(ink.shape[1], x1)] = ink[:, max(0, x0):min(ink.shape[1], x1)]
-    return sub
-
-
 def ExtractLineGlyphs(gray, text, model):
     """Returns (glyphInstances, lineStats) or (None, None).
     Each glyph instance: dict(char, strokes(normalized), advance, entryY,
-    exitY, connL, connR, hasInk)."""
+    exitY, connL, connR, hasInk).
+
+    Offline-only (called via ExtractAuthorRaw/BuildAll) -- imports
+    TrainText lazily so loading this module for its live-needed pieces
+    (LoadProfile/CtcForcedAlign/etc., see ProfileIO.py) never pulls in
+    torch just for this one geometry helper."""
+    from TrainText import frame_x_to_pixel, INPUT_WIDTH
     rawW = gray.shape[1]
     pil = Image.fromarray(gray)
     t = tensor_from_resized(resize_line_image_fixed(pil))
@@ -1264,75 +1100,7 @@ def BuildAuthorProfile(authorId, parsed, refs=None, prior=None,
 # ---------------------------------------------------------------------------
 # Driver: build all 10 profiles from non-holdout pages
 # ---------------------------------------------------------------------------
-def LoadProfile(authorId):
-    p = PROFILE_DIR / f"{authorId}.json"
-    with open(p, encoding='utf-8') as f:
-        return json.load(f)
-
-
 RAW_DIR = SCRIPT_DIR.parent / "NOGIT" / "GlyphCache10"
-LEGIBLE_CORE_PATH = SCRIPT_DIR.parent / "NOGIT" / "LegibleCore10.json"
-
-
-def BuildLegibleCore(rawLibs, prior, keepFrac=0.35, minPool=8):
-    """DISCARDED APPROACH, kept for the record. The medoid of every author's
-    best-formed real variants per character reads back at only ~76% char /
-    ~39% word through the frozen recognizer -- the consensus of a messy
-    cursive letter is still messy. SynthesizeHandwriting uses the hand-drawn
-    single-stroke print font `_FB` as its legibility anchor instead (~96% /
-    ~84%). Not called by BuildAll; run by hand if you want to revisit it.
-
-    One clean, style-neutral letterform per character: the medoid of the
-    best-formed variants pooled across ALL ten authors.
-
-    This is what synthesis blends an author's own (sometimes malformed)
-    letterform toward when legibility must be guaranteed. It is a REAL
-    handwritten shape -- an actual variant, not an average, so multi-stroke
-    letters stay intact -- chosen to be the one most typical of what every
-    hand agrees the letter looks like. Stored in the same normalized frame
-    as a glyph variant (origin at the left of the ink, baseline y=0, y up,
-    1.0 = x-height), so `SynthesizeHandwriting._BlendGlyph` can interpolate
-    toward it directly."""
-    byChar = {}
-    for lib in rawLibs.values():
-        for ch, vs in lib.items():
-            byChar.setdefault(ch, []).extend(vs)
-
-    core = {}
-    for ch, vs in byChar.items():
-        good = [g for g in vs
-                if 'strokes' in g and 0.05 < g.get('width', 0) < 3.0
-                and (g['top'] - g['bot']) > 0.25 and len(g['strokes']) <= 5
-                and _ClassOk(ch, g['top'], g['bot'])
-                and _PenLength(g) >= MIN_PEN_LEN
-                and _LongestStroke(g) >= MIN_LONGEST_STROKE]
-        if len(good) < minPool:
-            continue
-        good.sort(key=lambda g: _PriorScore(g, ch, prior))
-        pool = good[:max(minPool, int(round(keepFrac * len(good))))]
-        grids = [(_ShapeGrid(g), g) for g in pool]
-        grids = [(v, g) for v, g in grids if v is not None]
-        if len(grids) < 3:
-            continue
-        G = np.stack([v for v, _ in grids])
-        D = np.abs(G[:, None, :] - G[None, :, :]).sum(-1)
-        med = grids[int(np.argmin(D.sum(1)))][1]
-        adv = float(np.median([g['advance'] for g in pool]))
-        core[ch] = dict(
-            strokes=[[[round(x, 3), round(y, 3)] for (x, y) in s]
-                     for s in med['strokes']],
-            advance=round(adv, 3),
-            lead=round(float(med.get('lead', 0.0)), 3),
-            width=round(float(med.get('width', adv)), 3),
-            entryY=round(float(med.get('entryY', 0.3)), 3),
-            exitY=round(float(med.get('exitY', 0.3)), 3),
-            nPool=len(pool))
-    LEGIBLE_CORE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(LEGIBLE_CORE_PATH, 'w', encoding='utf-8') as f:
-        json.dump(core, f)
-    print("  legible core: %d characters (%s)"
-          % (len(core), ''.join(sorted(core))))
-    return core
 
 
 def BuildAll(maxLinesPerAuthor=None, useCache=True):
@@ -1340,6 +1108,7 @@ def BuildAll(maxLinesPerAuthor=None, useCache=True):
     extraction is cached: re-running only re-filters unless the cache is
     missing or `useCache` is off."""
     import pickle
+    from TrainText import IAMLineDatasetRaw, _decode_png
 
     base = IAMLineDatasetRaw(root_dir=str(DATA_DIR), cache_dir=str(CACHE_DIR))
     byAuthor = {}
@@ -1404,5 +1173,126 @@ def BuildAll(maxLinesPerAuthor=None, useCache=True):
     print(f"\nProfiles saved to {PROFILE_DIR}")
 
 
+# ---------------------------------------------------------------------------
+# Driver: build the 8-dataset + 2-personal (10-author) profile set
+# ---------------------------------------------------------------------------
+# WHY A SEPARATE DRIVER, NOT A TWEAK TO BuildAll()
+#     BuildAll() above is hardwired to IAMLineDatasetRaw (IAMpages10 folder
+#     layout). The 8 kept dataset authors (150,151,152,153,384,551,552,588
+#     -- dropped 154/155 for being redundant with 150/151/152's style
+#     cluster) already have fully-extracted, cached raw glyph libraries in
+#     NOGIT/GlyphCache10/ from earlier work -- loaded straight from cache
+#     here, NOT re-extracted, so this only pays the (expensive,
+#     forced-alignment) extraction cost for the 2 new personal authors
+#     (yeukita, dylan, from Software/CNN/NOGIT/yeukita and dylan). The two
+#     personal authors are segmented with SegmentPage.ProcessPage (the same
+#     personal-page pipeline used for non-IAM pages) instead of
+#     IAMLineDatasetRaw, and forced-aligned with the PERSONAL fine-tuned
+#     recognizer (not the general hf model) -- per the measured finding
+#     that the personal fine-tune reads their handwriting far better
+#     (90%+ vs whatever the general model gets on it) even though it's
+#     worse on general text.
+#
+#     Everything downstream (BuildLetterPrior pooling, BuildAuthorProfile,
+#     JSON output) is reused UNCHANGED from the functions above, and all 10
+#     profiles are written to the SAME PROFILE_DIR (NOGIT/StyleProfiles10/)
+#     so SynthesizeHandwriting.py/server.py etc. don't need to change at
+#     all to pick up yeukita/dylan as author IDs.
+def build_personal_line_items(author):
+    """Segments every photo for one personal author, splits its lines into
+    train/holdout (per-page, same convention as TrainTextPersonal.py), and
+    returns (train_items, holdout_texts) where train_items is a list of
+    (gray_crop, text) ready for ExtractAuthorRaw."""
+    rng = random.Random(SPLIT_SEED)
+    train_items, holdout_texts = [], []
+    for img_path in sorted((NOGIT_DIR / author).glob("*.jpg")):
+        results, _preview, _meta = F.ProcessPage(str(img_path))
+        crops = [r["raw_crop"] for r in results if r["tag"] == "TEXT"]
+        gt = ReadLabelLines(str(img_path))
+        gt = [g for g in gt if g.strip() != "MESS"]
+        n = min(len(crops), len(gt))
+        rows = list(zip(crops[:n], gt[:n]))
+        rng.shuffle(rows)
+        n_val = max(1, round(len(rows) * VAL_FRACTION))
+        for crop, text in rows[n_val:]:
+            train_items.append((crop, text))
+        for _crop, text in rows[:n_val]:
+            holdout_texts.append(text)
+    return train_items, holdout_texts
+
+
+def BuildAll10Authors():
+    import pickle
+
+    RAW_DIR.mkdir(parents=True, exist_ok=True)
+    PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+
+    allParsed = {}   # author -> (parsed, refs)
+
+    # ---- 8 kept dataset authors: load straight from existing cache ----
+    for a in DATASET_AUTHORS:
+        rawPath = RAW_DIR / f"{a}.pkl"
+        if not rawPath.exists():
+            raise SystemExit(f"[Error] expected cached raw glyphs at {rawPath} -- "
+                              f"run BuildStyleProfile.py's BuildAll() first if missing.")
+        with open(rawPath, "rb") as f:
+            parsed = pickle.load(f)
+        # refs (RenderRefStats) aren't cached separately in the original
+        # pipeline -- they're cheap (no model, no forced alignment) so just
+        # recompute from the same cached parsed data's own stats, which
+        # already embeds 'ref' per line (see ExtractAuthorRaw).
+        refs = [stats["ref"] for _glyphs, stats in parsed if "ref" in stats]
+        allParsed[a] = (parsed, refs)
+        print(f"[Dataset] {a}: {len(parsed)} lines loaded from cache")
+
+    # ---- 2 personal authors: fresh extraction with the personal model ----
+    personal_model = PaperCRNNNumpy(checkpoint_path=PERSONAL_WEIGHTS)
+
+    for a in PERSONAL_AUTHORS:
+        rawPath = RAW_DIR / f"{a}.pkl"
+        if rawPath.exists():
+            with open(rawPath, "rb") as f:
+                parsed = pickle.load(f)
+            print(f"[Personal] {a}: {len(parsed)} lines loaded from cache")
+        else:
+            train_items, holdout_texts = build_personal_line_items(a)
+            print(f"[Personal] {a}: {len(train_items)} train lines, "
+                  f"{len(holdout_texts)} held out")
+            parsed = ExtractAuthorRaw(a, train_items, personal_model)
+            with open(rawPath, "wb") as f:
+                pickle.dump(parsed, f)
+            print(f"[Personal] {a}: {len(parsed)}/{len(train_items)} lines usable after extraction")
+        refs = [stats["ref"] for _glyphs, stats in parsed if "ref" in stats]
+        allParsed[a] = (parsed, refs)
+
+    # ---- shared cross-author letter prior (needs ALL 10 pooled) ----
+    rawLibs = {}
+    for a2, (parsed2, _r) in allParsed.items():
+        lib = {}
+        for glyphs, _st in parsed2:
+            for g in glyphs:
+                if g and g.get('char', ' ') != ' ' and 'strokes' in g:
+                    lib.setdefault(g['char'], []).append(g)
+        rawLibs[a2] = lib
+    prior = BuildLetterPrior(rawLibs)
+    print(f"\n[Prior] learned for {len(prior)} characters across {len(allParsed)} authors")
+
+    for a2 in sorted(allParsed):
+        parsed2, refs2 = allParsed[a2]
+        prof = BuildAuthorProfile(a2, parsed2, refs=refs2, prior=prior)
+        if prof is None:
+            print(f"  {a2}: FAILED (no usable lines)")
+            continue
+        with open(PROFILE_DIR / f"{a2}.json", "w", encoding="utf-8") as f:
+            json.dump(prof, f)
+        print(f"  {a2}: profile saved")
+
+    print(f"\nProfiles saved to {PROFILE_DIR}")
+    print(f"Final 10-author set: {sorted(allParsed)}")
+
+
 if __name__ == '__main__':
-    BuildAll()
+    if "--10authors" in sys.argv:
+        BuildAll10Authors()
+    else:
+        BuildAll()

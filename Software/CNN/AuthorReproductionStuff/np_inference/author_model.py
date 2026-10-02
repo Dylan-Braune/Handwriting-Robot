@@ -2,10 +2,9 @@
 (TrainAuthor.py) + a ClassifyImage() matching EvaluateStyle.ClassifyImage's
 behavior. No torch import in this file.
 
-StrokeNormalize's binarize/skeletonize steps reuse BuildStyleProfile's
-BinarizeLine/Skeletonize/CoreBand and RawImageOps.Dilate -- those functions
-are pure numpy even though the modules they live in also import torch (for
-other, unrelated functions we never call from here)."""
+StrokeNormalize's binarize/skeletonize steps reuse ProfileIO's
+BinarizeLine/Skeletonize/CoreBand and SegmentPage.Dilate -- both are
+pure numpy with no torch dependency."""
 
 import os
 import sys
@@ -22,17 +21,17 @@ CNN_DIR = SCRIPT_DIR.parent  # .../Software/CNN
 sys.path.insert(0, str(SCRIPT_DIR))
 sys.path.insert(0, str(CNN_DIR))
 
-import RawImageOps as _RawOps  # noqa: E402  (pure numpy, see module docstring)
-import BuildStyleProfile as _SP  # noqa: E402  (BinarizeLine/Skeletonize/CoreBand are pure numpy)
+import SegmentPage as _RawOps  # noqa: E402  (pure numpy, see module docstring)
+import ProfileIO as _SP  # noqa: E402  (BinarizeLine/Skeletonize/CoreBand, pure numpy)
 
 from .text_model import resize_line_image_fixed, tensor_from_resized  # noqa: E402
 
 PEN_WIDTH_XH = 0.14  # matches TrainAuthorShape.PEN_WIDTH_XH
 
 # Mirrors EvaluateStyle.py's AUTHOR_WEIGHTS fallback chain exactly.
-_SHAPE = CNN_DIR / "NOGIT" / "weights" / "author_shape_10new_weights.pt"
-_W1 = CNN_DIR / "NOGIT" / "weights" / "author_classifier_10_weights.pt"
-_W2 = CNN_DIR / "NOGIT" / "weights" / "author_fast_10_weights.pt"
+_SHAPE = CNN_DIR / "weights" / "author_shape_10new_weights.pt"
+_W1 = CNN_DIR / "weights" / "author_classifier_10_weights.pt"
+_W2 = CNN_DIR / "weights" / "author_fast_10_weights.pt"
 DEFAULT_AUTHOR_WEIGHTS = _SHAPE if _SHAPE.exists() else (_W1 if _W1.exists() else _W2)
 
 

@@ -7,7 +7,6 @@ member per tensor storage (raw bytes, dtype/shape come from the pickle)."""
 
 import io
 import pickle
-import struct
 import zipfile
 from pathlib import Path
 

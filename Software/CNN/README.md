@@ -31,10 +31,11 @@ IAM dataset pages use a different, simpler segmenter: `ExtractIAMLines.py`
 | `TrainAuthor.py` | **Writer-identification** trainer -- 10-author model (`AuthorClassifierCNN`) on `Data/Datasets/IAMpages10`. Imports the backbone from `TrainText`; can transfer-init from its trained weights. |
 | `ClassifyText.py` | **Inference entry point** -- loads trained weights and transcribes a page (IAM or personal, picking `SegmentPage` for personal pages). Fully interactive, no CLI flags. |
 
-Weights live in `NOGIT/weights/` (gitignored). Line caches rebuild
+Trained weights live in `weights/` and ARE tracked in git, so a plain push/pull
+deploys them (only `*_checkpoint.pt` resume files stay local). Line caches rebuild
 automatically on first run. To read the current text model's stored
 validation numbers: `python Diagnostics/inspect_checkpoint.py` against
-`NOGIT/weights/paper_cnn_bilstm_ctc_best.pt`.
+`weights/paper_cnn_bilstm_ctc_joint_best.pt`.
 
 ## 3. Rewriting -- text in a chosen author's handwriting, as gantry motion
 

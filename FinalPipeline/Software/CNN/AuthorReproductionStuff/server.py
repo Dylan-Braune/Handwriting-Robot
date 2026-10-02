@@ -40,7 +40,6 @@ Endpoints (all JSON in/out unless noted):
     GET  /api/glyphs/<author>         -- glyph-grid PNG for one author
     GET  /api/samples/<author>        -- list of real sample crops (image URLs + transcriptions)
 """
-import io
 import os
 import sys
 import time
@@ -59,12 +58,12 @@ from flask_cors import CORS
 from PIL import Image
 
 import SynthesizeHandwriting as SY
-import WriteGCode as GW
 import SegmentPage as PS
 import web_render_helpers as WRH
 import camera_capture as CAM
 from np_inference.text_model import PaperCRNNNumpy, ReadText, CharAcc
 from np_inference.author_model import AuthorClassifierCNNNumpy, ClassifyImage
+from authors_config import author_classifier_weights_filename
 
 # odroid_direct_drive.py is safe to import anywhere now (see its own
 # comments) -- gpiod access only happens inside connect(), not at import
@@ -101,12 +100,13 @@ SHAPE_IDX2AUTHOR = {v: k for k, v in SHAPE_MAPPING.items()}
 
 print("[server] loading ink-based writer-ID classifier (classifies REAL photos)...")
 _INK_WEIGHTS_CANDIDATES = [
-    NOGIT_DIR / "weights" / "author_classifier_10new_weights.pt",
-    NOGIT_DIR / "weights" / "author_classifier_10_weights.pt",
+    NOGIT_DIR.parent / "weights" / author_classifier_weights_filename(),
+    NOGIT_DIR.parent / "weights" / "author_classifier_10_weights.pt",
 ]
 INK_WEIGHTS_PATH = next((p for p in _INK_WEIGHTS_CANDIDATES if p.exists()), None)
 if INK_WEIGHTS_PATH is None:
-    raise SystemExit("No ink-based author classifier weights found -- run TrainAuthor10.py first.")
+    raise SystemExit("No ink-based author classifier weights found -- run "
+                      "`python TrainAuthor.py 10authors` first.")
 INK_AUTHOR_MODEL = AuthorClassifierCNNNumpy(checkpoint_path=INK_WEIGHTS_PATH)
 INK_MAPPING = INK_AUTHOR_MODEL.author_mapping
 INK_IDX2AUTHOR = {v: k for k, v in INK_MAPPING.items()}
@@ -320,6 +320,24 @@ def api_classify():
     })
 
 
+def _job_response(job_id, line_count, pen_pulses, preview_img, expected_text=None, **extra):
+    """Shared response shape for /api/generate and /api/gcode/upload: reads
+    the rendered preview back with the text recognizer and reports accuracy
+    against expected_text when one was given."""
+    read_back = ReadText(preview_img, TEXT_MODEL)
+    return jsonify({
+        "job_id": job_id,
+        "gcode_url": f"/api/gcode/{job_id}",
+        "preview_url": f"/api/images/job_{job_id}",
+        "gcode_line_count": line_count,
+        "pen_pulses": pen_pulses,
+        "read_back_text": read_back,
+        "text_accuracy_pct": (round(CharAcc(read_back, expected_text) * 100, 1)
+                              if expected_text else None),
+        **extra,
+    })
+
+
 # ---------------------------------------------------------------------------
 # POST /api/generate   json: {text, author, nTries?}
 # ---------------------------------------------------------------------------
@@ -335,7 +353,7 @@ def api_generate():
         return jsonify({"error": f"Unknown author {author!r}"}), 400
 
     prof = PROFILES[author]
-    cfg = GW.GantryConfig()
+    cfg = SY.GantryConfig()
 
     t0 = time.time()
     traj = SY.SynthesizeJointBestOf(
@@ -351,22 +369,12 @@ def api_generate():
     job_dir.mkdir(parents=True, exist_ok=True)
 
     gcode_path = job_dir / "job.gcode"
-    g_res = GW.WriteGcode(traj, cfg, gcode_path, title=f"web job {author}")
-    preview_path = job_dir / "preview.png"
-    SY.RenderTrajectory(traj, pxPerMm=18.0, profile=prof).save(preview_path)
+    g_res = SY.WriteGcode(traj, cfg, gcode_path, title=f"web job {author}")
+    preview_img = SY.RenderTrajectory(traj, pxPerMm=18.0, profile=prof)
+    preview_img.save(job_dir / "preview.png")
 
-    read_back = ReadText(Image.open(preview_path), TEXT_MODEL)
-
-    return jsonify({
-        "job_id": job_id,
-        "gcode_url": f"/api/gcode/{job_id}",
-        "preview_url": f"/api/images/job_{job_id}",
-        "gcode_line_count": g_res["lines"],
-        "pen_pulses": g_res["penPulses"],
-        "read_back_text": read_back,
-        "text_accuracy_pct": round(CharAcc(read_back, text) * 100, 1),
-        "synth_seconds": round(synth_seconds, 1),
-    })
+    return _job_response(job_id, g_res["lines"], g_res["penPulses"], preview_img,
+                         expected_text=text, synth_seconds=round(synth_seconds, 1))
 
 
 @app.route("/api/gantry/status", methods=["GET"])
@@ -465,27 +473,14 @@ def api_gcode_upload():
     line_count = sum(1 for line in raw_text.splitlines() if line.strip())
     pen_pulses = sum(raw_text.count(cmd) for cmd in ("M3", "M5"))
 
-    cfg = GW.GantryConfig()
+    cfg = SY.GantryConfig()
     preview_path = job_dir / "preview.png"
     try:
-        preview_img, _strokes = GW.RenderGcodePreview(str(gcode_path), cfg, path=str(preview_path))
+        preview_img, _strokes = SY.RenderGcodePreview(str(gcode_path), cfg, path=str(preview_path))
     except Exception as e:
         return jsonify({"error": f"Could not parse/render that G-code file: {e}"}), 422
 
-    read_back = ReadText(preview_img, TEXT_MODEL)
-
-    response = {
-        "job_id": job_id,
-        "gcode_url": f"/api/gcode/{job_id}",
-        "preview_url": f"/api/images/job_{job_id}",
-        "gcode_line_count": line_count,
-        "pen_pulses": pen_pulses,
-        "read_back_text": read_back,
-        "text_accuracy_pct": None,
-    }
-    if expected_text:
-        response["text_accuracy_pct"] = round(CharAcc(read_back, expected_text) * 100, 1)
-    return jsonify(response)
+    return _job_response(job_id, line_count, pen_pulses, preview_img, expected_text=expected_text)
 
 
 @app.route("/api/gcode/<job_id>", methods=["GET"])
@@ -563,7 +558,7 @@ def api_model_info():
                 "text_char_gcode_pct": 84.1,
                 "text_word_pct": 54.3,
                 "method": "SynthesizeJointBestOf: best-of-N candidate draws scored by the harmonic mean of text accuracy and writer-ID confidence together, plus a joint-aware repair pass",
-                "measured_via": "VerifyRewrite.py, full official evaluation script",
+                "measured_via": "Evaluate.py rewrite, full official evaluation script",
             },
         },
         "device": "cpu (numpy inference, no ML library at runtime)",

@@ -99,12 +99,26 @@ import torch.optim as optim
 import torchvision.transforms.functional as TF
 from PIL import Image
 from scipy.ndimage import gaussian_filter, map_coordinates
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 
 from ExtractIAMLines import ExtractLinePatches, ReadLabelLines
 
 if os.name == "nt":
     pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+
+# -----------------------------------------------------------------------------
+# Merged in from TrainTextJoint.py / TrainTextPersonal.py: both need to import
+# SegmentPage (the personal-page pipeline) and TrainTextJoint.py additionally
+# put AuthorReproductionStuff on sys.path -- replicated here unchanged so the
+# merged file behaves exactly like running either original script directly,
+# regardless of the caller's working directory.
+# -----------------------------------------------------------------------------
+SCRIPT_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(SCRIPT_DIR))
+sys.path.insert(0, str(SCRIPT_DIR / "AuthorReproductionStuff"))
+
+import SegmentPage as PS
+from authors_config import PERSONAL_AUTHORS, VAL_FRACTION, SPLIT_SEED
 
 
 # -----------------------------------------------------------------------------
@@ -806,7 +820,7 @@ def train(config, device):
     # "tailored" the LR in some experiments, so this isn't out of spirit.
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=5, min_lr=1e-5)
 
-    weights_dir = script_dir / "NOGIT" / "weights"
+    weights_dir = script_dir / "weights"
     weights_dir.mkdir(parents=True, exist_ok=True)
     ckpt_path = weights_dir / f"{config['name']}_checkpoint.pt"
     best_path = weights_dir / f"{config['name']}_best.pt"
@@ -988,31 +1002,13 @@ def train(config, device):
     return best_val_loss
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="Train the paper CNN-BiLSTM-CTC model.")
-    parser.add_argument("--max-pages", type=int, default=None,
-                         help="Only train on the first N pages (in author-folder-sorted order) instead of "
-                              "the whole dataset -- e.g. --max-pages 100 to test on just the pages you've "
-                              "regenerated labels for so far. Omit (or pass 0) to use every page available.")
-    parser.add_argument("--force-rebuild", action="store_true",
-                         help="Ignore any existing line_image_cache/ and re-segment every page from scratch.")
-    parser.add_argument("--eval-every", type=int, default=1,
-                         help="Run validation every N epochs instead of every epoch (default 1). Validation's "
-                              "CER computation is pure-Python and can be slow, so bumping this to e.g. 5 skips "
-                              "most of that cost. Early stopping then waits for N validation CHECKS (not raw "
-                              "epochs) with no improvement -- see the in-code comment in train().")
-    parser.add_argument("--max-restarts", type=int, default=3,
-                         help="When early-stop patience runs out, warm-restart from the best checkpoint with "
-                              "a fresh LR/optimizer instead of stopping outright, up to this many times "
-                              "(default 3). After the last restart also plateaus, training stops for good.")
-    return parser.parse_args()
-
-
-def main():
+def main_base(args):
+    """Original TrainText.py direct-run behavior: train on your own segmented
+    IAMpages671 page scans. Unchanged except that `args` is now handed in by
+    the subcommand dispatcher instead of being parsed here."""
     script_dir = Path(__file__).resolve().parent
     data_dir = script_dir.parents[1] / "Data" / "Datasets" / "IAMpages671"
 
-    args = parse_args()
     max_pages = args.max_pages
     if max_pages is None:
         raw = input(
@@ -1068,6 +1064,742 @@ def main():
         print("\n[FATAL] Training crashed. Full traceback below (also saved to the .log file):")
         traceback.print_exc()
         raise
+
+
+# =============================================================================
+# Merged in from TrainTextHF.py -- train on the pre-segmented HuggingFace
+# Teklia/IAM-line dataset instead of our own page scans. Everything model-side
+# (PaperCRNN, preprocessing, CHARSET, decode, augmentation, evaluate()) is the
+# shared code above; only the data layer below is new.
+# =============================================================================
+WEIGHTS_DIR = SCRIPT_DIR / "weights"
+HF_NAME = "paper_cnn_bilstm_ctc_hf"
+HF_DATASET = "Teklia/IAM-line"
+DEFAULT_HF_CACHE = SCRIPT_DIR / "NOGIT" / "hf_cache"
+
+
+class HFLineDataset(Dataset):
+    def __init__(self, hf_split, is_train, max_samples=None):
+        self.hf = hf_split
+        self.is_train = is_train
+
+        # One pass over the text column only (no image decode) to find the
+        # rows we can actually train on.
+        texts = self.hf["text"]
+        self.rows = []          # (hf_index, cleaned_label)
+        dropped_empty = dropped_long = 0
+        for i, t in enumerate(texts):
+            kept = "".join(c for c in t.strip() if c in CHAR_TO_IDX)
+            if len(kept) == 0:
+                dropped_empty += 1
+                continue
+            if len(kept) > MAX_SAFE_LABEL_CHARS:
+                dropped_long += 1
+                continue
+            self.rows.append((i, kept))
+
+        if max_samples is not None and max_samples > 0:
+            self.rows = self.rows[:max_samples]
+
+        split_name = "train" if is_train else "eval"
+        print(f"[HFData/{split_name}] {len(self.rows)} usable line(s) "
+              f"(dropped {dropped_empty} empty-after-filter, {dropped_long} "
+              f"over {MAX_SAFE_LABEL_CHARS} chars, from {len(texts)} total).")
+
+    def __len__(self):
+        return len(self.rows)
+
+    def __getitem__(self, i):
+        hf_idx, label = self.rows[i]
+        pil_img = self.hf[hf_idx]["image"]                 # PIL, RGB, 128px
+        pil_img = resize_line_image_fixed(pil_img)         # -> L, 640x64
+        if self.is_train:
+            pil_img = augment_line_image(pil_img)
+        img_tensor = tensor_from_resized(pil_img)
+        return img_tensor, encode_text(label), label
+
+
+def load_hf(cache_dir):
+    try:
+        from datasets import load_dataset
+    except ImportError:
+        raise SystemExit(
+            "The 'datasets' library is required. Install it with:\n"
+            "    pip install datasets"
+        )
+    print(f"[HF] load_dataset('{HF_DATASET}')  (cache: {cache_dir})")
+    return load_dataset(HF_DATASET, cache_dir=str(cache_dir))
+
+
+# -----------------------------------------------------------------------------
+# Training loop -- same recipe as the base train(): RMSprop lr=1e-3
+# wd=1e-5, ReduceLROnPlateau on val loss, best-val-loss checkpointing, warm
+# restarts, early stop after N validation checks with no improvement.
+# -----------------------------------------------------------------------------
+def train_hf(config, device):
+    ds = load_hf(config["cache_dir"])
+    train_set = HFLineDataset(ds["train"], is_train=True,
+                              max_samples=config.get("max_samples"))
+    val_set = HFLineDataset(ds["validation"], is_train=False,
+                            max_samples=config.get("max_samples"))
+    if len(train_set) < 4 or len(val_set) < 1:
+        raise RuntimeError("Not enough usable samples to train.")
+
+    is_cuda = device.type == "cuda"
+    train_loader = DataLoader(
+        train_set, batch_size=config["batch_size"], shuffle=True,
+        collate_fn=collate_fn, num_workers=4 if is_cuda else 0,
+        pin_memory=is_cuda,
+    )
+    val_loader = DataLoader(
+        val_set, batch_size=config["batch_size"], shuffle=False,
+        collate_fn=collate_fn, num_workers=4 if is_cuda else 0,
+        pin_memory=is_cuda,
+    )
+
+    model = PaperCRNN(num_classes=len(CHARSET) + 1).to(device)
+    ctc_loss_fn = nn.CTCLoss(blank=0, zero_infinity=True)
+    optimizer = optim.RMSprop(model.parameters(), lr=config["lr"],
+                              weight_decay=config["weight_decay"])
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="min", factor=0.5, patience=5, min_lr=1e-5)
+
+    WEIGHTS_DIR.mkdir(parents=True, exist_ok=True)
+    ckpt_path = WEIGHTS_DIR / f"{HF_NAME}_checkpoint.pt"
+    best_path = WEIGHTS_DIR / f"{HF_NAME}_best.pt"
+
+    start_epoch = 1
+    best_val_loss = float("inf")
+    patience_counter = 0
+    restart_count = 0
+
+    if ckpt_path.exists() and config.get("resume", True):
+        ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+        model.load_state_dict(ckpt["model_state_dict"])
+        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        if "scheduler_state_dict" in ckpt:
+            scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+        start_epoch = ckpt["epoch"] + 1
+        best_val_loss = ckpt["best_val_loss"]
+        patience_counter = ckpt["patience_counter"]
+        restart_count = ckpt.get("restart_count", 0)
+        print(f"[Resume] from epoch {ckpt['epoch']}, resuming at {start_epoch} "
+              f"(best_val_loss={best_val_loss:.4f}, patience={patience_counter}, "
+              f"restarts={restart_count}, lr={optimizer.param_groups[0]['lr']:.6f}).")
+    elif config.get("init_from"):
+        # Warm start from an already-trained recogniser (same architecture and
+        # charset) instead of random init. Nothing about the data changes --
+        # this only saves the epochs that would be spent relearning generic
+        # stroke features, which matters a lot without a GPU.
+        src = Path(config["init_from"])
+        if src.exists():
+            sd = torch.load(src, map_location=device, weights_only=False)
+            if isinstance(sd, dict) and "model_state_dict" in sd:
+                sd = sd["model_state_dict"]
+            model.load_state_dict(sd)
+            print(f"[Init] warm-started from {src.name}")
+        else:
+            print(f"[Init] {src} not found -- training from scratch")
+
+    max_epochs = config["epochs"]
+    early_stop_patience = config["early_stop_patience"]
+    eval_every = max(1, config.get("eval_every", 1))
+    max_restarts = config.get("max_restarts", 8)
+    n_train_batches = len(train_loader)
+
+    for epoch in range(start_epoch, max_epochs + 1):
+        model.train()
+        total_loss, n_batches = 0.0, 0
+        epoch_start = time.time()
+
+        for images, targets, target_lengths, _texts in train_loader:
+            images = images.to(device)
+            targets = targets.to(device)
+            target_lengths = target_lengths.to(device)
+
+            optimizer.zero_grad()
+            log_probs = model(images)
+            input_lengths = torch.full((images.size(0),), log_probs.size(0),
+                                       dtype=torch.long, device=device)
+            loss = ctc_loss_fn(log_probs, targets, input_lengths, target_lengths)
+            loss.backward()
+            optimizer.step()
+
+            total_loss += float(loss.item())
+            n_batches += 1
+            if n_batches == 1 or n_batches % 5 == 0 or n_batches == n_train_batches:
+                elapsed = time.time() - epoch_start
+                spb = elapsed / n_batches
+                eta = spb * (n_train_batches - n_batches)
+                print(f"\r[{HF_NAME}] Epoch {epoch:03d} | Batch {n_batches:04d}/"
+                      f"{n_train_batches} | Running loss {total_loss / n_batches:.3f} "
+                      f"| {spb:.2f}s/batch | ETA {eta / 60:.1f} min",
+                      end="", flush=True)
+
+        print()
+        train_loss = total_loss / max(1, n_batches)
+        print(f"[{HF_NAME}] Epoch {epoch:03d} training pass done in "
+              f"{(time.time() - epoch_start) / 60:.1f} min.")
+
+        run_validation = (epoch % eval_every == 0) or (epoch == max_epochs)
+        if run_validation:
+            vs = time.time()
+            val_loss, val_char_acc, val_cer = evaluate(
+                model, val_loader, device, ctc_loss_fn)
+            lr_before = optimizer.param_groups[0]["lr"]
+            scheduler.step(val_loss)
+            lr_after = optimizer.param_groups[0]["lr"]
+            lr_msg = (f" | LR {lr_before:.6f} -> {lr_after:.6f}"
+                      if lr_after < lr_before else "")
+
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                patience_counter = 0
+                torch.save(model.state_dict(), best_path)
+                saved_msg = " [BEST SAVED]"
+            else:
+                patience_counter += 1
+                saved_msg = ""
+
+            print(f"[{HF_NAME}] Epoch {epoch:03d}/{max_epochs} | Train {train_loss:.3f} "
+                  f"| Val loss {val_loss:.3f} (best {best_val_loss:.3f}) | "
+                  f"Val char-acc {val_char_acc:.2%} | Val CER {val_cer:.2%} | "
+                  f"val {((time.time() - vs) / 60):.1f} min{lr_msg}{saved_msg}")
+        else:
+            print(f"[{HF_NAME}] Epoch {epoch:03d}/{max_epochs} | Train {train_loss:.3f} "
+                  f"| (validation skipped -- runs every {eval_every} epochs)")
+
+        torch.save({
+            "epoch": epoch,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict(),
+            "best_val_loss": best_val_loss,
+            "patience_counter": patience_counter,
+            "restart_count": restart_count,
+            "charset": CHARSET,
+            "input_height": INPUT_HEIGHT,
+            "input_width": INPUT_WIDTH,
+            "source": HF_DATASET,
+        }, ckpt_path)
+
+        if run_validation and patience_counter >= early_stop_patience:
+            if restart_count < max_restarts:
+                restart_count += 1
+                print(f"[{HF_NAME}] No val improvement for {early_stop_patience} "
+                      f"check(s) -- WARM RESTART #{restart_count}/{max_restarts}: "
+                      f"reload best, reset LR to {config['lr']:.6f}.")
+                if best_path.exists():
+                    model.load_state_dict(torch.load(
+                        best_path, map_location=device, weights_only=False))
+                optimizer = optim.RMSprop(model.parameters(), lr=config["lr"],
+                                          weight_decay=config["weight_decay"])
+                scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+                    optimizer, mode="min", factor=0.5, patience=6, min_lr=1e-5)
+                patience_counter = 0
+                continue
+            print(f"[{HF_NAME}] Early stopping for good after {max_restarts} warm "
+                  f"restart(s).")
+            break
+
+    return best_val_loss
+
+
+def eval_only_hf(config, device):
+    """Load the best HF-trained weights and report CER on validation + test.
+    Falls back to _checkpoint.pt if _best.pt isn't there yet."""
+    best_path = WEIGHTS_DIR / f"{HF_NAME}_best.pt"
+    ckpt_path = WEIGHTS_DIR / f"{HF_NAME}_checkpoint.pt"
+    model = PaperCRNN(num_classes=len(CHARSET) + 1).to(device)
+    if best_path.exists():
+        model.load_state_dict(torch.load(best_path, map_location=device,
+                                         weights_only=False))
+        print(f"[Eval] loaded {best_path.name}")
+    elif ckpt_path.exists():
+        ck = torch.load(ckpt_path, map_location=device, weights_only=False)
+        model.load_state_dict(ck["model_state_dict"])
+        print(f"[Eval] loaded {ckpt_path.name} (epoch {ck['epoch']})")
+    else:
+        raise SystemExit(f"No trained weights in {WEIGHTS_DIR} -- train first.")
+
+    ds = load_hf(config["cache_dir"])
+    ctc_loss_fn = nn.CTCLoss(blank=0, zero_infinity=True)
+    for split in ("validation", "test"):
+        loader = DataLoader(
+            HFLineDataset(ds[split], is_train=False,
+                          max_samples=config.get("max_samples")),
+            batch_size=config["batch_size"], shuffle=False,
+            collate_fn=collate_fn, num_workers=0)
+        loss, char_acc, cer = evaluate(model, loader, device, ctc_loss_fn)
+        print(f"[Eval] {split:10s} | loss {loss:.3f} | "
+              f"char-acc {char_acc:.2%} | CER {cer:.2%} | "
+              f"({len(loader.dataset)} lines)")
+
+
+def main_hf(args):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"[Device] {device}")
+
+    SCRIPT_DIR.joinpath("NOGIT").mkdir(exist_ok=True)
+    sys.stdout = DualLogger(str(SCRIPT_DIR / f"{HF_NAME}.log"))
+    sys.stderr = sys.stdout
+
+    config = {
+        "cache_dir": args.cache_dir,
+        "max_samples": args.max_samples,
+        "batch_size": args.batch_size,
+        "lr": args.lr,
+        "weight_decay": 1e-5,
+        "epochs": args.epochs,
+        "early_stop_patience": args.early_stop_patience,
+        "eval_every": args.eval_every,
+        "max_restarts": args.max_restarts,
+        "resume": not args.no_resume,
+        "init_from": args.init_from,
+    }
+
+    if args.eval_only:
+        eval_only_hf(config, device)
+        return
+
+    print(f"\n--- Training {HF_NAME} on {HF_DATASET} "
+          f"(lr={config['lr']}, batch_size={config['batch_size']}, "
+          f"max_epochs={config['epochs']}) ---")
+    try:
+        best = train_hf(config, device)
+        print(f"\nDone. Best validation loss: {best:.4f}")
+    except Exception:
+        import traceback
+        print("\n[FATAL] Training crashed:")
+        traceback.print_exc()
+        raise
+
+
+# =============================================================================
+# Merged in from TrainTextJoint.py -- trains ONE recogniser on BOTH the full
+# Teklia/IAM-line dataset AND personal pages (Software/CNN/NOGIT/yeukita +
+# dylan) together every epoch via a WeightedRandomSampler, so the model never
+# "sequentially forgets" either domain the way naive fine-tuning did. See the
+# original TrainTextJoint.py module docstring (preserved in git history) for
+# the measured numbers that motivated this approach.
+# =============================================================================
+NOGIT_DIR = SCRIPT_DIR / "NOGIT"
+JOINT_NAME = "paper_cnn_bilstm_ctc_joint"
+
+
+def collect_personal_lines_joint():
+    """Same personal-page collection as the `personal` subcommand: segments
+    every yeukita/dylan photo with SegmentPage, pairs TEXT crops with
+    their _labels.txt lines (MESS dropped), filters chars/length exactly
+    like HFLineDataset does, and splits per-page into train/val."""
+    all_rows = []
+    for folder in PERSONAL_AUTHORS:
+        for img_path in sorted((NOGIT_DIR / folder).glob("*.jpg")):
+            results, _preview, _meta = PS.ProcessPage(str(img_path))
+            crops = [r["raw_crop"] for r in results if r["tag"] == "TEXT"]
+            gt = [g for g in ReadLabelLines(str(img_path)) if g.strip() != "MESS"]
+            n = min(len(crops), len(gt))
+            for crop, text in zip(crops[:n], gt[:n]):
+                kept = "".join(c for c in text.strip() if c in CHAR_TO_IDX)
+                if 0 < len(kept) <= MAX_SAFE_LABEL_CHARS:
+                    all_rows.append((f"{folder}/{img_path.name}", crop, kept))
+
+    rng = random.Random(SPLIT_SEED)
+    train_rows, val_rows = [], []
+    by_page = {}
+    for page, crop, text in all_rows:
+        by_page.setdefault(page, []).append((crop, text))
+    for page, rows in by_page.items():
+        rng.shuffle(rows)
+        n_val = max(1, round(len(rows) * VAL_FRACTION))
+        val_rows.extend(rows[:n_val])
+        train_rows.extend(rows[n_val:])
+    print(f"[PersonalData] {len(train_rows)} train / {len(val_rows)} val lines "
+          f"from {len(by_page)} pages")
+    return train_rows, val_rows
+
+
+class PersonalLineDataset(Dataset):
+    """Shared by the `joint` and `personal` subcommands -- identical in both
+    original source files, so defined once here."""
+
+    def __init__(self, rows, is_train):
+        self.rows = rows
+        self.is_train = is_train
+
+    def __len__(self):
+        return len(self.rows)
+
+    def __getitem__(self, i):
+        crop, label = self.rows[i]
+        pil_img = Image.fromarray(crop).convert("L")
+        pil_img = resize_line_image_fixed(pil_img)
+        if self.is_train:
+            pil_img = augment_line_image(pil_img)
+        return tensor_from_resized(pil_img), encode_text(label), label
+
+
+def build_train_loader(teklia_train, personal_train, batch_size, personal_fraction):
+    combined = torch.utils.data.ConcatDataset([teklia_train, personal_train])
+    n_tek, n_per = len(teklia_train), len(personal_train)
+    # Per-sample weight so that, in expectation, personal_fraction of every
+    # sampled epoch comes from the personal set -- no literal duplication.
+    w_tek = (1.0 - personal_fraction) / max(1, n_tek)
+    w_per = personal_fraction / max(1, n_per)
+    weights = [w_tek] * n_tek + [w_per] * n_per
+    sampler = WeightedRandomSampler(weights, num_samples=n_tek, replacement=True)
+    return DataLoader(combined, batch_size=batch_size, sampler=sampler, collate_fn=collate_fn)
+
+
+def main_joint(args):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"[Device] {device}")
+
+    ds = load_hf(Path(args.cache_dir))
+    teklia_train = HFLineDataset(ds["train"], is_train=True, max_samples=args.max_samples)
+    teklia_val = HFLineDataset(ds["validation"], is_train=False, max_samples=args.max_samples)
+    personal_train_rows, personal_val_rows = collect_personal_lines_joint()
+    personal_train = PersonalLineDataset(personal_train_rows, is_train=True)
+    personal_val = PersonalLineDataset(personal_val_rows, is_train=False)
+
+    train_loader = build_train_loader(teklia_train, personal_train, args.batch_size, args.personal_fraction)
+    teklia_val_loader = DataLoader(teklia_val, batch_size=32, shuffle=False, collate_fn=collate_fn)
+    personal_val_loader = DataLoader(personal_val, batch_size=8, shuffle=False, collate_fn=collate_fn)
+    print(f"[Mix] {len(teklia_train)} Teklia + {len(personal_train)} personal train lines, "
+          f"sampled at {args.personal_fraction:.0%} personal per epoch "
+          f"({len(train_loader)} batches/epoch)")
+
+    model = PaperCRNN(num_classes=len(CHARSET) + 1).to(device)
+    ctc_loss_fn = nn.CTCLoss(blank=0, zero_infinity=True)
+    optimizer = optim.RMSprop(model.parameters(), lr=args.lr, weight_decay=1e-5)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=4, min_lr=1e-6)
+
+    WEIGHTS_DIR.mkdir(parents=True, exist_ok=True)
+    ckpt_path = WEIGHTS_DIR / f"{JOINT_NAME}_checkpoint.pt"
+    best_path = WEIGHTS_DIR / f"{JOINT_NAME}_best.pt"
+
+    start_epoch, best_min_acc = 1, -1.0
+    if ckpt_path.exists() and not args.no_resume:
+        ck = torch.load(ckpt_path, map_location=device, weights_only=False)
+        model.load_state_dict(ck["model_state_dict"])
+        optimizer.load_state_dict(ck["optimizer_state_dict"])
+        scheduler.load_state_dict(ck["scheduler_state_dict"])
+        start_epoch = ck["epoch"] + 1
+        best_min_acc = ck["best_min_acc"]
+        print(f"[Resume] epoch {ck['epoch']} -> {start_epoch}, best_min_acc={best_min_acc:.4f}")
+    else:
+        sd = torch.load(args.init_from, map_location=device, weights_only=False)
+        if isinstance(sd, dict) and "model_state_dict" in sd:
+            sd = sd["model_state_dict"]
+        model.load_state_dict(sd)
+        print(f"[Init] warm-started from {args.init_from}")
+
+    for epoch in range(start_epoch, args.epochs + 1):
+        model.train()
+        total_loss, n_batches = 0.0, 0
+        t0 = time.time()
+        for images, targets, target_lengths, _texts in train_loader:
+            images, targets, target_lengths = images.to(device), targets.to(device), target_lengths.to(device)
+            optimizer.zero_grad()
+            log_probs = model(images)
+            input_lengths = torch.full((images.size(0),), log_probs.size(0), dtype=torch.long, device=device)
+            loss = ctc_loss_fn(log_probs, targets, input_lengths, target_lengths)
+            if not torch.isfinite(loss):
+                continue
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
+            optimizer.step()
+            total_loss += loss.item()
+            n_batches += 1
+        train_loss = total_loss / max(1, n_batches)
+
+        tek_loss, tek_acc, tek_cer = evaluate(model, teklia_val_loader, device, ctc_loss_fn)
+        per_loss, per_acc, per_cer = evaluate(model, personal_val_loader, device, ctc_loss_fn)
+        scheduler.step(tek_loss + per_loss)
+
+        min_acc = min(tek_acc, per_acc)
+        saved = ""
+        torch.save(dict(model_state_dict=model.state_dict(), optimizer_state_dict=optimizer.state_dict(),
+                        scheduler_state_dict=scheduler.state_dict(), epoch=epoch,
+                        best_min_acc=max(best_min_acc, min_acc)), ckpt_path)
+        if min_acc > best_min_acc:
+            best_min_acc = min_acc
+            torch.save(model.state_dict(), best_path)
+            saved = " [BEST SAVED]"
+        print(f"[joint] Epoch {epoch:03d}/{args.epochs} | Train {train_loss:.3f} "
+              f"| Teklia CharAcc {tek_acc:.2%} CER {tek_cer:.2%} "
+              f"| Personal CharAcc {per_acc:.2%} CER {per_cer:.2%} "
+              f"| {time.time()-t0:.1f}s{saved}", flush=True)
+
+    print(f"\nDone. Best checkpoint (by min(Teklia acc, Personal acc) = {best_min_acc:.2%}) "
+          f"saved to {best_path}")
+
+
+# =============================================================================
+# Merged in from TrainTextPersonal.py -- fine-tunes PaperCRNN on YOUR OWN
+# handwriting (NOGIT/yeukita + NOGIT/dylan), warm-started from an existing
+# checkpoint. Kept because BuildStyleProfile10Authors.py depends on the
+# checkpoint this produces.
+# =============================================================================
+PERSONAL_NAME = "paper_cnn_bilstm_ctc_personal"
+PERSONAL_DIRS = ["yeukita", "dylan"]
+DEFAULT_INIT_FROM = WEIGHTS_DIR / "paper_cnn_bilstm_ctc_hf_best.pt"
+PERSONAL_VAL_FRACTION = 0.15
+PERSONAL_SPLIT_SEED = 0
+
+
+def collect_personal_lines_personal():
+    """Segments every photo in yeukita/dylan with SegmentPage.ProcessPage
+    (the same personal-page pipeline ClassifyText.py uses), pairs each
+    TEXT-tagged crop with its ground-truth line (MESS lines dropped, same
+    convention as ClassifyText.process_image), and filters characters/
+    length exactly like HFLineDataset does. Returns (train_rows, val_rows),
+    each a list of (raw_crop_ndarray, cleaned_label) tuples."""
+    all_rows = []   # (page_name, raw_crop, cleaned_label)
+    for folder in PERSONAL_DIRS:
+        for img_path in sorted((NOGIT_DIR / folder).glob("*.jpg")):
+            results, _preview, _meta = PS.ProcessPage(str(img_path))
+            crops = [r["raw_crop"] for r in results if r["tag"] == "TEXT"]
+            gt = ReadLabelLines(str(img_path))
+            gt = [g for g in gt if g.strip() != "MESS"]
+            if len(crops) != len(gt):
+                print(f"[WARN] {folder}/{img_path.name}: {len(crops)} crops vs "
+                      f"{len(gt)} label lines -- skipping this page's mismatched tail")
+            n = min(len(crops), len(gt))
+            for crop, text in zip(crops[:n], gt[:n]):
+                kept = "".join(c for c in text.strip() if c in CHAR_TO_IDX)
+                if len(kept) == 0 or len(kept) > MAX_SAFE_LABEL_CHARS:
+                    continue
+                all_rows.append((f"{folder}/{img_path.name}", crop, kept))
+
+    rng = random.Random(PERSONAL_SPLIT_SEED)
+    train_rows, val_rows = [], []
+    # Per-page shuffle+split so both splits see every page's vocabulary,
+    # rather than holding out whole pages (which would starve val/train of
+    # whatever technical notation is unique to the held-out pages).
+    by_page = {}
+    for page, crop, text in all_rows:
+        by_page.setdefault(page, []).append((crop, text))
+    for page, rows in by_page.items():
+        rng.shuffle(rows)
+        n_val = max(1, round(len(rows) * PERSONAL_VAL_FRACTION))
+        val_rows.extend(rows[:n_val])
+        train_rows.extend(rows[n_val:])
+
+    print(f"[PersonalData] {len(train_rows)} train / {len(val_rows)} val lines "
+          f"from {len(by_page)} pages ({len(all_rows)} total usable lines)")
+    return train_rows, val_rows
+
+
+def train_personal(config, device):
+    train_rows, val_rows = collect_personal_lines_personal()
+    if len(train_rows) < 4 or len(val_rows) < 1:
+        raise RuntimeError("Not enough usable personal lines to train.")
+
+    train_set = PersonalLineDataset(train_rows, is_train=True)
+    val_set = PersonalLineDataset(val_rows, is_train=False)
+    train_loader = DataLoader(train_set, batch_size=config["batch_size"],
+                              shuffle=True, collate_fn=collate_fn)
+    val_loader = DataLoader(val_set, batch_size=config["batch_size"],
+                            shuffle=False, collate_fn=collate_fn)
+
+    model = PaperCRNN(num_classes=len(CHARSET) + 1).to(device)
+    ctc_loss_fn = nn.CTCLoss(blank=0, zero_infinity=True)
+
+    if config.get("freeze_conv"):
+        # Freeze the CNN feature extractor (generic stroke/edge detectors,
+        # shouldn't need to change for a new handwriting style) and only
+        # let the LSTM + output layer adapt. Constrains how far the model
+        # can drift from the general-purpose weights, trading some
+        # personal-domain accuracy for much less forgetting of everything
+        # else -- confirmed the naive full-fine-tune lost ~10-11 char-acc
+        # points on clean Teklia val/test despite only 16 epochs.
+        for module in (model.stage1, model.stage2, model.stage3):
+            for p in module.parameters():
+                p.requires_grad = False
+        trainable = [p for p in model.parameters() if p.requires_grad]
+        print(f"[Freeze] conv stages frozen -- training {sum(p.numel() for p in trainable)} "
+              f"of {sum(p.numel() for p in model.parameters())} params")
+    else:
+        trainable = model.parameters()
+
+    optimizer = optim.RMSprop(trainable, lr=config["lr"], weight_decay=1e-5)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="min", factor=0.5, patience=5, min_lr=1e-6)
+
+    name = PERSONAL_NAME + ("_frozen" if config.get("freeze_conv") else "")
+    WEIGHTS_DIR.mkdir(parents=True, exist_ok=True)
+    ckpt_path = WEIGHTS_DIR / f"{name}_checkpoint.pt"
+    best_path = WEIGHTS_DIR / f"{name}_best.pt"
+
+    start_epoch, best_val_loss = 1, float("inf")
+    if ckpt_path.exists() and not config.get("no_resume"):
+        ck = torch.load(ckpt_path, map_location=device, weights_only=False)
+        model.load_state_dict(ck["model_state_dict"])
+        optimizer.load_state_dict(ck["optimizer_state_dict"])
+        scheduler.load_state_dict(ck["scheduler_state_dict"])
+        start_epoch = ck["epoch"] + 1
+        best_val_loss = ck["best_val_loss"]
+        print(f"[Resume] epoch {ck['epoch']} -> {start_epoch}, best_val_loss={best_val_loss:.4f}")
+    else:
+        src = Path(config["init_from"])
+        if src.exists():
+            sd = torch.load(src, map_location=device, weights_only=False)
+            if isinstance(sd, dict) and "model_state_dict" in sd:
+                sd = sd["model_state_dict"]
+            model.load_state_dict(sd)
+            print(f"[Init] warm-started from {src}")
+        else:
+            raise SystemExit(f"[Init] {src} not found -- refusing to train this small "
+                              f"a dataset from scratch. Pass --init-from a real checkpoint.")
+
+    for epoch in range(start_epoch, config["epochs"] + 1):
+        model.train()
+        total_loss, n_batches = 0.0, 0
+        t0 = time.time()
+        for images, targets, target_lengths, _texts in train_loader:
+            images, targets, target_lengths = images.to(device), targets.to(device), target_lengths.to(device)
+            optimizer.zero_grad()
+            log_probs = model(images)
+            input_lengths = torch.full((images.size(0),), log_probs.size(0), dtype=torch.long, device=device)
+            loss = ctc_loss_fn(log_probs, targets, input_lengths, target_lengths)
+            if not torch.isfinite(loss):
+                continue
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
+            optimizer.step()
+            total_loss += loss.item()
+            n_batches += 1
+        train_loss = total_loss / max(1, n_batches)
+
+        val_loss, val_char_acc, val_cer = evaluate(model, val_loader, device, ctc_loss_fn)
+        scheduler.step(val_loss)
+
+        saved = ""
+        torch.save(dict(model_state_dict=model.state_dict(),
+                        optimizer_state_dict=optimizer.state_dict(),
+                        scheduler_state_dict=scheduler.state_dict(),
+                        epoch=epoch, best_val_loss=min(best_val_loss, val_loss)), ckpt_path)
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            torch.save(model.state_dict(), best_path)
+            saved = " [BEST SAVED]"
+        print(f"[personal] Epoch {epoch:03d}/{config['epochs']} | Train {train_loss:.3f} "
+              f"| Val {val_loss:.3f} | CharAcc {val_char_acc:.2%} | CER {val_cer:.2%} "
+              f"| {time.time()-t0:.1f}s{saved}", flush=True)
+
+
+def main_personal(args):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"[Device] {device}")
+    train_personal(dict(epochs=args.epochs, batch_size=args.batch_size, lr=args.lr,
+              init_from=args.init_from, no_resume=args.no_resume,
+              freeze_conv=args.freeze_conv), device)
+
+
+# =============================================================================
+# Subcommand dispatcher: `python TrainText.py <base|joint|hf|personal> [opts]`
+# Each subcommand's options are exactly the original standalone script's
+# argparse options (same flags, defaults, and help text), just nested here.
+# Running with no arguments at all preserves the original TrainText.py
+# behavior of defaulting straight into the `base` mode.
+# =============================================================================
+def build_arg_parser():
+    parser = argparse.ArgumentParser(
+        description="Train the paper CNN-BiLSTM-CTC text recognizer (multiple data sources).")
+    sub = parser.add_subparsers(dest="command")
+
+    # --- base: original TrainText.py behavior (own page scans, IAMpages671) ---
+    p_base = sub.add_parser(
+        "base", help="Train on your own segmented IAMpages671 page scans (original TrainText.py behavior).")
+    p_base.add_argument("--max-pages", type=int, default=None,
+                         help="Only train on the first N pages (in author-folder-sorted order) instead of "
+                              "the whole dataset -- e.g. --max-pages 100 to test on just the pages you've "
+                              "regenerated labels for so far. Omit (or pass 0) to use every page available.")
+    p_base.add_argument("--force-rebuild", action="store_true",
+                         help="Ignore any existing line_image_cache/ and re-segment every page from scratch.")
+    p_base.add_argument("--eval-every", type=int, default=1,
+                         help="Run validation every N epochs instead of every epoch (default 1). Validation's "
+                              "CER computation is pure-Python and can be slow, so bumping this to e.g. 5 skips "
+                              "most of that cost. Early stopping then waits for N validation CHECKS (not raw "
+                              "epochs) with no improvement -- see the in-code comment in train().")
+    p_base.add_argument("--max-restarts", type=int, default=3,
+                         help="When early-stop patience runs out, warm-restart from the best checkpoint with "
+                              "a fresh LR/optimizer instead of stopping outright, up to this many times "
+                              "(default 3). After the last restart also plateaus, training stops for good.")
+
+    # --- hf: original TrainTextHF.py behavior ---
+    p_hf = sub.add_parser(
+        "hf", help="Train on the HuggingFace Teklia/IAM-line dataset (original TrainTextHF.py behavior).")
+    p_hf.add_argument("--eval-only", action="store_true",
+                       help="Load the best HF weights and print val + test CER, no training.")
+    p_hf.add_argument("--max-samples", type=int, default=None,
+                       help="Cap each split to the first N usable lines (quick smoke test).")
+    p_hf.add_argument("--epochs", type=int, default=200)
+    p_hf.add_argument("--batch-size", type=int, default=16)
+    p_hf.add_argument("--lr", type=float, default=1e-3)
+    p_hf.add_argument("--eval-every", type=int, default=1)
+    p_hf.add_argument("--early-stop-patience", type=int, default=15)
+    p_hf.add_argument("--max-restarts", type=int, default=8)
+    p_hf.add_argument("--no-resume", action="store_true",
+                       help="Ignore any existing checkpoint and start fresh.")
+    p_hf.add_argument("--cache-dir", default=str(DEFAULT_HF_CACHE),
+                       help="Where HuggingFace caches the downloaded dataset.")
+    p_hf.add_argument("--init-from", default=None,
+                       help="Warm-start model weights from an existing checkpoint "
+                            "of the same architecture (e.g. the page-trained "
+                            "paper_cnn_bilstm_ctc_best.pt). Only used when there "
+                            "is no HF checkpoint to resume from.")
+
+    # --- joint: original TrainTextJoint.py behavior ---
+    p_joint = sub.add_parser(
+        "joint", help="Train jointly on Teklia/IAM-line + personal pages (original TrainTextJoint.py behavior).")
+    p_joint.add_argument("--init-from", required=True,
+                          help="warm-start checkpoint, e.g. weights/paper_cnn_bilstm_ctc_hf_best.pt "
+                               "-- REQUIRED, this script refuses to train such a mixed objective from scratch")
+    p_joint.add_argument("--epochs", type=int, default=30)
+    p_joint.add_argument("--batch-size", type=int, default=16)
+    p_joint.add_argument("--lr", type=float, default=5e-4)
+    p_joint.add_argument("--personal-fraction", type=float, default=0.20,
+                          help="fraction of each training epoch drawn from personal lines (default 20%%)")
+    p_joint.add_argument("--max-samples", type=int, default=None,
+                          help="cap Teklia train/val size for a quick smoke test")
+    p_joint.add_argument("--cache-dir", default=str(DEFAULT_HF_CACHE))
+    p_joint.add_argument("--no-resume", action="store_true")
+
+    # --- personal: original TrainTextPersonal.py behavior ---
+    p_personal = sub.add_parser(
+        "personal", help="Fine-tune on personal pages only (original TrainTextPersonal.py behavior).")
+    p_personal.add_argument("--epochs", type=int, default=60)
+    p_personal.add_argument("--batch-size", type=int, default=8)
+    p_personal.add_argument("--lr", type=float, default=3e-4)
+    p_personal.add_argument("--init-from", default=str(DEFAULT_INIT_FROM))
+    p_personal.add_argument("--no-resume", action="store_true")
+    p_personal.add_argument("--freeze-conv", action="store_true",
+                             help="freeze the CNN feature extractor, only train LSTM+output -- "
+                                  "saves to a separate _frozen checkpoint, see train_personal()'s comment")
+
+    return parser
+
+
+def main():
+    parser = build_arg_parser()
+    argv = sys.argv[1:]
+    # No arguments at all: preserve the original TrainText.py behavior of
+    # training the base (own page scans) model by default.
+    args = parser.parse_args(argv if argv else ["base"])
+    command = args.command or "base"
+
+    if command == "base":
+        main_base(args)
+    elif command == "hf":
+        main_hf(args)
+    elif command == "joint":
+        main_joint(args)
+    elif command == "personal":
+        main_personal(args)
+    else:
+        parser.print_help()
 
 
 if __name__ == "__main__":

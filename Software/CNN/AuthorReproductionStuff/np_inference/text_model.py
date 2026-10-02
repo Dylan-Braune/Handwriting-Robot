@@ -20,9 +20,9 @@ INPUT_HEIGHT = 64
 INPUT_WIDTH = 640
 
 # Mirrors VerifyRewrite.py's TEXT_WEIGHTS fallback chain exactly.
-DEFAULT_TEXT_WEIGHTS = SCRIPT_DIR / "NOGIT" / "weights" / "paper_cnn_bilstm_ctc_best.pt"
+DEFAULT_TEXT_WEIGHTS = SCRIPT_DIR / "weights" / "paper_cnn_bilstm_ctc_best.pt"
 for _name in ("paper_cnn_bilstm_ctc_joint_best.pt", "paper_cnn_bilstm_ctc_hf_best.pt"):
-    _candidate = SCRIPT_DIR / "NOGIT" / "weights" / _name
+    _candidate = SCRIPT_DIR / "weights" / _name
     if _candidate.exists():
         DEFAULT_TEXT_WEIGHTS = _candidate
         break

@@ -104,7 +104,7 @@ def sample_crops(author, n=2):
         return list(zip(cached[:n], texts[:n]))
 
     import BuildStyleProfile as SP
-    from TrainAuthor10 import add_personal_samples, DATASET_AUTHORS
+    from TrainAuthor import add_personal_samples, DATASET_AUTHORS
     from TrainText import IAMLineDatasetRaw, _decode_png
 
     base = IAMLineDatasetRaw(root_dir=str(SP.DATA_DIR), cache_dir=str(SP.CACHE_DIR))

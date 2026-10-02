@@ -21,7 +21,11 @@ def conv2d(x, weight, bias, stride=1, padding=1):
     cols = cols.reshape(B, C * kh * kw, outH * outW)
 
     w = weight.reshape(OutC, C * kh * kw)
-    out = np.einsum("oc,bcp->bop", w, cols).reshape(B, OutC, outH, outW)
+    # plain matmul dispatches to BLAS; einsum with this subscript pattern
+    # doesn't and was ~10x slower for identical output (verified bit-for-bit
+    # equal to float rounding noise, ~1e-13) -- B is always 1 here in
+    # practice (one image per forward pass) so this loop never costs much.
+    out = np.stack([w @ cols[b] for b in range(B)], axis=0).reshape(B, OutC, outH, outW)
     if bias is not None:
         out = out + bias.reshape(1, OutC, 1, 1)
     return out
