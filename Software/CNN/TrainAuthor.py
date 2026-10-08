@@ -117,6 +117,7 @@ from TrainText import (
     tensor_from_resized,
 )
 import SegmentPage as PS
+import SegmentLean as SL
 from ExtractIAMLines import ReadLabelLines
 from authors_config import (
     DATASET_AUTHORS, PERSONAL_AUTHORS, VAL_FRACTION, SPLIT_SEED,
@@ -413,8 +414,8 @@ def add_personal_samples(base):
     n_added = 0
     for author in PERSONAL_AUTHORS:
         for img_path in sorted((NOGIT_DIR / author).glob("*.jpg")):
-            results, _preview, _meta = PS.ProcessPage(str(img_path))
-            crops = [r["raw_crop"] for r in results if r["tag"] == "TEXT"]
+            lean_lines, _ov, _info = SL.SegmentLines(str(img_path))
+            crops = [np.asarray(ln["image"]) for ln in lean_lines]
             gt = ReadLabelLines(str(img_path))
             gt = [g for g in gt if g.strip() != "MESS"]
             n = min(len(crops), len(gt))
