@@ -1,0 +1,508 @@
+"""Lean text-line separation for clean photographed handwriting (no diagrams, scribbles, faint ink).
+
+1. normalise lighting (divide by a blurred background), threshold ink (Otsu), deskew;
+   keep only ink on the paper (clamp, table, page edge and shadow are cut away)
+2. throw away long thin straight strokes: underlines, hand-ruled lines, notebook rules, the
+   binder's outline (long runs along x, or along y, measured in line spacings)
+3. line spacing P from the row-ink profile; line centres = its peaks
+4. between neighbouring centres, the least-ink path (dynamic programming): a rough boundary
+5. each line = the ink between its two rough boundaries, then: a small cut-off part rejoins its main part,
+   and a small stray piece outside its line's band moves to the neighbouring line (or is dropped)
+6. each line = its own ink: crop it, white out the rest
+
+Usage: python SegmentLean.py page.jpg outdir
+"""
+import sys
+import time
+from pathlib import Path
+
+import numpy as np
+from PIL import Image, ImageDraw
+
+
+CLF_HEIGHT, CLF_WIDTH = 64, 640          # exact input size TrainText.py / TrainAuthor.py were trained on
+
+
+def _toClassifierFormat(img, height=CLF_HEIGHT, width=CLF_WIDTH, pad_value=255):
+    """Ported from TrainText.py's resize_line_image_fixed: one scale factor for both axes
+    (never stretched unevenly), resized to fit inside height x width, then white-padded onto
+    a canvas of exactly that size so every crop leaves this function the same shape."""
+    w, h = img.size
+    if w <= 0 or h <= 0:
+        return Image.new("L", (width, height), pad_value)
+    s = min(height / h, width / w)
+    new_w, new_h = max(1, round(w * s)), max(1, round(h * s))
+    resized = img.resize((new_w, new_h), Image.BILINEAR)
+    canvas = Image.new("L", (width, height), pad_value)
+    canvas.paste(resized, (0, max(0, (height - new_h) // 2)))
+    return canvas
+
+
+def _box(a, r):
+    """Mean over a (2r+1)x(2r+1) window using an integral image."""
+    p = np.pad(a, r, mode="edge").astype(np.float64)
+    ii = np.pad(p.cumsum(0).cumsum(1), ((1, 0), (1, 0)))
+    k = 2 * r + 1
+    return (ii[k:, k:] - ii[:-k, k:] - ii[k:, :-k] + ii[:-k, :-k]) / (k * k)
+
+
+def _any(m, r, axis):
+    """True where any pixel within r along `axis` is set."""
+    a = np.moveaxis(m.astype(np.int32), axis, 0)
+    n = a.shape[0]
+    c = np.cumsum(np.pad(a, [(r + 1, r)] + [(0, 0)] * (a.ndim - 1)), 0)
+    return np.moveaxis((c[2 * r + 1:2 * r + 1 + n] - c[:n]) > 0, 0, axis)
+
+
+def _long_runs(m, n, axis):
+    """Pixels lying on a run of >= n consecutive set pixels along `axis`."""
+    a = np.moveaxis(m.astype(np.int32), axis, 0)
+    L = a.shape[0]
+    if L < n:
+        return np.zeros(m.shape, bool)
+    c = np.cumsum(np.pad(a, [(1, 0)] + [(0, 0)] * (a.ndim - 1)), 0)
+    hit = ((c[n:] - c[:-n]) == n).astype(np.int32)                    # run starts at i
+    ch = np.cumsum(np.pad(hit, [(1, 0)] + [(0, 0)] * (a.ndim - 1)), 0)
+    j = np.arange(L)
+    lo, hi = np.maximum(0, j - n + 1), np.minimum(j, L - n)
+    cov = ((ch[hi + 1] - ch[lo]) > 0) & (hi >= lo)[:, None] if a.ndim == 2 else None
+    return np.moveaxis(cov, 0, axis)
+
+
+def _otsu(v):
+    h, _ = np.histogram(np.clip(v, 0, 1.2), bins=256, range=(0, 1.2))
+    p = h / h.sum()
+    w, m = np.cumsum(p), np.cumsum(p * np.arange(256))
+    s = (m[-1] * w - m) ** 2 / np.maximum(w * (1 - w), 1e-12)
+    return (int(np.argmax(s)) + 0.5) * 1.2 / 256
+
+
+def _ink(gray):
+    r = max(8, min(40, round(gray.shape[0] / 41)))       # background-blur radius scales with the image so a small crop isn't swallowed whole
+    ratio = gray / np.maximum(_box(gray, r), 1.0)
+    mask = ratio < _otsu(ratio)
+    solid = _box(mask.astype(np.float64), 4) > 0.999                 # 9x9 solid ink: binder interior, shadow
+    return mask & ~(_box(solid.astype(np.float64), 3) > 0), ratio
+
+
+def _pitch(mask):
+    """Line spacing P: a direct gap between the row-profile's own peaks when there are at least 2 of them
+    -- this tracks irregular spacing (a page mixing single- and double-spaced paragraphs) correctly and
+    was checked against 16 real pages. Autocorrelation is used only when peaks can't be resolved at all
+    (lines so tight their profile never dips between them), since on a page with uneven paragraph gaps it
+    can lock onto a multiple of the true spacing instead of the spacing itself. A single line with nothing
+    to compare it to falls back to the page's own letter size (median height of its letter-sized ink
+    strokes, which sits close to P / 2.2 in practice)."""
+    W = mask.shape[1]
+    prof = mask[:, int(0.05 * W):int(0.97 * W)].sum(1).astype(float)
+    k = np.exp(-0.5 * (np.arange(-12, 13) / 4.0) ** 2)
+    sm = np.convolve(prof, k / k.sum(), "same")
+
+    peaks = [i for i in range(1, len(sm) - 1) if sm[i] >= sm[i - 1] and sm[i] > sm[i + 1] and sm[i] > 0.06 * sm.max()]
+    if len(peaks) >= 2:
+        return int(np.median(np.diff(sorted(peaks)))), sm                 # a direct gap: works for just 2 lines, and for irregular spacing
+
+    a = sm - sm.mean()
+    ac = np.correlate(a, a, "full")[len(a) - 1:]
+    seg = ac[15:min(200, len(ac) // 3)]
+    idx = next((i for i in range(1, len(seg) - 1)
+                if seg[i] >= 0.7 * seg.max() and seg[i] >= seg[i - 1] and seg[i] >= seg[i + 1]), None)
+    if idx is not None:
+        return 15 + idx, sm
+
+    lab, nc = _label(mask)
+    if nc > 0:
+        ys, xs = np.nonzero(mask)
+        pl = lab[ys, xs]
+        top, bot = np.full(nc + 1, mask.shape[0]), np.zeros(nc + 1, int)
+        np.minimum.at(top, pl, ys); np.maximum.at(bot, pl, ys)
+        area = np.bincount(pl, minlength=nc + 1)
+        hts = bot - top + 1
+        sel = (area >= 8) & (hts >= 3) & (hts <= mask.shape[0])
+        if sel[1:].any():
+            return max(15, int(round(2.2 * np.median(hts[1:][sel[1:]])))), sm   # one line: no gap to measure, so go by letter size
+    return 48, sm                                                          # no usable ink at all: an arbitrary but harmless default
+
+
+def _seam(cost, step=3):
+    """Left-to-right minimum-cost path (row index per column), up to `step` rows per column."""
+    h, W = cost.shape
+    acc = cost.copy()
+    back = np.zeros((h, W), np.int8)
+    idx = np.arange(h)
+    shifts = range(-step, step + 1)
+    for x in range(1, W):
+        p = acc[:, x - 1]
+        cand = np.full((len(shifts), h), np.inf)
+        for i, d in enumerate(shifts):
+            if d < 0:
+                cand[i, -d:] = p[:d] + 0.02 * abs(d)
+            elif d > 0:
+                cand[i, :-d] = p[d:] + 0.02 * d
+            else:
+                cand[i] = p
+        j = cand.argmin(0)
+        acc[:, x] += cand[j, idx]
+        back[:, x] = j - step
+    y = np.empty(W, int)
+    y[-1] = acc[:, -1].argmin()
+    for x in range(W - 1, 0, -1):
+        y[x - 1] = y[x] + back[y[x], x]
+    return y
+
+
+def _label(mask):
+    """8-connected component labelling (run based union-find) -> (labels, count)."""
+    H, W = mask.shape
+    lab = np.zeros((H, W), np.int32)
+    parent = [0]
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    prev = []
+    for y in range(H):
+        d = np.diff(np.r_[0, mask[y].view(np.int8), 0])
+        cur, k = [], 0
+        for a, b in zip(np.nonzero(d == 1)[0].tolist(), np.nonzero(d == -1)[0].tolist()):
+            while k < len(prev) and prev[k][1] < a:
+                k += 1
+            l, kk = 0, k
+            while kk < len(prev) and prev[kk][0] <= b:
+                r = find(prev[kk][2])
+                if l == 0:
+                    l = r
+                elif r != l:
+                    parent[max(r, l)] = min(r, l)
+                    l = min(r, l)
+                kk += 1
+            if l == 0:
+                parent.append(len(parent))
+                l = len(parent) - 1
+            cur.append((a, b, l))
+            lab[y, a:b] = l
+        prev = cur
+    roots = np.array([find(i) for i in range(len(parent))])
+    _, comp = np.unique(roots, return_inverse=True)
+    return comp[lab].astype(np.int32), int(comp.max())
+
+
+def _paper(g, P):
+    """Paper region of a photo: the largest bright area after the handwriting is blurred away, shrunk a little
+    from its edge. Drops the clamp, the table, the page edge and its shadow. A photo with no dark surround
+    (nothing clearly darker than the paper) keeps everything."""
+    H, W = g.shape
+    s = 4
+    c = _box(g[:H // s * s, :W // s * s].reshape(H // s, s, W // s, s).mean((1, 3)), max(1, int(0.15 * P / s)))
+    dark = c < 0.45 * np.median(c)                       # clearly darker than the typical paper
+    if dark.mean() < 0.002:
+        return np.ones((H, W), bool)
+    lab, n = _label(~dark)
+    big = np.kron(lab == np.bincount(lab.ravel())[1:].argmax() + 1, np.ones((s, s), bool))
+    full = np.ones((H, W), bool)
+    full[:big.shape[0], :big.shape[1]] = big
+    r = int(0.4 * P)
+    return ~_any(_any(~full, r, 0), r, 1)
+
+
+def SegmentLines(path):
+    t0 = time.time()
+    full = Image.open(path).convert("L")
+    half = full.resize((full.width // 2, full.height // 2), Image.BOX)
+
+    # 1. deskew by the sharpest row profile
+    mask, _ = _ink(np.asarray(half, dtype=np.float64))
+    q = Image.fromarray(mask.astype(np.uint8) * 255).resize((half.width // 2, half.height // 2))
+    best = max(np.arange(-4, 4.01, 0.5),
+               key=lambda a: float((np.asarray(q.rotate(a)).sum(1).astype(float) ** 2).sum()))
+    full = full.rotate(best, Image.BILINEAR, fillcolor=255)
+    half = half.rotate(best, Image.BILINEAR, fillcolor=255)
+    g = np.asarray(half, dtype=np.float64)
+    mask, ratio = _ink(g)
+    H, W = mask.shape
+
+    # 2. long thin straight strokes are not handwriting: underlines, ruled-off lines, rules, binder edge
+    P, _ = _pitch(mask)
+    paper = _paper(g, P)
+    paperRemoved = int((mask & ~paper).sum())
+    mask &= paper
+    flat = _any(_long_runs(_any(mask, 1, 0), int(1.25 * P), 1), 1, 0) & mask          # tolerant of a slight tilt
+    upright = _any(_long_runs(_any(mask, 3, 1), int(1.4 * P), 0), 3, 1) & mask          # wobbly vertical strips (page edge) too
+    removed = int((flat | upright).sum())
+    mask = mask & ~flat & ~upright
+
+    # 2b. page-boundary artifacts: pieces on the left border, thin slivers on the right border or tall and thin, far left of the text
+    rc = max(1, int(0.1 * P))
+    dil = _any(_any(mask, rc, 0), rc, 1)
+    closed = ~_any(_any(~dil, rc, 0), rc, 1)             # tiny pen-lift gaps joined
+    lab, nc = _label(closed)
+    ys, xs = np.nonzero(mask)
+    pl = lab[ys, xs]
+    area = np.bincount(pl, minlength=nc + 1).astype(float)
+    top, bot = np.full(nc + 1, H), np.zeros(nc + 1, int)
+    xmin, xmax = np.full(nc + 1, W), np.zeros(nc + 1, int)
+    np.minimum.at(top, pl, ys)
+    np.maximum.at(bot, pl, ys)
+    np.minimum.at(xmin, pl, xs)
+    np.maximum.at(xmax, pl, xs)
+    tall = (bot - top + 1) > 2.2 * P
+    thin = (xmax - xmin + 1) <= 0.5 * P
+    touchL, touchR = xmin <= 2, xmax >= W - 3
+    letters = (area >= 0.065 * P * P) & ~tall
+    xL = np.percentile(xmin[letters], 5)
+    vbar = ((xmax - xmin + 1) <= 0.12 * P) & ((bot - top + 1) >= 1.2 * P)        # thin and taller than any letter
+    drop = touchL | (touchR & thin) | (tall & thin) | vbar | (xmax < xL - 1.2 * P)     # edge, rule and fold slivers
+    drop[0] = False
+    nArtifacts = int(drop.sum())
+    mask &= ~drop[lab]
+
+    # 3. line spacing and centres
+    P, sm = _pitch(mask)
+    peaks = [i for i in range(1, H - 1) if sm[i] >= sm[i - 1] and sm[i] > sm[i + 1] and sm[i] > 0.06 * sm.max()]
+    centres = []
+    for c in sorted(peaks, key=lambda i: -sm[i]):
+        if all(abs(c - o) >= 0.6 * P for o in centres):
+            centres.append(c)
+    centres.sort()
+
+    # 4. rough boundaries: least-ink path between neighbouring centres
+    cuts = [np.full(W, max(0, centres[0] - int(0.75 * P)))]
+    m = (_box(mask.astype(np.float64), 1) > 0).astype(np.float64)
+    for c0, c1 in zip(centres, centres[1:]):
+        yy = np.arange(c0, c1 + 1)[:, None]
+        mid, half_w = c0 + 0.5 * (c1 - c0), max(1.0, (c1 - c0) / 2.0)       # a stray in the gap is more often the upper line's tail than the lower line's dot
+        cuts.append(c0 + _seam(4.0 * m[c0:c1 + 1] + 0.05 * ((yy - mid) / half_w) ** 2))
+    cuts.append(np.full(W, min(H - 1, centres[-1] + int(0.75 * P))))
+    L = len(cuts) - 1
+    cutsArr = np.array(cuts)
+
+    # 5. pieces (tiny pen-lift gaps joined), owned by the line holding most of their middle band
+    ys, xs = np.nonzero(mask)
+    pl = lab[ys, xs]
+    Y = np.arange(H)[:, None]
+    region = sum((Y >= cuts[n][None, :]).astype(np.int16) for n in range(1, L)) if L > 1 else np.zeros((H, W), np.int16)
+    rp = region[ys, xs]
+    ok = (ys >= cutsArr[0][xs]) & (ys < cutsArr[-1][xs])
+    area = np.bincount(pl, minlength=nc + 1).astype(float)
+    fr = (ys - cutsArr[rp, xs]) / np.maximum(cutsArr[rp + 1, xs] - cutsArr[rp, xs], 1)
+    core = ok & (fr >= 0.25) & (fr < 0.75)
+    # every ink pixel starts in the region between its two rough boundaries, then two clean-ups (all relative to P)
+    A = np.bincount(pl, minlength=nc + 1).astype(float)
+    cx = np.bincount(pl, xs, nc + 1) / np.maximum(A, 1)
+    cy = np.bincount(pl, ys, nc + 1) / np.maximum(A, 1)
+    cnt = np.bincount(pl[ok] * L + rp[ok], minlength=(nc + 1) * L).reshape(nc + 1, L)
+    major = cnt.argmax(1)
+    minor = (cnt > 0) & (cnt < 0.12 * P * P) & (cnt < 0.35 * cnt.sum(1, keepdims=True)) & (np.abs(np.arange(L)[None, :] - major[:, None]) == 1)       # only onto the adjacent line
+    key = pl[ok] * L + rp[ok]
+    xlo, xhi = np.full((nc + 1) * L, W), np.zeros((nc + 1) * L, int)
+    np.minimum.at(xlo, key, xs[ok])
+    np.maximum.at(xhi, key, xs[ok])
+    minor &= ((xhi - xlo + 1).reshape(nc + 1, L) <= 0.55 * P)         # a cut-off tail is narrow; a word-wide part belongs to its own line
+    big = (cnt.sum(1) >= 0.05 * P * P)
+    tiny = np.zeros(nc + 1, bool)
+    for l in np.nonzero((cnt.sum(1) > 0) & (cnt.sum(1) < 0.06 * P * P))[0]:           # B: small stray piece outside its line's band
+        n = major[l]
+        near = big & (major == n) & (np.abs(cx - cx[l]) <= 6 * P)
+        tiny[l] = True
+        speck = cnt[l].sum() < 0.01 * P * P
+        if not near.any() or (speck and not (near & (np.abs(cx - cx[l]) <= 3 * P)).any()):
+            major[l] = -1                                                              # nowhere near its line's writing: drop
+            continue
+        yc = np.median(cy[near & (np.abs(cx - cx[l]) <= 1.5 * P)]) if (near & (np.abs(cx - cx[l]) <= 1.5 * P)).any() else np.median(cy[near])
+        if cy[l] - yc > 0.5 * P and n + 1 < L:
+            major[l] = -1 if speck else n + 1                                          # a speck out of band is dropped, a real mark moves
+        elif yc - cy[l] > 0.7 * P and n > 0:
+            major[l] = -1 if speck else n - 1
+    for l in np.nonzero((cnt.sum(1) >= 0.06 * P * P) & (cnt.sum(1) < 0.15 * P * P) & (major >= 0))[0]:    # D: a small piece (bracket, quote, tail) goes to the nearest line centre
+        pick, bd = major[l], np.inf
+        for n in (major[l] - 1, major[l], major[l] + 1):
+            rows = big & (major == n) & (np.abs(cx - cx[l]) <= 1.5 * P)
+            if 0 <= n < L and rows.any() and abs(np.median(cy[rows]) - cy[l]) < bd:
+                pick, bd = n, abs(np.median(cy[rows]) - cy[l])
+        major[l], tiny[l] = pick, True
+    top2, bot2 = np.full(nc + 1, H), np.zeros(nc + 1, int)                             # C: a dot goes with the letter body directly below it
+    x0b, x1b = np.full(nc + 1, W), np.zeros(nc + 1, int)
+    np.minimum.at(top2, pl, ys)
+    np.maximum.at(bot2, pl, ys)
+    np.minimum.at(x0b, pl, xs)
+    np.maximum.at(x1b, pl, xs)
+    hh, ww = bot2 - top2 + 1, x1b - x0b + 1
+    dot = (A > 0) & (A < 0.1 * P * P) & (np.maximum(hh, ww) <= 0.45 * P) & (np.maximum(hh, ww) <= 2.2 * np.maximum(np.minimum(hh, ww), 1))
+    stem = (A >= 0.03 * P * P) & ~dot
+    for l in np.nonzero(dot & (major >= 0))[0]:
+        xa, xb = max(0, x0b[l] - 2), x1b[l] + 3
+        for gap in range(1, int(0.4 * P) + 1):
+            if bot2[l] + gap >= H:
+                break
+            row = lab[bot2[l] + gap, xa:xb]
+            hit = [v for v in np.unique(row[row > 0]) if v != l and stem[v] and major[v] >= 0]
+            if hit:
+                n2 = major[hit[0]]                                                     # an i-dot floats 0.25-0.7 spacings above its line's centre; a full stop sits a whole line higher
+                rows = big & (major == n2) & (np.abs(cx - cx[l]) <= 1.5 * P)
+                if rows.any() and 0.25 * P <= np.median(cy[rows]) - cy[l] <= 0.7 * P:
+                    major[l], tiny[l] = n2, True
+                break
+    own = np.full((H, W), -1, np.int16)
+    own[ys[ok], xs[ok]] = np.where(tiny[pl] | minor[pl, rp], major[pl], rp)[ok]        # A: a small cut-off part rejoins its main part
+
+    own_before_EF = own.copy()
+    # E: a dot joined to the line above by the gap-closing (e.g. an i-dot touching a descender) goes with the stem just below it
+    raw, nr = _label(mask)
+    pr = raw[ys, xs]
+    Ar = np.bincount(pr, minlength=nr + 1).astype(float)
+    rt, rb = np.full(nr + 1, H), np.zeros(nr + 1, int)
+    rl_, rr = np.full(nr + 1, W), np.zeros(nr + 1, int)
+    np.minimum.at(rt, pr, ys); np.maximum.at(rb, pr, ys); np.minimum.at(rl_, pr, xs); np.maximum.at(rr, pr, xs)
+    h0, w0 = rb - rt + 1, rr - rl_ + 1
+    dotr = (Ar >= 0.015 * P * P) & (Ar < 0.1 * P * P) & (np.maximum(h0, w0) <= 0.5 * P) & (np.maximum(h0, w0) <= 2.2 * np.maximum(np.minimum(h0, w0), 1))
+    stemr = (Ar >= 0.03 * P * P) & ~dotr
+    rl = np.where(ok, rp, -1)
+    for d in np.nonzero(dotr)[0]:
+        for gap in range(1, int(0.4 * P) + 1):
+            if rb[d] + gap >= H:
+                break
+            row = raw[rb[d] + gap, max(0, rl_[d] - 2):rr[d] + 3]
+            hit = [v for v in np.unique(row[row > 0]) if v != d and stemr[v]]
+            if hit:
+                n2 = region[rb[d] + gap, max(0, rl_[d] - 2) + np.nonzero(row == hit[0])[0][0]]       # the line of the stem where it meets the dot
+                dv = pr == d
+                ov = own[ys[dv], xs[dv]]
+                if (ov >= 0).any():
+                    n1 = np.bincount(ov[ov >= 0], minlength=L).argmax()                  # the line the dot is in now, whatever the rough boundaries said
+                    if n2 == n1 + 1 and (rt[d] + rb[d]) / 2 >= centres[n1] + 0.45 * P:    # an i-dot hangs in the lower part of the band above, a letter sits on the centre
+                        keep = ov == n1                                                  # a piece already dropped as a stray stays dropped
+                        own[ys[dv][keep], xs[dv][keep]] = n2
+                break
+
+    # F: a ring-shaped blob at the bottom of a stroke (an i-dot touching the descender above) goes with the x-height stem just below it
+    colbot = np.full((nr + 1, W), -1, np.int32)
+    np.maximum.at(colbot, (pr, xs), ys)
+    wr = int(0.35 * P)
+    for c in range(1, nr + 1):
+        cols = np.nonzero(colbot[c] >= 0)[0]
+        if len(cols) == 0 or Ar[c] < 0.015 * P * P:
+            continue
+        order = cols[np.argsort(-colbot[c][cols])]
+        taken = np.zeros(W, bool)
+        for xb in order[:60]:
+            if taken[xb]:
+                continue
+            taken[max(0, xb - wr):xb + wr + 1] = True
+            yb = colbot[c][xb]
+            xa, xe = max(0, xb - wr), min(W, xb + wr + 1)
+            widest, rt = 0, None
+            for r in range(yb, max(0, yb - int(0.5 * P)), -1):         # walk up while the blob stays wide; it ends where it narrows to the stem
+                cc = np.nonzero(raw[r, xa:xe] == c)[0]
+                wd = (cc.max() - cc.min() + 1) if len(cc) else 0
+                widest = max(widest, wd)
+                if wd < 0.45 * widest:
+                    rt = r
+                    break
+            else:
+                rt = max(0, yb - int(0.5 * P))
+            h = yb - rt
+            if not (0.2 * P <= widest <= 0.45 * P and 0.6 <= h / max(widest, 1) <= 1.6) or yb - rt >= 0.5 * P:
+                continue
+            blob = (raw[rt + 1:yb + 1, xa:xe] == c)
+            bc = np.nonzero(blob.any(0))[0]
+            xl, xr = xa + bc.min(), xa + bc.max()
+            if _label(~np.pad(blob[:, bc.min():bc.max() + 1], 1))[1] < 2:      # a dot ring encloses a hole; an open hook or tail end does not
+                continue
+            n = region[yb, xb]
+            for gap in range(1, int(0.4 * P) + 1):
+                if yb + gap >= H:
+                    break
+                row = raw[yb + gap, max(0, xl - 2):xr + 3]
+                hit = np.nonzero((row > 0) & (row != c))[0]
+                if len(hit):
+                    ty, tx = yb + gap, max(0, xl - 2) + hit[0]
+                    n2 = region[ty, tx]
+                    if n2 == n + 1 and ty >= centres[n2] - 0.45 * P:
+                        sub = own[rt + 1:yb + 1, xl:xr + 1]
+                        sub[blob[:, xl - xa:xr - xa + 1] & (sub == n)] = n2
+                    break
+
+    # H: a fragment with no ink in its own line's x-height band is not a letter of that line: a cut-off tail or ascender goes back
+    # to the line whose ink it touches; a floating one goes to the neighbouring line only if it sits in that line's band
+    own0, moves = own.copy(), []
+    locked = own != own_before_EF                                  # pixels placed by E and F
+    for n in range(L):
+        comp, nb = _label((own0 == n) & mask)
+        if nb == 0:
+            continue
+        yy, xx = np.nonzero(comp)
+        pc = comp[yy, xx]
+        inband = np.bincount(pc, weights=(np.abs(yy - centres[n]) <= 0.28 * P).astype(float), minlength=nb + 1)
+        size = np.bincount(pc, minlength=nb + 1)
+        for c in np.nonzero((inband == 0) & (size >= 0.006 * P * P))[0]:
+            if c == 0:
+                continue
+            fy, fx = yy[pc == c], xx[pc == c]
+            if locked[fy, fx].any() and len(fy) < 0.04 * P * P and max(np.ptp(fy), np.ptp(fx)) + 1 <= 0.4 * P:
+                continue                                                  # a dot placed by E or F, not a tail loop
+            ya, yb, xa, xb = max(0, fy.min() - 3), min(H, fy.max() + 4), max(0, fx.min() - 3), min(W, fx.max() + 4)
+            frag = np.zeros((yb - ya, xb - xa), bool)
+            frag[fy - ya, fx - xa] = True
+            near = _any(_any(frag, 2, 0), 2, 1) & mask[ya:yb, xa:xb] & ~frag
+            ov = own0[ya:yb, xa:xb][near]
+            cnt_ = np.bincount(ov[(ov >= 0) & (ov != n)], minlength=L)
+            cy_ = fy.mean()
+            if cnt_.max() >= 3:
+                m = int(cnt_.argmax())
+                if abs(m - n) == 1 and (m > n) == (cy_ > centres[n]):
+                    moves.append((fy, fx, m))
+            else:
+                best_m = min((m for m in (n - 1, n + 1) if 0 <= m < L), key=lambda m: abs(cy_ - centres[m]), default=None)
+                if best_m is not None and abs(cy_ - centres[best_m]) <= 0.2 * P:                  # sits in the other line's x-height band
+                    moves.append((fy, fx, best_m))
+    for fy, fx, m in moves:
+        own[fy, fx] = m
+    print("H fragments moved:", len(moves))
+
+    # 6. crops from the full-resolution, lighting-normalised page
+    r = max(8, min(40, round(H / 41)))                                  # same scale-aware radius as _ink
+    bg_full = np.asarray(Image.fromarray(_box(g, r).astype(np.float32)).resize(full.size, Image.BILINEAR))
+    norm = np.clip(np.asarray(full, dtype=np.float32) / np.maximum(bg_full, 1.0), 0, 1) * 255
+    f = full.width / W
+    perLine = np.bincount(own[own >= 0], minlength=L)
+    minInk = max(60, 0.12 * np.median(perLine[perLine > 0]))
+    lines = []
+    for n in range(L):
+        ink = own == n
+        yy, xx = np.nonzero(ink)
+        if len(yy) < minInk or yy.max() - yy.min() < max(6, 0.2 * P):      # a short lowercase word (no ascenders/descenders) is still a real line
+            continue
+        pad = int(0.15 * P)
+        y0, y1 = max(0, yy.min() - pad), min(H, yy.max() + 1 + pad)
+        x0, x1 = max(0, xx.min() - pad), min(W, xx.max() + 1 + pad)
+        Y0, Y1, X0, X1 = int(y0 * f), int(y1 * f), int(x0 * f), int(x1 * f)
+        nz = _box(ink[y0:y1, x0:x1].astype(np.float64), 3) > 0
+        nz = np.asarray(Image.fromarray(nz.astype(np.uint8) * 255).resize((X1 - X0, Y1 - Y0))) > 127
+        crop = np.where(nz, norm[Y0:Y1, X0:X1], 255).astype(np.uint8)
+        clf = _toClassifierFormat(Image.fromarray(crop))                   # same aspect-preserving resize + white pad the classifiers were trained on
+        lines.append(dict(order=len(lines), image=clf, bbox=(X0, Y0, X1, Y1)))
+
+    ov = Image.fromarray(np.clip(ratio * 255, 0, 255).astype(np.uint8)).convert("RGB")
+    shade = np.asarray(ov).astype(np.int16)
+    shade[~paper] = (shade[~paper] * 0.5 + np.array([120, 0, 0])).astype(np.int16)           # outside the paper = red tint
+    ov = Image.fromarray(np.clip(shade, 0, 255).astype(np.uint8))
+    d = ImageDraw.Draw(ov)
+    for n, cu in enumerate(cuts):
+        d.line(list(zip(range(W), cu.tolist())), fill=(255, 0, 0) if n % 2 else (0, 140, 255), width=2)
+    return lines, ov, dict(angle=float(best), pitch=int(P), paperCoverage=round(float(paper.mean()), 3), inkOutsidePaper=paperRemoved, removedStraightPixels=removed, artifactPieces=nArtifacts, 
+                           nLines=len(lines), seconds=round(time.time() - t0, 1))
+
+
+if __name__ == "__main__":
+    src, out = Path(sys.argv[1]), Path(sys.argv[2])
+    out.mkdir(parents=True, exist_ok=True)
+    for old in out.glob("*.png"):
+        old.unlink()
+    lines, ov, info = SegmentLines(src)
+    for ln in lines:
+        ln["image"].save(out / f"{ln['order']:02d}.png")
+    ov.save(out / "_cuts_overlay.jpg", quality=88)
+    print(info)

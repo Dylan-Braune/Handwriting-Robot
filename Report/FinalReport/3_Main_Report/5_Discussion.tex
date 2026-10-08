@@ -1,0 +1,190 @@
+\label{sec:discussion}
+
+\subsection{Critical evaluation of the design} % REQUIRED HEADING
+\label{sec:dis-critical}
+
+This subsection interprets the results of Section~\ref{sec:results}, evaluates the design choices in hindsight and identifies the aspects that must change before the requirements of the proposal can be considered proven.
+The results are limited in two ways that determine every conclusion below: the existing figures are design-stage figures obtained on a development laptop, and the evidence on synthesis is circular, because the networks that select the best candidate are the networks that report the score.
+Strong statements are therefore avoided where the evidence does not support them.
+
+    \subsubsection{Interpretation of results}
+    \label{sec:dis-interp}
+
+        \textbf{R1, reproduction fidelity.}
+        The established figures do not allow a conclusion on R1.
+        The character accuracies of synthesised text range from 81.4\% to 92.9\% depending on the run, and the writer identification from 91.5\% to 100\%; the runs differ in sample size, number of tries and writers, and all use the judges of the search.
+        A best-of-$N$ search that maximises a judge's score necessarily raises that judge's score, so the figures show that the search works, not that a human reader or an independent classifier would agree.
+        One observation in the established data limits the meaning of the 85\% target itself: in the scoped run the recogniser read the genuine handwriting of the reference set at 65.0\% and the synthesised text of the same writers at 88.2\%.
+        The synthesised text was thus easier for the machine to read than the writer's own text.
+        A reproduction that is faithful to the writer, including the writer's irregularities, would be expected to be read less well than a tidy one, so that a high character accuracy and a high stylistic fidelity pull in opposite directions.
+        The two parts of R1 must therefore be assessed together, which the qualification test~1 does with independent judges; it is not valid to read the 85\% on legibility as evidence of the 85\% on style.
+        The shape-only evaluation supports the conclusion that the synthesiser reproduces writer-specific geometry for most writers (91.5\% for the eight database writers, 6 of 8 above 85\%), but the ten-writer shape-only figure of 78.3\% is as low as the figure of the same judge on the writers' genuine pages (77.5\%), which indicates that the judge, and not the synthesiser, limits that evaluation for several writers.
+
+        \textbf{R2, classification.}
+        The recogniser reached 91.82\% on the general test set, 3.2 percentage points below the 95\% target, and 89.64\% on personal validation lines, which are optimistic.
+        The target is not met for text, whichever reading of ``overall'' is used, unless the writer accuracy is counted: with $A_{\mathrm{w}}=100\%$ the mean of Equation~\ref{eq:res-overall} would be $(91.82+100)/2=95.9\%$, but the same figures give a product of 91.8\%, and the writer figure is itself optimistic.
+        The probable cause of the shortfall is the small amount of training material: 13 personal pages and a public line data set on which a CNN--BiLSTM--CTC network of 3.36 million parameters reaches about 92\%, without a language model or lexicon decoder.
+        The word error rate of 21.1\% to 26.7\% shows that errors of single characters spread over many words; a language-model or lexicon decoder is a standard way of using this property, and was not used.
+        The writer classifier performed well on real photographs, but its 100\% rests on a split in which lines from training pages are used for validation; the figure shows that the classifier fits the training sheets and pens, and not that it generalises to new sheets.
+
+        \textbf{R3, reproduction time.}
+        The synthesis of a 38-character sentence at about 2.8~s per character is below 4~s per character on a laptop, and a three-try synthesis is faster by a large factor.
+        The writing time was not measured, and the model of the generator gives 2.4 to 2.8~s per character with 34\% of it spent on the pen dwell.
+        The sum of the two exceeds 4~s per character, so the answer depends on an ambiguity of the proposal, which does not state whether synthesis counts: if only the writing time counts, R3 is plausibly met by the model; if both count, it is not met at the high quality setting.
+        The result on the ODROID N2+ can only be slower than that on the laptop.
+
+        \textbf{R4, classification time.}
+        R4 is not met, and the shortfall is large rather than marginal.
+        For a 40-character line the budget is 3.0~s, and the laptop needed at least 35~s for segmentation alone (more than 11 times the budget) and about 2.6 to 3.0~s for recognition (about the whole budget).
+        The cause is not the neural network but the image-processing stage, which is written in pure Python and uses an algorithm for the grouping of text lines whose cost dominates the profile (about 70\% of the total in the cleanest run).
+        The budget of the proposal assumed a conditioning time of 2~s, which presupposed a considerably simpler algorithm and a language with compiled inner loops.
+
+        \textbf{R5, positional accuracy.}
+        No conclusion is possible.
+        The step resolution (12.5~$\mu$m) shows only that the control signals are not the limiting factor; the open-loop mechanics determine the error.
+
+        \textbf{R6, storage.}
+        R6 is met for storage: ten writers are stored in files, and the number equals the minimum.
+        The margin is zero, but the requirement is a minimum.
+
+        \textbf{Conditions under which the requirements could be considered met.}
+        R3 could be considered met if the quality setting is limited to a few tries and if the proposal's 4~s per character is read as the writing time of the gantry (or as the sum at a reduced number of tries).
+        R2 could be considered met under the lenient mean definition if the independent writer accuracy on new pages is at least 99\%, and under the strict definition only if the text accuracy rises to about 97.5\% (as $A_{\mathrm{prod}}\ge0.95$ requires $A_{\mathrm{c}}A_{\mathrm{w}}\ge0.95$).
+        R1 could be considered met if the independent judges of qualification test~1 confirm 85\% for both parts; the established data do not allow this to be assumed.
+        R4 cannot be considered met in the present implementation under any reading of the proposal.
+
+    \subsubsection{Critical evaluation}
+    \label{sec:dis-crit}
+
+        \textbf{Line-level reading instead of character separation.}
+        The design replaced the proposal's character separation by separation into lines and a sequence recogniser.
+        This was the right choice for connected handwriting, where character boundaries do not exist, and it makes the accuracy independent of a separation error; the price is that the reading of a line must be done by a network that processes the whole line, and the cost per character is higher than the proposal's 25~ms assumed.
+
+        \textbf{Best-of-$N$ search with the judges inside the loop.}
+        The search with a recogniser and a writer classifier as judges was a good decision for quality, because it prevents the synthesis from drawing an illegible or wrong-style sample.
+        In hindsight it was a poor decision for verification, because it removed the independence of the evaluation, and for time, because each of the $N$ candidates costs a rendering and two network passes.
+        Both are addressed by the qualification protocols, and the time by a lower $N$ or a cheaper first-stage filter.
+
+        \textbf{Pure Python for the segmentation.}
+        The proposal required that the processing run on the embedded platform and be written without library functions for the algorithm itself.
+        Writing the image processing in Python made the design transparent and correct, but the inner loops of the line grouping and labelling are too slow.
+        The C routines reduce the labelling and the box sums by 84\% to 88\%, but the end-to-end effect (25\% to 32\%) is small because the grouping dominates.
+        This is the consequence of Amdahl's law: if a fraction $p$ of the time is accelerated by a factor $s$, the total speed-up is $1/((1-p)+p/s)$, and with $p=0.30$ (the share outside the grouping, taking the grouping as 70\%) the total speed-up cannot exceed $3.3$ even if the accelerated part took no time.
+        The acceleration was not deployed because the benefit was not decisive.
+
+        \textbf{Open-loop gantry with step counting.}
+        Using the stepper motors without encoders is a standard and low-cost choice; its accuracy depends on missed steps, and no sensor reveals them.
+        The decision to run the driver without acceleration ramps (the generator models an acceleration of 400~mm/s$^2$, the driver does not execute it) makes the real motion differ from the model, and makes a lost step more likely at the start of a stroke at higher feed.
+
+
+    \subsubsection{Unsolved problems}
+    \label{sec:dis-unsolved}
+
+        The following problems were not solved and must be reported.
+
+        \begin{enumerate}
+          \item \textbf{X-axis direction fault.} During hardware bring-up the X-axis calibration reached the first end-stop, but the direction pin (physical pin 7) was not observed to change level when the direction was reversed.
+          The fault was unresolved when the project was closed; no cause is claimed, as the evidence does not support one.
+          Qualification tests 3 (writing time), 5 and 6 (physical demonstration) depend on its resolution.
+          \item \textbf{No measurements on the target hardware.} No timing on the ODROID N2+ and no physical accuracy measurement exists; the figures for R3 and R4 are from a laptop.
+          \item \textbf{R4 not met.} The segmentation time and the recognition time per character exceed the specification by more than one order of magnitude and by a factor of about 3, respectively.
+          \item \textbf{Optimistic validation of the personal writers.} A line-level split inside pages was used, and the checkpoint was selected on the reporting data; no separate test set exists.
+          \item \textbf{Circular synthesis evaluation.} No independent judge or human panel was used.
+          \item \textbf{Architecture sweep.} A sweep over widths, depths and learning rates was programmed but no result was kept, so the network layers are those of the published design.
+          \item \textbf{Implementation issues of the writing path.} (i) The stroke ordering sorts the text rows by ascending $Y$ coordinate, and with $Y$ upward this writes the bottom line first, while the documentation says reading order. (ii) The acceleration that the generator models is not executed by the driver. (iii) The work area of the generator (200~mm) is larger than the driver's travel between its limits (194~mm in X). (iv) The generator issues the fast feed once, and the driver has a single modal feed register, so that pen-up travel runs at the pen-down feed (900~mm/min instead of 2400~mm/min), which lengthens the job.
+          \item \textbf{Missing information.} The hardware documentation (CAD files, photographs, wiring diagram, camera data) and the inconsistent values of the number of tries (14 in the tuning notes, 20 as the server default, 30 mentioned in the interface) are \textbf{[TO BE COMPLETED BY STUDENT: reconcile the values and supply the hardware documentation]}.
+          \item \textbf{Training mode.} The proposal planned training on the single-board computer; training is done offline, and the interface has no training function.
+          \item \textbf{Display of the classification time} (specified in R4) is not implemented.
+        \end{enumerate}
+
+        \textbf{What must change to meet R4.}
+        Three measures are required together.
+        First, the line grouping (about 70\% of the segmentation time) must be redesigned algorithmically, for example by replacing an exhaustive search over component pairs by neighbourhood queries on a spatial index, if the profile on the ODROID N2+ confirms that the search is the quadratic part; the target is a reduction by a factor of at least 20, because $32~\mathrm{s}$ (70\% of 46~s) must fall to well below 2~s.
+        Second, the image must be reduced in resolution before segmentation: halving both dimensions of the $2400\times1800$ photograph reduces the number of pixels by 4, and, as the filters and labelling scale with the pixel count, the share outside the grouping (about 14~s) is expected to fall to about 3.5~s; with the C routines, which are 84\% to 88\% faster (a factor of 6 to 8.3), to about 0.4 to 0.6~s.
+        These are projections from the measured ratios and not measurements, and they ignore that the ODROID N2+ is slower than the laptop.
+        Third, the recogniser must become about 3 times cheaper per character, for example by a smaller network, by quantising the weights to 8 bit integers or by reducing the sequence length at the output; each of these must be validated against the accuracy loss, since R2 is already under its target.
+        The cost per character is approximately proportional to the number of multiply-accumulate operations per line, so a 3-fold reduction of this number would be needed.
+
+        \textbf{What must change for the other requirements.}
+        For R2 (text): more personal training pages, an evaluation on held-out pages, and a language-model or lexicon decoder.
+        For R1: an independent evaluation and the human panel, and if the independent figure is lower, re-tuning with an independent judge.
+        For R3: measurement on the ODROID N2+, correction of the feed register, execution of acceleration or a lower pen dwell, and a lower $N$.
+        For R5: resolution of the direction-pin fault, completion of the calibration and execution of qualification test~5.
+
+    \subsubsection{Strong points of the design}
+    \label{sec:dis-strong}
+
+        The design has the following strong points, each of which is a consequence of a design decision.
+        \begin{itemize}
+          \item The reading of whole lines avoids the dependence on a character separation that cannot work for connected handwriting, and the recogniser reached 91.82\% on an independent general test set.
+          \item The conditioning stage (flat-field correction, local thresholding, skew correction) was designed so that a photograph with uneven lighting can be used, and the live check on a personal photograph read the correct writer at 98.6\% confidence with 28 lines detected and an accurate transcription.
+          \item Writers are represented as compact profile files, so that a new writer is added by a file, and ten writers are stored permanently, satisfying R6.
+          \item The use of two judges in the search (text and writer) gives a measurable improvement over a single sample, and the shape classifier solves the problem that an ink-based classifier cannot judge a plotter's constant line width (about 20\% on synthesised output).
+          \item The numerical resolution of the gantry (12.5~$\mu$m) is 40 times finer than the tolerance of R5, and the absolute step bookkeeping prevents accumulating rounding errors.
+          \item Safety in software: end-stop confirmation (three consecutive samples), software limits and automatic retraction after a trip.
+          \item The algorithms are implemented from first principles and documented to a level that allows their analysis, and the established limitations (circularity, optimistic splits) are stated.
+        \end{itemize}
+
+    \subsubsection{Expected failure conditions}
+    \label{sec:dis-failure}
+
+        The system is expected to fail, or to degrade strongly, under the following conditions.
+        \begin{itemize}
+          \item \textbf{Lighting.} Illuminance below 400~lux or strongly directional light with shadows violates FC1; the thresholding then merges ink with shadows or loses faint strokes, and the recognition accuracy falls.
+          \item \textbf{Page skew and perspective.} Large skew angles or a page that is not flat exceed the range of the skew correction.
+          \item \textbf{Non-text regions.} Diagrams, tables and printed text can be segmented as text lines; the text versus non-text scoring reduces but does not exclude this, and the recogniser then produces meaningless characters.
+          \item \textbf{Unseen writers.} The writer classifier is a ten-class closed-set classifier; a writer who is not among the ten is assigned to one of the ten classes, because the softmax output cannot express ``none of the above'', so the output is wrong without a warning.
+          \item \textbf{Styles outside the glyph library.} A writer whose letter shapes are very different from the stored letter paths (for instance with unusual letters, capitals, digits or symbols that were scarce in the training pages) is reproduced with the nearest stored shape; characters that were never harvested cannot be written in that style.
+          \item \textbf{Text with accents, mathematical notation or rare symbols}, which occur in the personal pages, are outside the benchmark vocabulary.
+          \item \textbf{Motor stalls and lost steps.} The open-loop gantry has no feedback, so a stall shifts every later mark without any signal.
+          \item \textbf{Limit switch failure.} A switch that does not close lets the carriage run against the mechanical stop; the software protection depends on the switches, and a hardware emergency stop that cuts the power does not exist.
+          \item \textbf{Long sentences.} The synthesis time grows with the number of characters and tries, so that a long text at a high quality setting would take minutes on the target board and may time out the web request.
+          \item \textbf{Network failure} between the browser and the server prevents control of the system; a running job continues on the board.
+        \end{itemize}
+        The system does not fail gracefully in all cases: the classifier returns a confident answer for an unseen writer, and the gantry cannot detect lost steps.
+
+\subsection{Considerations in the design} % REQUIRED HEADING
+\label{sec:dis-considerations}
+
+This subsection addresses the ergonomics, health and safety, environmental, social, legal and ethical aspects of the design.
+
+    \subsubsection{Design ergonomics}
+
+        The user interacts with the system through a web interface with four pages (Read, Write, Model and Style) that run in a browser on any laptop connected to the network, so that no program is installed by the user.
+        The Read page captures the page with a live preview and shows the recognised text, the writer and the confidence; the Write page keeps the writing grid locked until the gantry has been calibrated, which prevents a job on an uncalibrated machine; and a preview of the G-code is shown before it is sent.
+        The shortcomings are that the live progress of a running job is not displayed, the classification time is not shown, and the interface has no training function.
+        The physical rig has to be set up with the page, the pen and the paper placed by hand; the documentation of the rig is incomplete.
+
+    \subsubsection{Health and safety}
+
+        The electronics operate at low voltage (a single-board computer, stepper-driver modules and small motors), so the risk of electric shock is low; \textbf{[TO BE CONFIRMED BY STUDENT: supply voltage and the mains insulation of the power supply]}.
+        The mechanical hazards are the moving carriage, belts and pulleys, which present pinch points for fingers while the gantry moves, and the pen, whose tip is not hazardous at the writing force.
+        The protective measures are the end-stop switches with confirmation, the software limits and the automatic retraction, and the calibration at a low speed (7.8~mm/s).
+        There is no hardware emergency stop that removes the motor power, and the server has no abort function for a running job; a job can be stopped only by ending the program or by removing the power, which is a limitation; and the fitting of a mains-independent emergency stop is recommended for use by others.
+        Users must keep their hands away from the carriage while a job runs.
+
+    \subsubsection{Environmental impact}
+
+        The ODROID N2+ is a low-power board, and the stepper motors consume power only while the gantry works, so the energy use is small in comparison with a desktop computer.
+        The system uses paper; test pages and failed jobs add waste, which is limited by the preview before writing and by the option to write on used paper.
+        The mechanical parts that were printed in plastic or bought as standard parts are \textbf{[TO BE COMPLETED BY STUDENT: which parts were 3D-printed and with which material]}; they can be reused, and plastic and electronic waste at the end of life must be taken to a recycling point and not discarded with domestic waste.
+        The pen ink is a small consumable; no hazardous material beyond the electronics is used.
+        The system produces no relevant acoustic or electromagnetic emission beyond the stepper motor noise and the pulses of the drive.
+
+    \subsubsection{Social and legal impact}
+
+        The social benefit is that the system can write in a person's own handwriting for those who cannot write neatly or at all, for example because of an injury, and offers the personal touch of handwriting that the proposal identified.
+        The technology has also a risk of misuse: reproducing a person's handwriting can be used for forgery or impersonation, for instance on signed documents or letters.
+        The risk is reduced, but not removed, by the use of a plotter pen of constant line width, which differs from natural writing in stroke width and pressure (the ink-based classifier identified only about 20\% of the synthesised output, so these ink properties are not reproduced), but a document in a plausible style can still mislead a reader.
+        Handwriting samples are personal information, and a writer profile is similar to biometric data, since it permits the identification of the writer; in South Africa the Protection of Personal Information Act (POPIA) applies to such data.
+        This requires the consent of the writers, the minimum storage and the protection of the profiles against access by others.
+        The samples of the two personal writers require documented consent, \textbf{[TO BE COMPLETED BY STUDENT: confirm that consent was given and in what form]}, and the eight database writers are the contributors to a public research database whose terms of use apply.
+        The server has no user accounts (only an optional shared key), accepts requests from any origin and can start physical motion for anyone who can reach its port, so it must be operated only on a trusted local network.
+        No other legislation was identified to which a research prototype of this type must conform beyond the general electrical safety rules; \textbf{[TO BE CONFIRMED BY STUDENT: any applicable regulation or university rule]}.
+
+    \subsubsection{Ethics clearance}
+
+        The project used handwriting samples of two named persons and of a public database, and so involves human participants in a limited way.
+        The status of ethics clearance is \textbf{[TO BE COMPLETED BY STUDENT: ethics clearance number, or a statement that no clearance was required]}.
+        If the human panel of qualification test~1 is carried out, the raters give informed consent and their responses are stored without personal identifiers, and clearance must be confirmed before the panel is run.
+

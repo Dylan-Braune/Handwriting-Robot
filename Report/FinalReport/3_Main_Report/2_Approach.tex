@@ -1,0 +1,130 @@
+\label{sec:approach}
+This section explains how the problem of the approved proposal was approached, before the technical detail of Section~3. It answers \emph{how} the functional analysis was translated into a first concept and which alternatives were weighed for each major decision, and \emph{why} the subsections of Section~3 appear in their order and which requirement each serves. The description is conceptual; mathematics and parameter values are deferred to Section~3.
+
+\subsection{From functional analysis to concept}
+\label{sec:app-concept}
+
+The proposal defined three modes (training, classification and reproduction) and four functional units: FU\,1, the page-scanning setup; FU\,2, the single-board computer (SBC) with blocks 2.1 image conditioning, 2.2 character separation, 2.3 classification, 2.4 back-propagation, 2.5 conversion of characters to trajectory maps, 2.6 permanent storage, 2.7 loading and 2.8 stepper-pulse generation; FU\,3, the gantry (3.1 voltage shifter, 3.2 X/Y motor control, 3.3 pen and paper adjustment, 3.4 pen movement control); and FU\,4, the power supply. Requirements R1 to R6 and two field conditions, FC1 (a well-lit room, 400 to 1000\,lux) and FC2 (a stable, level, vibration-free surface), were attached to this structure.
+
+The first concept kept the structure and made one decision per block. A fixed camera above the page provides FU\,1. The SBC conditions the image, separates the page into units that a classifier can read, reads the text, identifies the writer and, in training mode, builds a permanent library of the writer's letter shapes. The gantry receives only step and direction pulses. Figure~\ref{fig:app-concept} shows the concept with its three modes, and Table~\ref{tab:app-fu} states how each unit was realised and where it departs from the proposal; the departures are justified in Section~\ref{sec:app-alternatives}.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  blk/.style={draw,rounded corners=2pt,fill=gray!15,minimum height=1.0cm,text width=2.45cm,align=center,font=\footnotesize,inner sep=2pt},
+  arr/.style={-{Stealth[length=2mm]},thick},
+  darr/.style={-{Stealth[length=2mm]},thick,dashed},
+  lab/.style={font=\footnotesize\bfseries,anchor=east}]
+\node[blk] (cam) at (0,-1.1) {Camera above page (FU\,1)};
+\node[blk] (seg) at (3,-1.1) {Conditioning and line segmentation (FU\,2.1, 2.2)};
+\node[blk] (ali) at (6,0) {Forced alignment with the transcript (FU\,2.4)};
+\node[blk] (gly) at (9,0) {Glyph extraction and style statistics (FU\,2.5)};
+\node[blk] (sto) at (12,0) {Style-profile store (FU\,2.6)};
+\node[blk] (rec) at (6,-2.2) {Text recogniser (FU\,2.3)};
+\node[blk] (wid) at (9,-2.2) {Writer classifiers (FU\,2.3)};
+\node[blk] (dis) at (12,-2.2) {Browser display of text and writer};
+\node[blk] (inp) at (0,-4.8) {Text and writer chosen in browser};
+\node[blk] (lkp) at (3,-4.8) {Profile lookup (FU\,2.7)};
+\node[blk] (syn) at (6,-4.8) {Synthesis with best-of-$N$ selection};
+\node[blk] (gco) at (9,-4.8) {G-code generation (FU\,2.8)};
+\node[blk] (gan) at (12,-4.8) {Pulse generator and gantry (FU\,2.8, 3)};
+\draw[arr] (cam)--(seg);
+\draw[arr] (seg.east)--(ali.west);
+\draw[arr] (ali)--(gly); \draw[arr] (gly)--(sto);
+\draw[arr] (seg.east)--(rec.west);
+\draw[arr] (rec)--(wid); \draw[arr] (wid)--(dis);
+\draw[arr] (inp)--(lkp); \draw[arr] (lkp)--(syn); \draw[arr] (syn)--(gco); \draw[arr] (gco)--(gan);
+\draw[arr] (sto.east) -- ++(0.55,0) |- ($(lkp.north)+(0,0.55)$) -- (lkp.north);
+\draw[darr] (rec.south) -- node[right,font=\scriptsize,pos=0.45]{judges} (syn.north);
+\node[lab] at (13.3,0.85) {Training};
+\node[lab] at (13.3,-1.2) {Classification};
+\node[lab] at (13.3,-3.25) {Reproduction};
+\end{tikzpicture}
+\caption{Block diagram of the chosen concept. Solid arrows show the flow of data; the dashed arrow shows that the recogniser and writer classifier also judge the candidates in the synthesis block. Functional-unit numbers of the proposal are in brackets. Training is performed offline and is not part of the browser interface.}
+\label{fig:app-concept}
+\end{figure}
+
+\begin{table}[htbp]
+\centering
+\fontsize{9}{10.5}\selectfont
+\begin{tabularx}{\linewidth}{|p{1.5cm}|X|X|}
+\hline
+\textbf{Unit} & \textbf{Realisation in the final concept} & \textbf{Departure from the proposal} \\
+\hline
+FU\,1, 2.1 & Camera on a fixed rig over an A4 page; conditioning of the photograph (scale, lighting, binarisation, skew, ruled lines). & None; conditioning is far more extensive than anticipated. \\
+\hline
+FU\,2.2 & Separation of the page into \emph{text lines}. & Lines instead of characters (Section~\ref{sec:app-alternatives}). \\
+\hline
+FU\,2.3, 2.4 & Line recogniser for text, two classifiers for the writer; gradient-based training offline. & Text and writer by separate networks; training not in the interface. \textbf{[TO BE COMPLETED BY STUDENT: state on which computer the networks were trained and the profiles built; the proposal requires embedded-only processing.]} \\
+\hline
+FU\,2.5--2.7 & A style profile per writer (pen-path glyphs and style statistics) stored permanently as a data file and loaded at start-up. & Stored per glyph variant with statistics, not one map per character. \\
+\hline
+FU\,2.8, 3.1, 3.2 & G-code, then step/direction pulses generated by the SBC for two stepper-driver modules; limit switches bound the travel. & Two stages; limit switches added as a safety function. \\
+\hline
+FU\,3.3, 3.4 & Pen and paper holders; pen lifted by a one-way toggle gear motor with a position switch. & Pen lift not controlled through the stepper driver. \textbf{[TO BE COMPLETED BY STUDENT: reason for this change.]} \\
+\hline
+FU\,4 & Power supply. & \textbf{[TO BE COMPLETED BY STUDENT: supply voltages, current ratings and distribution.]} \\
+\hline
+\end{tabularx}
+\caption{Translation of the functional units of the proposal into the first concept.}
+\label{tab:app-fu}
+\end{table}
+
+\subsection{Design alternatives and trade-offs}
+\label{sec:app-alternatives}
+
+For each major decision the options offered by the literature of Section~1 and the proposal were compared against criteria derived from the requirements: accuracy (R1, R2), processing time on the SBC (R3, R4), the data available for ten writers (R6), the need for first-principles implementation, and mechanical and electrical simplicity and safety. The comparisons are mostly qualitative arguments; where design-stage measurements supported a decision they are quoted with their caveats. Table~\ref{tab:app-software} covers the processing chain and Table~\ref{tab:app-hardware} the physical system.
+
+\begin{table}[htbp]
+\centering
+\fontsize{9}{10.5}\selectfont
+\begin{tabular}{|p{1.6cm}|p{3.4cm}|p{4.3cm}|p{4.3cm}|}
+\hline
+\textbf{Decision} & \textbf{Alternatives} & \textbf{Comparison} & \textbf{Preferred and reason} \\
+\hline
+Unit of recognition & (a) Cut characters, classify each. (b) Cut lines, read with a sequence recogniser. & (a) Needs a segmenter that works on joined letters and character-level labels (absent); cannot repair a wrong cut. (b) No boundaries below the line; uses context; larger network. & (b): cursive cannot be segmented reliably, labels exist per line, and segmenter errors would bound system accuracy. \\
+\hline
+Networks for text and writer & (a) One network, two outputs. (b) Separate networks. & (a) One computation, but the tasks compete. (b) Each trainable and measurable alone. & (b): an early joint network learned the writer quickly while text accuracy stayed very low (training-script documentation; log not kept). \\
+\hline
+Synthesis of writing & (a) Neural generator on pen trajectories. (b) Pretrained image generators. (c) Library of the writer's own glyphs. & (a) Needs recorded pen trajectories (unavailable). (b) Raster output, no control of size or slant, slow without a graphics processor. (c) About nine pages per writer, strokes with controllable parameters; cursive links partly lost. & (c): a from-scratch generator trained on stroke data from the photographs learned slant and roundness but not legible letters; image generators took tens of seconds per line on a processor-only computer. \\
+\hline
+Selection of output & (a) Use the first result. (b) Draw $N$ candidates, keep the best by recogniser and writer classifier jointly. & (a) Fastest, but random variation gives good and bad results. (b) Time grows with $N$. & (b): with $N=14$ writer identification of the synthetic output rose from 79.2\,\% to 97.5\,\% and character accuracy from 75.9\,\% to 81.6\,\%; the judges also select, so this is not independent evidence. \\
+\hline
+Location of processing & (a) Offload to a personal computer. (b) All inference on the SBC. & (a) Faster, but contradicts the proposal. (b) Limits memory, compute and methods. & (b), as required; method cost was considered throughout (Section~\ref{sec:lit-embedded}). \\
+\hline
+\end{tabular}
+\caption{Software design decisions, alternatives and reasons for the preferred solution.}
+\label{tab:app-software}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\fontsize{9}{10.5}\selectfont
+\begin{tabular}{|p{1.6cm}|p{3.4cm}|p{4.3cm}|p{4.3cm}|}
+\hline
+\textbf{Decision} & \textbf{Alternatives} & \textbf{Comparison} & \textbf{Preferred and reason} \\
+\hline
+Page capture & (a) Fixed camera. (b) Flatbed scanner. & (a) Instant capture, standard interface, live framing; lighting and tilt handled in software (FC1 applies). (b) Even lighting; larger separate device with a scanning delay. & (a): suits the compact rig and the capture budget of R4; cost is the extensive conditioning of Section~\ref{sec:segmentation}. \\
+\hline
+Robot type & (a) Cartesian gantry. (b) Serial arm. (c) Parallel robot. & (a) Identity kinematics, flat page, axis errors do not add up. (b) Inverse kinematics, joint errors add up. (c) Stiff, but small workspace, complex kinematics. & (a): position follows from step counts; the 0.5\,mm limit of R5 is simplest to meet and verify~\cite{teikari2016}. \\
+\hline
+Motor control & (a) Separate microcontroller receives moves. (b) SBC generates STEP/DIR pulses. & (a) Offloads timing, but an issued move cannot be stopped without a round trip. (b) Less deterministic timing; limit switches read before every step. & (b): stopping within one step on a limit-switch trip was valued above deterministic timing. \\
+\hline
+\end{tabular}
+\caption{Hardware design decisions, alternatives and reasons for the preferred solution.}
+\label{tab:app-hardware}
+\end{table}
+
+Two consequences deserve emphasis. Rejecting segmentation below the line means the recogniser is trained from line transcriptions with connectionist temporal classification~\cite{graves2006}, at the price of a larger network and a heavier dependence on robust \emph{line} segmentation. The glyph library gives up the natural variation of a neural generator for control and a small data requirement; heavily cursive hands, whose letter links are lost when letters are cut apart, were recognised from the outset as its weak case.
+
+\subsection{Off-the-shelf components and own design}
+\label{sec:app-offshelf}
+
+Consistent with rows 5 and 6 of the requirement tables of the proposal, the following were taken off the shelf: the camera and its driver, the SBC (an ODROID N2+), the stepper motors and driver modules, the limit switches, the pen, standard gantry parts (belts or screws, bearings, fasteners), storage and the power supply. Camera and general-purpose input/output access use standard system drivers for hardware interfacing only. The student designed and implemented the image conditioning and page segmentation; the recogniser and writer classifiers with their training; the style-profile builder, synthesiser and candidate selection; the conversion of pen paths to G-code and of G-code to step pulses with safety checks; the gantry calibration; the browser interface; and the mechanical parts designed in computer-aided design software for the gantry. \textbf{[TO BE COMPLETED BY STUDENT: list of the mechanical parts designed and manufactured, as opposed to purchased.]}
+
+\subsection{Verification strategy and roadmap}
+\label{sec:app-verification}
+
+The design was verified against two kinds of evidence. The first is performance on data \emph{held out} from training: a public line-level partition for the recogniser, and one whole page per public-data writer for the writer classifiers. The partition for the two personal writers is weaker, since held-out lines come from the training pages, and this is stated wherever the figures are quoted. The second is the proposal's \emph{measurable specifications}: character and style accuracy (R1), text and writer accuracy (R2), time per character (R3, R4), absolute positional error (R5) and number of stored styles (R6); Section~4 reports what was and was not measured. Two limitations were recognised at the outset: synthesis was both tuned and judged with the same two networks, so its figures measure agreement with these judges, and the recogniser's accuracy on real handwriting of the same writers is the non-circular reference; and the figures for R3, R4 and R5 depend on the built hardware and the SBC and can only be obtained by timing and positional measurements on the built system.
+
+Section~3 follows the path of the data, because each stage uses the output of the preceding one. After the overall architecture (Section~\ref{sec:blockdiagram}), page conditioning and line segmentation (Section~\ref{sec:segmentation}) come first, since every later stage needs clean line images and FC1 and FC2 act here (R2, R4). The text recogniser (Section~\ref{sec:textrec}; R2, R4) precedes the writer classifier (Section~\ref{sec:writerid}; R2, R6), which starts from its features. The style profile (Section~\ref{sec:styleprofile}) is built from the segmented lines with the trained recogniser and is followed by synthesis and candidate selection (Section~\ref{sec:synthesis}); both serve R1 and the profile also R6. G-code generation (Section~\ref{sec:gcode}) and the gantry with its control (Section~\ref{sec:gantry}) form the final physical stage (R3, R5), and integration into one system, with its interface and timing chains (Section~\ref{sec:system}), closes the section (R3, R4). R1 is the most important requirement but is addressed after the networks because it rests on everything upstream.

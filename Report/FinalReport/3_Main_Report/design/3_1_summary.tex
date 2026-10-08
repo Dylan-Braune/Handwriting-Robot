@@ -1,0 +1,100 @@
+% ---- Writer 2 shared definitions (used by 3.1 - 3.5) ----
+\providecommand{\wht}{h_{\mathrm{t}}}
+\tikzset{
+  w2box/.style={draw,rounded corners=2pt,fill=gray!12,align=center,font=\footnotesize,minimum height=7mm,inner sep=3pt},
+  w2dark/.style={draw,rounded corners=2pt,fill=gray!30,align=center,font=\footnotesize,minimum height=7mm,inner sep=3pt},
+  w2store/.style={draw,fill=white,align=center,font=\footnotesize,minimum height=7mm,inner sep=3pt,double,double distance=1pt},
+  w2io/.style={draw,rounded corners=6pt,fill=white,align=center,font=\footnotesize,minimum height=7mm,inner sep=3pt},
+  w2arr/.style={-{Stealth[length=2.2mm]},thick},
+  w2dash/.style={-{Stealth[length=2.2mm]},thick,dashed},
+  w2group/.style={draw,dashed,rounded corners=4pt,inner sep=5pt},
+  w2lab/.style={font=\scriptsize,inner sep=1.5pt}
+}
+
+\subsection{Design summary}
+\label{sec:summary}
+
+This section summarises the project design tasks and how they were implemented (see Table~\ref{tab:des-summary}).
+The rows follow the deliverables of line~5 of the table of Section~4 of the approved project proposal (requirements R1 to R6, ``own design contribution'') and the design and implementation tasks of Section~6.1 of that proposal.
+R1 is reproduction of text in the style of any writer of the training set, R2 decoding of the text and identification of the writer, R3 reproduction speed, R4 classification time, R5 gantry positional accuracy and R6 at least ten stored writing styles.
+Only work designed and implemented by the student is claimed; the physical parts that were bought as finished items (camera, single-board computer, stepper motors and driver modules, pen, end-stop switches, power supply, standard mechanical parts) carry no design credit.
+All image-processing, machine-learning, trajectory and motion-control algorithms were written by the student in Python, and the only external functions used interface with the camera, the file system and the network.
+
+Two deviations from the proposal shape several rows.
+First, the proposal planned an explicit separation of the page into characters (functional unit (FU) 2.2) before classification; the implemented design separates the page into \emph{text lines} only and reads each line with a sequence recogniser, because the characters of connected handwriting have no reliable boundaries and a segmentation error would pass directly into a wrong reading (Sections~\ref{sec:segmentation} and~\ref{sec:textrec}).
+Second, the proposal placed training and the building of trajectory maps on the single-board computer (FU 2.4 to 2.6); in the implemented system the networks and the per-writer style profiles are produced by offline programs on a general-purpose computer, and only inference, synthesis and motion control run on the single-board computer, so the training mode is not offered by the user interface.
+\textbf{[TO BE COMPLETED BY STUDENT: state the computer used for network training (the project notes mention a laptop processor and a cloud notebook) and confirm that the single-board computer was not used for training.]}
+
+{
+\fontsize{9.5}{11.5}\selectfont
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.05}
+\begin{longtable}{|p{3.3cm}|p{7.0cm}|p{4.3cm}|}
+\hline
+\textbf{Deliverable or task} & \textbf{Implementation} & \textbf{Completion of deliverable or task, and section in the report} \\
+\hline
+\endfirsthead
+\hline
+\textbf{Deliverable or task} & \textbf{Implementation} & \textbf{Completion of deliverable or task, and section in the report} \\
+\hline
+\endhead
+\hline
+\multicolumn{3}{r}{\emph{continued on the next page}}\\
+\endfoot
+\hline
+\endlastfoot
+Image conditioning and noise removal (FU 2.1; R2, R4) &
+Designed and implemented from first principles using only array arithmetic: size normalisation, page localisation, flat-field illumination correction with summed-area tables, local adaptive thresholding, skew correction and removal of printed rules, faint print and neighbouring-page ink. &
+Completed. Section~\ref{sec:segmentation}. Processing time on the single-board computer: \textbf{[TO BE COMPLETED BY STUDENT]}. \\
+\hline
+Separation into characters (FU 2.2; R2, R4) &
+Replaced by separation into text lines and diagram regions (connected components, glyph-scale estimation, chaining, baseline merging, text versus non-text scoring, one deskewed crop per line). Character territories are derived only offline, by forced alignment, when style profiles are built (Section~\ref{sec:styleprofile}). &
+Completed as modified (lines instead of characters). Sections~\ref{sec:segmentation}, \ref{sec:textrec}. \\
+\hline
+Neural network that decodes the text (FU 2.3; R2) &
+Convolutional and bidirectional recurrent network with connectionist temporal classification (CTC) output, 3\,358\,763 trainable parameters. The layer pattern follows a published design \cite{kizilirmak2023}; the student chose the input geometry, data pipeline, label cleaning, augmentation and staged joint training, wrote the training code and a separate from-scratch inference implementation. &
+Completed. Section~\ref{sec:textrec}; accuracy in Section~\ref{sec:results}. \\
+\hline
+Neural network that identifies the writer (FU 2.3; R2) &
+Two ten-class convolutional classifiers: an ink-based one for photographs and one whose input is re-drawn at a constant pen width (stroke normalisation by thinning and re-inking, designed by the student), with page-level aggregation. &
+Completed. Section~\ref{sec:writerid}. \\
+\hline
+Training on datasets and choice of layer numbers (FU 2.4; simulation on existing datasets) &
+Training programs for the recogniser (four stages) and both classifiers on a public database, a public line-level set and 13 photographed personal pages. A sweep over widths, depths and learning rates was programmed but no result was kept, so the layer numbers are those of the published design. Training is offline. &
+Completed for training and data pipeline; \textbf{incomplete} for the architecture sweep. Sections~\ref{sec:textrec}, \ref{sec:writerid}. \\
+\hline
+Capture rig and deployment on the single-board computer (FU 1; R2, R4) &
+A generic USB camera is read with a live preview and a five-frame warm-up; recognition, synthesis and motion programs run on the ODROID N2+ behind a web server. Rig geometry, camera resolution and lighting: \textbf{[TO BE COMPLETED BY STUDENT: camera model, resolution, mounting height, field of view, lamp, lux readings, photograph.]} &
+Software completed; hardware description \textbf{to be completed}. Sections~\ref{sec:blockdiagram}, \ref{sec:system}. \\
+\hline
+Trajectory maps and permanent storage (FU 2.5 to 2.7; R1, R6) &
+Letter shapes are harvested by forced alignment with the recogniser, thinned to centre-line pen paths, normalised and stored as one JavaScript Object Notation (JSON) file per writer with measured style statistics; ten styles (eight database writers, two personal writers) exist. The builder is an offline program. &
+Completed for ten styles. Section~\ref{sec:styleprofile}. \\
+\hline
+Pen trajectory mapping and G-code (FU 2.5 to 2.8; R1, R3) &
+A synthesiser assembles the writer's own letter paths into lines (slant, spacing, joins, wobble) with a best-of-$N$ search judged by the recogniser and the writer classifier; a generator turns the trajectory into G-code (the numerical-control command language of plotters), with placement, stroke ordering and pen-state tracking, and a simulator replays it. &
+Completed. Sections~\ref{sec:synthesis}, \ref{sec:gcode}. \\
+\hline
+Stepper-motor control and pen lift (FU 2.8, 3.1 to 3.4; R5) &
+A G-code interpreter generates step and direction pulses directly on the general-purpose pins, with Bresenham interpolation, absolute step bookkeeping, calibration between end-stops, debounced end-stop monitoring and software limits. The pen is lifted by a toggle gear motor confirmed by a position switch (not through the stepper driver as proposed). No acceleration ramps. &
+Completed (open loop). Section~\ref{sec:gantry}. \\
+\hline
+Gantry design and construction (FU 3.3, 3.4; R5) &
+A Cartesian X/Y gantry with two stepper motors, four end-stops and the pen lift; measured switch-to-switch travel 204\,mm (X) and 262\,mm (Y). \textbf{[TO BE COMPLETED BY STUDENT: computer-aided design files, parts printed or bought, belt specification, pen and paper holders.]} &
+Constructed; documentation \textbf{to be completed}. Section~\ref{sec:gantry}. \\
+\hline
+Optimisation of pen movement (R3) &
+Greedy nearest-endpoint stroke ordering reduces pen-up travel. &
+Completed. Section~\ref{sec:gcode}. \\
+\hline
+Display and user interface (R4, R6) &
+A web server exposes classification, generation, calibration and sending of jobs; browser pages show text, writer with confidence, stored writers and G-code preview. Synthesis time is returned; no classification timer is shown. &
+Completed except the display of classification time (\textbf{not implemented}). Section~\ref{sec:system}. \\
+\hline
+Tests against the requirements (R3 to R5) &
+Offline accuracy evaluations are reported in Section~\ref{sec:results}. No recorded timing on the single-board computer and no measurement of gantry positional error were found. &
+\textbf{Incomplete} unless measurements are supplied: \textbf{[TO BE COMPLETED BY STUDENT: demonstration results for R3, R4, R5.]} Section~\ref{sec:results}. \\
+\caption{Design summary.}
+\label{tab:des-summary}
+\end{longtable}
+}

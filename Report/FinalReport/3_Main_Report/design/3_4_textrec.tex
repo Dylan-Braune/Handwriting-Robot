@@ -1,0 +1,308 @@
+\subsection{Text recognition}
+\label{sec:textrec}
+
+This subsection describes the neural network that decodes the written content of a handwritten line image into text (functional unit FU~2.3 of the proposal, requirement R2).
+The network, its training procedure and a separate from-scratch inference implementation for the single-board computer were designed and written by the student.
+Readers are not assumed to know machine learning, so every building block is explained first in words and then with its equations.
+
+\subsubsection{Problem statement and design approach}
+
+The input of the recogniser is one grey-scale image of a text line, delivered by the segmentation block (Section~\ref{sec:segmentation}), and the output is the string of characters that was written.
+Three properties of handwriting determine the design.
+First, the characters of cursive handwriting are joined, so that boundaries between them cannot be located reliably; a design that first cuts the line into characters and then classifies each piece (as the proposal planned) would pass every cutting error directly into a wrong reading.
+Second, the number of characters is unknown and has no fixed relation to the image width, because the same letter can be written narrow or wide.
+Third, the training material that is available (public handwriting databases and the personal pages of the two writers) consists of line images with their transcriptions, but not of the position of every character.
+
+The chosen design is a \emph{convolutional neural network (CNN)} followed by a \emph{bidirectional long short-term memory (BiLSTM)} network and trained with \emph{connectionist temporal classification (CTC)} \cite{graves2006,shi2017}.
+The convolutional layers convert the image into a sequence of feature vectors, one for each narrow vertical slice of the line; the recurrent layers let every slice use the context of the whole line to its left and right; and the CTC loss allows the network to be trained from the line transcription alone, without any alignment between characters and image columns.
+The layer pattern follows a published design for the IAM handwriting database \cite{kizilirmak2023}; the student fixed the input geometry, built the data pipeline and the training recipe, and verified every layer shape and parameter count (Table~\ref{tab:rec-layers}).
+
+\subsubsection{Input pre-processing}
+
+The network has a fixed input size of $64\times640$ pixels (height $\times$ width), because a fixed size allows batching and a fixed sequence length.
+The size is smaller than the $100\times960$ of the published design, since that size needed about one hour per training epoch on a processor-only computer.
+A line crop of height $h$ and width $w$ pixels is resized \emph{uniformly} (the aspect ratio is preserved) with the scale
+\begin{equation}
+s=\min\!\Bigl(\frac{64}{h},\frac{640}{w}\Bigr),\qquad w'=\max(1,\mathrm{round}(ws)),\qquad h'=\max(1,\mathrm{round}(hs)),
+\label{eq:rec-resize}
+\end{equation}
+using bilinear interpolation (Equation~\ref{eq:seg-resize}), and is pasted onto a white $640\times64$ canvas, left-aligned and vertically centred (Figure~\ref{fig:rec-canvas}).
+Typical text lines are about $14{:}1$ in width to height, whereas the canvas is $10{:}1$, so for most lines the width is the binding constraint and the line occupies fewer than 64 rows.
+Left alignment is deliberate: it makes the conversion from a network time step back to a pixel position in the original crop an exact inverse, $x_{\mathrm{orig}}=x_{\mathrm{canvas}}/s$, which the style-extraction block (Section~\ref{sec:styleprofile}) relies on when it cuts characters out of lines.
+A plain stretch to the canvas size was used initially but distorted the proportions of letters (a horizontal scale of 0.48 against a vertical scale of 0.35 in one example) and was replaced by the uniform scaling.
+Finally, the grey values $p\in[0,255]$ are inverted and normalised with a \emph{fixed} constant,
+\begin{equation}
+x=\frac{(1-p/255)-0.5}{0.5}=1-\frac{2p}{255},
+\label{eq:rec-norm}
+\end{equation}
+where $x\in[-1,1]$ is the network input; white paper ($p=255$) becomes $-1$ and black ink ($p=0$) becomes $+1$.
+A fixed constant is used instead of a per-image mean and standard deviation, so that the amount of white padding does not change the contrast statistics.
+
+
+\subsubsection{Network architecture}
+
+Figure~\ref{fig:rec-arch} gives an overview of the network and Table~\ref{tab:rec-layers} lists every layer with its output shape and parameter count.
+The building blocks are defined first.
+
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}[x=1cm,y=1cm]
+\tikzset{nb/.style={w2box,text width=2.55cm,minimum height=1.5cm}}
+\node[nb] (in) at (-6.2,0) {\textbf{Input}\\ $1\times64\times640$};
+\node[nb] (s1) at (-3.1,0) {\textbf{Stage 1}\\ 2$\times$[conv 3$\times$3, BN, ReLU], 32 ch.\\ $32\times64\times640$};
+\node[nb] (p1) at (0,0) {\textbf{Max-pool 2$\times$2}\\ $32\times32\times320$};
+\node[nb] (s2) at (3.1,0) {\textbf{Stage 2}\\ 4$\times$[conv, BN, ReLU], 64 ch.\\ $64\times32\times320$};
+\node[nb] (p2) at (6.2,0) {\textbf{Max-pool 2$\times$2}\\ $64\times16\times160$};
+\node[nb] (s3) at (6.2,-2.3) {\textbf{Stage 3}\\ 6$\times$[conv, BN, ReLU], 128 ch.\\ $128\times16\times160$};
+\node[nb] (hm) at (3.1,-2.3) {\textbf{Height max-pool}\\ $128\times1\times160$\\ $\rightarrow$ 160 vectors};
+\node[nb] (ls) at (0,-2.3) {\textbf{BiLSTM $\times2$}\\ hidden 256 per direction\\ $160\times512$};
+\node[nb] (ln) at (-3.1,-2.3) {\textbf{Linear + log-softmax}\\ $160\times75$};
+\node[nb] (dc) at (-6.2,-2.3) {\textbf{Greedy CTC decoding}\\ collapse repeats, delete blanks $\rightarrow$ text};
+\foreach \a/\b in {in/s1,s1/p1,p1/s2,s2/p2,p2/s3,s3/hm,hm/ls,ls/ln,ln/dc} \draw[w2arr] (\a)--(\b);
+\end{tikzpicture}
+\caption{Architecture of the text recogniser. Tensor shapes are channels $\times$ height $\times$ width for the convolutional part and time steps $\times$ features for the recurrent part; BN denotes batch normalisation.}
+\label{fig:rec-arch}
+\end{figure}
+
+\paragraph{Two-dimensional convolution.}
+A convolutional layer slides a small learned filter over the image, so that the same pattern detector (for example a stroke end or a loop) is applied at every position.
+For an input feature map $X$ with $C_{\mathrm{in}}$ channels, the output channel $o$ at position $(i,j)$ is
+\begin{equation}
+Y[o,i,j]=b_o+\sum_{c=1}^{C_{\mathrm{in}}}\sum_{u=0}^{k-1}\sum_{v=0}^{k-1}W[o,c,u,v]\;X_{\mathrm{pad}}[c,\,s\,i+u,\,s\,j+v],
+\label{eq:rec-conv}
+\end{equation}
+where $W$ are the learned weights, $b_o$ the bias of output channel $o$, $k$ the kernel size, $s$ the stride, and $X_{\mathrm{pad}}$ the input padded with zeros by $p$ pixels on every side.
+The output size (Equation~\ref{eq:rec-outsize}) is
+\begin{equation}
+H_{\mathrm{out}}=\Bigl\lfloor\frac{H+2p-k}{s}\Bigr\rfloor+1,\qquad W_{\mathrm{out}}=\Bigl\lfloor\frac{W+2p-k}{s}\Bigr\rfloor+1,
+\label{eq:rec-outsize}
+\end{equation}
+which is equal to the input size for the used values $k=3$, $p=1$ and $s=1$, so only pooling changes the size.
+A layer has $C_{\mathrm{out}}(C_{\mathrm{in}}k^2+1)$ parameters.
+
+\paragraph{Batch normalisation.}
+Every convolution is followed by batch normalisation \cite{ioffe2015}: during training each channel is normalised with the mean and variance of the mini-batch (Equation~\ref{eq:rec-bn} in the Appendix) and then scaled and shifted by learned parameters; at test time running statistics replace them, which reduces the layer to a fixed per-channel affine map (Equation~\ref{eq:rec-bnfold} in the Appendix), the form used by the inference implementation.
+
+\paragraph{Rectified linear unit and pooling.}
+The non-linearity is the rectified linear unit $\mathrm{ReLU}(x)=\max(0,x)$.
+A $2\times2$ max-pooling with stride 2 outputs the maximum of each $2\times2$ block, $Y[c,i,j]=\max_{u,v\in\{0,1\}}X[c,2i+u,2j+v]$, which halves height and width, makes the features tolerant to small shifts and has no parameters.
+After the last convolution the remaining 16 rows are collapsed by a maximum over the height (Equation~\ref{eq:rec-hmax}),
+\begin{equation}
+z_t[c]=\max_{i}F[c,i,t],\qquad t=1,\ldots,T=160,
+\label{eq:rec-hmax}
+\end{equation}
+where $F$ is the output of the last convolutional stage and $z_t\in\mathbb R^{128}$ is the feature vector of time step $t$.
+The collapse discards the vertical position and states only whether a feature is present anywhere in the column, which suits the ascenders and descenders of handwriting, and it converts the two-dimensional map into a one-dimensional sequence.
+Because the two pools halve the width twice, the sequence has $T=640/4=160$ steps, and one time step corresponds to a four-pixel-wide column group of the canvas.
+
+\paragraph{Receptive field.}
+The recursion of Equation~\ref{eq:rec-rf} (Appendix) gives a receptive field of $72\times72$ pixels for each column feature, the full height of the line and about 18 time steps of context, before the recurrent layers add unbounded horizontal context.
+
+\paragraph{Long short-term memory.}
+The recurrent part reads the 160 feature vectors in order.
+A plain recurrent network forgets information over long sequences, so a long short-term memory (LSTM) cell \cite{hochreiter1997} is used, which has a memory $c_t$ that is protected by three learned gates (Figure~\ref{fig:rec-lstm}).
+For input $x_t$ and the previous hidden state $h_{t-1}$ and memory $c_{t-1}$ (both initially zero), one direction of one layer with hidden size $n=256$ computes
+\begin{equation}
+\begin{aligned}
+i_t&=\sigma(W_{ii}x_t+b_{ii}+W_{hi}h_{t-1}+b_{hi}), &&\text{input gate,}\\
+f_t&=\sigma(W_{if}x_t+b_{if}+W_{hf}h_{t-1}+b_{hf}), &&\text{forget gate,}\\
+g_t&=\tanh(W_{ig}x_t+b_{ig}+W_{hg}h_{t-1}+b_{hg}), &&\text{candidate memory,}\\
+o_t&=\sigma(W_{io}x_t+b_{io}+W_{ho}h_{t-1}+b_{ho}), &&\text{output gate,}\\
+c_t&=f_t\odot c_{t-1}+i_t\odot g_t,\qquad h_t=o_t\odot\tanh(c_t),
+\end{aligned}
+\label{eq:rec-lstm}
+\end{equation}
+where $\sigma(a)=1/(1+e^{-a})$ is the logistic function, $\odot$ the element-wise product, the $W$ are weight matrices (the $x_t$-matrices $W_{i\cdot}$ and the recurrent matrices $W_{h\cdot}$) and the $b$ are bias vectors.
+The forget gate decides how much of the old memory is kept, the input gate how much of the new candidate is written, and the output gate how much of the memory is revealed.
+In the implementation the four pre-activations are computed with one product, $[i;f;g;o]=W_{ih}x_t+b_{ih}+W_{hh}h_{t-1}+b_{hh}$ with $W_{ih}\in\mathbb R^{1024\times I}$ and $W_{hh}\in\mathbb R^{1024\times256}$.
+A \emph{bidirectional} layer runs one LSTM from step 1 to 160 and an independent second LSTM from step 160 to 1, and concatenates the two hidden states of every step (Equation~\ref{eq:rec-bi}),
+\begin{equation}
+h_t=\bigl[\,\overrightarrow{h}_t\,;\,\overleftarrow{h}_t\,\bigr]\in\mathbb R^{512},
+\label{eq:rec-bi}
+\end{equation}
+so each step sees the letters before it and after it, which is needed to distinguish, for example, the cursive strokes of u, n and m.
+Two such layers are stacked, and the layers have no dropout, following the published design.
+
+
+\paragraph{Output layer and parameter count.}
+A linear layer maps the 512-dimensional state of each step to one score $\ell_t^k$ for each of the 75 classes (74 characters and one blank symbol, index 0), and a log-softmax turns the scores into log-probabilities (Equation~\ref{eq:rec-softmax}),
+\begin{equation}
+\ell_t=W_oh_t+b_o,\qquad \log y_t^k=\ell_t^k-\log\sum_{j=0}^{74}e^{\ell_t^j},
+\label{eq:rec-softmax}
+\end{equation}
+where $W_o\in\mathbb R^{75\times512}$, and $y_t^k=P(\pi_t=k\mid x)$ is the probability of class $k$ at step $t$.
+The character set has 74 symbols: the 26 lower-case and 26 upper-case letters, the ten digits and twelve symbols (space and the characters . , ; : ' " ! ? ( ) -); characters outside this set are removed from the training targets.
+The numbers of parameters in Table~\ref{tab:rec-layers} follow from the shapes: a convolution with batch normalisation has $C_{\mathrm{out}}(9C_{\mathrm{in}}+1)+2C_{\mathrm{out}}$ trainable parameters, and one LSTM direction has the number of parameters of Equation~\ref{eq:rec-params},
+\begin{equation}
+N_{\mathrm{LSTM}}=4n(I+n)+2\cdot4n,
+\label{eq:rec-params}
+\end{equation}
+where $I$ is the input size, $n=256$ and the last term counts the two bias vectors; for the first layer $N=4\cdot256\cdot384+2048=395\,264$ and for the second $788\,480$ per direction.
+The LSTM layers hold 70.5\,\% of the 3\,358\,763 parameters, stage 3 holds 24.2\,\%, stage 2 3.9\,\%, the output layer 1.1\,\% and stage 1 0.3\,\%.
+
+The number of multiply--accumulate operations (MACs) for one line (Equation~\ref{eq:rec-macs}) is
+\begin{equation}
+\begin{split}N_{\mathrm{MAC}}={}&\sum_\ell 9\,C_{\mathrm{in},\ell}C_{\mathrm{out},\ell}H_\ell W_\ell\\&+2T\,[4n(128+n)+4n(512+n)]+T\cdot512\cdot75\approx4.17\times10^9,\end{split}
+\label{eq:rec-macs}
+\end{equation}
+where $H_\ell W_\ell$ is the size of the feature map at convolutional layer $\ell$: $3.79\times10^9$ for the convolutions, $0.38\times10^9$ for the BiLSTM and $6\times10^6$ for the output layer.
+Convolutions therefore dominate the arithmetic (91\,\%), while the LSTM is inherently sequential, with $160\times2\times2=640$ small matrix--vector products.
+
+\subsubsection{Connectionist temporal classification}
+
+The network outputs a distribution over 75 symbols at each of 160 time steps, but the transcription has only, for example, 40 characters, and its alignment with the steps is unknown.
+CTC solves this by summing over all possible alignments.
+A \emph{path} $\pi=(\pi_1,\ldots,\pi_T)$ assigns one symbol, possibly the blank, to every step; the many-to-one map $\mathcal B$ first merges consecutive repeated symbols and then deletes the blanks, so that, for example, $\mathcal B(\text{--hh-e-ll-ll-o})=\text{hello}$, where the blank between the two groups of l is what allows a genuine double letter.
+With the steps treated as conditionally independent, the probability of a transcription $y=(y_1,\ldots,y_U)$ of length $U$ is the sum over all paths that collapse to it, and the loss is its negative logarithm:
+\begin{equation}
+P(\pi\mid x)=\prod_{t=1}^{T}y_t^{\pi_t},\qquad p(y\mid x)=\sum_{\pi:\,\mathcal B(\pi)=y}P(\pi\mid x),\qquad \mathcal L_{\mathrm{CTC}}=-\ln p(y\mid x).
+\label{eq:rec-ctcprob}
+\end{equation}
+The number of paths is exponential in $T$, so the sum is evaluated by dynamic programming on the blank-augmented label $y'=(\varnothing,y_1,\varnothing,y_2,\ldots,y_U,\varnothing)$ of length $S=2U+1$ (Figure~\ref{fig:rec-ctc}).
+The forward variable $\alpha_t(s)$ is the total probability of all path prefixes of length $t$ that end at position $s$ of $y'$ and are consistent with it:
+\begin{equation}
+\begin{split}&\alpha_1(1)=y_1^{\varnothing},\quad\alpha_1(2)=y_1^{y_1},\quad\alpha_1(s)=0\ (s>2),\\&\alpha_t(s)=\Bigl[\alpha_{t-1}(s)+\alpha_{t-1}(s-1)+\mathbb 1[\,y'_s\ne\varnothing\wedge y'_s\ne y'_{s-2}\,]\,\alpha_{t-1}(s-2)\Bigr]\,y_t^{\,y'_s},\end{split}
+\label{eq:rec-alpha}
+\end{equation}
+\begin{equation}
+p(y\mid x)=\alpha_T(S)+\alpha_T(S-1),
+\label{eq:rec-pfinal}
+\end{equation}
+where $y_t^{\varnothing}$ is the network's blank probability at step $t$ and $y_t^{y'_s}$ the probability of the symbol at position $s$.
+The probability of the transcription follows from the last two positions at the last step (Equation~\ref{eq:rec-pfinal}).
+The three terms of the bracket are the three allowed transitions into position $s$: staying on the same symbol, advancing by one position, and skipping over a blank to the next symbol.
+The skip is forbidden when $y'_s$ is a blank or equals $y'_{s-2}$, because skipping the blank between two equal letters would merge them.
+Backward variables $\beta_t(s)$ are defined symmetrically from $t=T$, and the gradient of the loss with respect to the pre-softmax score (Equation~\ref{eq:rec-ctcgrad}) is
+\begin{equation}
+\frac{\partial\mathcal L}{\partial\ell_t^{k}}=y_t^k-\frac{1}{p(y\mid x)\,y_t^k}\sum_{s:\,y'_s=k}\alpha_t(s)\beta_t(s),
+\label{eq:rec-ctcgrad}
+\end{equation}
+from which gradient back-propagation proceeds through the log-softmax, both LSTM layers and the convolutional stack.
+The computation is done in the logarithmic domain for numerical stability.
+Two implementation details matter for the loss values that are quoted below.
+The loss of each line is divided by its target length, so reported loss values are per-character negative log-likelihoods, and lines for which no valid path exists are given zero loss.
+All lines of a batch use the full $T=160$ steps including the padding; a label cap of 120 characters, $\lfloor160\cdot0.75\rfloor$, keeps every label far below $T$ (CTC needs $T\ge U$ plus the number of adjacent repeated letters).
+
+
+\paragraph{Decoding.}
+At inference the most probable symbol of each step is taken, repeats are merged and blanks deleted (Equation~\ref{eq:rec-greedy}):
+\begin{equation}
+\hat\pi_t=\arg\max_k y_t^k,\qquad \hat y=\mathcal B(\hat\pi).
+\label{eq:rec-greedy}
+\end{equation}
+This best-path decoding approximates $\arg\max_y p(y\mid x)$ and needs only 160 arg-max operations; no lexicon, language model or beam search is used.
+The published design obtains its best error rate with lexicon-constrained decoding, which was not implemented here, so the headline figure of that publication is not a result of this project.
+
+\subsubsection{Training data and splits}
+
+Table~\ref{tab:rec-data} lists the data sets and the rule that separates training from validation data, together with the leakage that each rule leaves.
+Characters outside the 74-symbol set are removed from every label, lines that become empty are dropped, and lines with more than 120 characters (which indicate merged lines) are dropped.
+
+In short, the first-stage hold-out is writer-dependent and its labels are noisy; the validation set of the public line set drives learning-rate decay and checkpoint choice (so its accuracy is mildly optimistic) while its test set is used for no decision, although the partitions are only believed, not verified, to be writer-independent; the personal validation lines are random lines of the same pages as the training lines (optimistic); and the ten-author hold-out may overlap with the training data and has project-generated labels.
+
+The labels of the database pages were generated by aligning the printed prompt words with the detected ink word runs by dynamic programming (details in the Appendix).
+An earlier purely proportional labelling assigned wrong text to lines, and correcting the evaluation labels, without any change of the weights, raised the measured accuracy on the ten-author hold-out from 42.7\,\% to 89.4\,\%; label quality, not the network, had limited the earlier measurements, which is why the recogniser was later trained on a public line-level set with clean labels.
+
+\paragraph{Data augmentation.}
+Training images (never validation images) are augmented after the resize: each of four transformations (horizontal shear with factor in $U(-0.6,0.6)$, rotation by up to $\pm2.5^\circ$, elastic distortion \cite{simard2003} and perspective distortion) is enabled with probability 0.5 and at most one enabled transformation, chosen uniformly, is applied, so that 6.25\,\% of the images are unchanged; the parameters are listed in the Appendix.
+
+\subsubsection{Training procedure}
+
+\paragraph{Optimiser.}
+The loss of Equation~\ref{eq:rec-ctcprob} is minimised by mini-batch gradient descent with the RMSprop update.
+For the gradient $g_t$ at update $t$, learning rate $\eta$ and weight decay $\lambda=10^{-5}$ (an L2 term added to the gradient),
+\begin{equation}
+g_t\leftarrow g_t+\lambda\theta_{t-1},\qquad v_t=\rho\,v_{t-1}+(1-\rho)\,g_t^2,\qquad \theta_t=\theta_{t-1}-\eta\,\frac{g_t}{\sqrt{v_t}+\epsilon},
+\label{eq:rec-rmsprop}
+\end{equation}
+where $\theta$ is the vector of parameters, $v_t$ the running average of the squared gradient (smoothing $\rho=0.99$) and $\epsilon=10^{-8}$ a small constant; there is no momentum.
+Dividing by $\sqrt{v_t}$ gives every parameter its own effective step size, which suits the very different gradient magnitudes of convolutional and recurrent layers.
+In the joint stage the global gradient norm is clipped at 5 (Equation~\ref{eq:rec-clip}),
+\begin{equation}
+g\leftarrow g\,\min\Bigl(1,\frac{5}{\|g\|_2}\Bigr),
+\label{eq:rec-clip}
+\end{equation}
+which prevents a rare exploding gradient of the recurrent layers from destroying the weights, and batches with a non-finite loss are skipped.
+The learning rate is halved by a plateau schedule: after a number of validation checks (the patience) without improvement of the validation loss, $\eta\leftarrow\max(0.5\,\eta,\eta_{\min})$.
+Validation uses no augmentation, the batch-normalisation running statistics and greedy decoding.
+
+\paragraph{Staged recipe.}
+Training was carried out in four stages (Table~\ref{tab:rec-stages} and Figure~\ref{fig:rec-stages} in the Appendix), each motivated by a limitation of the previous one:
+(1)~the published recipe on lines that were segmented from database pages by the student's own tools, which gave small, noisy data (best validation loss 1.06);
+(2)~a warm start on the public line-level IAM set with human-checked labels;
+(3)~fine-tuning on the personal lines alone, which was rejected because the general accuracy fell by about ten points (catastrophic forgetting, Table~\ref{tab:rec-forget});
+(4)~joint training from stage 2 on both sets with a weighted sampler, in which each public line has the weight $w_T=(1-f)/n_T$ and each personal line $w_P=f/n_P$ with $f=0.20$, so that 20\,\% of every epoch is personal data seen with fresh augmentation (Equation~\ref{eq:rec-sampler} in the Appendix); the checkpoint with the largest $\min(\text{accuracy}_{\mathrm{public}},\text{accuracy}_{\mathrm{personal}})$ is kept.
+A sweep over learning rate, LSTM width, depth, convolution width, dropout and optimiser (14 configurations) was programmed, but no result file was kept, so the deployed architecture is the published one and not an optimum found by the student.
+Training was done offline on a general-purpose computer; the log of the joint stage was not kept, and the stored joint checkpoint contains weights only.
+
+\subsubsection{Evaluation metrics}
+
+Accuracy is measured with the Levenshtein edit distance \cite{levenshtein1966}, the minimum number of insertions, deletions and substitutions that turn one string into another (recursion in the Appendix).
+For training and validation the character error rate is micro-averaged over all lines $n$ with prediction $\hat y_n$ and reference $y_n$,
+\begin{equation}
+\mathrm{CER}=\frac{\sum_nd_{\mathrm{lev}}(\hat y_n,y_n)}{\sum_n|y_n|},\qquad\text{character accuracy}=1-\mathrm{CER},
+\label{eq:rec-cer}
+\end{equation}
+where $d_{\mathrm{lev}}$ is the edit distance; the measure is case-sensitive.
+The end-to-end evaluation of Section~\ref{sec:results} instead averages per line the floored accuracy $\max(0,1-d_{\mathrm{lev}}/|y|)$ after lower-casing, which is slightly more lenient, so the two kinds of figure are not computed identically.
+A word measure (the in-order recall of the reference words, Equation~\ref{eq:rec-wacc} in the Appendix) is not equal to $1-\mathrm{WER}$; a standard word error rate (WER) was computed only once, for the public sets.
+
+\subsubsection{Design-stage evidence}
+
+Table~\ref{tab:rec-results} lists the accuracies of the deployed network that served as design evidence.
+They are \emph{not} the final qualification results, which belong to Section~\ref{sec:results}, and every figure carries the caveat of its data set (Table~\ref{tab:rec-data}).
+
+\begin{table}[h]
+\centering
+\fontsize{9.5}{11.5}\selectfont
+\begin{tabularx}{\linewidth}{|p{3.7cm}|p{2.7cm}|X|}
+\hline
+\textbf{Data set} & \textbf{Result} & \textbf{Status of the figure} \\
+\hline
+Public set, validation (976 lines) & 94.03\,\% character accuracy; WER 21.1\,\% & Used for model selection, therefore mildly optimistic. \\
+\hline
+Public set, test (2\,915 lines) & 91.82\,\% character accuracy; WER 26.7\%; 15.9\,\% of lines exactly right & Used for no decision; the cleanest figure, with the partition caveats of Table~\ref{tab:rec-data}. \\
+\hline
+Personal validation ($\approx52$ lines) & 89.64\,\% & Within-page random split and used in selection; optimistic. \\
+\hline
+Ten-author hold-out & 89.4\,\% character, 70.8\,\% word (LCS) accuracy & Possible training overlap; project-generated labels; not writer-independent. \\
+\hline
+Same hold-out before the label correction & 42.7\,\% & Shows the effect of wrong evaluation labels. \\
+\hline
+Ten personal photographed test pages, full page pipeline, first-stage network (no personal training) & 61.21\,\% (CER 38.79\,\%, 3\,617 of 9\,324 characters) & Six unique pages (four are listed twice); includes line-segmentation and label-alignment errors, so it is not a recogniser-only figure. \\
+\hline
+\end{tabularx}
+\caption{Design-stage accuracy of the text recogniser with the status of each figure. The public-set figures were reproduced exactly by re-running the deployed weights.}
+\label{tab:rec-results}
+\end{table}
+
+
+Three conclusions follow.
+First, adding personal data without removing the public data (Table~\ref{tab:rec-forget}) kept the general accuracy (test accuracy +0.22 points over the clean-label stage) while giving the personal accuracy of about 90\,\%, so the weighted-sampler design is justified.
+Second, the word error rate is about four times the character error rate, so that roughly one word in four contains a character error and only about one line in six is entirely correct; greedy decoding without a lexicon leaves spelling errors uncorrected.
+Third, no confidence intervals, repeated runs or per-character error analyses exist; with 125\,607 test characters the binomial standard error of the error rate is of the order of 0.1 points if errors were independent, but they are clustered by line and writer, so the true uncertainty is larger.
+
+\subsubsection{Inference implementation for the single-board computer}
+
+Training needs a large software environment, so the student wrote a separate from-scratch inference implementation in Python (about 480 lines) that reads the trained weights directly and uses only array arithmetic.
+Each convolution is converted to one matrix product (the im2col method): the padded input is cut into overlapping $3\times3$ patches that become the columns of a matrix $\mathrm{cols}$, and
+\begin{equation}
+Y=\tilde W\,\mathrm{cols}+b\,\mathbf 1^{\top},
+\label{eq:rec-im2col}
+\end{equation}
+where $\tilde W\in\mathbb R^{C_{\mathrm{out}}\times C_{\mathrm{in}}k^2}$ is the weight tensor reshaped to a matrix and $b\,\mathbf 1^\top$ adds the channel bias at all positions.
+One optimised matrix product replaces the six nested loops of Equation~\ref{eq:rec-conv} and was about ten times faster than a general summation routine; the largest matrix (second convolution of stage 1, $288\times40\,960$ entries) needs 47\,MB, so the working set is a few tens of megabytes.
+Batch normalisation is applied in the folded form of Equation~\ref{eq:rec-bnfold}, and the LSTM is an explicit loop over the 160 steps with one product of 1024 rows per step and direction.
+A weight reader parses the training checkpoint file directly (details in the Appendix, subsection ``Text recogniser: weight file and inference details'').
+For one random $64\times640$ input the largest difference between the log-probabilities of the two implementations was $2.3\times10^{-5}$, with identical arg-max (hence decoded text) at all 160 steps; this is a single synthetic input and not a test-set sweep.
+One forward pass of one line took 2.6 to 3.1\,s on the development computer (processor only), which is about 65 to 75\,ms per character for a 40-character line and exceeds the 25\,ms per character of requirement R4; the ARM processor of the single-board computer is expected to be slower.
+\textbf{[TO BE COMPLETED BY STUDENT: measure the recognition time per line on the ODROID N2+; the project files contain no such measurement, and the proposal's budget may refer to the whole classification step.]}
+
+\subsubsection{Design alternatives and justification}
+
+Table~\ref{tab:rec-alt} compares the design with the alternatives that were considered.
+Only the chosen design was built and measured; the statements about the others are arguments, not measurements.
+
+
+The chosen design fits the four facts of the problem: the output is a sequence of unknown length (CTC), cursive strokes need context from both sides (bidirectional recurrence), the labels that exist are line transcriptions (an alignment-free loss), and the model is small enough to be re-implemented with matrix products and element-wise gate equations on the single-board computer.
+The same convolutional backbone is reused for the writer classifiers in Section~\ref{sec:writerid} and for the forced alignment of Section~\ref{sec:styleprofile}, which saves design and training effort.

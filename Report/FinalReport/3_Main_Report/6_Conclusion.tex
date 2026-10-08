@@ -1,0 +1,49 @@
+\subsection{Summary of the work completed}
+\label{sec:con-work}
+
+This report describes work carried out on the design and implementation of a handwriting robot that recognises handwritten text and its writer and reproduces text on paper in the handwriting style of a chosen writer.
+
+A literature survey on handwriting recognition, writer identification, handwriting synthesis and plotter-based writing was completed.
+The software was then designed and implemented from first principles in Python: an image-conditioning and text-line segmentation chain, a convolutional and recurrent sequence recogniser trained with connectionist temporal classification, two ten-class writer classifiers, a builder of per-writer style profiles from forced alignment, a trajectory synthesiser with a best-of-$N$ search, a G-code generator and a stepper-motor driver with end-stop calibration and software limits.
+These were integrated on the ODROID N2+ single-board computer behind a web server with a browser interface.
+The gantry was constructed from purchased components.
+The qualification tests that are required to prove each requirement of the proposal were defined (Section~\ref{sec:res-qtp}), but were not executed for this report; the results that exist are design-stage figures obtained on a development laptop.
+The hardware bring-up was not completed because of an unresolved fault of the direction signal of the X axis.
+
+\subsection{Summary of observations and findings}
+\label{sec:con-findings}
+
+The following findings are supported by the evidence that exists.
+\begin{itemize}
+  \item The sequence recogniser reached a character accuracy of 91.82\% on the general test set and 94.03\% on the validation set, and 89.64\% on the personal validation lines; the 95\% target of R2 for text was therefore not reached.
+  \item The ink-based writer classifier reached 100\% on its validation pages, but this figure is optimistic, because the personal-writer validation lines share pages with the training lines; the shape classifier reached 96.7\% on real ink.
+  \item The synthesised text was read with 81.4\% to 92.9\% character accuracy and identified with 91.5\% to 100\% writer accuracy by the judges of the search, which are circular figures; an independent evaluation was designed but not carried out.
+  \item The time of classification (R4) was not met on the development laptop: the segmentation took 35 to 57~s against a budget of 2~s, and the recogniser took 65 to 75~ms per character against 25~ms; the grouping of text lines accounted for about 70\% of the segmentation time, and C implementations of two routines reduced the total time by 25\% to 32\% only.
+  \item The synthesis of a 38-character sentence took about 105~s (2.8~s per character) on a loaded laptop, and the physical writing time and the positional accuracy of the gantry (R3, R5) were not measured.
+  \item Ten writers are stored permanently (R6), and the server lists them.
+\end{itemize}
+It follows that R6 is met, R4 is not met and the requirements R1 to R3 and R5 are not proven by the existing evidence.
+An important implication is that the time requirement can only be met by a redesign of the line-grouping algorithm, a reduction of the image resolution before segmentation and a cheaper recogniser, as quantified in Section~\ref{sec:discussion}; the neural network is not the dominant cost.
+A second finding is that a high character accuracy of synthesised text and a faithful reproduction of a writer's style are partly in conflict, because the recogniser read the genuine handwriting of a reference set at 65.0\% and the synthesised text at 88.2\%.
+
+\subsection{Contribution}
+\label{sec:con-contribution}
+
+The following was new to the student and was mastered during the project: the training of sequence networks with connectionist temporal classification, the algorithms of the image-conditioning and line-segmentation chain, the extraction of writer-specific letter paths by forced alignment, the synthesis of handwriting trajectories, the generation of G-code and the control of stepper motors from the general-purpose pins of a single-board computer.
+All of these were implemented from first principles by the student in Python, and C99 was used for an optional acceleration of two routines.
+The mechanical parts, the camera, the single-board computer, the motors and drivers, the end-stop switches, the pen mechanism and the power supply were purchased as finished items and carry no design credit.
+The design of the networks follows a published layer pattern \cite{kizilirmak2023}, and public data were used for training.
+\textbf{[TO BE COMPLETED BY STUDENT: the interaction with the study leader (how often consulted, what guidance and what direct help were received, for example with the hardware faults), and the contributions of other persons, including any code that was taken from or adapted from other sources and any help received from fellow students or others.]}
+
+\subsection{Suggestions for future work}
+\label{sec:con-future}
+
+The work can be continued in the following order of priority.
+\begin{enumerate}
+  \item Resolve the direction-pin fault of the X axis, complete the calibration and execute the qualification tests 3, 5 and 6 on the gantry, including the field checks FC1 and FC2.
+  \item Execute qualification test~2 on newly collected held-out pages, and qualification test~1 with independent judges, a human panel and the hand-crafted and overlay measures, so that the figures of Section~\ref{sec:results} are no longer circular or optimistic.
+  \item Redesign the line grouping, reduce the image resolution before segmentation, deploy compiled implementations, and make the recogniser about 3 times cheaper per character (smaller network, quantisation, shorter sequence), measuring each change on the ODROID N2+.
+  \item Add a language-model or lexicon decoder and more personal training pages to raise the text accuracy towards 95\%.
+  \item Correct the implementation issues of the writing path (reading-order stroke ordering, execution of acceleration, work area, pen-up feed), add a hardware emergency stop and an abort function, and consider a position feedback (for example a sensor on the end-stops or a camera check of the written line) so that lost steps can be detected.
+  \item Add an unknown-writer class to the writer classifier, and an authenticated interface.
+\end{enumerate}

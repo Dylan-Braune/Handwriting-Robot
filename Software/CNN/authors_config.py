@@ -8,7 +8,7 @@ only, not every script that touches the author list."""
 # 8 kept IAM dataset authors (dropped 154/155 for being redundant with
 # 150/151/152's style cluster) + 2 personal authors.
 DATASET_AUTHORS = ["150", "151", "152", "153", "384", "551", "552", "588"]
-PERSONAL_AUTHORS = ["yeukita", "dylan"]
+PERSONAL_AUTHORS = ["abhinav", "dylan", "owen", "thiya", "yeukita"]
 
 # Train/holdout split convention shared by every script that segments a
 # personal author's photos, so the same lines are held out everywhere in

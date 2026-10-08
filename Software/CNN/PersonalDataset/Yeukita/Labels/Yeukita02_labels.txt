@@ -1,0 +1,27 @@
+The problem UCM still has - and why DUCM still exists
+- To run KF update, also need Rp - the covariance of your converted
+measurement error. The natural thing is to compute this covariance using
+the measurement you received
+- subtlety: Rp computed this way is not independent of measurement
+noise - it's a function of the very noise it's supposed to describe.
+- When Kp (which depends on Pp) is
+7. Where my research model comes in
+- both derivations (UCM and DUCM) assume range noise & bearing
+noise are statistically independent of each other. My research introduces
+a correlation coeff. p between them-
+- My hypothesis: DUCM's decorrelation step, which was derived
+assuming independence, might be more fragile to this violation than
+UCM's - because DUCM's whole fix relies on a specific independence
+property that p≠0 directly attacks.
+8. How do I know if any of this actually works? (verification theory)
+- RMSE answers: how far off is my estimate, on average
+you about accuracy.
+- NEES answers: is my filters own confidence (reported covariance P)
+trustworthy?
+Why does thu have a known distribution? Because if the filter is
+truly consistent - its errors
+- then this expression is exactly the sum of squares of n standard
+normal variables, which by definition follows
+nz degrees of freedom. So NEES gives you a statistical test, not just
+a number: if NEES values are wildly outside chi-sq. bounds - filter is
+lying about its uncertainty, even if RMSE looks fine.

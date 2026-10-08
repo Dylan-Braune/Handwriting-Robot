@@ -1,0 +1,169 @@
+% ---- Writer 3 shared definitions (used by 3.6 - 3.10) ----
+\tikzset{
+  w3box/.style={draw,rounded corners=2pt,fill=gray!12,align=center,font=\footnotesize,minimum height=8mm,inner sep=3pt},
+  w3dark/.style={draw,rounded corners=2pt,fill=gray!30,align=center,font=\footnotesize,minimum height=8mm,inner sep=3pt},
+  w3store/.style={draw,fill=white,align=center,font=\footnotesize,minimum height=8mm,inner sep=3pt,double,double distance=1pt},
+  w3io/.style={draw,rounded corners=6pt,fill=white,align=center,font=\footnotesize,minimum height=8mm,inner sep=3pt},
+  w3dec/.style={draw,diamond,aspect=2.2,fill=white,align=center,font=\scriptsize,inner sep=1pt},
+  w3arr/.style={-{Stealth[length=2.2mm]},thick},
+  w3dash/.style={-{Stealth[length=2.2mm]},thick,dashed},
+  w3group/.style={draw,dashed,rounded corners=4pt,inner sep=5pt},
+  w3lab/.style={font=\scriptsize,inner sep=1.5pt}
+}
+
+\subsection{Style extraction and glyph library}
+\label{sec:styleprofile}
+
+This subsection describes how a writer's style is learned from photographs of that writer's pages and stored permanently (functional units FU~2.5 to FU~2.7; requirements R1 and R6).
+``Training'' on a writer does not mean training a neural network here.
+A \emph{style profile} is built once for each writer: a library of the writer's own letter shapes, each reduced to a thin centre-line pen path (a \emph{glyph}), with a few measured numbers such as slant, letter height, spacing and how often letters are joined.
+The profile is one text file, and afterwards neither page images nor networks are needed to write in that style.
+The builder (Figure~\ref{fig:sty-flow}) is an offline program written by the student; the recogniser of Section~\ref{sec:textrec} is used in it only for inference.
+Its input is the set of line crops with transcriptions from Section~\ref{sec:segmentation}: ten pages of each of eight database writers (150, 151, 152, 153, 384, 551, 552, 588; the last labelled page is held out, so no evaluation text enters a profile) and the notebook pages of the two personal writers (15\,\% of their lines held out), aligned with the recogniser fine-tuned on their hands.
+
+\begin{figure}[!htbp]
+\centering
+\begin{tikzpicture}[x=1cm,y=1cm]
+\tikzset{b/.style={w3box,text width=3.05cm,minimum height=1.0cm}}
+\node[b] (a1) at (0,0) {Line crop and transcript};
+\node[b] (a2) at (3.7,0) {Recogniser: 160 log-probability vectors};
+\node[b] (a3) at (7.4,0) {Viterbi forced alignment (Eq.~\ref{eq:sty-viterbi})};
+\node[b] (a4) at (11.1,0) {Territories cut at thin low columns (Eq.~\ref{eq:sty-cut})};
+\node[b] (b4) at (11.1,-1.6) {Binarise, strip rules, thin whole line};
+\node[b] (b3) at (7.4,-1.6) {Trace skeleton, prune spurs, join at junctions};
+\node[b] (b2) at (3.7,-1.6) {Split at territories, Douglas--Peucker (Eq.~\ref{eq:sty-dp})};
+\node[b] (b1) at (0,-1.6) {Normalise to x-height frame (Eq.~\ref{eq:sty-norm})};
+\node[b] (c1) at (0,-3.2) {Quality gates, letter prior (Eq.~\ref{eq:sty-prior})};
+\node[b] (c2) at (3.7,-3.2) {Variants, medoid, denoised prototype};
+\node[b] (c3) at (7.4,-3.2) {Style statistics (slant, gap, joins)};
+\node[w3store,text width=3.05cm,minimum height=1.0cm] (c4) at (11.1,-3.2) {JSON profile, one file per writer};
+\foreach \p/\q in {a1/a2,a2/a3,a3/a4,b4/b3,b3/b2,b2/b1,c1/c2,c2/c3,c3/c4,a4/b4,b1/c1} \draw[w3arr] (\p) -- (\q);
+\end{tikzpicture}
+\caption{Flow chart of the offline style-profile builder: alignment (top), glyph extraction (middle) and profile assembly (bottom).}
+\label{fig:sty-flow}
+\end{figure}
+
+\subsubsection{Forced alignment: where is each character?}
+
+A character in a joined line has no visible boundary and no per-character labels exist.
+\emph{Forced alignment} asks which of the recogniser's $T=160$ time steps (4-pixel slices of the canvas) most probably belong to which character, given that the line says exactly the known transcript.
+Let $y=(y_1,\ldots,y_U)$ be the transcript, $y'=(\varnothing,y_1,\varnothing,\ldots,y_U,\varnothing)$ the blank-augmented label of length $S=2U+1$ (Figure~\ref{fig:rec-ctc}) and $\ell_t(k)=\ln y_t^k$ (Equation~\ref{eq:rec-softmax}).
+Where the CTC loss (Equation~\ref{eq:rec-alpha}) \emph{sums} over all paths, the alignment keeps the single best path, found by the Viterbi recursion \cite{viterbi1967}, with $\delta_t(s)$ the best log-probability of a path at position $s$ at step $t$:
+\begin{equation}
+\begin{split}
+&\delta_1(1)=\ell_1(\varnothing),\quad\delta_1(2)=\ell_1(y'_2),\quad\delta_1(s)=-\infty\ (s>2),\\
+&\delta_t(s)=\ell_t(y'_s)+\max\bigl\{\delta_{t-1}(s),\ \delta_{t-1}(s-1),\ \delta^{\mathrm{skip}}_{t-1}(s)\bigr\},\\
+&\delta^{\mathrm{skip}}_{t-1}(s)=\begin{cases}\delta_{t-1}(s-2)&s\ge3,\ y'_s\ne\varnothing,\ y'_s\ne y'_{s-2},\\-\infty&\text{otherwise.}\end{cases}
+\end{split}
+\label{eq:sty-viterbi}
+\end{equation}
+These are the three transitions of Equation~\ref{eq:rec-alpha} with the sum replaced by a maximum; the winning transition is stored as a back-pointer, the path ends on the last character or the final blank ($s^*_T=S$ if $\delta_T(S)\ge\delta_T(S-1)$, else $S-1$) and is recovered backwards (Figure~\ref{fig:sty-lattice} of the appendix; cost $O(TS)$).
+Character $i$ owns the frames with $s^*_t=2i$, with span $[a_i,b_i)=[t_{\mathrm{first}}-1,t_{\mathrm{last}})$ in frame boundaries.
+Because the recogniser input is left-aligned with the uniform scale of Equation~\ref{eq:rec-resize}, boundary $a$ lies at the original pixel
+\begin{equation}
+x_{\mathrm{px}}(a)=\frac{640\,a}{T\,s},\qquad s=\min\Bigl(\frac{64}{h},\frac{640}{w}\Bigr),
+\label{eq:sty-f2p}
+\end{equation}
+for a crop of $h\times w$ pixels (about 6 pixels per frame for a 980-pixel line).
+The \emph{alignment confidence} is the mean log-probability along the path,
+\begin{equation}
+\mathrm{conf}=\frac1T\sum_{t=1}^{T}\ell_t\bigl(y'_{s^*_t}\bigr),
+\label{eq:sty-conf}
+\end{equation}
+so that $\mathrm{conf}$ of Equation~\ref{eq:sty-conf} is low if the recogniser never really read the line; every line below the 25th percentile of the writer's lines is dropped (if at least eight exist), e.g.\ 22 of 88 lines for writer 153.
+
+\paragraph{Cutting the ink into territories.}
+CTC spans are narrow slivers that lag the ink, so only their centres $c_k$ (pixels, Equation~\ref{eq:sty-f2p}) are used, and the provisional boundary between two characters is $\hat x_k=\tfrac12(c_{k-1}+c_k)$.
+In cursive writing the only honest boundary is a ligature, where the ink is thin and low, so the boundary is snapped to
+\begin{equation}
+\begin{aligned}
+\mathrm{cost}(x)&=\mathrm{thin}(x)+1.15\,\mathrm{top}(x),\qquad r=\max\bigl(3,\mathrm{round}(0.5x_h)\bigr),\\
+x^*&=\arg\min_{|x-\hat x_k|\le r}\Bigl[\mathrm{cost}(x)+0.6\,\frac{|x-\hat x_k|}{r}\Bigr],
+\end{aligned}
+\label{eq:sty-cut}
+\end{equation}
+where $\mathrm{thin}(x)$ is the smoothed column ink count divided by its 60th percentile over non-empty columns, $\mathrm{top}(x)$ the height of the highest ink above the baseline in x-heights (limited to 3), the cost is zero in empty columns, and $x_h$ is the x-height of Equation~\ref{eq:wid-xh}.
+The cuts are vertical: cutting along the slant lowered the writer identification of the synthesised output from 81.8\,\% to 68.6\,\% (shape classifier, design-stage measurement without raw log), because vertically cut glyphs retile more naturally.
+
+\subsubsection{From ink to ordered pen paths}
+
+\paragraph{Binarisation, core band and slant.}
+Each line is binarised like the input of the shape classifier (Otsu threshold, rule removal by Equation~\ref{eq:wid-rule}, closing, speck removal; Section~\ref{sec:wid-strokenorm}), and the baseline and x-height come from the core band of Equation~\ref{eq:wid-xh} (median $x_h$ of 20 to 46 pixels over the ten writers).
+The \emph{slant} is the shear that makes the strokes vertical.
+For ink pixels $(x_i,y_i)$ with mean row $\bar y$ and trial angle $\theta$ (image $y$ downwards),
+\begin{equation}
+x'_i(\theta)=\bigl\lfloor x_i-(y_i-\bar y)\tan\theta\bigr\rfloor,\qquad H_\theta(c)=\#\{i:x'_i(\theta)=c\},\qquad S(\theta)=\sum_cH_\theta(c)^2 ,
+\label{eq:sty-slant}
+\end{equation}
+and $\hat\theta=-\arg\max_\theta S(\theta)$ over $\theta\in\{-45^\circ,-43.5^\circ,\ldots,45^\circ\}$, forward lean positive.
+Since $\sum_cH_\theta(c)$ is fixed, the sum of squares is largest when the ink is concentrated in few columns, that is when strokes are vertical.
+
+\paragraph{Thinning and tracing.}
+The whole line is thinned \emph{once} with the Zhang--Suen algorithm \cite{zhang1984} (Equation~\ref{eq:wid-zs}) and only then cut at the territories, because thinning each slice separately creates a spurious spine along the cut.
+The skeleton pixels form a graph in the 8-neighbourhood; walks from ends and junctions follow degree-2 pixels, and chains under 2.5 pixels with a free end are pruned as spurs.
+A pen stroke that crosses itself (loops of e, l, o; the bar of t) appears as several chains at a junction, so chain ends within 1.5 pixels are merged repeatedly in the order of the smallest continuation angle
+\begin{equation}
+\varphi=\arccos\bigl(-\mathbf d_i\cdot\mathbf d_j\bigr)<75^\circ,
+\label{eq:sty-join}
+\end{equation}
+where in Equation~\ref{eq:sty-join} $\mathbf d_i,\mathbf d_j$ are the outward unit directions of the two ends ($\varphi=0$ is a straight continuation).
+A chain that crosses a territory boundary is split, and each crossing records that the pen did not lift between the two characters (flags $\mathrm{connL}_i$, $\mathrm{connR}_i$).
+
+\paragraph{Douglas--Peucker simplification.}
+Thinning leaves a pixel staircase, so each chain is simplified with the Douglas--Peucker algorithm \cite{douglas1973} (Figure~\ref{fig:sty-dp} of the appendix): the vertex $p_i$ farthest from the line through the first and last vertex $a,b$ has the distance
+\begin{equation}
+d_i=\frac{\bigl|(b_x-a_x)(p_{i,y}-a_y)-(b_y-a_y)(p_{i,x}-a_x)\bigr|}{\lVert b-a\rVert+10^{-9}},
+\label{eq:sty-dp}
+\end{equation}
+and if $\max_id_i>\varepsilon$ the chain is split there and both halves are simplified recursively, otherwise only $a$ and $b$ are kept.
+The tolerance is $\varepsilon=0.6$ pixels (0.05 to 0.12\,mm at 4\,mm per x-height).
+\emph{Implementation note:} Equation~\ref{eq:sty-dp} is the distance to the infinite line, not clamped to the segment, so a closed loop with $a=b$ would collapse to two identical points; the effect was not quantified.
+
+\paragraph{Normalisation and resampling.}
+Every simplified point $(x,y)$ (pixels, $y$ down) of a chain in the territory $[L,R)$ is converted to the writer-independent frame with baseline 0, $y$ up, one x-height equal to 1 and the line's slant removed:
+\begin{equation}
+y_n=\frac{y_b-y}{x_h},\qquad x_n=\frac{x-L}{x_h}-\sigma\,y_n,\qquad\sigma=\tan\hat\theta .
+\label{eq:sty-norm}
+\end{equation}
+The synthesiser applies the inverse shear (Equation~\ref{eq:syn-place}), so glyphs are stored upright and re-appear leaning at the writer's angle.
+A cursive cut falls inside a ligature, so on a side confirmed connected the outward-running low connector is trimmed (if at least 18\,\% of the glyph width remains) and the entry and exit points are recorded for the synthesiser's own connector; the stored fields of a glyph are listed in Table~\ref{tab:sty-schema} of the appendix.
+Kept variants are resampled at 0.055 x-heights arc length and smoothed with two passes of the binomial filter of Equation~\ref{eq:sty-smooth},
+\begin{equation}
+q_i\leftarrow\tfrac14q_{i-1}+\tfrac12q_i+\tfrac14q_{i+1}
+\label{eq:sty-smooth}
+\end{equation}
+(end points fixed), because the pixel staircase (median turn angle $8.9^\circ$, 90th percentile $59.5^\circ$) would otherwise be drawn as hand tremor.
+
+\subsubsection{Variants, quality gates and the cross-writer letter prior}
+
+Of about 2\,000 to 6\,200 raw instances per writer roughly 10\,\% survive these gates, applied per character in order: (1) \emph{geometry} (size limits, at most six strokes, a class prior on height, no swallowed neighbour, a pen length of at least 1.05 x-heights); (2) \emph{outliers} (width and height within fixed ratios of the 40th-percentile width and the median height).
+(3) \emph{Cross-writer prior.} Ten pages of one writer cannot show what a clean letter is, ten writers can. A glyph is turned into a shape descriptor $v_g$ (points along its strokes accumulated on a $12\times12$ grid over its own bounding box, damped, blurred and normalised to unit length); the prior $\bar v_c$ of a character is the normalised element-wise median over all writers, and the distance of a glyph is
+\begin{equation}
+\mathrm{priorD}(g,c)=1-v_g\cdot\bar v_c\in[0,1].
+\label{eq:sty-prior}
+\end{equation}
+The 70\,\% nearest are kept; the prior only \emph{rejects} malformed variants and later gates substitution, and never imports another writer's shapes.
+(4) \emph{Consensus:} the nearest 75\,\% to the L1-medoid of the descriptors are kept, which removes glyphs contaminated by a neighbour. (5) \emph{Typicality:} the best 12 by closeness to the reference width and height are kept.
+Two derived glyphs are stored: the \emph{medoid}, the real variant closest to all others (the writer's own ``ideal'' letter), and a \emph{denoised prototype}, the per-stroke median curve of the modal stroke-count group, prepended (so a library can hold 13 variants) only if clearly cleaner.
+Figure~\ref{fig:sty-glyphs} of the appendix shows stored variants.
+
+\subsubsection{Style statistics and permanent storage}
+
+Besides glyphs the profile holds numbers measured over the kept lines (Table~\ref{tab:sty-schema} lists every key): slant, x-height, stroke width, typical ascender and descender reach, the median advance of each character, the word gap, and the \emph{connectedness}
+\begin{equation}
+c=\frac{\#\{\text{adjacent letter pairs with }\mathrm{connR}\}}{\#\{\text{adjacent letter pairs}\}}.
+\label{eq:sty-conn}
+\end{equation}
+The word gap is measured on the \emph{real} ink (median of ink-free column runs wider than $0.5x_h$), because CTC gives a space only a narrow slice, and the slant and reach of the real lines are stored for the calibration of Section~\ref{sec:syn-cal}.
+The ten writers differ widely (Table~\ref{tab:sty-writers}): slant from $-10.5^\circ$ to $42^\circ$, connectedness 0.21 to 0.98, word gap 0.92 to 2.68 x-heights, which is the diversity that requirement R1 asks the system to reproduce.
+The legibility parameter $\lambda$ (Section~\ref{sec:synthesis}) is written into the file after the build and is not regenerated by it.
+\emph{Permanent storage (R6):} a profile is a JavaScript Object Notation (JSON) text file of 322 to 457\,kB (about 3.6\,MB for all ten), loaded when the server starts (Section~\ref{sec:system}); ten profiles exist and the web interface lists them from the loaded files.
+\textbf{[TO BE COMPLETED BY STUDENT: the demonstration of R6 (display of the stored writers, reproduction in a writer chosen by the examiner) and the storage device holding the files.]}
+
+\subsubsection{Design alternatives and justification}
+
+Table~\ref{tab:sty-alt} of the appendix lists the alternatives.
+Fixed widths, projection minima or hand labelling would replace the forced alignment, but joined letters have no gaps, hand labelling of about 90 pages is impractical, and the recogniser already knows the text.
+Thinning each slice separately creates a spurious spine; one averaged letter per writer blurs letters whose strokes are arranged differently, whereas variants keep the natural variation; importing the median shape into every writer would erase the writer, whereas filtering keeps the shapes the writer's own; and a generator learned from on-line pen data is impossible because no such data exist for the ten writers (47 to 138 usable lines each).
+The weakness inherent in cutting and storing is that cutting a joined line destroys how a letter changes with its neighbours, so the most joined hands (writers 151 and 551) are reproduced least legibly (Section~\ref{sec:synthesis}).
+A real example of the builder stages is still to be supplied (Figure~\ref{fig:sty-stages} of the appendix).

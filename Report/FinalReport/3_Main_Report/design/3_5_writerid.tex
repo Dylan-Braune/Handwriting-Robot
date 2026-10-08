@@ -1,0 +1,192 @@
+\subsection{Writer identification}
+\label{sec:writerid}
+
+This subsection describes the neural networks that identify which of the ten stored writers wrote a line or a page (functional unit FU~2.3 of the proposal, requirement R2), and that additionally act as the judge of how closely synthesised handwriting resembles a writer (requirement R1).
+Two classifiers with the same architecture were designed; they differ in their input pre-processing and in what was trained.
+The training programs, the stroke-normalisation algorithm, the aggregation rule and the from-scratch inference code were written by the student.
+
+\subsubsection{Problem statement and the need for two classifiers}
+
+The task is closed-set writer identification: given a line image, choose one of $K=10$ known writers, namely eight writers of a public handwriting database and the two personal writers whose pages were photographed for this project.
+A line-level image classifier was chosen, and a classifier of this kind has to be trained with few lines per writer (63 to 184 training lines per writer, Table~\ref{tab:wid-data}).
+
+A first classifier, trained on the raw grey-scale line crops, was found to classify real held-out lines of the ten writers perfectly but to identify the writer of \emph{synthesised} output in only about 20\,\% of the trials (17.5\,\% when the output was generated through the G-code path), with the errors concentrated on one or two classes.
+The explanation lies in the physics of the plotter: it draws every stroke with one pen at one line width and one pressure, whereas real handwriting carries a stroke thickness, an ink density and a pressure modulation that a convolutional network readily exploits when only a few training lines are available.
+A judge that relies on such cues does not predict what the robot can achieve, and it does not match how a person judges a writing style, which is by geometry (slant, proportions, spacing, letter shapes and joins).
+A second classifier was therefore built whose input contains only geometry, because the thickness has been removed by construction by the stroke-normalisation algorithm of Section~\ref{sec:wid-strokenorm}.
+The roles of the two classifiers are as follows.
+
+The ink-based classifier takes the raw grey-scale line crop, is used for real photographed pages in the classification mode, and has all 966\,154 parameters trained, starting from the recogniser backbone.
+The shape classifier takes the stroke-normalised crop, is used to judge synthesised and G-code-rendered output inside the best-of-$N$ search of Section~\ref{sec:synthesis}, and trains only the 13\,354 parameters of its head on top of the frozen recogniser backbone.
+
+\subsubsection{Architecture}
+
+Both classifiers use the same network (Figure~\ref{fig:wid-arch}, Table~\ref{tab:wid-layers}).
+The line crop is brought to the fixed $64\times640$ canvas and normalised exactly as for the text recogniser (Equations~\ref{eq:rec-resize} and~\ref{eq:rec-norm}).
+The backbone is the 12-layer convolutional stack of the recogniser (Table~\ref{tab:rec-layers}, stages 1 to 3, with convolution, batch normalisation and ReLU defined in Equations~\ref{eq:rec-conv} to~\ref{eq:rec-bnfold}), which delivers a feature map $F\in\mathbb R^{128\times16\times160}$.
+The recurrent layers are not used, because writer identity does not depend on the sequence of letters.
+The feature map is reduced to one 128-dimensional vector by a maximum over the height followed by a mean over the width (Equation~\ref{eq:wid-pool}):
+\begin{equation}
+m_{c,t}=\max_{r=1,\ldots,16}F_{c,r,t},\qquad f_c=\frac1{160}\sum_{t=1}^{160}m_{c,t},\qquad f\in\mathbb R^{128},
+\label{eq:wid-pool}
+\end{equation}
+where $c$ is the channel, $r$ the row and $t$ the column of $F$.
+The network is fully convolutional along the width, so the representation is a ``bag of local stroke patterns'', independent of the position along the line.
+The mean runs over all 160 columns, including the white padding of short lines, so the feature of a short line is diluted; this is the same in training and in use, but it makes the absolute size of the scores, and therefore the confidence, depend on the line length.
+A small two-layer head converts $f$ into scores for the $K=10$ writers (Equation~\ref{eq:wid-head}):
+\begin{equation}
+h=\mathrm{ReLU}(W_1f+b_1)\in\mathbb R^{96},\qquad z=W_2\,\mathrm{Drop}_{0.2}(h)+b_2\in\mathbb R^{K},
+\label{eq:wid-head}
+\end{equation}
+where $W_1\in\mathbb R^{96\times128}$ and $W_2\in\mathbb R^{K\times96}$ are learned and $\mathrm{Drop}_{0.2}$ is dropout \cite{srivastava2014} with probability 0.2: during training each element is replaced by $h_k\xi_k/(1-0.2)$ with $\xi_k\sim\mathrm{Bernoulli}(0.8)$, which prevents the head from relying on single units, and at inference it is the identity.
+The scores are turned into probabilities by the softmax and the network is trained with the cross-entropy loss of Equation~\ref{eq:wid-ce},
+\begin{equation}
+p_k=\frac{e^{z_k}}{\sum_{j=1}^{K}e^{z_j}},\qquad
+\mathcal L=-\frac1B\sum_{n=1}^{B}\log p^{(n)}_{y_n}=\frac1B\sum_{n=1}^B\Bigl[\log\sum_je^{z^{(n)}_j}-z^{(n)}_{y_n}\Bigr],\qquad\hat k=\arg\max_kp_k,
+\label{eq:wid-ce}
+\end{equation}
+where $B$ is the batch size, $y_n$ the true writer of sample $n$, and $p_k$ the probability that the line was written by writer $k$; the loss is unweighted, without class weights or label smoothing.
+
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}[x=1cm,y=1cm]
+\tikzset{wb/.style={w2box,text width=2.55cm,minimum height=1.5cm}}
+\node[wb] (in) at (-6.2,0) {\textbf{Input}\\ $1\times64\times640$\\ (raw or stroke-normalised)};
+\node[wb] (bb) at (-3.1,0) {\textbf{Backbone}\\ 12 conv 3$\times$3 + BN + ReLU, two max-pools\\ $128\times16\times160$};
+\node[wb] (hm) at (0,0) {\textbf{Height max-pool}\\ $128\times160$};
+\node[wb] (wm) at (3.1,0) {\textbf{Width mean-pool}\\ $128$};
+\node[wb] (fc1) at (6.2,0) {\textbf{FC 128$\to$96}\\ ReLU, dropout 0.2};
+\node[wb] (fc2) at (6.2,-2.2) {\textbf{FC 96$\to$10}\\ scores $z$};
+\node[wb] (sm) at (3.1,-2.2) {\textbf{Softmax}\\ probabilities $p$};
+\node[wb] (am) at (0,-2.2) {\textbf{Arg-max}\\ writer, confidence};
+\foreach \a/\b in {in/bb,bb/hm,hm/wm,wm/fc1,fc1/fc2,fc2/sm,sm/am} \draw[w2arr] (\a)--(\b);
+\end{tikzpicture}
+\caption{Architecture of the two writer classifiers. The backbone is that of the text recogniser; the head has 13\,354 parameters. FC denotes a fully connected (linear) layer.}
+\label{fig:wid-arch}
+\end{figure}
+
+
+\subsubsection{Stroke normalisation}
+\label{sec:wid-strokenorm}
+
+The stroke-normalisation algorithm re-draws every line with a constant pen width that is proportional to the line's own letter height, so that the thickness cue is identical for all writers and for synthesised lines.
+It is applied to the full-resolution crop \emph{before} the resize to the $64\times640$ canvas, in six steps (Figure~\ref{fig:wid-strokenorm}).
+
+
+\begin{enumerate}
+\item \emph{Binarisation.} The crop is thresholded with the global Otsu threshold (Equation~\ref{eq:seg-otsu}), ink being the pixels below the threshold. Ruled lines and underlines are then removed with the run-length idea of Section~\ref{sec:segmentation}: with $h$ the crop height, an ink pixel is a rule pixel if the condition of Equation~\ref{eq:wid-rule} holds,
+\begin{equation}
+H_{\mathrm{run}}\ge\max(24,\lfloor1.1h\rfloor)\quad\wedge\quad V_{\mathrm{run}}\le\max(3,\lfloor0.12h\rfloor),
+\label{eq:wid-rule}
+\end{equation}
+where $H_{\mathrm{run}}$ and $V_{\mathrm{run}}$ are the lengths of the horizontal and vertical ink runs through the pixel (rule pixels crossed by a vertical stroke have a large $V_{\mathrm{run}}$ and are kept). Hairline breaks are closed with a square structuring element of side $k_c=\mathrm{clip}(\mathrm{round}(0.045h),2,4)$, and 8-connected components of fewer than 6 pixels are removed. If no ink remains the sample is dropped.
+\item \emph{Core band and x-height.} With the row ink profile $P(r)=\sum_c\mathrm{ink}(r,c)$, the core band is the range of rows from the first to the last row with $P(r)\ge0.45\max P$ (the dense band of the lower-case bodies, while ascenders and descenders are sparse). The pixel x-height (Equation~\ref{eq:wid-xh}) is
+\begin{equation}
+x_h=\text{base}-\text{top},\qquad\text{or}\ x_h=\max(8,h/3)\ \text{if no valid band exists or}\ x_h<4,
+\label{eq:wid-xh}
+\end{equation}
+where top and base are the first and last row of the band.
+\item \emph{Pen width.} The target stroke width in pixels is proportional to the x-height, which makes it independent of the scan resolution (Equation~\ref{eq:wid-penw}):
+\begin{equation}
+w=\mathrm{clip}\bigl(\mathrm{round}(0.14\,x_h),\,2,\,9\bigr),\qquad k=2\lfloor w/2\rfloor+1,
+\label{eq:wid-penw}
+\end{equation}
+where $k$ is the odd side of the structuring element that realises the width (for example $x_h=20$ gives $w=3$ and $k=3$).
+\item \emph{Skeletonisation.} The ink is thinned to a one-pixel centre line with the iterative algorithm of Zhang and Suen \cite{zhang1984}, which deletes boundary pixels under neighbour-count and transition-count conditions (Equation~\ref{eq:wid-zs} in the Appendix) and preserves the topology of the strokes.
+\item \emph{Re-inking at constant width.} The skeleton is dilated with the $k\times k$ square (computed from a box sum, a pixel being set if the sum exceeds 0.5; Equation~\ref{eq:wid-dilate}),
+\begin{equation}
+\mathrm{ink}_{\mathrm{norm}}=\mathrm{Dilate}_{k\times k}(\mathrm{skeleton}).
+\label{eq:wid-dilate}
+\end{equation}
+Because a square kernel is used, a stroke has the width $k$ along the axes and about $k\sqrt2$ along diagonals; this is the same for every writer.
+\item \emph{Inversion and canvas.} The result is inverted to black strokes on white and passed through the standard resize and normalisation.
+\end{enumerate}
+
+
+Stroke normalisation removes the thickness and pressure cues but leaves slant, letter proportions, spacing and connection habits, which are exactly the properties that the style profiles and the synthesiser measure.
+Every input of the shape classifier, real or synthesised, passes through the same transform, so the real training lines and the synthesised test lines have an identical geometry-only distribution; the ink classifier on real pages does not use it.
+The synthesis renderer draws with a pen width of 0.085 times the x-height, whereas the judge uses 0.14; because the judge re-draws every input itself, the two constants do not need to match.
+
+\subsubsection{Training data, protocol and leakage}
+
+The ten writers are the database writers 150, 151, 152, 153, 384, 551, 552 and 588 (ten pages of each) and the two personal writers (8 and 5 photographed pages); two further writers of an earlier set were dropped because their style was redundant.
+The stroke-normalised data set has 63 to 88 training lines per database writer and 118 and 184 for the personal writers, 920 training and 123 validation lines in total (Appendix, Table~\ref{tab:wid-data}).
+
+The split differs between the two kinds of writer and the figures must be read accordingly.
+For the database writers the last labelled page of each writer is held out and all lines of that page are validation lines, so the split is at page level, with the same writer in training, which is the intended closed-set task; each writer contributes a single validation set of 8 to 11 lines.
+For the personal writers the lines of every photographed page are shuffled with a fixed seed and 15\,\% (at least one line) become validation lines, so training and validation lines come from the same physical pages, the same pen, paper, lighting and session.
+A line classifier can exploit such page-level nuisance, and since each personal class is perfectly confounded with its collection session, the validation figure is inflated for 52 of the 123 validation lines (42\,\%).
+In addition, the checkpoint with the best validation accuracy is kept and the same accuracy is reported, so the validation set serves both for selection and for reporting; with 123 lines a single line is 0.81 percentage points.
+There is no untouched test set for the writer classifiers, and the validation accuracies below must not be described as true held-out test accuracies.
+A defensible mitigation that was not carried out is to hold out whole pages of the personal writers.
+
+\paragraph{Augmentation.}
+The augmentation of the recogniser (shear, rotation, elastic and perspective distortion, at most one per image) is applied to the training images. Shear and perspective change slant and proportions, which are themselves writer cues (a shear of $\pm0.6$ is about $\pm31^\circ$ against measured writer slants between about $-7.5^\circ$ and $+42^\circ$); it was inherited from the recogniser and not tuned.
+
+\paragraph{Optimisation.}
+Both classifiers are trained with AdamW \cite{kingma2015,loshchilov2019}, which applies the weight decay (here $10^{-4}$) separately from the gradient step, with a cosine schedule of the learning rate (Equation~\ref{eq:wid-adamw} and Table~\ref{tab:wid-hyper} in the Appendix).
+The ink classifier is fully fine-tuned from the recogniser backbone, and all 84 backbone tensors differ from the recogniser's afterwards.
+For the shape classifier the frozen backbone computes the 128-dimensional feature of every training image once, each line appearing four times (once unaugmented and three times with a different random augmentation), and only the head is trained on these 3\,680 stored vectors; all 84 backbone tensors of the stored shape model are bit-identical to those of the recogniser.
+This is fast and cannot overfit the thickness cue in the backbone, but augmentation is not re-sampled between epochs.
+
+\subsubsection{From line decisions to a page decision}
+
+On real photographs the ink classifier is applied to every text line that the segmentation block delivers, and the probabilities are averaged:
+\begin{equation}
+\bar p_k=\frac1N\sum_{n=1}^Np^{(n)}_k,\qquad\hat k=\arg\max_k\bar p_k,\qquad\text{confidence}=100\,\bar p_{\hat k}\ \%,
+\label{eq:wid-aggr}
+\end{equation}
+where $N$ is the number of detected text lines, $p^{(n)}_k$ the probability of writer $k$ for line $n$ and $\bar p_k$ the page probability (Figure~\ref{fig:wid-aggr}).
+All lines carry equal weight, not weighted by length or by confidence.
+Averaging the probabilities is less sensitive to a few confidently wrong lines than a majority vote, and it uses all of the probability mass; no experiment that compares the two was carried out.
+The confidence is a softmax probability and not a calibrated one, because no calibration step exists and the networks were trained to a near-perfect training fit, so over-confidence is expected.
+For synthesised output the shape classifier is used differently: each rendered sentence is classified by the arg-max of a single softmax, and the probability of the target writer is used as one score in the best-of-$N$ search of Section~\ref{sec:synthesis}.
+
+
+\subsubsection{Design-stage evidence}
+
+Table~\ref{tab:wid-results} lists the measurements that motivated the design and the status of each figure; the final qualification figures belong to Section~\ref{sec:results}.
+
+\begin{table}[h]
+\centering
+\fontsize{9.5}{11.5}\selectfont
+\begin{tabularx}{\linewidth}{|p{4.2cm}|p{2.5cm}|X|}
+\hline
+\textbf{Measurement} & \textbf{Result} & \textbf{Status of the figure} \\
+\hline
+Ink classifier, validation lines (about 120 lines) & 100\,\% & Page-held-out for the database writers; within-page split for the personal writers; also used for checkpoint selection. \\
+\hline
+Shape classifier, validation lines (123) & 96.7\,\% (119 of 123) & Same caveats; the 95\,\% Wilson interval is about 92 to 99\,\% if lines were independent, which they are not. \\
+\hline
+Ink classifier on synthesised output & about 20\,\% (17.5\,\% via G-code) & 12 trials per writer on novel sentences; motivates the shape classifier. \\
+\hline
+Ink classifier on real lines re-drawn at one width & 11 to 16\,\% (chance 10\,\%) & Quoted in a program note only; no log was kept. \\
+\hline
+Shape classifier on synthesised output, before tuning & 79.2\,\% (80.0\,\% via G-code) & Same trials; the judge is not yet used to select candidates. \\
+\hline
+Final synthesis with best-of-$N$ & 97.5\,\% (95.8\,\% via G-code) & The same shape classifier selects the candidates and scores them, so the figure measures whether the pipeline satisfies its own judge, not an independent verdict (Sections~\ref{sec:synthesis} and~\ref{sec:results}). \\
+\hline
+\end{tabularx}
+\caption{Design-stage evidence for the writer classifiers. Chance level for ten writers is 10\,\%.}
+\label{tab:wid-results}
+\end{table}
+
+On the 123 validation lines the shape classifier made four errors: one line of writer 150 was assigned to a personal writer, one line of writer 551 to writer 152, and two lines of one personal writer to the other personal writer (a confusion that may be caused by the common collection session).
+The remaining synthesis failures of writer 150 are attributed to the fact that 150 and the first personal writer have the two least connected and least slanted hands among the ten writers in the measured style profiles.
+
+\subsubsection{Alternatives and justification}
+
+Table~\ref{tab:wid-alt} lists the alternatives.
+None of them was built, so they are arguments and not measurements.
+
+Hand-crafted features (slant, x-height, spacing, connectedness) with nearest-profile classification are interpretable and the style-profile builder already measures them, but they separate two similar hands (writer 150 and a personal writer) poorly, and no such classifier was measured; contour-direction and allograph statistics \cite{bulacu2007} are text-independent and strong for large writer sets but hand-built and less direct as a judge of constant-width output; Siamese or metric learning is open-set but needs pair mining and threshold calibration although only a closed set of ten is required; deep fragment networks \cite{he2020} scale to hundreds of writers, which are not available here; a joint network with a text head and a writer head was tried first, but the writer accuracy reached 98.9 to 100\,\% by epoch 20 while the text accuracy stalled at 28 to 29\,\%, so separate single-task networks were adopted; and an ink classifier with random pen-width augmentation would reduce but not remove the thickness cue, whereas the normalisation removes it by construction (no ablation was run).
+
+The known limits of the design are that it is a closed set without an ``unknown writer'' class (the softmax cannot answer ``none of them''), that the validation sets are small, that the geometry cues of the personal writers may be confounded with the collection session, and that the judge is also an objective of the generator.
+
+\subsubsection{Inference on the single-board computer}
+
+The classifiers run with the same layer functions as the recogniser (Section~\ref{sec:textrec}): convolution as one matrix product per layer, batch normalisation in the folded form of Equation~\ref{eq:rec-bnfold}, windowed pooling, a matrix product for each linear layer, the dropout skipped and the softmax computed after subtraction of the maximum score.
+The weights are read directly from the training checkpoint by the student's weight reader.
+A forward pass needs about $3.79\times10^9$ multiply--accumulate operations, and the parameters occupy about 3.9\,MB as 32-bit floating-point numbers.
+The layer-level equality of the matrix-product convolution with a direct summation was checked to floating-point rounding, but no end-to-end comparison of the writer network with the training code was recorded; the equivalence is supported by the fact that all evaluation results were produced with this inference path.
+\textbf{[TO BE COMPLETED BY STUDENT: execution time of one classifier pass on the ODROID N2+.]}

@@ -1,0 +1,144 @@
+% Appendix material owned by writer 4 (extended QTP protocols)
+\subsection{Extended qualification-test protocols}
+
+This appendix gives the data sheets and definitions that support the qualification tests of Section~\ref{sec:res-qtp}.
+
+\subsubsection{Metric definitions and detailed steps (qualification tests 1 and 5)}
+
+Inter-rater agreement of the panel is quantified with Fleiss' kappa,
+\begin{equation}
+\label{eq:res-kappa}
+\kappa=\frac{\bar P-\bar P_e}{1-\bar P_e},
+\end{equation}
+where $\bar P$ is the mean observed pairwise agreement and $\bar P_e$ the agreement expected by chance.
+Each feature is $z$-scored, $z_{wf}=(v_{wf}-\mu_f)/\sigma_f$, using the mean and standard deviation over the ten real writers, and the stylistic correlation is
+\begin{equation}
+\label{eq:res-pearson}
+\rho=\frac{\sum_{i}(a_i-\bar a)(b_i-\bar b)}{\sqrt{\sum_i(a_i-\bar a)^2}\sqrt{\sum_i(b_i-\bar b)^2}},
+\end{equation}
+where $a_i$ and $b_i$ are the real and synthesised $z$-scored entries pooled over 10 writers and 7 features (70 pairs); a per-writer value (7 pairs) and a nearest-centroid retrieval in $z$-space with its $10\times10$ confusion matrix are also computed.
+For the overlay test (Figure~\ref{fig:res-overlay}) the skeleton point sets $A$ and $B$ are compared with
+\begin{equation}
+\label{eq:res-chamfer}
+d_{\mathrm{ch}}(A,B)=\frac{1}{2}\left[\frac{1}{\lvert A\rvert}\sum_{a\in A}\min_{b\in B}\lVert a-b\rVert+\frac{1}{\lvert B\rvert}\sum_{b\in B}\min_{a\in A}\lVert a-b\rVert\right],
+\end{equation}
+\begin{equation}
+\label{eq:res-mhd}
+d_{\mathrm{MH}}(A,B)=\max\left[\frac{1}{\lvert A\rvert}\sum_{a\in A}\min_{b\in B}\lVert a-b\rVert,\;\frac{1}{\lvert B\rvert}\sum_{b\in B}\min_{a\in A}\lVert a-b\rVert\right],
+\end{equation}
+\begin{equation}
+\label{eq:res-auc}
+\mathrm{AUC}=\Pr\left[d_{\mathrm{matched}}<d_{\mathrm{mismatched}}\right]+\tfrac{1}{2}\Pr\left[d_{\mathrm{matched}}=d_{\mathrm{mismatched}}\right],
+\end{equation}
+where $\lVert\cdot\rVert$ is the Euclidean norm and distances are in units of the x-height $x_{\mathrm{h}}$.
+Equation~\ref{eq:res-chamfer} is the mean of the two directed mean nearest-neighbour distances, Equation~\ref{eq:res-mhd} their maximum (less sensitive to outliers than the classical Hausdorff distance), and Equation~\ref{eq:res-auc} is 0.5 for a distance without writer information and 1.0 for perfect separation.
+With 8 writers and 5 sentences there are 40 matched and $40\times9=360$ mismatched pairs.
+
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}
+\node[resbox,text width=2.9cm] (real) at (0,0.9) {Genuine sentence image (held-out form, writer $w$)};
+\node[resbox,text width=2.9cm] (syn) at (0,-0.9) {Synthesised image of the same text in style $w$ (or $w'$)};
+\node[resbox,text width=2.7cm] (n1) at (4.1,0.9) {Crop to ink, scale to $x_{\mathrm{h}}$, align centroid};
+\node[resbox,text width=2.7cm] (n2) at (4.1,-0.9) {Crop to ink, scale to $x_{\mathrm{h}}$, align centroid};
+\node[resdark,text width=2.4cm] (d) at (8.0,0) {Skeleton point sets $A$, $B$: $d_{\mathrm{ch}}$, $d_{\mathrm{MH}}$};
+\node[resbox,text width=2.3cm] (out) at (11.4,0) {Matched vs mismatched: AUC, rank-1};
+\draw[resarr] (real)--(n1); \draw[resarr] (syn)--(n2);
+\draw[resarr] (n1.east)--(d.north west); \draw[resarr] (n2.east)--(d.south west);
+\draw[resarr] (d)--(out);
+\end{tikzpicture}
+\caption{Overlay test of qualification test 1: both images are normalised in the same way and matched writer pairs are compared with mismatched pairs.}
+\label{fig:res-overlay}
+\end{figure}
+
+For qualification test 1 the steps are: (1) fix the held-out pages and freeze the system; (2) produce the 150 renderings (direct and G-code replay) on the ODROID N2+ and store writer, sentence, seed and text; (3) read every rendering with the base recogniser and evaluate Equation~\ref{eq:res-cacc} with the intervals; (4) run the panel with Table~\ref{tab:res-panel}, computing transcription accuracy and $\kappa$; (5) run the feature extractor and compute $\rho$ and the confusion matrix; (6) compute overlay distances, AUC and rank-1 retrieval and produce overlay figures for at least four sentences; (7) write a sentence on the gantry in a chosen style and count visibly matching characters (pass at 85\%).
+Raters are 8 persons who are neither the student nor writers in the data set; the panel is blind and uses 30 synthesised lines (3 per writer) and 10 genuine control lines in random order, about 1350 scored characters per rater.
+
+For qualification test 5 the absolute error and the measurement uncertainty are
+\begin{equation}
+\label{eq:res-r5}
+e_i=\lVert\mathbf{p}_i-\mathbf{p}_i^{\mathrm{cmd}}\rVert,
+\end{equation}
+\begin{equation}
+\label{eq:res-unc}
+u=\sqrt{u_{\mathrm{scan}}^2+u_{\mathrm{ref}}^2+u_{\mathrm{id}}^2},
+\end{equation}
+where $\mathbf{p}_i$ is the measured and $\mathbf{p}_i^{\mathrm{cmd}}$ the commanded centre of cross $i$ (referenced to the machine origin 5~mm inside the minimum end-stops), $u_{\mathrm{scan}}$ the scanner scale error (from scanning the verified ruler), $u_{\mathrm{ref}}$ the registration of the sheet against the machine origin and $u_{\mathrm{id}}$ the error of locating a cross centre (half a pixel); the expanded uncertainty is $2u$.
+The steps are: (1) calibrate and verify the direction pin on both axes and record the calibrated steps per millimetre; (2) fix the sheet against the stops, draw the grid, scan it with the ruler; (3) locate the cross centres with sub-pixel image analysis and compute $e_i$; (4) repeat 5 times and write the same word twice on one sheet for the overlay; (5) estimate $u$.
+Repeatability is the radius of scatter of the 5 repeats of one cross about its centroid.
+
+\subsubsection{Human legibility panel (qualification test 1)}
+
+Table~\ref{tab:res-panel} is the worksheet that each of the 8 raters completes; it contains no information on whether a line is synthesised or genuine.
+
+\begin{table}[h]
+\centering
+\fontsize{10}{12}\selectfont
+\begin{tabularx}{\linewidth}{|l|X|l|l|}
+\hline
+\textbf{Line no.} & \textbf{Transcription written by the rater (without hint of the content)} & \textbf{Illegible characters (positions)} & \textbf{Confidence (1--5)} \\
+\hline
+1 & & & \\
+\hline
+2 & & & \\
+\hline
+$\vdots$ & & & \\
+\hline
+40 & & & \\
+\hline
+\end{tabularx}
+\caption{Worksheet for the blind human panel: 30 synthesised lines and 10 genuine control lines in random order.}
+\label{tab:res-panel}
+\end{table}
+
+\subsubsection{Style-feature definitions (qualification test 1)}
+
+The features of Table~\ref{tab:res-features} are computed by one deterministic extractor with identical thresholds on every image, after cropping to the ink and binarising with the same rule.
+
+\begin{table}[h]
+\centering
+\fontsize{10}{12}\selectfont
+\begin{tabularx}{\linewidth}{|>{\raggedright\arraybackslash}p{3.3cm}|X|}
+\hline
+\textbf{Feature} & \textbf{Definition} \\
+\hline
+Slant & Shear angle (degrees) that maximises the variance of the column ink projection of the line. \\
+\hline
+Stroke width & Median stroke width from the distance transform at the skeleton, divided by $x_{\mathrm{h}}$. \\
+\hline
+Ink density & Fraction of ink pixels inside the core band between the baseline and the x-height line. \\
+\hline
+Word gap & Median horizontal gap between words (gaps larger than $0.5\,x_{\mathrm{h}}$) divided by $x_{\mathrm{h}}$. \\
+\hline
+Connectedness & Number of connected ink components divided by the number of characters of the text. \\
+\hline
+Character width & Line width divided by the number of characters, divided by $x_{\mathrm{h}}$. \\
+\hline
+Ascender/descender ratio & (Height of the ascender zone plus depth of the descender zone) divided by $x_{\mathrm{h}}$. \\
+\hline
+\end{tabularx}
+\caption{Hand-crafted style features for the correlation and retrieval of qualification test 1 (definitions to be implemented by the student exactly as listed).}
+\label{tab:res-features}
+\end{table}
+
+\subsubsection{Hardware overlay measurement sheet (qualification test 5)}
+
+Table~\ref{tab:res-sheet} is the sheet on which the measurements of the grid test are recorded for each repetition.
+
+\begin{table}[h]
+\centering
+\fontsize{10}{12}\selectfont
+\begin{tabularx}{\linewidth}{|l|l|l|l|l|l|X|}
+\hline
+\textbf{Repeat} & \textbf{Cross} & \textbf{$x^{\mathrm{cmd}}$ (mm)} & \textbf{$y^{\mathrm{cmd}}$ (mm)} & \textbf{$x$ meas. (mm)} & \textbf{$y$ meas. (mm)} & \textbf{$e_i$ (mm)} \\
+\hline
+1 & 1 & & & & & \\
+\hline
+1 & 2 & & & & & \\
+\hline
+$\vdots$ & & & & & & \\
+\hline
+\end{tabularx}
+\caption{Data sheet for the absolute positional error of qualification test 5; one row per cross and repetition, together with the scanner scale check and the registration check.}
+\label{tab:res-sheet}
+\end{table}

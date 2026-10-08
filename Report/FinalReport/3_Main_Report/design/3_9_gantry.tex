@@ -1,0 +1,134 @@
+\subsection{Gantry control and hardware}
+\label{sec:gantry}
+
+This subsection describes the motion-control program and the hardware it drives (functional units FU~2.8 and FU~3.1 to FU~3.4; requirement R5).
+The single-board computer generates the step and direction pulses of both stepper drivers itself on its general-purpose pins, with no microcontroller in between.
+A move handed to a microcontroller cannot be interrupted without a round trip, whereas here the loop that emits every step also reads the end-stop switches, so ``stop at once on any trigger'' is a property of the program; an earlier design with a microcontroller on a serial link was superseded for this reason.
+The interpreter (about 800 lines of Python), the calibration and the safety logic were written by the student; the only library used gives access to the pins.
+
+\subsubsection{Hardware blocks and pin assignment}
+
+The blocks are those of Figure~\ref{fig:des-hw}.
+The project files document the electronics only through the program and its comments, and the folder meant for CAD files, drawings and photographs is empty.
+What is evidenced is the following: an ODROID N2+ with 3.3\,V pins; two stepper motors with STEP/DIR driver modules, for which the program assumes 200 full steps per revolution, an A4988 at 1/16 microstepping and 40\,mm per revolution (a 2\,mm belt on a 20-tooth pulley), the last value being replaced by calibration; measured switch-to-switch distances of 204\,mm (X) and 262\,mm (Y); four active-high end-stop switches, each with a pull-down resistor of about 10\,k$\Omega$ (closing current $3.3\,\mathrm{V}/10\,\mathrm{k}\Omega=0.33$\,mA, Figure~\ref{fig:gan-switch} of the appendix); a one-direction gear motor with a pen switch for the pen lift (Section~\ref{sec:gan-pen}); and a generic USB camera.
+The pins of the character device \texttt{/dev/gpiochip0} are listed in Table~\ref{tab:gan-pins} of the appendix: STEP and DIR of the X motor on offsets 68 and 64, of the Y motor on 69 and 81, the four end-stops on 72, 65, 66 and 67, the pen switch on 70 and the pen motor on 71.
+Table~\ref{tab:gan-hw} and Figure~\ref{fig:gan-photo} of the appendix separate evidence from what the student must supply.
+\textbf{[TO BE COMPLETED BY STUDENT: motor and driver models, current-limit setting, microstepping jumpers, belt or screw and pulley data, the calibrated steps per millimetre, switch type, the circuit that switches the pen motor, the power supply (voltages, current ratings, grounding), level shifting (if any), camera model and resolution, and the photographs and wiring diagram.]}
+
+\subsubsection{Step generation, resolution and speed}
+\label{sec:gan-res}
+
+A driver advances the motor one microstep per pulse at STEP, in the direction given by DIR.
+With 200 full steps, 16 microsteps per step and $\ell_{\mathrm{rev}}=40$\,mm per revolution (assumed values),
+\begin{equation}
+\kappa=\frac{200\cdot16}{\ell_{\mathrm{rev}}}=\frac{3200}{40}=80\ \mathrm{steps/mm},\qquad\Delta=\frac1\kappa=12.5\ \mu\mathrm{m},
+\label{eq:gan-spm}
+\end{equation}
+and after calibration $\kappa$ is replaced by the measured value of each axis.
+Targets are converted to \emph{absolute} integer step counts, $n_{\mathrm{target}}=\mathrm{round}\bigl((x+5)\kappa\bigr)$ (5\,mm edge offset, Section~\ref{sec:gan-calib}), and the step difference is taken against the tracked integer position, so rounding errors do not accumulate.
+The quantisation error is at most $\Delta/2=6.25\ \mu$m per axis and $\sqrt2\,\Delta/2=8.8\ \mu$m combined, 57 times finer than the 0.5\,mm of R5.
+This is only the \emph{digital} resolution: the accuracy of a mark is set by belt stretch, backlash, missed steps (open loop, no encoders), switch repeatability and pen compliance, none of which was measured.
+\textbf{[TO BE COMPLETED BY STUDENT: the measured positional error for R5 (same word drawn twice and overlaid) and the return-to-zero repeatability.]}
+
+For a move of length $d$ at feed $v_f$ (mm/s) with $N_{\mathrm{maj}}=\max(|n_x|,|n_y|,1)$ steps on the major axis the delay of every pulse is
+\begin{equation}
+\tau=\max\Bigl(\frac{d/v_f}{N_{\mathrm{maj}}},\ 2\,\mu\mathrm s\Bigr),\qquad v_f=\max(F/60,\,0.1),
+\label{eq:gan-tau}
+\end{equation}
+with $F$ the feed in mm/min.
+For an axis-parallel move, 900\,mm/min gives $\tau=1/(15\cdot80)=833\ \mu$s (1200 steps/s) and 2400\,mm/min gives 312.5\,\textmu s (3200 steps/s, 60\,rpm); homing and retracting use 0.8\,ms high and 0.8\,ms low, 625 steps/s or $7.8$\,mm/s.
+The real rate is limited by the program (four switch readings and two pin writes per step) and the sleep granularity, not by the 2\,\textmu s floor; the maximum reliable rate and the stall speed were not measured.
+\textbf{[TO BE COMPLETED BY STUDENT: the highest feed without lost steps.]}
+Since \emph{every} pulse of both axes sleeps for $\tau$, a segment takes $(n_{\mathrm{maj}}+n_{\mathrm{min}})\tau$ and the effective feed is
+\begin{equation}
+v_{\mathrm{eff}}=v_f\,\frac{n_{\mathrm{maj}}}{n_{\mathrm{maj}}+n_{\mathrm{min}}}\in\Bigl[\frac{v_f}{2},v_f\Bigr],
+\label{eq:gan-eff}
+\end{equation}
+$v_f$ for an axis-parallel move and $v_f/2$ at $45^\circ$; for uniformly distributed directions the mean factor is $\frac4\pi\int_0^{\pi/4}\frac{\mathrm d\vartheta}{1+\tan\vartheta}=\frac12+\frac{\ln2}{\pi}=0.72$.
+The interpreter executes \emph{no acceleration ramps}: the constant speed of Equation~\ref{eq:gan-tau} is used, and the acceleration of Equation~\ref{eq:gc-trap} appears only in the generator's estimate; abrupt starts at 1200 to 3200 steps/s with an unknown motor and load may lose steps.
+\label{sec:gan-timing}
+For the test word of Section~\ref{sec:gcode}, a model of the interpreter (modal feed, Equation~\ref{eq:gan-eff}, first travel at 2400\,mm/min) gives 6.8\,s drawing, 10.8\,s travel and 9.1\,s dwell, 26.7\,s in total (2.4\,s per character for 11 characters).
+Neither this nor Equation~\ref{eq:gc-trap} includes the pen-motor run time or program overhead, and neither is a measurement; both are below the 4\,s per character of R3 for this short word, where dwell is 34\,\% of the time, but R3 must be demonstrated with a stopwatch.
+
+\subsubsection{Bresenham line interpolation}
+
+Stepping the two axes independently would draw an L-shaped path.
+The program uses the integer algorithm of Bresenham \cite{bresenham1965}: with $a_x=|\Delta x|$, $a_y=|\Delta y|$ the step counts and the DIR pins set once, for $a_x\ge a_y$ (else the roles swap): (1) set $e\leftarrow\lfloor a_x/2\rfloor$; (2) repeat $a_x$ times: if an end-stop is triggered, stop; pulse STEP of X; $e\leftarrow e-a_y$; if $e<0$, pulse STEP of Y and $e\leftarrow e+a_x$.
+Keeping $e=\lfloor a_x/2\rfloor-k\,a_y+m_ka_x$ in $[0,a_x)$ gives, after $k$ major steps, the minor-axis count of Equation~\ref{eq:gan-bres},
+\begin{equation}
+m_k=\Bigl\lceil\frac{k\,a_y-\lfloor a_x/2\rfloor}{a_x}\Bigr\rceil,
+\label{eq:gan-bres}
+\end{equation}
+which differs from the ideal $k\,a_y/a_x$ by at most $\tfrac12+\tfrac1{2a_x}\le1$ step (about 6\,\textmu m); only integer arithmetic is needed.
+
+\subsubsection{Direction-agnostic calibration}
+\label{sec:gan-calib}
+
+Equation~\ref{eq:gan-spm} rests on assumed transmission values and the position after power-up is unknown, so each session starts with a calibration between the two switches of each axis (Figure~\ref{fig:gan-calib}), which never needs to know which direction leads to which switch.
+For one axis the program drives in an arbitrary direction (DIR high, 1.6\,ms per step) until \emph{either} switch triggers, reverses, and counts the steps $N$ until the \emph{other} switch triggers.
+With the hand-measured switch-to-switch travel $L$ (204\,mm in X, 262\,mm in Y), the calibrated resolution, the initial counter and the position in millimetres are
+\begin{equation}
+\kappa_{\mathrm{axis}}=\frac{N}{L},\qquad n_0=\begin{cases}N&\text{if the second switch was MAX,}\\0&\text{if it was MIN,}\end{cases}\qquad x_{\mathrm{mm}}=\frac{n}{\kappa}-5 .
+\label{eq:gan-cal}
+\end{equation}
+The zero lies 5\,mm inside the minimum switch, the usable area is $194\times252$\,mm, and the axis is retracted 5\,mm off its last switch.
+An already triggered switch, an unexpected switch of the other axis or more than 200\,000 steps (2500\,mm) without a trigger aborts the calibration and jobs are refused; X is calibrated before Y, the gantry parks at $(0,0)$, and the two traverses alone need at least $(204+262)/7.8\approx60$\,s (derived, not measured).
+The result is deliberately not stored, because a mechanical bump between sessions would silently invalidate it.
+A hand-measurement error $\delta L$ scales every position, giving the error $x\,\delta L/L$ at distance $x$; to keep it below half of R5 over 194\,mm,
+\begin{equation}
+\delta L\le\frac{0.25\ \mathrm{mm}}{194\ \mathrm{mm}}\,L=\frac{0.25}{194}\cdot204\ \mathrm{mm}=0.26\ \mathrm{mm}\quad(0.13\ \%),
+\label{eq:gan-budget}
+\end{equation}
+and the repeatability of the switch trigger adds directly to the zero error (Equation~\ref{eq:gan-budget} requires this accuracy of the hand measurement).
+\textbf{[TO BE COMPLETED BY STUDENT: the method and uncertainty of the measurement of $L_X$ and $L_Y$.]}
+
+\begin{figure}[!htbp]
+\centering
+\begin{tikzpicture}[x=1cm,y=1cm]
+\tikzset{n/.style={w3box,text width=3.6cm,minimum height=0.75cm,font=\scriptsize},d/.style={w3dec,text width=2.2cm}}
+\node[w3io,text width=2.6cm,font=\scriptsize,minimum height=0.65cm] (c0) at (0,0) {Calibration request};
+\node[d] (c1) at (0,-1.3) {Any switch\\ already triggered?};
+\node[n] (c2) at (0,-2.7) {Drive one way until either switch of the axis triggers: ``first''};
+\node[n] (c3) at (0,-3.8) {Reverse; count steps $N$ until the other switch triggers};
+\node[n] (c4) at (0,-4.9) {$\kappa=N/L$; counter $n_0$ (Eq.~\ref{eq:gan-cal})};
+\node[n] (c5) at (7.3,-4.9) {Retract 5\,mm off the switch};
+\node[d] (c6) at (7.3,-3.7) {Both axes done?};
+\node[n,text width=3.0cm] (c7) at (7.3,-2.5) {Park at $(0,0)$ at 600\,mm/min};
+\node[w3io,text width=3.0cm,font=\scriptsize,minimum height=0.65cm] (c8) at (7.3,-1.3) {Calibrated; jobs allowed};
+\node[w3dark,text width=3.2cm,font=\scriptsize,minimum height=0.75cm] (err) at (3.65,-0.1) {Error: not calibrated, jobs refused};
+\draw[w3arr] (c0) -- (c1); \draw[w3arr] (c1) -- (c2) node[midway,right,w3lab] {no};
+\draw[w3arr] (c2) -- (c3); \draw[w3arr] (c3) -- (c4); \draw[w3arr] (c4) -- (c5); \draw[w3arr] (c5) -- (c6);
+\draw[w3arr] (c6) -- (c7) node[midway,right,w3lab] {yes}; \draw[w3arr] (c7) -- (c8);
+\draw[w3arr] (c6.west) -- ++(-1.4,0) |- (c2.east) node[pos=0.12,above,w3lab] {no: next axis};
+\draw[w3arr] (c1.east) -- ++(0.9,0) |- (err.south west) node[pos=0.1,above,w3lab] {yes};
+\draw[w3dash] (c2.east) -- ++(0.5,0) |- (err.south) node[pos=0.5,right,w3lab,fill=white] {fault};
+\end{tikzpicture}
+\caption{Flow chart of the calibration; the left column runs for each axis in turn (X, then Y). A triggered switch at the start, an unexpected switch or more than 200\,000 steps without a trigger is a fault.}
+\label{fig:gan-calib}
+\end{figure}
+
+\subsubsection{End-stop monitoring, emergency stop and pen mechanism}
+\label{sec:gan-stop}
+
+All four switches are read before every major-axis step and every G-code line.
+A switch counts as triggered only if it reads high three times in a row, 6\,ms apart, because motors without flyback diodes and a shared ground return were found to hold an input high for several milliseconds, longer than a single re-check.
+The latency from a trip to the stop (Equation~\ref{eq:gan-latency}) is
+\begin{equation}
+t_{\mathrm{stop}}\approx\tau+(3-1)\cdot6\ \mathrm{ms}\approx13\ \mathrm{ms},
+\label{eq:gan-latency}
+\end{equation}
+during which the carriage moves 0.2\,mm at 15\,mm/s and 0.5\,mm at 40\,mm/s, far inside the 5\,mm edge tolerance.
+On a trip the program latches an emergency stop, sets both STEP pins low, retracts 5\,mm (400 steps) off every triggered switch (stopping early if another switch trips) and aborts the job; the state clears only by an explicit command that refuses while a switch is still triggered.
+Every job target is also clamped to the calibrated usable area.
+\emph{Limitations:} protection is software only (no hardware emergency stop that cuts motor power is documented); in the web-server mode the switches are polled only during a job; no endpoint aborts a running job; and no lock prevents two simultaneous jobs.
+
+\paragraph{Pen mechanism.}
+\label{sec:gan-pen}
+The proposal planned to lift the pen through the stepper driver; the implemented lift is a gear motor that turns in one direction only, each $90^\circ$ of its cam toggling the pen, so only pulses can be given and the state must be known.
+The pen switch is feedback only (high = up).
+The routine behind \texttt{M5} (up) and \texttt{M3} (down) refuses to run if an end-stop is tripped, returns at once if the switch already shows the target (a toggle motor must not run when no change is needed, or the state inverts), and otherwise runs the motor, polling the switch every 2\,ms until it shows the target, an end-stop trips or 3\,s elapse (for ``up'' the motor runs 40\,ms longer so that the cam seats); if the switch never confirms, a warning is printed and the job continues.
+With the generator's open-loop tracking this forms a state machine with a fault path; the real time of one toggle was not recorded (the generator assumes 0.35\,s).
+
+\paragraph{What is not modelled.}
+The program does not model acceleration, torque margin or stall speed, belt stretch and backlash, the timing between DIR and the first STEP pulse and the minimum STEP widths of the driver, or pen tilt and compliance; missed steps cannot be detected, since there is no feedback.
+The true accuracy must therefore come from the test of Section~\ref{sec:results} and not from the resolution of Equation~\ref{eq:gan-spm}.

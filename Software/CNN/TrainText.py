@@ -1542,7 +1542,7 @@ def main_joint(args):
 # checkpoint this produces.
 # =============================================================================
 PERSONAL_NAME = "paper_cnn_bilstm_ctc_personal"
-PERSONAL_DIRS = ["yeukita", "dylan"]
+PERSONAL_DIRS = PERSONAL_AUTHORS
 DEFAULT_INIT_FROM = WEIGHTS_DIR / "paper_cnn_bilstm_ctc_hf_best.pt"
 PERSONAL_VAL_FRACTION = 0.15
 PERSONAL_SPLIT_SEED = 0

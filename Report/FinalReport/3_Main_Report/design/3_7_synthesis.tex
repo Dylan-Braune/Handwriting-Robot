@@ -1,0 +1,198 @@
+\subsection{Handwriting synthesis}
+\label{sec:synthesis}
+
+This subsection describes how a text is converted into pen paths in the style of a stored writer (functional units FU~2.7 and part of FU~2.5; requirements R1 and R3).
+The synthesiser takes the text, a style profile (Section~\ref{sec:styleprofile}), the size of one x-height $x_{\mathrm{mm}}$ in millimetres (4\,mm by default) and a random seed, and returns a \emph{trajectory}: pen-down polylines in millimetres, $y$ upwards, origin at the first baseline.
+Because the construction is random, a search over several candidates (Section~\ref{sec:syn-search}) keeps the one that the text recogniser (Section~\ref{sec:textrec}) and the stroke-normalised writer classifier (Section~\ref{sec:writerid}) jointly prefer.
+Geometry is kept in x-height units until one multiplication at the end, so one profile serves any pen size.
+
+\subsubsection{Global quantities and glyph choice}
+
+Let $\theta_{\mathrm p}$ be the slant, $c$ the connectedness, $A$ and $D<0$ the ascender and descender reach and $g$ the word gap of the profile, and $\lambda\in[0,1]$ the writer's legibility parameter (below).
+The synthesiser derives
+\begin{equation}
+\theta_{\mathrm{cap}}=45^\circ-19^\circ\lambda,\quad\sigma=\tan\!\bigl(\operatorname{clip}(\theta_{\mathrm p},\pm\theta_{\mathrm{cap}})\bigr)+\Delta_\sigma,\quad p_{\mathrm j}=\min(c,1),\quad L=(A-D+0.85)\,x_{\mathrm{mm}},
+\label{eq:syn-global}
+\end{equation}
+with the shear coefficient $\sigma$ (calibration shift $\Delta_\sigma$, Section~\ref{sec:syn-cal}), the join probability $p_{\mathrm j}$ and the line pitch $L$ (12.6\,mm for $A=1.7$, $D=-0.6$, $x_{\mathrm{mm}}=4$\,mm).
+The connectedness is used as a \emph{probability}: as a threshold it joined every pair for every writer above it and fused words into blobs.
+
+For each character the synthesiser tries, in order, the writer's own variants, a borrowed shape (other case or similar character), the \emph{anchor} glyph, and finally a hand-designed skeleton or a blank.
+The stored variants are ranked by $\mathrm{priorD}$ (Equation~\ref{eq:sty-prior}); only the five best are eligible, and rank $i=0,\ldots,4$ is drawn with probability proportional to
+\begin{equation}
+w_i=\frac{1}{1+1.4\,i}\exp\!\Bigl[-\Bigl(\frac{\mathrm{entryY}_i-\hat e}{0.45}\Bigr)^2\Bigr],
+\label{eq:syn-pick}
+\end{equation}
+where the exponential factor is used only when the glyph is joined to a previous letter and $\hat e$ is the pen's exit height above the baseline in x-heights: a variant whose entry height matches the pen avoids tangled joins.
+Without the factor the probabilities are $0.494$, $0.206$, $0.130$, $0.095$, $0.075$.
+Restricting the choice to typical variants gave 80.5\,\% writer identification with the two best variants against 75.5\,\% over all twelve (design-stage measurement, no raw log), because a writer forms a letter consistently.
+The \emph{anchor} is a legible stand-in: the writer's own medoid if its $\mathrm{priorD}\le0.30$, otherwise a hand-designed single-stroke skeleton (joined cursive for $c\ge0.5$, upright print otherwise) re-proportioned to the writer's reach, $y\mapsto1+(y-1)\max(0.35,(A-1)/0.75)$ for $y>1$ and $y\mapsto y\max(0.35,|D|/0.55)$ for $y<0$.
+The print skeleton reads back at about 96\\% character accuracy through the recogniser against about 89\\% for the cursive skeleton (code comments, no raw log), so it is the legibility floor.
+
+\paragraph{The role of $\lambda$.}
+The parameter does \emph{not} interpolate geometrically between the writer's glyph and the anchor.
+It scales the probability that a chosen variant with prior distance $d$ is \emph{replaced} by the anchor,
+\begin{equation}
+P_{\mathrm{swap}}(\lambda,d)=\begin{cases}1&d\ge0.55,\\0&\lambda\le10^{-3},\\0.06\,\lambda&d\le0.12,\\\operatorname{clip}\bigl(\lambda\,(0.55+0.9\,b),0,1\bigr),\ b=\operatorname{clip}\bigl(\tfrac{d-0.12}{0.43},0,1\bigr)&\text{otherwise,}\end{cases}
+\label{eq:syn-swap}
+\end{equation}
+and it lowers the cap on the writer's own slant (Equation~\ref{eq:syn-global}).
+Clean glyphs are almost always kept, garbage is always replaced, and in between replacement grows with $\lambda$ (at $\lambda=1$: 0.74 for $d=0.21$, 0.99 for $d=0.33$), giving a probabilistic mixture of sources: with the stored values the share of anchor glyphs in a design-stage probe ranged from 0\,\% (writer 552, $\lambda=0$) to 76\,\% (writer 151, $\lambda=1$).
+$\lambda$ is set per writer (Table~\ref{tab:sty-writers}) by an automatic search on a novel corpus followed by manual adjustment against the evaluation script, so it is tuned on the sentences of Section~\ref{sec:results}.
+\emph{Implementation note:} a geometric blend toward the anchor and a ``soft archetype'' proposal appear only in the project notes, not in the delivered code.
+
+\subsubsection{Placement, joins and randomness}
+
+A chosen glyph $(x,y)$ (x-height units, upright) is placed at the pen position $(P_x,P_y)$ (mm) by
+\begin{equation}
+X=P_x+(\ell+x+\sigma_g\,y)\,x_{\mathrm{mm}},\qquad Y=P_y+(y+\delta_g)\,x_{\mathrm{mm}},
+\label{eq:syn-place}
+\end{equation}
+with the glyph's lead $\ell$, shear $\sigma_g$ and baseline drift $\delta_g$; this inverts the de-slanting of Equation~\ref{eq:sty-norm} (Figure~\ref{fig:syn-layout} of the appendix).
+The writer's own glyphs use $\sigma$; anchor glyphs are limited to $\pm\tan30^\circ$ (cursive) or $\pm\tan22^\circ$ (print), because a $40^\circ$ shear makes even a clean letter collide.
+A guard shifts glyph and pen right if the glyph would come closer than $0.05\,x_{\mathrm{mm}}$ to the previous ink, and the pen advances by the glyph's \emph{own} advance, never the character median.
+After a word the pen advances by $g\,x_{\mathrm{mm}}(0.85+0.3u)$, $u\sim U(0,1)$, and a word that would cross the line width (185\,mm in the server) starts a new line at the pitch $L$.
+Adjacent letters are joined if both are alphabetic, both are the writer's own glyphs or both the cursive anchor, and a random $u<p_{\mathrm j}$ (a print anchor is never joined through).
+The connector of Equation~\ref{eq:syn-lig}, from exit $p_0$ to the next entry $p_1$, is
+\begin{equation}
+\begin{aligned}
+&\text{path}(p_0,m,p_1),\qquad m=\Bigl(\tfrac{p_{0x}+p_{1x}}{2},\ \min(p_{0y},p_{1y})-\mathrm{sag}\Bigr),\\
+&\mathrm{sag}=\min\bigl(0.11\,x_{\mathrm{mm}},0.16\,|\Delta x|\bigr)+\mathcal N\bigl(0,(0.015\,x_{\mathrm{mm}})^2\bigr),
+\end{aligned}
+\label{eq:syn-lig}
+\end{equation}
+with $\Delta x=p_{1x}-p_{0x}$; a fixed dip would turn a short join into a loop.
+A joined run is one pen-down polyline, so the pen lifts only where the writer lifts, and every polyline is resampled at 0.35\,mm arc length for even plotter motion.
+One pseudo-random stream, seeded by the seed argument, supplies every draw, so the arguments determine the output completely.
+Each glyph receives the jitter (amplitude $J$: 0.15 by default, 0.5 in the search)
+\begin{equation}
+\begin{pmatrix}x'\\y'\end{pmatrix}=R(\vartheta)\,\mathrm{diag}(s_x,s_y)\begin{pmatrix}x\\y\end{pmatrix}+\begin{pmatrix}d_x\\d_y\end{pmatrix},\quad
+\begin{aligned}d_x&\sim\mathcal N(0,(0.022J)^2),&d_y&\sim\mathcal N(0,(0.0132J)^2),\\\vartheta&\sim\mathcal N(0,(2.2^\circ J)^2),&s_{x,y}&\sim1+\mathcal N(0,(0.05J)^2),\end{aligned}
+\label{eq:syn-jit}
+\end{equation}
+(translations in x-heights), and the baseline drifts as a slow first-order walk (Table~\ref{tab:syn-const} of the appendix); at $J=0.5$ the translation spread is below 0.05\,mm, the rotation $1.1^\circ$ and the scale 2.5\,\%.
+
+\paragraph{Style calibration.}
+\label{sec:syn-cal}
+A line of separate glyphs does not automatically reproduce the line-level slant and reach of the real lines (writer 150's ascenders came out about 7\,% too tall, writer 551's slant about $9^\circ$ too steep).
+A probe sentence is therefore synthesised once per writer and size, measured with the estimators of Section~\ref{sec:styleprofile}, and three fixed-point iterations (Equation~\ref{eq:syn-cal} of the appendix) adjust the shear shift $\Delta_\sigma$ and the scale factors $K_A$, $K_D$ of tall and deep strokes of the writer's own glyphs until the probe matches the stored real-line values.
+The same estimator measures both sides, so the agreement of slant and reach is partly self-fulfilling and not independent evidence.
+
+\subsubsection{Best-of-$N$ search with joint scoring}
+\label{sec:syn-search}
+
+Single draws vary in quality, so the line is drawn $N$ times and the best candidate kept.
+Selecting by text accuracy alone raised legibility but lowered writer identification for some writers (Table~\ref{tab:syn-evid}), because the most legible draw need not be the most characteristic one; the score therefore uses both judges.
+For a rendered candidate $I$, with $\hat y(I)$ the greedy CTC reading (Equation~\ref{eq:rec-greedy}) and $y$ the intended text,
+\begin{equation}
+a(I)=\max\Bigl(0,1-\frac{\mathrm{Lev}(\hat y(I),y)}{|y|}\Bigr),\quad w(I)=\mathrm{softmax}\bigl(f_{\mathrm{wid}}(I)\bigr)_{a^\star},\quad S(I)=\frac{2\,a(I)\,w(I)}{a(I)+w(I)},
+\label{eq:syn-score}
+\end{equation}
+where $\mathrm{Lev}$ is the Levenshtein distance (Equation~\ref{eq:rec-lev}), $f_{\mathrm{wid}}$ the shape classifier after stroke normalisation (Section~\ref{sec:wid-strokenorm}), $a^\star$ the target writer, and $S=0$ if $a+w\le10^{-9}$.
+The harmonic mean is dominated by the smaller term, so a candidate cannot win by excelling at one criterion and failing the other, and $w$ is a probability, not a hit-or-miss flag.
+
+\begin{figure}[!htbp]
+\centering
+\begin{tikzpicture}[x=1cm,y=1cm]
+\tikzset{n/.style={w3box,text width=3.6cm,minimum height=0.7cm,font=\scriptsize},d/.style={w3dec,text width=2.1cm}}
+\node[w3io,text width=3.6cm,font=\scriptsize,minimum height=0.7cm] (s0) at (0,0) {Text, writer, $N$, base seed};
+\node[n] (s1) at (0,-1.0) {Synthesise candidate $k$, seed $\mathrm{base}+977k$, $J=0.5$};
+\node[n] (s2) at (0,-2.0) {Render at constant pen width};
+\node[n] (s3) at (0,-3.0) {Judges $a(I)$, $w(I)$; $S(I)$ (Eq.~\ref{eq:syn-score})};
+\node[d] (s4) at (0,-4.2) {$S>\mathrm{best}$?};
+\node[d] (s5) at (0,-5.7) {$\mathrm{best}\ge0.99$ or $k=N-1$?};
+\node[n,text width=2.0cm] (keep) at (3.0,-4.2) {keep candidate};
+\node[n] (r1) at (7.0,-0.3) {Forced-align text; rank characters by $m_i$ (Eq.~\ref{eq:syn-weak})};
+\node[d] (r0) at (7.0,-1.6) {$\mathrm{best}\ge0.995$ or 3 rounds?};
+\node[n] (r2) at (7.0,-2.9) {Pin the 2 worst unpinned characters to the anchor};
+\node[n] (r3) at (7.0,-3.9) {Re-synthesise line, seed $=\mathrm{base}$; judge};
+\node[d] (r4) at (7.0,-5.0) {$S'>\mathrm{best}$?};
+\node[n,text width=2.2cm] (acc) at (10.0,-5.0) {accept; keep pins};
+\node[w3io,text width=3.0cm,font=\scriptsize,minimum height=0.7cm] (out) at (7.0,-6.3) {Trajectory to G-code};
+\draw[w3arr] (s0) -- (s1); \draw[w3arr] (s1) -- (s2); \draw[w3arr] (s2) -- (s3); \draw[w3arr] (s3) -- (s4);
+\draw[w3arr] (s4) -- (keep) node[midway,above,w3lab] {yes};
+\draw[w3arr] (s4) -- (s5) node[midway,right,w3lab] {no};
+\draw[w3arr] (keep.south) |- (s5.east);
+\draw[w3arr] (s5.west) -- ++(-1.6,0) |- (s1.west) node[pos=0.2,left,w3lab] {no};
+\draw[w3arr] (s5.south) -- ++(0,-0.45) -| ++(3.6,0) |- (r1.west) node[pos=0.1,right,w3lab] {yes};
+\draw[w3arr] (r1) -- (r0);
+\draw[w3arr] (r0) -- (r2) node[midway,right,w3lab] {no};
+\draw[w3arr] (r2) -- (r3); \draw[w3arr] (r3) -- (r4);
+\draw[w3arr] (r4) -- (acc) node[midway,above,w3lab] {yes};
+\draw[w3arr] (r4.south) -- (out.north) node[pos=0.3,right,w3lab] {no};
+\draw[w3arr] (acc.south) |- (out.east);
+\draw[w3arr] (r0.east) -- ++(1.3,0) |- ++(0,-4.4) |- (out.east);
+\end{tikzpicture}
+\caption{Flow chart of the joint best-of-$N$ search: the search over $N$ candidates (left) and the repair pass (right). A repair round ends after acceptance or rejection and the next round starts from the best candidate; when its test is satisfied the repair loop exits to the output.}
+\label{fig:syn-flow}
+\end{figure}
+
+The steps of Figure~\ref{fig:syn-flow} are:
+(1) set $\mathrm{best}\leftarrow-1$ and, for $k=0,\ldots,N-1$, synthesise a candidate with seed $\mathrm{base}+977k$ and $J=0.5$, render it with a constant pen width of 0.085 x-heights (18 pixels per millimetre), compute $S$, keep it if $S>\mathrm{best}$, and stop early if $\mathrm{best}\ge0.99$;
+(2) \emph{repair} (at most three rounds, skipped if $\mathrm{best}\ge0.995$): forced-align the intended text to the recogniser output on the best image (Equation~\ref{eq:sty-viterbi}) and score each non-space character $i$ by its mean own-class log-probability over its frames,
+\begin{equation}
+m_i=\frac{1}{b_i-a_i}\sum_{t=a_i+1}^{b_i}\ell_t(y_i),
+\label{eq:syn-weak}
+\end{equation}
+with $m_i=-10^9$ if the path never visits it, sorted ascending;
+(3) pin the two worst characters not yet pinned (their glyph is then always the anchor), re-synthesise the \emph{whole} line with seed $\mathrm{base}$ and the pins, render and score it;
+(4) accept it only if its joint score is strictly larger than $\mathrm{best}$, so that a repair that fixes a letter but makes the line look like another writer is rejected (a text-only search with a plain repair that accepts on text score alone was measured to cost writer identification).
+If candidate scores were independent with distribution function $F$, then
+\begin{equation}
+\Pr\bigl[\max_kS_k\le\tau\bigr]=F(\tau)^N,
+\label{eq:syn-order}
+\end{equation}
+so, by Equation~\ref{eq:syn-order}, the gain grows roughly logarithmically in $N$ (the seeds share a profile, so independence is only approximate, and no per-$N$ curve was kept).
+\emph{Implementation notes.} (i) The repair re-uses seed $\mathrm{base}$, so it is a fresh draw with pins, not a patch of the winner. (ii) The pin set is updated only on acceptance, so after a rejection the next round re-synthesises an identical candidate and the remaining rounds are wasted work. (iii) In three probe runs (writers 150, 153, 551, $N=14$) no repair was accepted, so the repair pass rarely changes the result.
+
+\paragraph{Values of $N$ and cost.}
+$N$ is 6 as the function default, 14 for Table~\ref{tab:syn-evid}, 20 as the web default and 30 in the official evaluation script.
+A candidate costs one synthesis, one rendering, one recogniser pass and one classifier pass,
+\begin{equation}
+T\approx N\,(T_{\mathrm{syn}}+T_{\mathrm{ren}}+T_{\mathrm{text}}+T_{\mathrm{wid}})+\text{(up to three repair candidates)},
+\label{eq:syn-cost}
+\end{equation}
+and each network pass is about $4\times10^9$ multiply--accumulate operations (Equation~\ref{eq:rec-macs}, Table~\ref{tab:wid-layers}).
+Laptop timings are in Table~\ref{tab:syn-cost} of the appendix: synthesis takes 11 to 16\,ms per candidate and the two judges 0.5 to 4\,s, dominated by thinning the full-resolution render, so the search at $N=14$ took 23 to 137\,s; times on the single-board computer were not recorded.
+
+\subsubsection{Design-stage evidence and its limits}
+
+Table~\ref{tab:syn-evid} lists the measurements that motivated the design (six novel sentences, two seeds, ten writers: 12 lines per writer, so one misjudged line moves a writer's rate by 8.3 percentage points).
+\emph{Every figure after the search was introduced is the opinion of the very networks that selected the output}: the networks inside the search load the same weight files as those that measure the result, so a selection effect is added to genuine quality, and $\lambda$, the anchor threshold and $N$ were tuned on the same sentences.
+The values show that the pipeline can satisfy these two judges, not that human readers or an independent recogniser agree; the non-circular reference is the recogniser on \emph{real} held-out handwriting of the same writers, 89.4\,% character and 70.8\,% word accuracy (Table~\ref{tab:rec-data}; possible training overlap).
+Section~\ref{sec:results} reports the final evaluation.
+
+\begin{table}[!htbp]
+\centering
+\fontsize{9.5}{11.5}\selectfont
+\begin{tabularx}{\linewidth}{|X|c|c|}
+\hline
+\textbf{Stage} & \textbf{Writer ID, direct / G-code (\%)} & \textbf{Char. acc., direct / G-code (\%)} \\
+\hline
+Plain synthesis after label and glyph fixes & 79.2 / 80.0 & 75.9 / 76.3 \\
+\hline
++ per-writer $\lambda$ & 83.3 / 86.7 & 77.2 / 77.8 \\
+\hline
+Text-only best-of-$N$ with plain repair & 76.7 / 73.3 & 83.8 / 82.7 \\
+\hline
+Joint best-of-$N$, $N=6$ & 92.5 / 92.5 & 79.9 / 79.6 \\
+\hline
+Joint best-of-$N$, $N=14$ & 97.5 / 95.8 & 81.6 / 81.4 \\
+\hline
+\end{tabularx}
+\caption{Design-stage measurements (12 lines per writer; writer identification is the top-1 decision of the shape classifier per line; ``G-code'' means converted to G-code and read back, Section~\ref{sec:gcode}). All values are judged by the networks that drive the search and by tuning on the same sentences and are therefore not independent evidence; source: the project's tuning log and evaluation script.}
+\label{tab:syn-evid}
+\end{table}
+
+Two remarks follow: the two most joined writers (151, 551) stay at 59 to 63\,% character accuracy at $N=14$ and do not reach the 85\,% target of R1 in that run, while the other eight writers average about 87\,%; and word accuracy is much lower (48.0\,%) because one wrong character spoils a word.
+Figure~\ref{fig:syn-lines} of the appendix shows one candidate each for a print and a joined hand.
+\textbf{[TO BE COMPLETED BY STUDENT: the final evaluation run (writer identification, character and word accuracy, the $N$ used) with its raw log; the figures on the interface's statistics page are hard-coded and their log was not found.]}
+
+\subsubsection{Design alternatives and justification}
+
+Table~\ref{tab:syn-alt} of the appendix lists the alternatives.
+A recurrent sequence generator with attention and mixture-density output \cite{graves2013} needs on-line pen data (hundreds to thousands of lines per writer), whereas only 47 to 138 scanned lines per writer exist; a from-scratch version trained on skeleton-derived strokes learned slant, roundness and connectedness but no legible letters and was rejected.
+Adversarial and diffusion generators of line images \cite{kang2020,dai2024} need less data, but their output is a raster that would have to be vectorised with the same thinning artefacts, size, slant and spacing cannot be controlled, and a trial took 35 to 45\,s per line on a laptop processor against 3 to 8\,s for glyph synthesis.
+The glyph library needs about nine pages per writer and no training, outputs pen strokes directly, exposes size, slant, joins and gap as numbers, traces a failure to a single glyph and has a fallback for every glyph; its weakness is joined hands, whose joins are lost by cutting.
+Glyph assembly from one writer's sample \cite{haines2016} is a related approach.
+Synthesis costs about 15\,ms, so only the optional search is expensive, which suits a single-board computer without accelerator.
