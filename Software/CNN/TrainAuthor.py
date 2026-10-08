@@ -116,12 +116,11 @@ from TrainText import (
     resize_line_image_fixed,
     tensor_from_resized,
 )
-import SegmentPage as PS
 import SegmentLean as SL
 from ExtractIAMLines import ReadLabelLines
 from authors_config import (
     DATASET_AUTHORS, PERSONAL_AUTHORS, VAL_FRACTION, SPLIT_SEED,
-    AUTHOR_CLASSIFIER_RUN_NAME,
+    AUTHOR_CLASSIFIER_RUN_NAME, personal_author_pages,
 )
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -413,10 +412,10 @@ def add_personal_samples(base):
     rng = random.Random(SPLIT_SEED)
     n_added = 0
     for author in PERSONAL_AUTHORS:
-        for img_path in sorted((NOGIT_DIR / author).glob("*.jpg")):
+        for img_path, label_path in personal_author_pages(author):
             lean_lines, _ov, _info = SL.SegmentLines(str(img_path))
             crops = [np.asarray(ln["image"]) for ln in lean_lines]
-            gt = ReadLabelLines(str(img_path))
+            gt = ReadLabelLines(str(img_path), str(label_path))
             gt = [g for g in gt if g.strip() != "MESS"]
             n = min(len(crops), len(gt))
             rows = list(zip(range(n), crops[:n], gt[:n]))

@@ -74,6 +74,7 @@ from ProfileIO import (
 )
 from authors_config import (
     DATASET_AUTHORS, PERSONAL_AUTHORS, VAL_FRACTION, SPLIT_SEED,
+    personal_author_pages,
 )
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -1183,9 +1184,9 @@ def BuildAll(maxLinesPerAuthor=None, useCache=True):
 #     cluster) already have fully-extracted, cached raw glyph libraries in
 #     NOGIT/GlyphCache10/ from earlier work -- loaded straight from cache
 #     here, NOT re-extracted, so this only pays the (expensive,
-#     forced-alignment) extraction cost for the 2 new personal authors
-#     (yeukita, dylan, from Software/CNN/NOGIT/yeukita and dylan). The two
-#     personal authors are segmented with SegmentPage.ProcessPage (the same
+#     forced-alignment) extraction cost for the personal authors in
+#     authors_config.PERSONAL_AUTHORS (Software/CNN/PersonalDataset/<Author>/).
+#     Personal authors are segmented with SegmentPage.ProcessPage (the same
 #     personal-page pipeline used for non-IAM pages) instead of
 #     IAMLineDatasetRaw, and forced-aligned with the PERSONAL fine-tuned
 #     recognizer (not the general hf model) -- per the measured finding
@@ -1194,10 +1195,10 @@ def BuildAll(maxLinesPerAuthor=None, useCache=True):
 #     worse on general text.
 #
 #     Everything downstream (BuildLetterPrior pooling, BuildAuthorProfile,
-#     JSON output) is reused UNCHANGED from the functions above, and all 10
-#     profiles are written to the SAME PROFILE_DIR (NOGIT/StyleProfiles10/)
+#     JSON output) is reused UNCHANGED from the functions above, and every
+#     profile is written to the SAME PROFILE_DIR (NOGIT/StyleProfiles10/)
 #     so SynthesizeHandwriting.py/server.py etc. don't need to change at
-#     all to pick up yeukita/dylan as author IDs.
+#     all to pick up a new personal author ID.
 def build_personal_line_items(author):
     """Segments every photo for one personal author, splits its lines into
     train/holdout (per-page, same convention as TrainTextPersonal.py), and
@@ -1205,10 +1206,10 @@ def build_personal_line_items(author):
     (gray_crop, text) ready for ExtractAuthorRaw."""
     rng = random.Random(SPLIT_SEED)
     train_items, holdout_texts = [], []
-    for img_path in sorted((NOGIT_DIR / author).glob("*.jpg")):
+    for img_path, label_path in personal_author_pages(author):
         results, _preview, _meta = F.ProcessPage(str(img_path))
         crops = [r["raw_crop"] for r in results if r["tag"] == "TEXT"]
-        gt = ReadLabelLines(str(img_path))
+        gt = ReadLabelLines(str(img_path), str(label_path))
         gt = [g for g in gt if g.strip() != "MESS"]
         n = min(len(crops), len(gt))
         rows = list(zip(crops[:n], gt[:n]))

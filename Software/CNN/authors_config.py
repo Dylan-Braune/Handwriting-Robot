@@ -5,6 +5,11 @@ drifting out of sync between them silently changed which lines a model
 was trained/evaluated on. Adding a new author means editing this file
 only, not every script that touches the author list."""
 
+from pathlib import Path
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+PERSONAL_DATASET_DIR = SCRIPT_DIR / "PersonalDataset"
+
 # 8 kept IAM dataset authors (dropped 154/155 for being redundant with
 # 150/151/152's style cluster) + 2 personal authors.
 DATASET_AUTHORS = ["150", "151", "152", "153", "384", "551", "552", "588"]
@@ -24,3 +29,16 @@ AUTHOR_CLASSIFIER_RUN_NAME = "author_classifier_10new"
 
 def author_classifier_weights_filename():
     return f"{AUTHOR_CLASSIFIER_RUN_NAME}_weights.pt"
+
+
+def personal_author_pages(author):
+    """Yields (img_path, label_path) for one PERSONAL_AUTHORS entry, reading
+    directly from PersonalDataset/<Author>/{Pages,Labels}/ -- the single
+    maintained copy of a personal author's photos/transcriptions, instead of
+    a NOGIT/<author> duplicate that every script would otherwise need to
+    keep in sync (and that would need its own .gitignore allowlist entry
+    to ever reach Colab)."""
+    folder = PERSONAL_DATASET_DIR / author.capitalize()
+    pagesDir, labelsDir = folder / "Pages", folder / "Labels"
+    for imgPath in sorted(pagesDir.glob(f"{author.capitalize()}*.jpg")):
+        yield imgPath, labelsDir / f"{imgPath.stem}_labels.txt"

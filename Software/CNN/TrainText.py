@@ -118,7 +118,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 sys.path.insert(0, str(SCRIPT_DIR / "AuthorReproductionStuff"))
 
 import SegmentPage as PS
-from authors_config import PERSONAL_AUTHORS, VAL_FRACTION, SPLIT_SEED
+from authors_config import PERSONAL_AUTHORS, VAL_FRACTION, SPLIT_SEED, personal_author_pages
 
 
 # -----------------------------------------------------------------------------
@@ -1377,27 +1377,27 @@ def main_hf(args):
 
 # =============================================================================
 # Merged in from TrainTextJoint.py -- trains ONE recogniser on BOTH the full
-# Teklia/IAM-line dataset AND personal pages (Software/CNN/NOGIT/yeukita +
-# dylan) together every epoch via a WeightedRandomSampler, so the model never
-# "sequentially forgets" either domain the way naive fine-tuning did. See the
-# original TrainTextJoint.py module docstring (preserved in git history) for
-# the measured numbers that motivated this approach.
+# Teklia/IAM-line dataset AND personal pages (Software/CNN/PersonalDataset,
+# all of authors_config.PERSONAL_AUTHORS) together every epoch via a
+# WeightedRandomSampler, so the model never "sequentially forgets" either
+# domain the way naive fine-tuning did. See the original TrainTextJoint.py
+# module docstring (preserved in git history) for the measured numbers that
+# motivated this approach.
 # =============================================================================
-NOGIT_DIR = SCRIPT_DIR / "NOGIT"
 JOINT_NAME = "paper_cnn_bilstm_ctc_joint"
 
 
 def collect_personal_lines_joint():
     """Same personal-page collection as the `personal` subcommand: segments
-    every yeukita/dylan photo with SegmentPage, pairs TEXT crops with
+    every PERSONAL_AUTHORS photo with SegmentPage, pairs TEXT crops with
     their _labels.txt lines (MESS dropped), filters chars/length exactly
     like HFLineDataset does, and splits per-page into train/val."""
     all_rows = []
     for folder in PERSONAL_AUTHORS:
-        for img_path in sorted((NOGIT_DIR / folder).glob("*.jpg")):
+        for img_path, label_path in personal_author_pages(folder):
             results, _preview, _meta = PS.ProcessPage(str(img_path))
             crops = [r["raw_crop"] for r in results if r["tag"] == "TEXT"]
-            gt = [g for g in ReadLabelLines(str(img_path)) if g.strip() != "MESS"]
+            gt = [g for g in ReadLabelLines(str(img_path), str(label_path)) if g.strip() != "MESS"]
             n = min(len(crops), len(gt))
             for crop, text in zip(crops[:n], gt[:n]):
                 kept = "".join(c for c in text.strip() if c in CHAR_TO_IDX)
@@ -1537,9 +1537,9 @@ def main_joint(args):
 
 # =============================================================================
 # Merged in from TrainTextPersonal.py -- fine-tunes PaperCRNN on YOUR OWN
-# handwriting (NOGIT/yeukita + NOGIT/dylan), warm-started from an existing
-# checkpoint. Kept because BuildStyleProfile10Authors.py depends on the
-# checkpoint this produces.
+# handwriting (PersonalDataset/<Author>/ for every authors_config.PERSONAL_AUTHORS
+# entry), warm-started from an existing checkpoint. Kept because
+# BuildStyleProfile10Authors.py depends on the checkpoint this produces.
 # =============================================================================
 PERSONAL_NAME = "paper_cnn_bilstm_ctc_personal"
 PERSONAL_DIRS = PERSONAL_AUTHORS
@@ -1549,7 +1549,7 @@ PERSONAL_SPLIT_SEED = 0
 
 
 def collect_personal_lines_personal():
-    """Segments every photo in yeukita/dylan with SegmentPage.ProcessPage
+    """Segments every PERSONAL_DIRS photo with SegmentPage.ProcessPage
     (the same personal-page pipeline ClassifyText.py uses), pairs each
     TEXT-tagged crop with its ground-truth line (MESS lines dropped, same
     convention as ClassifyText.process_image), and filters characters/
@@ -1557,10 +1557,10 @@ def collect_personal_lines_personal():
     each a list of (raw_crop_ndarray, cleaned_label) tuples."""
     all_rows = []   # (page_name, raw_crop, cleaned_label)
     for folder in PERSONAL_DIRS:
-        for img_path in sorted((NOGIT_DIR / folder).glob("*.jpg")):
+        for img_path, label_path in personal_author_pages(folder):
             results, _preview, _meta = PS.ProcessPage(str(img_path))
             crops = [r["raw_crop"] for r in results if r["tag"] == "TEXT"]
-            gt = ReadLabelLines(str(img_path))
+            gt = ReadLabelLines(str(img_path), str(label_path))
             gt = [g for g in gt if g.strip() != "MESS"]
             if len(crops) != len(gt):
                 print(f"[WARN] {folder}/{img_path.name}: {len(crops)} crops vs "
