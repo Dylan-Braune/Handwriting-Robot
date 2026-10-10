@@ -108,7 +108,7 @@ if os.name == "nt":
 
 # -----------------------------------------------------------------------------
 # Merged in from TrainTextJoint.py / TrainTextPersonal.py: both need to import
-# SegmentPage (the personal-page pipeline) and TrainTextJoint.py additionally
+# the personal-page segmenter and TrainTextJoint.py additionally
 # put AuthorReproductionStuff on sys.path -- replicated here unchanged so the
 # merged file behaves exactly like running either original script directly,
 # regardless of the caller's working directory.
@@ -117,7 +117,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
 sys.path.insert(0, str(SCRIPT_DIR / "AuthorReproductionStuff"))
 
-import SegmentPage as PS
+import SegmentLean as SL
 from authors_config import PERSONAL_AUTHORS, VAL_FRACTION, SPLIT_SEED, personal_author_pages
 
 
@@ -1389,15 +1389,22 @@ JOINT_NAME = "paper_cnn_bilstm_ctc_joint"
 
 def collect_personal_lines_joint():
     """Same personal-page collection as the `personal` subcommand: segments
-    every PERSONAL_AUTHORS photo with SegmentPage, pairs TEXT crops with
-    their _labels.txt lines (MESS dropped), filters chars/length exactly
-    like HFLineDataset does, and splits per-page into train/val."""
+    every PERSONAL_AUTHORS photo with SegmentLean (the segmenter the
+    writer-ID classifier and every evaluation also use, so training and
+    scoring see the same kind of crop), pairs each line with its
+    _labels.txt line (MESS dropped), filters chars/length exactly like
+    HFLineDataset does, and splits per-page into train/val."""
     all_rows = []
     for folder in PERSONAL_AUTHORS:
         for img_path, label_path in personal_author_pages(folder):
-            results, _preview, _meta = PS.ProcessPage(str(img_path))
-            crops = [r["raw_crop"] for r in results if r["tag"] == "TEXT"]
+            lean_lines, _ov, _info = SL.SegmentLines(str(img_path))
+            crops = [np.asarray(ln["image"]) for ln in lean_lines]
             gt = [g for g in ReadLabelLines(str(img_path), str(label_path)) if g.strip() != "MESS"]
+            if len(crops) != len(gt):
+                print(f"[WARN] {folder}/{img_path.name}: {len(crops)} crops vs {len(gt)} "
+                      f"label lines -- lines past the divergence would be paired with the "
+                      f"wrong transcript, so this page is skipped")
+                continue
             n = min(len(crops), len(gt))
             for crop, text in zip(crops[:n], gt[:n]):
                 kept = "".join(c for c in text.strip() if c in CHAR_TO_IDX)
@@ -1549,22 +1556,24 @@ PERSONAL_SPLIT_SEED = 0
 
 
 def collect_personal_lines_personal():
-    """Segments every PERSONAL_DIRS photo with SegmentPage.ProcessPage
-    (the same personal-page pipeline ClassifyText.py uses), pairs each
-    TEXT-tagged crop with its ground-truth line (MESS lines dropped, same
-    convention as ClassifyText.process_image), and filters characters/
-    length exactly like HFLineDataset does. Returns (train_rows, val_rows),
-    each a list of (raw_crop_ndarray, cleaned_label) tuples."""
-    all_rows = []   # (page_name, raw_crop, cleaned_label)
+    """Segments every PERSONAL_DIRS photo with SegmentLean.SegmentLines --
+    the same segmenter the writer-ID classifier and every evaluation use, so
+    the recogniser is trained on the kind of crop it is later asked to read
+    -- pairs each line crop with its ground-truth line (MESS lines dropped),
+    and filters characters/length exactly like HFLineDataset does. Returns
+    (train_rows, val_rows), each a list of (crop_ndarray, cleaned_label)."""
+    all_rows = []   # (page_name, crop, cleaned_label)
     for folder in PERSONAL_DIRS:
         for img_path, label_path in personal_author_pages(folder):
-            results, _preview, _meta = PS.ProcessPage(str(img_path))
-            crops = [r["raw_crop"] for r in results if r["tag"] == "TEXT"]
+            lean_lines, _ov, _info = SL.SegmentLines(str(img_path))
+            crops = [np.asarray(ln["image"]) for ln in lean_lines]
             gt = ReadLabelLines(str(img_path), str(label_path))
             gt = [g for g in gt if g.strip() != "MESS"]
             if len(crops) != len(gt):
                 print(f"[WARN] {folder}/{img_path.name}: {len(crops)} crops vs "
-                      f"{len(gt)} label lines -- skipping this page's mismatched tail")
+                      f"{len(gt)} label lines -- lines past the divergence would be "
+                      f"paired with the wrong transcript, so this page is skipped")
+                continue
             n = min(len(crops), len(gt))
             for crop, text in zip(crops[:n], gt[:n]):
                 kept = "".join(c for c in text.strip() if c in CHAR_TO_IDX)

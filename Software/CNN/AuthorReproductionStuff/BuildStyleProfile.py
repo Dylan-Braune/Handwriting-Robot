@@ -111,6 +111,30 @@ ALIGN_CONF_PCT = 25
 MIN_PEN_LEN = 1.05
 MIN_LONGEST_STROKE = 0.55
 
+# An ink component this size or smaller is treated as ONE whole letter and
+# awarded to a single character instead of being sliced at the vertical cut.
+# The primary test is relative to the line's own character cell (advance),
+# because that is what separates a lone letter (about one cell) from a pair
+# the pen joined (about two) without any per-author tuning; the x-height cap
+# is a second guard for lines whose advances came out nonsense. Anything
+# bigger is genuinely joined writing and still gets cut at the ligatures.
+COMP_WHOLE_MAX_ADV = 1.35
+COMP_WHOLE_MAX_W = 2.6
+_USE_COMPONENT_OWNERSHIP = True     # temporary A/B switch, see test_extract.py
+
+# Smallest ink blob (as a fraction of x-height squared) still treated as a
+# deliberate dot rather than scanner speckle when recovering components the
+# skeleton tracer produced no polyline for.
+DOT_MIN_AREA = 0.004
+
+# A single letter is never this wide. Unlike the relative advance-based gate
+# (which a confidently-wrong cut satisfies, because the advance is wrong by
+# the same amount), this is an absolute backstop against a stored variant
+# that is really two letters. Wide letters get their own allowance.
+MAX_GLYPH_W = 2.1
+MAX_GLYPH_W_WIDE = 2.9
+_WIDE_CHARS = set('mwMW')
+
 
 # ---------------------------------------------------------------------------
 # Skeleton -> ordered polylines
@@ -456,16 +480,70 @@ def ExtractLineGlyphs(gray, text, model):
         for p in polysAll) or 1.0
 
     bounds = [(int(round(c[2])), int(round(c[3]))) for c in cuts]
+
+    # A letter that the pen never joined to its neighbours is ONE ink
+    # component, so the only honest owner of that component is a single
+    # character -- slicing it at a vertical boundary (which is all the code
+    # below used to do) is how a misplaced cut hands the whole of a 'b' to
+    # the 'a' next to it. Award each separate component to the character
+    # holding most of its ink and let no other character take a piece.
+    # Components too wide to be one letter are genuinely joined writing:
+    # those still get sliced at the ligature cuts, as before.
+    compLab, _nComp = F.LabelComponents(ink, connectivity=8)
+    ownerOfComp = {}
+    if bounds and _USE_COMPONENT_OWNERSHIP:
+        # Width of one character's cell on THIS line, which is what tells a
+        # single letter apart from two letters the pen joined: a lone letter
+        # fits in about one cell, a joined pair needs about two. Measuring it
+        # per line keeps the test free of any x-height or per-author tuning.
+        medAdv = float(np.median([max(1.0, R - L) for (L, R) in bounds]))
+        compIds = np.unique(compLab)
+        for cid in compIds:
+            if cid == 0:
+                continue
+            colsHit = np.where((compLab == cid).any(axis=0))[0]
+            if colsHit.size == 0:
+                continue
+            compW = float(colsHit.max() - colsHit.min() + 1)
+            if compW > COMP_WHOLE_MAX_ADV * medAdv or compW > COMP_WHOLE_MAX_W * xh:
+                continue                      # joined run: slice it as before
+            colMass = (compLab == cid).sum(axis=0).astype(np.float64)
+            best, bestMass = None, 0.0
+            for k2, (L, R) in enumerate(bounds):
+                m = float(colMass[max(0, L):max(0, R)].sum())
+                if m > bestMass:
+                    best, bestMass = cuts[k2][0], m
+            if best is not None:
+                ownerOfComp[int(cid)] = best
+
+    def _CompAt(pt):
+        x, y = int(round(pt[0])), int(round(pt[1]))
+        if 0 <= y < compLab.shape[0] and 0 <= x < compLab.shape[1]:
+            v = int(compLab[y, x])
+            if v:
+                return v
+            y0, y1 = max(0, y - 1), min(compLab.shape[0], y + 2)
+            x0, x1 = max(0, x - 1), min(compLab.shape[1], x + 2)
+            nb = compLab[y0:y1, x0:x1]
+            nz = nb[nb > 0]
+            if nz.size:
+                return int(np.bincount(nz).argmax())
+        return 0
+
     segsFor = {i: [] for i in range(len(charXs))}
     crossings = set()
+    tracedComps = set()
     for p in polysAll:
         cur, curT = [], None
         for pt in p:
-            t = None
-            for k2, (L, R) in enumerate(bounds):
-                if L <= pt[0] < R:
-                    t = cuts[k2][0]
-                    break
+            cid = _CompAt(pt)
+            tracedComps.add(cid)
+            t = ownerOfComp.get(cid)
+            if t is None:
+                for k2, (L, R) in enumerate(bounds):
+                    if L <= pt[0] < R:
+                        t = cuts[k2][0]
+                        break
             if t != curT:
                 if curT is not None and len(cur) >= 2:
                     segsFor[curT].append(cur)
@@ -477,6 +555,23 @@ def ExtractLineGlyphs(gray, text, model):
                 cur.append(pt)
         if curT is not None and len(cur) >= 2:
             segsFor[curT].append(cur)
+
+    # A dot thins to a SINGLE skeleton pixel, and a one-pixel chain is not a
+    # polyline, so every i-dot, j-dot and full stop was being dropped before
+    # it could be assigned to anything -- which is why the stored 'i' was a
+    # bare stem. Recover any component the tracer produced nothing for as a
+    # short dash across its own width, which is what a dot draws as.
+    for cid, owner in ownerOfComp.items():
+        if cid in tracedComps:
+            continue
+        ysC, xsC = np.nonzero(compLab == cid)
+        if ysC.size < max(2, int(round(DOT_MIN_AREA * xh * xh))):
+            continue                        # scan speck, not ink the pen made
+        yc = float(ysC.mean())
+        x0c, x1c = float(xsC.min()), float(xsC.max())
+        if x1c - x0c < 1.0:
+            x0c, x1c = x0c - 0.5, x1c + 0.5
+        segsFor[owner].append([(x0c, yc), (x1c, yc)])
 
     for (i, ch, left, right, ax0, ax1) in cuts:
         if ch == ' ':
@@ -944,8 +1039,9 @@ def BuildAuthorProfile(authorId, parsed, refs=None, prior=None,
     # the most typical MAX_VARIANTS (nearest to the median width/height)
     lib2 = {}
     for ch, insts in lib.items():
+        wMax = MAX_GLYPH_W_WIDE if ch in _WIDE_CHARS else MAX_GLYPH_W
         good = [g for g in insts
-                if 0.05 < g['width'] < 6.0 and (g['top'] - g['bot']) > 0.25
+                if 0.05 < g['width'] < wMax and (g['top'] - g['bot']) > 0.25
                 and len(g['strokes']) <= 6
                 and _ClassOk(ch, g['top'], g['bot'])
                 # ink much wider than the cell the recognizer gave it means
