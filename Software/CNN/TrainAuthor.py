@@ -607,20 +607,50 @@ def BuildNormCache(force=False):
     return rows
 
 
-def Features(model, arr, device, aug=False):
-    im = Image.fromarray(arr)
-    if aug:
-        im = augment_line_image(im)
-    t = tensor_from_resized(im).unsqueeze(0).to(device)
-    with torch.no_grad():
-        x = model.pool1(model.stage1(t))
-        x = model.pool2(model.stage2(x))
-        x = model.stage3(x)
-        x = model.height_pool(x).squeeze(2)
-        return model.width_pool(x).squeeze(2)[0].cpu().numpy()
+class ShapeNormalizedView(Dataset):
+    """rows: BuildNormCache()'s output -- already stroke-normalized PNG
+    arrays (binarize -> skeletonize -> re-ink at constant width), so no
+    further normalization happens here, only the same resize/augment/
+    tensor steps AuthorLabeledView applies for the ink classifier."""
+    def __init__(self, rows, a2i, is_train):
+        self.rows = rows
+        self.a2i = a2i
+        self.is_train = is_train
+
+    def __len__(self):
+        return len(self.rows)
+
+    def __getitem__(self, i):
+        r = self.rows[i]
+        pil_img = resize_line_image_fixed(Image.fromarray(r["png"]))
+        if self.is_train:
+            pil_img = augment_line_image(pil_img)
+        img_tensor = tensor_from_resized(pil_img)
+        return img_tensor, self.a2i[r["author"]], r["author"]
 
 
-def Train(nAug=4, epochs=500, lr=3e-3, seed=0):
+def Train(epochs=20, lr=1e-3, seed=0):
+    """Fine-tunes the WHOLE network (backbone + head) end-to-end on
+    stroke-normalized input, same as main_10authors does for the ink
+    classifier.
+
+    Previously this only trained `author_head` on features extracted
+    ONCE from the frozen, text-model-warm-started backbone (500 epochs,
+    lr 3e-3, head only). That backbone was trained to read CHARACTERS
+    (PaperCRNN) -- a good text recognizer is explicitly supposed to be
+    INVARIANT to the stylistic differences that separate two writers'
+    normalized strokes, so freezing it discarded exactly the signal this
+    classifier needs. Measured effect: pooled val accuracy looked fine
+    (95.3%) but the real-photo confusion matrix showed owen's lines
+    called "yeukita" 80% of the time (118/148) and abhinav's lines
+    split across "552"/"thiya" -- despite owen's own lines sitting
+    CLOSER to each other than to yeukita's in the model's raw 64x640
+    input space (mean L2 11118 vs 15599), ruling out "the two styles
+    just look alike" as the explanation. The ink classifier, which
+    fine-tunes the whole network on the same crops (just not stroke-
+    normalized), gets owen right 147/148 -- so the fix is to let this
+    classifier's backbone learn from the normalized domain too, instead
+    of relying on frozen OCR features it was never trained to need."""
     torch.manual_seed(seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     rows = BuildNormCache()
@@ -632,64 +662,44 @@ def Train(nAug=4, epochs=500, lr=3e-3, seed=0):
     sd = torch.load(SHAPE_TEXT_WEIGHTS, map_location=device, weights_only=False)
     if "model_state_dict" in sd:
         sd = sd["model_state_dict"]
-    print("[Init] loaded %d backbone tensors" % model.load_backbone_from_text_model(sd))
-    model.eval()
+    print("[Init] loaded %d backbone tensors (warm-start only, not frozen)"
+          % model.load_backbone_from_text_model(sd))
 
     tr = [r for r in rows if not r["holdout"]]
     va = [r for r in rows if r["holdout"]]
     print("[Split] train %d / val %d" % (len(tr), len(va)))
 
-    def build(rs, aug):
-        X, Y = [], []
-        for r in rs:
-            for k in range(aug if aug else 1):
-                X.append(Features(model, r["png"], device, aug=bool(k)))
-                Y.append(a2i[r["author"]])
-        return (torch.tensor(np.stack(X), dtype=torch.float32),
-                torch.tensor(Y, dtype=torch.long))
+    trainLoader = DataLoader(ShapeNormalizedView(tr, a2i, is_train=True),
+                             batch_size=16, shuffle=True, collate_fn=collate_fn)
+    valLoader = DataLoader(ShapeNormalizedView(va, a2i, is_train=False),
+                           batch_size=16, shuffle=False, collate_fn=collate_fn)
 
-    print("[Features] extracting...")
-    Xtr, Ytr = build(tr, nAug)
-    Xva, Yva = build(va, 0)
-    print("[Features] train %s val %s" % (tuple(Xtr.shape), tuple(Xva.shape)))
-
-    head = model.author_head.to(device)
-    opt = torch.optim.AdamW(head.parameters(), lr=lr, weight_decay=1e-4)
-    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=epochs)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
     lossFn = nn.CrossEntropyLoss()
     best, bestState = 0.0, None
     for ep in range(1, epochs + 1):
-        head.train()
-        perm = torch.randperm(len(Xtr))
-        for i in range(0, len(perm), 64):
-            b = perm[i:i + 64]
-            opt.zero_grad()
-            lossFn(head(Xtr[b].to(device)), Ytr[b].to(device)).backward()
-            opt.step()
-        sched.step()
-        head.eval()
-        with torch.no_grad():
-            acc = (head(Xva.to(device)).argmax(1).cpu() == Yva).float().mean().item()
+        model.train()
+        for images, authorIdxs, _ in trainLoader:
+            images, authorIdxs = images.to(device), authorIdxs.to(device)
+            optimizer.zero_grad()
+            lossFn(model(images), authorIdxs).backward()
+            nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+            optimizer.step()
+        scheduler.step()
+
+        acc, per_author_acc = evaluate(model, valLoader, device, authors)
         if acc > best:
             best = acc
-            bestState = {k: v.detach().cpu().clone()
-                         for k, v in model.state_dict().items()}
-        if ep % 100 == 0 or ep == 1:
-            print("  epoch %4d  val shape-only author-acc %.3f (best %.3f)" % (ep, acc, best))
+            bestState = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+        print("  epoch %3d/%d  val shape author-acc %.3f (best %.3f)" % (ep, epochs, acc, best))
 
     if bestState:
         model.load_state_dict(bestState)
-    with torch.no_grad():
-        pred = model.author_head(Xva.to(device)).argmax(1).cpu().numpy()
-    print("\nBest val author-accuracy (SHAPE ONLY): %.3f" % best)
-    per = {}
-    for p, y in zip(pred, Yva.numpy()):
-        d = per.setdefault(authors[y], [0, 0])
-        d[1] += 1
-        d[0] += int(p == y)
-    for a in sorted(per):
-        c, t = per[a]
-        print("  %s: %.3f  (%d/%d)" % (a, c / max(1, t), c, t))
+    print("\nBest val author-accuracy (SHAPE, backbone fine-tuned): %.3f" % best)
+    _, per_author_acc = evaluate(model, valLoader, device, authors)
+    for a in sorted(per_author_acc):
+        print("  %s: %.3f" % (a, per_author_acc[a]))
 
     SHAPE_OUT_WEIGHTS.parent.mkdir(parents=True, exist_ok=True)
     torch.save({"model_state_dict": model.state_dict(),

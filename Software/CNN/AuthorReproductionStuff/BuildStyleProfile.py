@@ -82,7 +82,19 @@ DATA_DIR = SCRIPT_DIR.parents[2] / "Data" / "Datasets" / "IAMpages10"
 CACHE_DIR = SCRIPT_DIR.parent / "NOGIT" / "line_cache_authors10"
 NOGIT_DIR = SCRIPT_DIR.parent / "NOGIT"
 TEXT_WEIGHTS = SCRIPT_DIR.parent / "weights" / "paper_cnn_bilstm_ctc_best.pt"
+# Glyph cutting is CTC forced alignment, so the personal authors' letter
+# boundaries are only as good as the recogniser that reads their writing.
+# The personal fine-tune used to be the best reader of it, but it was
+# trained on SegmentPage crops: measured on the SegmentLean crops now used
+# everywhere it reads Thiya at 67.7% char / 20.0% word, against 96.5% /
+# 85.3% for the joint model, so it was placing her cuts nearly blind.
+# Prefer the joint recogniser when it is present.
 PERSONAL_WEIGHTS = NOGIT_DIR.parent / "weights" / "paper_cnn_bilstm_ctc_personal_best.pt"
+for _pw in ("paper_cnn_bilstm_ctc_joint_best.pt",):
+    _cand = NOGIT_DIR.parent / "weights" / _pw
+    if _cand.exists():
+        PERSONAL_WEIGHTS = _cand
+        break
 # Prefer the best available recogniser, in order:
 #   1) joint (Teklia + personal, warm-started, trained together every
 #      epoch so nothing gets forgotten) -- 94.03%/91.82% char-acc on
@@ -107,20 +119,15 @@ MAX_VARIANTS_PER_CHAR = 12
 # them) are not trustworthy. Higher = fewer but cleaner glyphs.
 ALIGN_CONF_PCT = 25
 
-# variant fragment gates (0 disables)
-MIN_PEN_LEN = 1.05
+# Variant fragment gates. The pen-length test is RELATIVE to what the same
+# character usually measures, because characters legitimately differ by a lot:
+# a dotless 'i' is one stroke of ~0.7 x-heights while an 'o' is ~2.3, so the
+# old fixed 1.05 floor threw away 77% of this project's dotless 'i' variants
+# and kept only the ones a neighbouring letter had bled into -- every stored
+# 'i' came out as "si", "ti", "fi". MIN_PEN_ABS still kills true specks.
+FRAGMENT_PEN_FRAC = 0.5
+MIN_PEN_ABS = 0.30
 MIN_LONGEST_STROKE = 0.55
-
-# An ink component this size or smaller is treated as ONE whole letter and
-# awarded to a single character instead of being sliced at the vertical cut.
-# The primary test is relative to the line's own character cell (advance),
-# because that is what separates a lone letter (about one cell) from a pair
-# the pen joined (about two) without any per-author tuning; the x-height cap
-# is a second guard for lines whose advances came out nonsense. Anything
-# bigger is genuinely joined writing and still gets cut at the ligatures.
-COMP_WHOLE_MAX_ADV = 1.35
-COMP_WHOLE_MAX_W = 2.6
-_USE_COMPONENT_OWNERSHIP = True     # temporary A/B switch, see test_extract.py
 
 # Smallest ink blob (as a fraction of x-height squared) still treated as a
 # deliberate dot rather than scanner speckle when recovering components the
@@ -276,10 +283,25 @@ def _JoinAtJunctions(chains, maxAngleDeg=75.0):
 
 
 def SimplifyPolyline(poly, eps=0.6):
-    """Douglas-Peucker."""
+    """Douglas-Peucker, with closed curves split before simplifying.
+
+    Douglas-Peucker measures every point against the chord from the first
+    point to the last. On a CLOSED curve those are the same point, the chord
+    has no length and no direction, so every distance measures zero and the
+    whole loop collapses to a single repeated point. An 'o' came out as a
+    zero-length dot -- measured at 23% of Yeukita's stored 'o' variants,
+    against 2% for the open-curve 'e'. Splitting the loop at its farthest
+    point from the start gives two open arcs, which the algorithm handles
+    correctly."""
     if len(poly) < 3:
         return poly
     p = np.asarray(poly, np.float64)
+    fromStart = np.hypot(*(p - p[0]).T)
+    if fromStart[-1] <= max(1.5, 0.25 * fromStart.max()):
+        far = int(np.argmax(fromStart))
+        if 0 < far < len(poly) - 1:
+            return SimplifyPolyline(poly[:far + 1], eps)[:-1] + \
+                   SimplifyPolyline(poly[far:], eps)
     a, b = p[0], p[-1]
     ab = b - a
     L = np.hypot(*ab) + 1e-9
@@ -421,11 +443,24 @@ def ExtractLineGlyphs(gray, text, model):
     topAbove = np.clip((base - hiY) / max(1.0, xh), 0.0, 3.0)
     thin = colSm / max(1e-6, float(np.percentile(colSm[colSm > 0], 60))
                        if (colSm > 0).any() else 1.0)
+    # NOTE: penalising columns that cross a loop (two or more separate
+    # vertical ink runs), on the theory that the cost above prefers slicing
+    # round letters down their open middle, was tried and measured to change
+    # nothing (Yeukita 'o' slivers stayed at 27%). The real cause of the
+    # broken 'o' was SimplifyPolyline collapsing closed curves -- see there.
     cutCost = thin + 1.15 * topAbove
     cutCost[colProf == 0] = 0.0          # a true gap is always a fine cut
     snapR = max(3, int(round(xh * 0.5)))
 
-    def _Snap(x):
+    # NOTE: snapping boundaries to the nearest true ink gap, searched well
+    # beyond `snapR`, was tried and measured WORSE (Yeukita's dropped-glyph
+    # rate 12% -> 18%): inside a word there is no gap to find, so internal
+    # boundaries got dragged onto the distant word gap and the cells between
+    # them collapsed. A gap already wins inside `snapR` anyway, via the
+    # cutCost==0 line above, which is the right amount of preference.
+    def _Snap(x, floor=None):
+        """Cheapest column by the thin/low cost near `x`. A true ink gap
+        scores 0 so it wins whenever one is within reach."""
         a = int(np.clip(round(x) - snapR, 0, rawW - 1))
         b = int(np.clip(round(x) + snapR + 1, 1, rawW))
         if b - a < 2:
@@ -453,17 +488,29 @@ def ExtractLineGlyphs(gray, text, model):
         charXs.append((ch, x0, x1))
     valid = [(i, c) for i, c in enumerate(charXs) if c[1] is not None]
     centres = [0.5 * (c[1] + c[2]) for _, c in valid]
+    # One shared, strictly increasing boundary array rather than snapping each
+    # character's left and right edge on its own. Snapped independently, two
+    # neighbouring boundaries could land on the SAME column, leaving the
+    # character between them an empty cell and no glyph at all -- which is
+    # what produced the near-empty variants in the stored library.
+    nV = len(valid)
+    minCell = max(1.0, 0.08 * xh)
+    bnd = [0.0] * (nV + 1)
+    bnd[0] = max(0.0, centres[0] - (0.5 * (centres[1] - centres[0])
+                                    if nV > 1 else xh))
+    bnd[nV] = min(float(rawW), centres[-1] + (0.5 * (centres[-1] - centres[-2])
+                                              if nV > 1 else xh))
+    for k2 in range(1, nV):
+        s = _Snap(0.5 * (centres[k2 - 1] + centres[k2]), floor=bnd[k2 - 1])
+        lo = bnd[k2 - 1] + minCell
+        # leave room for the cells still to come, but never at the cost of
+        # going backwards -- `lo` wins if the line is too cramped for both
+        hi = max(lo, bnd[nV] - (nV - k2) * minCell)
+        bnd[k2] = min(max(s, lo), hi)
     cuts = []
-    for k2 in range(len(valid)):
+    for k2 in range(nV):
         i, (ch, x0, x1) = valid[k2]
-        c = centres[k2]
-        left = (c - 0.5 * (centres[1] - centres[0]) if len(centres) > 1 else c - xh) \
-            if k2 == 0 else 0.5 * (centres[k2 - 1] + c)
-        right = (c + 0.5 * (centres[-1] - centres[-2]) if len(centres) > 1 else c + xh) \
-            if k2 == len(valid) - 1 else 0.5 * (c + centres[k2 + 1])
-        left = max(0.0, _Snap(left) if k2 > 0 else left)
-        right = min(float(rawW), _Snap(right) if k2 < len(valid) - 1 else right)
-        cuts.append((i, ch, left, right, x0, x1))
+        cuts.append((i, ch, bnd[k2], bnd[k2 + 1], x0, x1))
 
     glyphs = [None] * len(charXs)
     inkArea = float(ink.sum())
@@ -481,54 +528,13 @@ def ExtractLineGlyphs(gray, text, model):
 
     bounds = [(int(round(c[2])), int(round(c[3]))) for c in cuts]
 
-    # A letter that the pen never joined to its neighbours is ONE ink
-    # component, so the only honest owner of that component is a single
-    # character -- slicing it at a vertical boundary (which is all the code
-    # below used to do) is how a misplaced cut hands the whole of a 'b' to
-    # the 'a' next to it. Award each separate component to the character
-    # holding most of its ink and let no other character take a piece.
-    # Components too wide to be one letter are genuinely joined writing:
-    # those still get sliced at the ligature cuts, as before.
+    # NOTE: awarding each unjoined ink component WHOLE to the character
+    # holding most of it, instead of slicing it at the vertical boundary, was
+    # tried as a fix for cuts that hand one letter's ink to its neighbour. It
+    # measured no better on the print hands and slightly worse on 551, so it
+    # is not here; the component map below is kept only to find the dots the
+    # skeleton tracer drops.
     compLab, _nComp = F.LabelComponents(ink, connectivity=8)
-    ownerOfComp = {}
-    if bounds and _USE_COMPONENT_OWNERSHIP:
-        # Width of one character's cell on THIS line, which is what tells a
-        # single letter apart from two letters the pen joined: a lone letter
-        # fits in about one cell, a joined pair needs about two. Measuring it
-        # per line keeps the test free of any x-height or per-author tuning.
-        medAdv = float(np.median([max(1.0, R - L) for (L, R) in bounds]))
-        compIds = np.unique(compLab)
-        for cid in compIds:
-            if cid == 0:
-                continue
-            colsHit = np.where((compLab == cid).any(axis=0))[0]
-            if colsHit.size == 0:
-                continue
-            compW = float(colsHit.max() - colsHit.min() + 1)
-            if compW > COMP_WHOLE_MAX_ADV * medAdv or compW > COMP_WHOLE_MAX_W * xh:
-                continue                      # joined run: slice it as before
-            colMass = (compLab == cid).sum(axis=0).astype(np.float64)
-            best, bestMass = None, 0.0
-            for k2, (L, R) in enumerate(bounds):
-                m = float(colMass[max(0, L):max(0, R)].sum())
-                if m > bestMass:
-                    best, bestMass = cuts[k2][0], m
-            if best is not None:
-                ownerOfComp[int(cid)] = best
-
-    def _CompAt(pt):
-        x, y = int(round(pt[0])), int(round(pt[1]))
-        if 0 <= y < compLab.shape[0] and 0 <= x < compLab.shape[1]:
-            v = int(compLab[y, x])
-            if v:
-                return v
-            y0, y1 = max(0, y - 1), min(compLab.shape[0], y + 2)
-            x0, x1 = max(0, x - 1), min(compLab.shape[1], x + 2)
-            nb = compLab[y0:y1, x0:x1]
-            nz = nb[nb > 0]
-            if nz.size:
-                return int(np.bincount(nz).argmax())
-        return 0
 
     segsFor = {i: [] for i in range(len(charXs))}
     crossings = set()
@@ -536,14 +542,14 @@ def ExtractLineGlyphs(gray, text, model):
     for p in polysAll:
         cur, curT = [], None
         for pt in p:
-            cid = _CompAt(pt)
-            tracedComps.add(cid)
-            t = ownerOfComp.get(cid)
-            if t is None:
-                for k2, (L, R) in enumerate(bounds):
-                    if L <= pt[0] < R:
-                        t = cuts[k2][0]
-                        break
+            px, py = int(round(pt[0])), int(round(pt[1]))
+            if 0 <= py < compLab.shape[0] and 0 <= px < compLab.shape[1]:
+                tracedComps.add(int(compLab[py, px]))
+            t = None
+            for k2, (L, R) in enumerate(bounds):
+                if L <= pt[0] < R:
+                    t = cuts[k2][0]
+                    break
             if t != curT:
                 if curT is not None and len(cur) >= 2:
                     segsFor[curT].append(cur)
@@ -561,12 +567,21 @@ def ExtractLineGlyphs(gray, text, model):
     # it could be assigned to anything -- which is why the stored 'i' was a
     # bare stem. Recover any component the tracer produced nothing for as a
     # short dash across its own width, which is what a dot draws as.
-    for cid, owner in ownerOfComp.items():
-        if cid in tracedComps:
+    minDotPx = max(2, int(round(DOT_MIN_AREA * xh * xh)))
+    for cid in np.unique(compLab):
+        if cid == 0 or int(cid) in tracedComps:
             continue
         ysC, xsC = np.nonzero(compLab == cid)
-        if ysC.size < max(2, int(round(DOT_MIN_AREA * xh * xh))):
+        if ysC.size < minDotPx:
             continue                        # scan speck, not ink the pen made
+        xc = float(xsC.mean())
+        owner = None
+        for k2, (L, R) in enumerate(bounds):
+            if L <= xc < R:
+                owner = cuts[k2][0]
+                break
+        if owner is None:
+            continue
         yc = float(ysC.mean())
         x0c, x1c = float(xsC.min()), float(xsC.max())
         if x1c - x0c < 1.0:
@@ -1040,6 +1055,11 @@ def BuildAuthorProfile(authorId, parsed, refs=None, prior=None,
     lib2 = {}
     for ch, insts in lib.items():
         wMax = MAX_GLYPH_W_WIDE if ch in _WIDE_CHARS else MAX_GLYPH_W
+        # what THIS character's own pen path usually measures, so the
+        # fragment test below adapts to a one-stroke 'i' and a looping 'o'
+        # alike instead of holding both to one number
+        penFloor = max(MIN_PEN_ABS, FRAGMENT_PEN_FRAC *
+                       float(np.median([_PenLength(g) for g in insts])))
         good = [g for g in insts
                 if 0.05 < g['width'] < wMax and (g['top'] - g['bot']) > 0.25
                 and len(g['strokes']) <= 6
@@ -1050,7 +1070,7 @@ def BuildAuthorProfile(authorId, parsed, refs=None, prior=None,
                 # a letter needs a letter's worth of pen path: a light hand
                 # whose thin strokes broke up in the scan leaves fragments
                 # that pass every shape test but are not the letter
-                and _PenLength(g) >= MIN_PEN_LEN
+                and _PenLength(g) >= penFloor
                 and _LongestStroke(g) >= MIN_LONGEST_STROKE]
         if not good:
             continue

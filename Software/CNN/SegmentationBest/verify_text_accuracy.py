@@ -30,9 +30,9 @@ AUTHORS = ["Abhinav", "Dylan", "Owen", "Thiya", "Yeukita"]
 CROPS_ROOT = THIS_DIR / "Crops"
 
 
-def load_model(device):
+def load_model(device, weights=None):
     model = PaperCRNN(num_classes=len(CHARSET) + 1).to(device)
-    sd = torch.load(TEXT_WEIGHTS, map_location=device, weights_only=False)
+    sd = torch.load(weights or TEXT_WEIGHTS, map_location=device, weights_only=False)
     if "model_state_dict" in sd:
         sd = sd["model_state_dict"]
     model.load_state_dict(sd)
@@ -62,6 +62,9 @@ def parse_args():
     p.add_argument("--crop", type=Path, default=None,
                     help="Classify one arbitrary crop image directly and print its predicted text -- "
                          "skips the whole Crops/ folder and accuracy scoring (no ground truth for a loose file).")
+    p.add_argument("--weights", type=Path, default=None,
+                    help="Text-recognizer checkpoint to score with (default: the joint one in weights/). "
+                         "Use this to compare two checkpoints without overwriting either.")
     return p.parse_args()
 
 
@@ -69,8 +72,9 @@ def main():
     args = parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[Device] {device}")
-    print(f"[Weights] {TEXT_WEIGHTS}")
-    model = load_model(device)
+    weights = args.weights or TEXT_WEIGHTS
+    print(f"[Weights] {weights}")
+    model = load_model(device, weights)
 
     if args.crop:
         pred = read_text(model, Image.open(args.crop).convert("L"), device)
