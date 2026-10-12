@@ -58,7 +58,7 @@ from flask_cors import CORS
 from PIL import Image
 
 import SynthesizeHandwriting as SY
-import SegmentPage as PS
+import SegmentLean as SL
 import web_render_helpers as WRH
 import camera_capture as CAM
 from np_inference.text_model import PaperCRNNNumpy, ReadText, CharAcc
@@ -275,10 +275,10 @@ def api_classify():
     tmp_path = UPLOAD_DIR / f"_classify_tmp_{image_id}.png"
     Image.fromarray(gray).save(tmp_path)
     try:
-        results, _preview, _meta = PS.ProcessPage(str(tmp_path))
+        lean_lines, _overlay, _info = SL.SegmentLines(str(tmp_path))
     finally:
         tmp_path.unlink(missing_ok=True)
-    line_crops = [r["raw_crop"] for r in results if r.get("tag") == "TEXT"]
+    line_crops = [np.asarray(ln["image"]) for ln in lean_lines]
     if not line_crops:
         return jsonify({"error": "No handwriting lines were detected in this image."}), 422
 

@@ -220,8 +220,11 @@ def ExtractPrintedGroundTruth(rawGrayscaleArray, topY, headerTopY=None):
         return []
 
 
-def ReadLabelLines(imgPath):
-    labelPath = os.path.splitext(imgPath)[0] + "_labels.txt"
+def ReadLabelLines(imgPath, labelPath=None):
+    """labelPath defaults to the image's own "<stem>_labels.txt" sibling;
+    pass it explicitly for a dataset (e.g. PersonalDataset/<Author>/) that
+    keeps its images and labels in separate Pages/Labels folders."""
+    labelPath = labelPath or (os.path.splitext(imgPath)[0] + "_labels.txt")
     if not os.path.exists(labelPath):
         return []
 

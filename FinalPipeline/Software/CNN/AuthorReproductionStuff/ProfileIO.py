@@ -20,11 +20,187 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import SegmentPage as F
 from np_inference.text_model import CHAR_TO_IDX
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROFILE_DIR = SCRIPT_DIR.parent / "NOGIT" / "StyleProfiles10"
+
+
+# Image primitives copied verbatim from SegmentPage.py rather than
+# imported from it: importing that module for these dragged its whole
+# 1,659 lines of page-layout analysis into every live request's import
+# closure, just for Otsu, a closing and a connected-component labeller.
+# Same reasoning that split this module out of BuildStyleProfile.py.
+# Verified identical to the originals; keep them so if SegmentPage changes.
+
+# ---------------------------------------------------------------------------
+# Box sums / blurs
+# ---------------------------------------------------------------------------
+def _Integral(img):
+    """Summed-area table with a zero row/col on top/left."""
+    ii = np.zeros((img.shape[0] + 1, img.shape[1] + 1), np.float64)
+    np.cumsum(np.cumsum(img, axis=0), axis=1, out=ii[1:, 1:])
+    return ii
+
+
+def BoxSum(img, ry, rx):
+    """Sum over a (2*ry+1) x (2*rx+1) window centred per pixel, with edge
+    clamping (window truncated at borders)."""
+    h, w = img.shape
+    ii = _Integral(img)
+    y = np.arange(h)
+    x = np.arange(w)
+    y1 = np.clip(y - ry, 0, h)[:, None]
+    y2 = np.clip(y + ry + 1, 0, h)[:, None]
+    x1 = np.clip(x - rx, 0, w)[None, :]
+    x2 = np.clip(x + rx + 1, 0, w)[None, :]
+    return ii[y2, x2] - ii[y1, x2] - ii[y2, x1] + ii[y1, x1]
+
+
+def BoxCount(ry, rx, h, w):
+    """Pixel count of the clamped window at each position."""
+    y = np.arange(h)
+    x = np.arange(w)
+    cy = (np.clip(y + ry + 1, 0, h) - np.clip(y - ry, 0, h))[:, None]
+    cx = (np.clip(x + rx + 1, 0, w) - np.clip(x - rx, 0, w))[None, :]
+    return cy * cx
+
+
+# ---------------------------------------------------------------------------
+# Thresholding
+# ---------------------------------------------------------------------------
+def OtsuThresholdValue(gray):
+    hist = np.bincount(gray.ravel(), minlength=256).astype(np.float64)
+    total = hist.sum()
+    sumAll = np.dot(np.arange(256), hist)
+    sumB = wB = 0.0
+    maxVar, thresh = 0.0, 0
+    for t in range(256):
+        wB += hist[t]
+        if wB == 0:
+            continue
+        wF = total - wB
+        if wF == 0:
+            break
+        sumB += t * hist[t]
+        mB = sumB / wB
+        mF = (sumAll - sumB) / wF
+        var = wB * wF * (mB - mF) ** 2
+        if var > maxVar:
+            maxVar, thresh = var, t
+    return thresh
+
+
+# ---------------------------------------------------------------------------
+# Binary morphology (rectangular kernels) via box sums
+# ---------------------------------------------------------------------------
+def Dilate(mask, ky, kx):
+    """Kernel of size ky x kx (odd sizes; centre anchored)."""
+    ry, rx = ky // 2, kx // 2
+    s = BoxSum(mask.astype(np.float64), ry, rx)
+    # asymmetric even kernels: cv2 anchors differently, but the pipeline only
+    # uses small symmetric-ish kernels where this is equivalent enough
+    return s > 0.5
+
+
+def Erode(mask, ky, kx):
+    ry, rx = ky // 2, kx // 2
+    s = BoxSum(mask.astype(np.float64), ry, rx)
+    cnt = BoxCount(ry, rx, *mask.shape)
+    return s >= cnt - 0.5
+
+
+def Close(mask, ky, kx):
+    return Erode(Dilate(mask, ky, kx), ky, kx)
+
+
+# ---------------------------------------------------------------------------
+# Connected components: run-based two-pass union-find
+# ---------------------------------------------------------------------------
+class _RunUF:
+    __slots__ = ('parent',)
+
+    def __init__(self, n):
+        self.parent = list(range(n))
+
+    def find(self, a):
+        p = self.parent
+        while p[a] != a:
+            p[a] = p[p[a]]
+            a = p[a]
+        return a
+
+    def union(self, a, b):
+        ra, rb = self.find(a), self.find(b)
+        if ra != rb:
+            self.parent[ra] = rb
+
+
+def _RowRuns(mask):
+    """Per row: arrays of (start, end) column indices of ink runs."""
+    h, w = mask.shape
+    padded = np.zeros((h, w + 2), bool)
+    padded[:, 1:-1] = mask
+    d = np.diff(padded.astype(np.int8), axis=1)
+    runs = []
+    for r in range(h):
+        starts = np.nonzero(d[r] == 1)[0]
+        ends = np.nonzero(d[r] == -1)[0]
+        runs.append((starts, ends))
+    return runs
+
+
+def LabelComponents(mask, connectivity=8):
+    """Returns (labels int32 array with 0 = background, count)."""
+    h, w = mask.shape
+    rowRuns = _RowRuns(mask)
+    # global run ids
+    runIdStart = []
+    total = 0
+    for r in range(h):
+        runIdStart.append(total)
+        total += len(rowRuns[r][0])
+    if total == 0:
+        return np.zeros((h, w), np.int32), 0
+
+    uf = _RunUF(total)
+    pad = 1 if connectivity == 8 else 0
+    for r in range(1, h):
+        s1, e1 = rowRuns[r - 1]
+        s2, e2 = rowRuns[r]
+        if len(s1) == 0 or len(s2) == 0:
+            continue
+        i = j = 0
+        while i < len(s1) and j < len(s2):
+            # runs [s1[i], e1[i]) and [s2[j], e2[j]) touch?
+            if s1[i] < e2[j] + pad and s2[j] < e1[i] + pad:
+                uf.union(runIdStart[r - 1] + i, runIdStart[r] + j)
+            if e1[i] < e2[j]:
+                i += 1
+            else:
+                j += 1
+
+    # resolve roots -> compact labels
+    rootLabel = {}
+    runLabel = np.zeros(total, np.int32)
+    nextLabel = 1
+    for k in range(total):
+        root = uf.find(k)
+        lab = rootLabel.get(root)
+        if lab is None:
+            lab = nextLabel
+            rootLabel[root] = lab
+            nextLabel += 1
+        runLabel[k] = lab
+
+    labels = np.zeros((h, w), np.int32)
+    for r in range(h):
+        starts, ends = rowRuns[r]
+        base = runIdStart[r]
+        for i in range(len(starts)):
+            labels[r, starts[i]:ends[i]] = runLabel[base + i]
+    return labels, nextLabel - 1
+
 
 
 def LoadProfile(authorId):
@@ -150,7 +326,7 @@ def BinarizeLine(gray, stripRules=True, closeGaps=True):
     everything downstream -- they glue every letter together (so the hand
     measures as fully cursive), drag the slant estimate toward horizontal,
     and paste a bar across every extracted glyph."""
-    thr = F.OtsuThresholdValue(gray)
+    thr = OtsuThresholdValue(gray)
     ink = gray < thr
     if stripRules and ink.any():
         h = ink.shape[0]
@@ -169,8 +345,8 @@ def BinarizeLine(gray, stripRules=True, closeGaps=True):
         # the kernel is a fraction of the stroke pitch, not a fixed size.
         h = ink.shape[0]
         k = int(np.clip(round(0.045 * h), 2, 4))
-        ink = F.Close(ink, k, k)
-    labels, n = F.LabelComponents(ink, connectivity=8)
+        ink = Close(ink, k, k)
+    labels, n = LabelComponents(ink, connectivity=8)
     if n:
         areas = np.bincount(labels.ravel())
         keep = areas >= 6

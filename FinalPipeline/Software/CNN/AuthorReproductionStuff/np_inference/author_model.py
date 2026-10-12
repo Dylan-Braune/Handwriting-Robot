@@ -2,9 +2,8 @@
 (TrainAuthor.py) + a ClassifyImage() matching EvaluateStyle.ClassifyImage's
 behavior. No torch import in this file.
 
-StrokeNormalize's binarize/skeletonize steps reuse ProfileIO's
-BinarizeLine/Skeletonize/CoreBand and SegmentPage.Dilate -- both are
-pure numpy with no torch dependency."""
+StrokeNormalize's binarize/skeletonize/dilate steps all reuse ProfileIO,
+which is pure numpy with no torch dependency."""
 
 import os
 import sys
@@ -21,8 +20,7 @@ CNN_DIR = SCRIPT_DIR.parent  # .../Software/CNN
 sys.path.insert(0, str(SCRIPT_DIR))
 sys.path.insert(0, str(CNN_DIR))
 
-import SegmentPage as _RawOps  # noqa: E402  (pure numpy, see module docstring)
-import ProfileIO as _SP  # noqa: E402  (BinarizeLine/Skeletonize/CoreBand, pure numpy)
+import ProfileIO as _SP  # noqa: E402  (binarize/skeletonize/band + Dilate, pure numpy)
 
 from .text_model import resize_line_image_fixed, tensor_from_resized  # noqa: E402
 
@@ -50,7 +48,7 @@ def StrokeNormalize(gray, penWidthXh=PEN_WIDTH_XH):
     if not sk.any():
         return None
     k = 2 * (w // 2) + 1
-    out = _RawOps.Dilate(sk, k, k)
+    out = _SP.Dilate(sk, k, k)
     return Image.fromarray(((~out) * 255).astype(np.uint8))
 
 

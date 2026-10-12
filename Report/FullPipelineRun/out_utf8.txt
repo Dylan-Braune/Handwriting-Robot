@@ -1,0 +1,89 @@
+=== 14. Re-verification after the shape-classifier training fix ===
+This section re-measures the pipeline against the FIXED writer-ID judge and is the current state of the system. Sections 6 and 7 above are kept as the before-picture; they remain accurate for the checkpoints they were measured on.
+The shape trainer had been warm-starting the CNN backbone from the text recogniser's weights, then freezing it: model.eval(), and 500 epochs training only author_head on features extracted once from that fixed backbone. An OCR backbone is explicitly trained to be invariant to stylistic differences between writers, so the shape classifier could separate only authors whose OCR features already differed. The retrained version fine-tunes the whole network end-to-end.
+  14.1 Writer-ID and text accuracy on synthesised text, all 13 authors
+Metric | Before fix | After fix | Δ
+shape writer-ID — rendered | 74% | 92% | +18pp
+shape writer-ID — G-code | 74% | 90% | +15pp
+INK writer-ID — G-code (untouched control) | 26% | 28% | +3pp
+text character accuracy — G-code | 80% | 79% | -1pp
+text character accuracy — rendered | 79% | 79% | -0pp
+text word accuracy — G-code | 43% | 44% | +0pp
+---
+The ink row is the control, and it is the most informative line in the table. That checkpoint and its preprocessing were not touched, so its score should be flat — and it is. The character-accuracy rows are also flat. Only the shape writer-ID column moves. That combination says the improvement is in the judge, not in the drawing: synthesis produces the same text at the same legibility, and is now correctly attributed.
+  14.2 Per author, writer-ID on the drawn line
+Author | shape before | shape after | Δ | ink after (control) | char after | word after
+150 | 33% | 33% | +0 | 0% | 87% | 54%
+151 | 67% | 100% | +33 | 0% | 60% | 11%
+152 | 100% | 100% | +0 | 0% | 75% | 29%
+153 | 67% | 100% | +33 | 0% | 67% | 24%
+384 | 33% | 100% | +67 | 0% | 94% | 74%
+551 | 100% | 100% | +0 | 0% | 66% | 26%
+552 | 100% | 100% | +0 | 0% | 86% | 47%
+588 | 100% | 100% | +0 | 0% | 78% | 28%
+abhinav | 0% | 100% | +100 | 100% | 75% | 32%
+dylan | 100% | 100% | +0 | 100% | 94% | 73%
+owen | 100% | 100% | +0 | 100% | 96% | 85%
+thiya | 100% | 100% | +0 | 0% | 65% | 22%
+yeukita | 67% | 67% | +0 | 0% | 88% | 60%
+---
+The largest gains are exactly where the broken judge had been collapsing: abhinav 0% → 100%, 384 33% → 100%, 151 and 153 67% → 100%. The authors that were already correct stay correct.
+  14.3 Real handwriting: the collapse is gone
+Author / head | before | after | Δ
+150 | 100.0% (n=91) | 98.9% (n=91) | -1.1pp
+151 | 100.0% (n=86) | 100.0% (n=86) | +0.0pp
+152 | 100.0% (n=87) | 100.0% (n=87) | +0.0pp
+153 | 100.0% (n=97) | 99.0% (n=97) | -1.0pp
+384 | 100.0% (n=83) | 100.0% (n=83) | +0.0pp
+551 | 98.8% (n=86) | 100.0% (n=86) | +1.2pp
+552 | 100.0% (n=73) | 93.2% (n=73) | -6.8pp
+588 | 100.0% (n=86) | 100.0% (n=86) | +0.0pp
+abhinav | 64.1% (n=206) | 97.1% (n=206) | +33.0pp
+dylan | 85.5% (n=124) | 84.7% (n=124) | -0.8pp
+owen | 18.9% (n=148) | 67.6% (n=148) | +48.6pp
+thiya | 90.7% (n=75) | 93.3% (n=75) | +2.7pp
+yeukita | 94.8% (n=116) | 99.1% (n=116) | +4.3pp
+shape — overall | 83.4% | 93.7% | +10.3pp
+ink — overall (untouched control) | 99.8% | 99.8% | +0.0pp
+---
+The signature of the bug was concentration: before the fix 118 of owen's 148 real lines were called yeukita at 87-100% confidence, and 41 of abhinav's 206 went to 552. After the fix abhinav's residual misses are 3 to owen, 2 to thiya and 1 to 384 — scattered, low-count, which is what a model at its limit looks like. owen still loses 48 lines to yeukita, down from 118; that residual is now the one real remaining style-separation question, and it is a synthesis-side question because the same head reads yeukita herself at 99.1%.
+Note also that the earlier claim of 99.3% for owen is not reproduced here: on these 669 crops the retrained head scores owen 67.6%. The cause of the difference has not been established — the scored line set differs between that measurement and this one — so the number reported here is the one to quote for this crop set.
+  14.4 Confusion after the fix
+ink head — true author | lines | most-confused-as
+150 | 91 | none
+151 | 86 | none
+152 | 87 | none
+153 | 97 | none
+384 | 83 | none
+551 | 86 | 153 × 1
+552 | 73 | none
+588 | 86 | none
+abhinav | 206 | none
+dylan | 124 | owen × 1
+owen | 148 | yeukita × 1
+thiya | 75 | none
+yeukita | 116 | none
+---
+shape head — true author | lines | most-confused-as
+150 | 91 | owen × 1
+151 | 86 | none
+152 | 87 | none
+153 | 97 | 151 × 1
+384 | 83 | none
+551 | 86 | none
+552 | 73 | owen × 5
+588 | 86 | none
+abhinav | 206 | owen × 3, thiya × 2, 384 × 1
+dylan | 124 | yeukita × 11, owen × 8
+owen | 148 | yeukita × 48
+thiya | 75 | 151 × 3, 551 × 2
+yeukita | 116 | owen × 1
+---
+Scattered residual error indicates a model at its genuine limit; error concentrated on one neighbour at high confidence indicates a systematic fault. The second pattern is what section 6.3 documented, and it is now replaced by the first — with the partial exception of owen, whose remaining errors do still concentrate on a single neighbour.
+Figure — owen: shape-head verdicts on real lines after the fix (green = correct).
+Figure — abhinav: shape-head verdicts on real lines after the fix (green = correct).
+Figure — yeukita: shape-head verdicts on real lines after the fix (green = correct).
+  14.5 What this changes, and what it does not
+Changed: writer-ID on synthesised text is now decided by a judge that can discriminate these authors, so those figures carry information for the first time. The framing in section 6.5, which treated owen-vs-yeukita as intrinsically near-identical styles, was largely a consequence of the frozen backbone and should not be carried forward — though owen's residual 48 misses suggest a smaller real effect may remain.
+Not changed: the thin-skeleton and pen-width findings in section 6.4. Those concern the ink/skeleton representation and the 64px canvas, neither of which this fix touches. The survival measurement — a 1px skeleton resolving to 0.45px at that canvas — stands on its own, as does the conclusion that stroke thickness is not what separates these authors.
+Still true: writer-ID measured on synthesised text remains partly self-referential, because the shape head both selects candidates inside SynthesizeJointBestOf and scores the result. A judge that selects cannot be fully independent of what it selects, which is why the ink column and the real-line table above are reported next to it rather than replaced by it.
