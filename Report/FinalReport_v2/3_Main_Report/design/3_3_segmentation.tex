@@ -1,0 +1,246 @@
+\subsection{Page conditioning and line segmentation}
+\label{sec:segmentation}
+
+This subsection describes the design of the first processing block of the classification chain (functional units FU~2.1 and FU~2.2 of the proposal): the block that turns a photograph of a handwritten page into a list of clean, deskewed, white-background images of single text lines, which are the input of the text recogniser (Section~\ref{sec:textrec}) and of the writer classifier (Section~\ref{sec:writerid}).
+Every algorithm in this block was designed and written by the student in Python using plain array arithmetic; no image-processing library was used, and the camera interface is the only external function involved.
+
+\subsubsection{Motivation and design goals}
+
+Requirement R2 demands that the written content and the writer are decoded from a page that is photographed by a camera, and requirement R4 allows 2\,s for image capture and conditioning.
+Both requirements depend on this block, because every recognition error that is caused by a badly cropped line cannot be repaired by the networks that follow.
+A photograph differs from a flat-bed scan by seven nuisances that the block has to remove: uneven illumination (a lamp gradient or a shadow can make the paper in one corner darker than the ink in another), surroundings (desk, hand, neighbouring page), skew, printed structure (ruled and margin lines that touch the handwriting), faint marks (bleed-through, pale print, lightly pressed strokes), non-text content (diagrams) and touching lines (descenders meeting ascenders).
+The design goals that follow are that the block shall (a)~work for any camera resolution and handwriting size without manual tuning, (b)~never delete handwriting in order to remove a nuisance, (c)~separate text from non-text, and (d)~use only operations that are cheap enough for a single-board computer.
+
+The central design device that serves goal~(a) is \emph{scale invariance}.
+The module first normalises every photograph to a long side of 2400 pixels, and then estimates the median glyph height $\wht$ (in pixels) from the page itself.
+Almost every threshold in the block is then written as a multiple of $\wht$ (for example, ``a gap of at most $6\wht$'') or of the page width, so that the same constants hold for small and large handwriting.
+A second device serves goal~(b): a \emph{two-tier ink description}.
+A strict ink mask is used to decide the structure of the page (which components exist and which line they belong to), and a permissive ``weak-ink'' mask is used only at the end, to paint pale strokes into the crop of a line that has already been found.
+The strict mask can therefore be conservative without making pale words disappear from the crops.
+
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}[x=1cm,y=1cm]
+\tikzset{pb/.style={w2box,text width=4.45cm,minimum height=1.3cm}}
+\node[pb] (a) at (-5.2,0) {\textbf{1 Acquisition}\\ resize to 2400\,px long side, luma grey image};
+\node[pb] (b) at (0,0) {\textbf{2 Localisation}\\ paper mask from Otsu threshold, largest component, convex repair};
+\node[pb] (c) at (5.2,0) {\textbf{3 Enhancement}\\ flat-field correction by division with a blurred background};
+\node[pb] (d) at (5.2,-1.9) {\textbf{4 Binarisation}\\ local adaptive threshold, red-ink exclusion, speckle removal};
+\node[pb] (e) at (0,-1.9) {\textbf{5 Deskew}\\ projection-variance search $\pm8^\circ$, then $\pm3^\circ$; rotate; repeat 3 and 4};
+\node[pb] (f) at (-5.2,-1.9) {\textbf{6 Clean-up}\\ faint filter, edge and facing-page ink, rule and rule-network removal};
+\node[pb] (g) at (-5.2,-3.8) {\textbf{7 Components}\\ run-length labelling with union-find, glyph height $\wht$};
+\node[pb] (h) at (0,-3.8) {\textbf{8 Grouping}\\ MESS score, left-to-right chaining, baseline merging, refinement};
+\node[pb] (i) at (5.2,-3.8) {\textbf{9 Rendering}\\ pixel ownership, weak-ink recovery, crop, per-line deskew};
+\draw[w2arr] (a)--(b); \draw[w2arr] (b)--(c); \draw[w2arr] (c)--(d); \draw[w2arr] (d)--(e);
+\draw[w2arr] (e)--(f); \draw[w2arr] (f)--(g); \draw[w2arr] (g)--(h); \draw[w2arr] (h)--(i);
+\node[w2io,text width=2.3cm,minimum height=0.8cm] (in) at (-5.2,1.6) {photograph};
+\node[w2io,text width=3.6cm,minimum height=0.8cm] (out) at (5.2,-5.5) {ordered list of line and diagram crops};
+\draw[w2arr] (in)--(a); \draw[w2arr] (i)--(out);
+\end{tikzpicture}
+\caption{Flow diagram of the page-conditioning and line-segmentation block. The numbers correspond to the subsubsections of this subsection.}
+\label{fig:seg-pipeline}
+\end{figure}
+
+Figure~\ref{fig:seg-pipeline} shows the nine stages in the order in which they are executed; about 60 functions take part, and the following subsubsections describe each stage with its mathematics and constants.
+The output is an ordered list of items, each tagged either \texttt{TEXT} (a line of handwriting) or \texttt{MESS} (a non-text region), with one cropped grey-scale image per item.
+
+\subsubsection{Stage 1 and 3: size normalisation, grey conversion and illumination correction}
+
+\paragraph{Size normalisation and grey conversion.}
+Every photograph is resampled by bilinear interpolation (Equation~\ref{eq:seg-resize}, Appendix) so that its longer side is 2400 pixels, and converted to a grey image $G$ with the luma weights of Equation~\ref{eq:seg-luma}, namely $0.299R+0.587G_{\mathrm c}+0.114B$.
+Smaller pages are enlarged and larger pages reduced without a pre-filter, which keeps the operation cheap.
+
+\paragraph{Summed-area tables and box sums.}
+Most later operations (blurring, local means, dilation, erosion) are sums over rectangular windows.
+To make the cost of such a sum independent of the window size, the block uses the summed-area table (integral image) \cite{crow1984}.
+For an image $I$ the table $S$ (Equation~\ref{eq:seg-sat}) has one extra zero row and column and is defined by
+\begin{equation}
+S(y,x)=\sum_{i<y}\sum_{j<x} I(i,j),
+\label{eq:seg-sat}
+\end{equation}
+which is computed with two cumulative sums, one along each axis.
+The sum of $I$ over a window of half-sizes $(r_y,r_x)$ centred on pixel $(y,x)$ then requires only four table look-ups (Figure~\ref{fig:seg-boxsum}):
+\begin{equation}
+\mathrm{BoxSum}(y,x)=S(y_2,x_2)-S(y_1,x_2)-S(y_2,x_1)+S(y_1,x_1),
+\label{eq:seg-boxsum}
+\end{equation}
+with the clamped limits $y_1=\max(0,y-r_y)$, $y_2=\min(H,y+r_y+1)$, and $x_1=\max(0,x-r_x)$, $x_2=\min(W,x+r_x+1)$, where $H$ and $W$ are the image height and width.
+The box mean is the box sum divided by the number of pixels that actually lie inside the clamped window, $\mathrm{BoxMean}=\mathrm{BoxSum}/\bigl((y_2-y_1)(x_2-x_1)\bigr)$, so that pixels near the border are averaged over a truncated window and are not darkened.
+The cost is one $O(HW)$ table build plus $O(1)$ per pixel, whatever the window size; a direct convolution with a large window would cost $O(r)$ per pixel per axis.
+This property is decisive because the illumination blur described below has a radius of about 35 pixels.
+
+
+\paragraph{Gaussian blur from three box blurs.}
+A Gaussian blur is approximated by three successive box means of equal radius $r$ (central-limit argument), whose realised standard deviation is $\sigma_{\mathrm{real}}=\sqrt{(w^2-1)/4}$ with $w=2r+1$ (Equation~\ref{eq:seg-gauss} in the Appendix).
+The radius chosen by the implementation gives $\sigma_{\mathrm{real}}\approx0.58\,\sigma$ (a nominal scale of 60 gives $r=35$ and $\sigma_{\mathrm{real}}\approx35.5$), so the nominal $\sigma$ of this report is a blur-scale parameter and not the realised deviation.
+
+\paragraph{Flat-field illumination correction.}
+The intensity observed by the camera is, to a good approximation, the product of the paper reflectance and the illumination.
+The page background is therefore estimated as a heavily blurred copy of the grey image, and the image is divided by it:
+\begin{equation}
+B=\mathcal{G}_{\sigma_b}(G),\quad \sigma_b=\frac{W}{30},\qquad I_{\mathrm c}(p)=\mathrm{clip}\!\left(255\,\frac{G(p)}{B(p)+10^{-3}},\;0,\;255\right),
+\label{eq:seg-flat}
+\end{equation}
+where $\mathcal G_{\sigma}$ denotes the three-box blur of Equation~\ref{eq:seg-gauss} with nominal scale $\sigma$, $B$ is the background estimate, $W$ is the image width, $p$ a pixel position, and $10^{-3}$ guards against division by zero.
+Paper pixels end close to 255 and are clipped, whereas ink pixels are darker than their neighbourhood and remain dark, so a lamp gradient or a soft shadow is turned into a nearly constant white level.
+Division was chosen instead of subtraction because the lighting is multiplicative.
+The blur is computed over the whole frame, including the desk, which makes the paper margin slightly too bright; this is harmless because the value is clipped.
+A limitation is that large ink-heavy areas such as diagrams bias the background estimate (the blur radius is comparable with a few glyph heights), so that big dark areas are partly flattened.
+
+\begin{figure}[h]
+\centering
+\end{figure}
+
+Figure~\ref{fig:seg-illum} is reserved for an example of the effect of Equation~\ref{eq:seg-flat}.
+
+\subsubsection{Stage 2: paper localisation}
+
+The desk, a hand or a facing notebook page must not generate ink, and the glyph-height estimate must not be influenced by them, so all thresholds that follow are confined to a boolean \emph{page mask} that marks the sheet.
+The mask is built in ten steps (listed in the Appendix, subsection ``Stage 2 details''). A global threshold $t^*$ according to Otsu \cite{otsu1979} is found on the blurred grey image by maximising the between-class variance of the intensity histogram,
+\begin{equation}
+t^*=\arg\max_t\;\omega_B(t)\,\omega_F(t)\,\bigl[\mu_B(t)-\mu_F(t)\bigr]^2,
+\label{eq:seg-otsu}
+\end{equation}
+where $\omega_B(t)$ and $\omega_F(t)$ are the numbers of pixels below and above $t$, and $\mu_B(t)$ and $\mu_F(t)$ the mean intensities of the two classes; a global threshold is adequate here because the paper--desk contrast is large.
+Pixels that are bright and of low saturation ($S<90$) form the paper candidate; a $9\times9$ opening and the choice of the largest component follow, then a second threshold relative to the median paper brightness $m_p$ (at $m_p-50$) that admits shadowed paper, hole filling and closing, trimming of ragged protrusions and of rows and columns darker than a cut level between the desk and paper brightness (Equation~\ref{eq:seg-dark} in the Appendix), a convex-hull repair of shadow notches (a photographed sheet is a convex quadrilateral; new pixels are accepted only where the brightness is at least $0.55\,m_p$) and a final erosion of about 11 pixels so that the paper edge itself is not binarised as ink.
+If the mask covers less than 15\,\% of the frame the whole frame is used instead.
+The method fails for strongly tinted paper (saturation above 90), when the desk is almost as bright as the paper, or when the sheet violates the convexity assumption, and the fallback then applies. Figure~\ref{fig:seg-mask} is reserved for an example of the construction of the mask.
+
+
+\subsubsection{Stage 4: binarisation, red-ink exclusion and speckle removal}
+
+After flat-field correction the ink is separated from the paper by a local threshold.
+For a window size $B_w=\max(15,\,2\lfloor W/60\rfloor+1)$ (61 pixels for $W=1800$), the local mean is computed with the three-box blur of Equation~\ref{eq:seg-gauss} using the derived blur scale of Equation~\ref{eq:seg-sigmaa}
+\begin{equation}
+\sigma_a=0.3\Bigl(\frac{B_w-1}{2}-1\Bigr)+0.8\quad(=9.5\ \text{for}\ B_w=61),
+\label{eq:seg-sigmaa}
+\end{equation}
+and, according to Equation~\ref{eq:seg-adapt}, a pixel is declared ink if it is darker than its local mean by more than a constant $C$:
+\begin{equation}
+\mathrm{ink}(p)=\mathbb 1\bigl[\,I_{\mathrm c}(p)<M(p)-C\,\bigr]\wedge\mathrm{pageMask}(p),\qquad C=12,
+\label{eq:seg-adapt}
+\end{equation}
+where $M=\mathcal G_{\sigma_a}(I_{\mathrm c})$ is the Gaussian-weighted local mean, $\mathbb 1[\cdot]$ is the indicator function, and $C$ is in grey levels out of 255.
+The offset $C=12$ rejects paper grain and compression noise; a larger value would drop pale strokes and a smaller one would admit texture.
+Pixels whose red channel dominates are excluded from the mask (red margin lines or marking pen): a pixel is \emph{bright red} if $R>1.30\,G$, $R>1.30\,B$ and $R-\min(G,B)>22$, or \emph{dark red} if $R>1.18\,G$, $R>1.18\,B$, $R-\min(G,B)>14$ and $R<190$; blue and black ink are kept.
+Finally, 8-connected components smaller than 10 pixels are removed as speckle (12 pixels in later calls).
+
+A single global threshold fails on photographs because shading and pen contrast have the same order of magnitude; a local threshold with the standard deviation \cite{sauvola2000} was not needed, since the two-step normalisation is cheaper and sufficient.
+
+\paragraph{Weak-ink recovery by hysteresis.}
+The strict threshold $C=12$ drops pale strokes, but omitting them would truncate words in the crop, and adding them to the structural mask would create noise components.
+A weak mask with $C=3$ is therefore built (also from a colour-aware grey image in which blue ink stays dark), and a weak component is accepted only if it lies close to strong ink, namely within a $9\times25$ window or, for components of at least 40 pixels, within about two glyph heights horizontally (Equation~\ref{eq:seg-hyst} in the Appendix).
+The weak mask never influences which components form a line.
+
+\subsubsection{Stage 7: connected components and the glyph-height scale}
+
+A connected component is a maximal set of touching ink pixels.
+Components are found by a run-length two-pass labelling with a union-find structure \cite{tarjan1975,rosenfeld1966}: every row is encoded as runs, runs of adjacent rows are merged when they touch under 8-connectivity (Equation~\ref{eq:seg-adj} in the Appendix), and the labels are painted back, at a cost that is linear in the number of runs.
+The glyph height $\wht$ is the median height of the components of plausible size (Equation~\ref{eq:seg-ht} in the Appendix); it is recomputed three times, because the cleaning stages change the component set.
+
+\subsubsection{Stage 5: skew estimation and rotation}
+
+The skew is estimated by the projection-profile principle: for horizontal lines the row-sum profile of the ink has sharp peaks and deep troughs.
+The ink mask, reduced by a factor 4, is rotated through candidate angles (a coarse grid of $\pm8^\circ$ in steps of $0.5^\circ$, then a fine grid in steps of $0.1^\circ$) and the angle that maximises the variance of the profile is chosen, $J(\theta)=\mathrm{Var}_y[P_\theta(y)]$ (Equation~\ref{eq:seg-skew} in the Appendix); rotation uses inverse mapping with bilinear interpolation (Equation~\ref{eq:seg-rot} in the Appendix).
+The page is rotated only if $|\theta^*|\ge0.15^\circ$, stages 3 and 4 are recomputed, and a second residual pass of $\pm3^\circ$ follows.
+A single global angle is estimated, so page curl and keystone are not corrected; the objective was preferred to a Hough transform because ruled lines and diagrams dominate edge directions, and a sign mismatch between rotation and scoring that doubled the skew in an early version was corrected.
+
+\subsubsection{Stage 6: removal of printed structure and faint marks}
+
+Ruled paper and other printed structure join words and lines into giant components, so it must be removed without removing handwriting that touches it.
+Four steps, each rule-aware or scale-aware, are applied; their full definitions and equations are in the Appendix, subsection ``Stage 6 details''.
+\emph{Rules:} the horizontal and vertical ink-run lengths of every pixel are computed, long thin runs are candidates, fragments are chained into long structures when their gap is at most $2.5\wht$ and their vertical offset is within an allowance that grows with distance (Equations~\ref{eq:seg-cand} and~\ref{eq:seg-slope}), and a chain is declared a rule only if it spans at least $0.6W$ and reaches both ends of the page, so that a long word or underline cannot be mistaken for a rule.
+\emph{Faint components:} after a rule has been cut out of any word that is glued to it, components fainter than the handwriting are removed with a one-dimensional Otsu threshold on the component darkness (Equation~\ref{eq:seg-dark2}), so that each page defines for itself what ``faint'' means.
+\emph{Page edges and facing pages:} junk at the mask edges and ink of a neighbouring page are removed by edge and column-profile tests.
+\emph{Sparse rule networks:} sloped or wavy rules are removed by a column-span test.
+
+\subsubsection{Stage 8a: text versus non-text}
+
+Diagrams and drawings would be read as nonsense by the text recogniser, so each component is scored for the likelihood of being a drawing.
+Letters such as o, a and e enclose only small holes, below $0.7\wht^2$ in area, whereas diagrams contain large enclosed loops, and open line art is wide and sparse.
+The score is
+\begin{equation}
+\begin{gathered}
+\mathrm{holeScore}=\mathrm{clip}\!\Bigl(\frac{A_h/\wht^2-0.7}{0.8},0,1\Bigr),\qquad
+\mathrm{sparse}=\begin{cases}0.7,&w>6\wht\wedge h>1.8\wht\wedge\mathrm{fill}<0.05\\0,&\text{otherwise}\end{cases}\\
+\mathrm{mess}=\max(\mathrm{holeScore},\mathrm{sparse}),
+\end{gathered}
+\label{eq:seg-mess}
+\end{equation}
+where $A_h$ is the area of the largest enclosed hole of the component (holes are found by filling the component and subtracting it from the filled version), and $w$, $h$ and fill are the width, height and fill ratio of the component.
+Figure~\ref{fig:seg-ramp} shows the ramp: a hole of $0.7\wht^2$ gives the score 0 and a hole of $1.5\wht^2$ the score 1.
+A component with $\mathrm{mess}\ge0.5$ becomes a candidate, unless at least three text-sized neighbours stand in the same row band and the candidate is not taller than their typical height (a veto that rescues large looped letters in headings); the surviving candidates are clustered greedily into \texttt{MESS} blocks (thresholds in the Appendix, subsection ``Text-versus-diagram clustering'').
+
+\subsubsection{Stage 8b: grouping components into lines}
+
+Grouping is the part of the block where components become lines.
+It was designed around local chaining and a baseline curve instead of a global projection profile, because personal pages have drifting baselines, ascenders that touch the next line and diagrams between the lines.
+\emph{Core text components} are components that are not \texttt{MESS}, have a height between $0.3\wht$ and $1.8\wht$, an area of at least $1.2\wht$ and are not underline-like.
+They are sorted by centroid abscissa, and each component $a$ is linked to at most one successor $b$ on its right (Figure~\ref{fig:seg-chain}) for which the gap is at most $6\wht$ and $\Delta y=|c_{y,b}-c_{y,a}|\le0.75\wht$, choosing the minimum of
+\begin{equation}
+\mathrm{cost}(a,b)=\max(0,\mathrm{gap})+3\,\Delta y,
+\label{eq:seg-cost}
+\end{equation}
+where $\mathrm{gap}$ is the horizontal distance between the bounding boxes (a negative gap larger than $0.6w_a$ is clamped to zero).
+The factor 3 prefers to stay on the same baseline instead of jumping to a nearer component on another row.
+Union-find collects the links into \emph{chains}.
+
+
+\paragraph{Baseline curves, merging and leftovers.}
+Each chain receives a baseline curve whose ordinate is an area-weighted five-point moving average,
+\begin{equation}
+\tilde y_i=\frac{\sum_{k=i-2}^{i+2}A_k\,y_k}{\sum_{k=i-2}^{i+2}A_k},
+\label{eq:seg-curve}
+\end{equation}
+where $y_k$ and $A_k$ are the centroid row and area of the $k$th component (the window is truncated at the ends), and the curve $y_{\mathrm{curve}}(x)$ is interpolated linearly.
+Chains of one physical row are merged in three passes: by curve height over their overlap (below $0.6\wht$); by the measured line pitch $p$, the median gap between chain centres, so that thresholds scale with the writing (merge below $0.45\,p$); and weak isolated chains are demoted.
+Components that are not yet in a chain are assigned by shape: underline-like components to the chain above, small marks (dots, accents) to the nearest curve, and tall components that link two rows are split pixel by pixel between the nearest chains, so that one connected stroke can be shared by two lines.
+A refinement step rejoins rows that were split by large word gaps, moves underlines to the line above them and re-attaches pale components that were removed as faint; text lines that lie inside a diagram block are absorbed into it.
+All thresholds and the four criteria for rejoining rows are in the Appendix, subsection ``Grouping details''.
+
+\subsubsection{Stage 9: pixel ownership and rendering of the line crops}
+
+The recogniser sees only what is in the crop, so rendering decides which pixels it sees. A pixel-ownership map labels every ink pixel with its item, so that a neighbouring row's descender or recovered halo cannot enter a crop. The bounding box of an item is padded by 6 pixels, its mask is dilated by $3\times3$ and extended by weak-ink pixels within a short reach (at most $3g$ pixels horizontally with $g=\max(8,\lfloor0.55\wht\rfloor)$), pixels of other items are excluded, and grey values are taken from the darkest evidence on a white background; pale words without any strong ink anchor are attached to a row if they lie on its baseline curve.
+
+A final \emph{per-line deskew} removes the linear drift of the baseline.
+For \texttt{TEXT} items with at least three components and a crop width above twice its height, a line $y=ax+b$ is fitted to the component centroids by weighted least squares (Equation~\ref{eq:seg-lsq}),
+\begin{equation}
+\min_{a,b}\ \sum_i A_i\,(y_i-a\,x_i-b)^2,\qquad \phi=\arctan a,
+\label{eq:seg-lsq}
+\end{equation}
+where $(x_i,y_i)$ is the centroid and $A_i$ the area of component $i$ (the area weights make large letters dominate), and $\phi$ is the drift angle.
+If $0.4^\circ<|\phi|<12^\circ$ the crop is padded vertically by $\lfloor|\tan\phi|\,W_c/2\rfloor+4$ white rows ($W_c$ is the crop width) and rotated by $\phi$ with Equation~\ref{eq:seg-rot}, then trimmed again.
+Each result is a record with the order index, tag, bounding box in the coordinates of the deskewed page, the grey crop and the number of components.
+Crop heights are variable here: the scaling to the fixed recogniser canvas is described in Section~\ref{sec:textrec}. Figure~\ref{fig:seg-result} is reserved for an example of the output.
+
+\figplaceholder{4.2cm}{Result of the block on a personal page: the deskewed photograph with green boxes for TEXT items and orange boxes for MESS items with order labels (existing preview files \texttt{*\_segpreview.png} in \texttt{Software/CNN/NOGIT/dylan} and \texttt{.../yeukita}), next to three example line crops, one of them before and after per-line deskew.}
+\captionof{figure}{Output of the segmentation block (placeholder).}
+\label{fig:seg-result}
+
+\subsubsection{Data sets, complexity, performance and limitations}
+
+\paragraph{Use for the training data and complexity.}
+The same block segments the 13 personal pages that are used for training; pages of the public database have a fixed printed form and are scanned flat, so a simpler row-projection method is used to prepare them (it is not part of the deployed block).
+Every pixel pass is $O(N_p)$ for $N_p=HW\approx4.3\times10^6$ pixels; a complete run makes 123 large box-sum calls and 1396 labelling calls (32 of them full-page).
+Chaining is $O(n_c^2)$ in the worst case ($n_c$ components), the merge passes restart after each merge and dominate, and the leftover assignment evaluates a nearest-chain distance for every pixel of every tall component; the peak memory is about a dozen full-page arrays plus integral images of about 35\,MB each.
+
+\paragraph{Measured performance.}
+Profiling on the development laptop with the pure-Python implementation gave a total of about 44 to 48\,s for one $2400\times1800$ page in the cleanest run (29 to 142\,s were observed over several runs), of which about 70\,\% was spent in grouping and about 10\,s each in box sums and labelling.
+Optional compiled replacements for the box sum and the labelling were written for these two kernels and make the whole block 25 to 32\,\% faster; they are not used by the deployed pipeline, and the estimated ceiling of a complete port is 12 to 16\,s.
+\textbf{[TO BE COMPLETED BY STUDENT: the processing time of the block on the ODROID N2+ was not recorded in the project files; measure it.]}
+These laptop figures are far above the 2\,s that requirement R4 allows for image capture and conditioning, so the block as implemented does not satisfy that budget; Section~\ref{sec:results} must report this.
+
+\paragraph{Segmentation accuracy.}
+A project note states that the segmenter reproduced the hand-checked line count on a set of six pages; the test set and the scoring rule are not documented, so this statement is not used as evidence here.
+In a sanity run on one personal page the block found 27 text lines and no diagram, which equals the 27 lines of the transcription file of that page.
+\textbf{[TO BE COMPLETED BY STUDENT: a quantified segmentation accuracy over the test pages, if it is claimed in Section~\ref{sec:results}.]}
+
+\paragraph{Design alternatives and justification.}
+Table~\ref{tab:seg-alt} in the Appendix compares the main design choices with their alternatives.
+The common argument is that each chosen operation is the cheapest one that is robust against exactly one photographic nuisance, and that all thresholds are expressed relative to $\wht$ or to the page width $W$.
+
+\paragraph{Limitations.}
+The block assumes writing that flows from left to right in roughly horizontal lines with a single dominant glyph height, so heading sizes that differ strongly from the body text can be grouped wrongly (the neighbour veto and the pitch-aware merge mitigate this).
+A diagram that consists only of open strokes and has small extent may be read as text, and text inside a diagram is absorbed into the diagram.
+Page curl and perspective are not corrected, and tinted paper or a bright desk defeats the page mask.
+In the deployed classification path the photograph is converted to grey scale before it enters the block, so that the red-ink mask is empty and the colour-aware channel equals the luma; those colour features matter only for the colour photographs that are used to prepare the training data.

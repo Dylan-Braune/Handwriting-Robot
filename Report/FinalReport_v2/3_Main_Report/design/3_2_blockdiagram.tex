@@ -1,0 +1,125 @@
+\subsection{System block diagram}
+\label{sec:blockdiagram}
+
+This subsection gives a block-diagram-level description of the whole implemented design.
+Two diagrams are used: Figure~\ref{fig:des-hw} shows the hardware blocks and the way in which they are connected to the single-board computer (SBC), and Figure~\ref{fig:des-sw} shows the software data flow of the three modes of operation (reproduction, classification and offline training).
+Both diagrams are related to the functional block diagram of the approved proposal, which divided the system into the page-scanning set-up (FU~1), the single-board computer (FU~2), the text-reproduction gantry (FU~3) and the power supply (FU~4); the differences are explained in Table~\ref{tab:des-fumap}.
+
+\subsubsection{Hardware block diagram}
+
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}[x=1cm,y=1cm]
+% left column: FU1
+\node[w2io,text width=3.0cm] (page) at (-5.6,3.6) {A4 page with handwriting};
+\node[w2box,text width=2.9cm] (cam) at (-5.6,1.7) {USB camera on page-scanning rig};
+\node[font=\scriptsize\bfseries,anchor=south west] at (-7.1,2.45) {FU 1};
+\begin{scope}[on background layer]
+\node[w2group,fit=(page)(cam),inner sep=6pt] (fu1) {};
+\end{scope}
+% SBC
+\node[w2box,text width=5.0cm,minimum height=0.85cm] (m1) at (0,4.2) {Web server (API, job handling)};
+\node[w2box,text width=5.0cm,minimum height=0.85cm] (m2) at (0,3.2) {Page conditioning and line segmentation};
+\node[w2box,text width=5.0cm,minimum height=0.85cm] (m3) at (0,2.2) {Text recogniser and writer identification};
+\node[w2box,text width=5.0cm,minimum height=0.85cm] (m4) at (0,1.2) {Handwriting synthesis and G-code generation};
+\node[w2box,text width=5.0cm,minimum height=0.85cm] (m5) at (0,0.2) {G-code interpreter and general-purpose pin pulse generator};
+\node[w2store,text width=5.0cm,minimum height=0.85cm] (st) at (0,-0.9) {Stored: network weights, ten style profiles};
+\begin{scope}[on background layer]
+\node[w2group,fit=(m1)(m5)(st),inner sep=7pt] (sbc) {};
+\end{scope}
+% right column: FU3
+\node[w2box,text width=3.1cm] (drv) at (5.6,3.9) {Stepper driver modules for X and Y (STEP/DIR)};
+\node[w2box,text width=3.1cm] (mot) at (5.6,2.5) {Stepper motors X and Y};
+\node[w2box,text width=3.1cm] (gan) at (5.6,1.3) {X/Y gantry, pen holder and pen};
+\node[w2box,text width=3.1cm] (pen) at (5.6,0.1) {Pen-lift toggle gear motor and pen-position switch};
+\node[w2box,text width=3.1cm] (end) at (5.6,-1.1) {Four end-stop switches};
+\begin{scope}[on background layer]
+\node[w2group,fit=(drv)(end),inner sep=6pt] (fu3) {};
+\end{scope}
+\node[font=\scriptsize\bfseries,anchor=south east] at (7.2,4.55) {FU 3};
+\node[font=\scriptsize\bfseries,anchor=south west,align=left] at (sbc.north west) {ODROID N2+ single-board\\ computer (FU 2)};
+% laptop
+\node[w2io,text width=4.6cm] (lap) at (1.6,6.5) {User's laptop: web browser (input and display)};
+% power
+\node[w2dark,text width=6cm] (psu) at (0,-2.6) {Power supply (FU 4)};
+% arrows
+\draw[w2arr] (page) -- (cam);
+\draw[w2arr] (cam.east) -- ++(0.55,0) |- (m2.west);
+\draw[w2arr,<->] (1.6,6.1) -- (1.6,4.65);
+\draw[w2arr] (2.5,0.4) -- (3.8,0.4) |- (drv.west);
+\draw[w2arr] (drv) -- (mot);
+\draw[w2arr] (mot) -- (gan);
+\draw[w2arr,<->] (2.5,0.2) -- (3.5,0.2) |- (pen.west);
+\draw[w2arr] (end.west) -| (3.2,0.0) -- (2.5,0.0);
+% power (dashed)
+\draw[w2dash] (psu.north) -- (sbc.south);
+\draw[w2dash] (psu.west) -| (cam.south);
+\draw[w2dash] (psu.east) -| (fu3.south);
+\node[w2lab,fill=white] at (-3.6,-2.6) {power};
+\node[w2lab,fill=white] at (3.6,-2.6) {power};
+\end{tikzpicture}
+\caption{Hardware block diagram of the implemented system. Solid arrows show signals and data, dashed arrows show the power supply. FU numbers refer to the functional units of the project proposal.}
+\label{fig:des-hw}
+\end{figure}
+
+The hardware of the implemented system (Figure~\ref{fig:des-hw}) consists of four groups.
+The page-scanning rig (FU~1) holds a generic USB camera above an A4 page; the camera is read by the single-board computer through the standard driver of the operating system, so no camera driver was designed by the student.
+The single-board computer (FU~2) is an ODROID N2+; it runs every software block of the system, including the web server through which the user's laptop controls the robot.
+The text-reproduction gantry (FU~3) is a Cartesian X/Y gantry in which each axis is moved by one stepper motor; each motor is driven by one stepper driver module whose STEP and DIR inputs are connected directly to general-purpose pins of the single-board computer, so that no separate microcontroller is present.
+Four end-stop switches, two per axis, bound the travel and are read by the same program that generates the step pulses.
+The pen is raised and lowered by a toggle gear motor whose state is confirmed by a pen-position switch, and both are connected to general-purpose pins as well.
+The power supply (FU~4) feeds the camera, the single-board computer and the gantry electronics.
+\textbf{[TO BE COMPLETED BY STUDENT: model numbers of the camera, stepper motors and driver modules, the supply voltages and current ratings of the power supply, the way in which the pen motor is switched, and the logic-level and grounding arrangement between the single-board computer and the drivers; these are not documented in the project files.]}
+
+\subsubsection{Software block diagram and systems-level description}
+
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}[x=1cm,y=1cm]
+\tikzset{cb/.style={w2box,text width=2.4cm,minimum height=1.05cm}}
+% Row 1 reproduction
+\node[font=\scriptsize\bfseries,anchor=west] at (-7.0,5.45) {Reproduction mode (online)};
+\node[cb] (r1) at (-5.2,4.6) {Text and writer chosen in browser};
+\node[cb] (r2) at (-2.6,4.6) {Style synthesis, best of $N$ candidates};
+\node[cb] (r3) at (0,4.6) {Pen trajectory in millimetres};
+\node[cb] (r4) at (2.6,4.6) {G-code generator and simulator};
+\node[cb] (r5) at (5.2,4.6) {G-code interpreter, step pulses to gantry};
+\foreach \a/\b in {r1/r2,r2/r3,r3/r4,r4/r5} \draw[w2arr] (\a) -- (\b);
+% stores
+\node[w2store,text width=2.4cm] (sw) at (-5.2,2.7) {Network weights};
+\node[w2store,text width=2.4cm] (sp) at (5.2,2.7) {Style profiles (one file per writer)};
+% Row 3 classification
+\node[font=\scriptsize\bfseries,anchor=west] at (-7.0,1.75) {Classification mode (online)};
+\node[cb] (c1) at (-5.2,0.8) {Photograph from camera or upload};
+\node[cb] (c2) at (-2.6,0.8) {Conditioning and line segmentation};
+\node[cb] (c3) at (0,0.8) {One grey crop per text line};
+\node[cb] (c4) at (2.6,0.8) {Text recogniser, ink writer classifier};
+\node[cb] (c5) at (5.2,0.8) {Text, writer and confidence to browser};
+\foreach \a/\b in {c1/c2,c2/c3,c3/c4,c4/c5} \draw[w2arr] (\a) -- (\b);
+% Row 4 training
+\node[font=\scriptsize\bfseries,anchor=west] at (-7.0,-0.65) {Training mode (offline)};
+\node[cb] (t1) at (-5.2,-1.5) {Pages and transcripts};
+\node[cb] (t2) at (-2.6,-1.5) {Line segmentation of the photographs};
+\node[cb] (t3) at (0,-1.5) {Training of recogniser and writer classifiers};
+\node[cb] (t4) at (2.6,-1.5) {Forced alignment and profile builder};
+\foreach \a/\b in {t1/t2,t2/t3,t3/t4} \draw[w2arr] (\a) -- (\b);
+% store connections (reads, dashed)
+\draw[w2dash] (sw.east) -- (-2.6,2.7) -- (r2.south);
+\draw[w2dash] (sw.east) -- (2.6,2.7) -- (c4.north);
+\draw[w2dash] (sp.west) -- (-2.2,2.55) -- (-2.2,3.97);
+% writes (solid) via margins
+\draw[w2arr] (t3.south) -- ++(0,-0.55) -| (-6.95,2.7) -- (sw.west);
+\draw[w2arr] (t4.south) -- ++(0,-0.55) -| (6.95,2.7) -- (sp.east);
+\end{tikzpicture}
+\caption{Software data flow of the three modes. Dashed arrows are reads from permanent storage, solid arrows between the training row and the two stores are writes. The same line-segmentation and recognition blocks serve classification, training and the judging of synthesised handwriting.}
+\label{fig:des-sw}
+\end{figure}
+
+The intention of the system is to learn how a person writes from photographs of that person's pages and later to write new text in the same style; three chains of blocks share two permanent stores, the network weights and the per-writer style profiles (Figure~\ref{fig:des-sw}).
+In the classification mode (R2, R4) the page is conditioned and separated into text lines (Section~\ref{sec:segmentation}), each line is read by the text recogniser (Section~\ref{sec:textrec}) and classified by the ink-based writer classifier (Section~\ref{sec:writerid}), and the writer probabilities of the lines are averaged to a page decision.
+In the reproduction mode (R1, R3, R5, R6) the synthesiser (Section~\ref{sec:synthesis}) assembles the writer's own stored letter paths (Section~\ref{sec:styleprofile}) into a line, repeats the random construction for $N$ candidates and keeps the one that the recogniser and the stroke-normalised writer classifier jointly prefer; the trajectory is converted to G-code (Section~\ref{sec:gcode}) and executed by the interpreter after the gantry has been calibrated between its end-stops (Section~\ref{sec:gantry}).
+The training mode runs offline: the same segmentation block prepares the pages, the networks are trained and the profile builder writes the two stores, after which no image and no training code are needed to use a style.
+
+Table~\ref{tab:des-fumap} relates the implemented blocks to the functional units of the proposal.
+The structure of the proposal was kept for the physical units FU~1 to FU~4, whereas the software functional units FU~2.1 to FU~2.8 were reorganised for the reasons given in the last column.
+

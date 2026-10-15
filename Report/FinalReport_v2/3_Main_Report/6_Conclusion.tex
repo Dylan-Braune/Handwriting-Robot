@@ -1,0 +1,54 @@
+\subsection{Summary of the work completed}
+\label{sec:con-work}
+
+This report describes work carried out on the design and implementation of a handwriting robot that recognises handwritten text and its writer and reproduces text on paper in the handwriting style of a chosen writer.
+
+A literature survey on handwriting recognition, writer identification, handwriting synthesis and plotter-based writing was completed.
+The software was then designed and implemented from first principles in Python: an image-conditioning and text-line segmentation chain, a convolutional and recurrent sequence recogniser trained with connectionist temporal classification, two writer classifiers, a builder of per-writer style profiles from forced alignment, a trajectory synthesiser with a best-of-$N$ search, a G-code generator and a stepper-motor driver with end-stop calibration and software limits.
+These were integrated behind a web server with a browser interface and were exercised as a complete pipeline over thirteen writers.
+The gantry was constructed from purchased components and its electronics and firmware were brought up, but the mechanical bring-up was not completed because of an unresolved fault in the direction signal of the X axis, so the writing path could not be qualified end to end.
+
+\subsection{Summary of observations and findings}
+\label{sec:con-findings}
+
+The following findings are supported by the measurements reported in Section~\ref{sec:results}.
+\begin{itemize}
+  \item The sequence recogniser read 669 real line crops from the five personal writers at 98.61\% character accuracy and 94.21\% word accuracy, with per-writer character accuracy between 96.46\% and 99.15\%. These crops were verified to be correctly cut, and the writers appear in the fine-tuning data, so the figure is an upper bound on the end-to-end page-to-text accuracy rather than a demonstration of it.
+  \item Writer identification over 1358 real lines from thirteen writers reached 99.78\% with the ink classifier and 93.67\% with the shape classifier, both above the 95\% target of R2.
+  \item Correcting a training fault in the shape classifier, which had frozen the recogniser's backbone and fitted only the classification head, raised its accuracy from 83.36\% to 93.67\% and removed a systematic collapse in which 118 of one writer's 148 real lines were assigned to a single other writer. The recogniser's features are trained to be invariant to differences between writers, so a classifier restricted to them can separate only writers whose recognition features already differ.
+  \item Synthesised text was read at 82.2\% character accuracy over thirteen writers (79.2\% in a wider coverage run), below the 85\% target of R1, and identified at 80.1\% and 89.7\% respectively by a classifier that also selects the candidates.
+  \item On a matching comparison of identical sentences the writers' genuine handwriting was read at 89.0\% character and 70.5\% word accuracy, and the system's synthesis of those same sentences at 81.6\% and 46.7\%. The synthesis therefore loses 7.4 percentage points of character accuracy but 23.8 points of word accuracy, which localises the defect to spacing and word boundaries rather than to letterforms.
+  \item The reproduction rate of R3 was not met: a four-character word at six candidates took 64.3~s, or 16.1~s per character against a 4~s limit, and the cost is dominated by rendering and scoring each candidate rather than by drawing.
+  \item Classification time (R4) was met for recognition, at 8.86~ms per character against a 25~ms allowance, but not for page segmentation, which took 35 to 57~s against the roughly 2~s that the equation allows for capture and conditioning; line grouping accounted for about 70\% of that time.
+  \item Thirteen writing styles are stored as profile files and the live server lists all thirteen, so the requirement for at least ten permanently stored styles is met with a margin of three.
+  \item The absolute positional accuracy of the gantry (R5) and both field conditions were not measured, so no conclusion is possible for them.
+\end{itemize}
+It follows that R6 is met, R2 is met for writer identification on real handwriting and for recognition on correctly segmented in-distribution crops, R1 is close to its target but not at it, R3 and R4 are not met, and R5 and the field conditions are unassessed.
+Two implications are worth stating separately.
+First, the time requirement cannot be met by improving the neural network, because recognition already has a margin of about 2.8 times; the shortfall lies in the pure-Python line-grouping stage, which must be redesigned or compiled, and in the cost of evaluating every synthesis candidate.
+Second, on the evidence of the matching comparison the two halves of R1 are not in conflict as they first appeared: genuine and synthesised text were read within 7.4 percentage points at character level, so the synthesis is already close to the human hand in letterform, and the remaining gap is concentrated in a small number of measurable spacing statistics that can be corrected directly.
+
+
+\subsection{Contribution}
+\label{sec:con-contribution}
+
+The following was new to the student and was mastered during the project: the training of sequence networks with connectionist temporal classification, the algorithms of the image-conditioning and line-segmentation chain, the extraction of writer-specific letter paths by forced alignment, the synthesis of handwriting trajectories, the generation of G-code and the control of stepper motors from the general-purpose pins of a single-board computer.
+All of these were implemented from first principles by the student in Python, and C99 was used for an optional acceleration of two routines.
+The mechanical parts, the camera, the single-board computer, the motors and drivers, the end-stop switches, the pen mechanism and the power supply were purchased as finished items and carry no design credit.
+The design of the networks follows a published layer pattern \cite{kizilirmak2023}, and public data were used for training.
+The architecture of the recogniser is taken from the literature; the training recipe, the preprocessing chain, the style-profile construction and the whole synthesis and drawing path are the student's own work.
+Any other contribution by other persons is declared in Section~2 (Project history) of the preamble.
+
+
+\subsection{Suggestions for future work}
+\label{sec:con-future}
+
+The work can be continued in the following order of priority.
+\begin{enumerate}
+  \item Resolve the direction-pin fault of the X axis, complete the calibration and execute the qualification tests 3, 5 and 6 on the gantry, including the field checks FC1 and FC2.
+  \item Execute qualification test~2 on newly collected held-out pages, and qualification test~1 with independent judges, a human panel and the hand-crafted and overlay measures, so that the figures of Section~\ref{sec:results} are no longer circular or optimistic.
+  \item Redesign the line grouping, reduce the image resolution before segmentation, deploy compiled implementations, and make the recogniser about 3 times cheaper per character (smaller network, quantisation, shorter sequence), measuring each change on the ODROID N2+.
+  \item Add a language-model or lexicon decoder and more personal training pages to raise the text accuracy towards 95\%.
+  \item Correct the implementation issues of the writing path (reading-order stroke ordering, execution of acceleration, work area, pen-up feed), add a hardware emergency stop and an abort function, and consider a position feedback (for example a sensor on the end-stops or a camera check of the written line) so that lost steps can be detected.
+  \item Add an unknown-writer class to the writer classifier, and an authenticated interface.
+\end{enumerate}

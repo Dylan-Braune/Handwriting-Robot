@@ -1,0 +1,89 @@
+\subsection{Software architecture and system integration}
+\label{sec:system}
+
+This subsection describes how the software blocks of Sections~\ref{sec:segmentation} to~\ref{sec:gantry} form one application that runs on the single-board computer and is operated from a web browser (the display and input interface of the proposal).
+All blocks are Python programs written by the student; only the camera interface, the pin interface and the transport of web requests come from libraries.
+\textbf{[TO BE COMPLETED BY STUDENT: confirm that the complete source code has been submitted separately.]}
+
+\subsubsection{Modules and data flow}
+
+\begin{figure}[!htbp]
+\centering
+\begin{tikzpicture}[x=1cm,y=1cm]
+\tikzset{m/.style={w3box,text width=2.55cm,minimum height=0.9cm,font=\scriptsize}}
+\node[w3io,text width=2.2cm,minimum height=0.85cm,font=\scriptsize] (rd) at (-6.3,3.1) {Read page};
+\node[w3io,text width=2.2cm,minimum height=0.85cm,font=\scriptsize] (wr) at (-6.3,0.5) {Write page};
+\node[w3io,text width=2.2cm,minimum height=0.85cm,font=\scriptsize] (ms) at (-6.3,-2.0) {Model and style page};
+\node[m] (cam) at (-2.3,3.3) {Camera capture and live preview};
+\node[m] (seg) at (0.9,3.3) {Page conditioning and line segmentation};
+\node[m] (txt) at (-2.3,1.9) {Text recogniser};
+\node[m] (ink) at (0.9,1.9) {Ink-based writer classifier};
+\node[m] (syn) at (-2.3,0.5) {Synthesiser and best-of-$N$ search};
+\node[m] (shp) at (0.9,0.5) {Stroke-normalised writer classifier};
+\node[m] (gen) at (-2.3,-0.9) {G-code generator and preview};
+\node[w3store,text width=2.55cm,minimum height=0.9cm,font=\scriptsize] (prof) at (0.9,-0.9) {Ten style profiles (JSON)};
+\node[m] (drv) at (-2.3,-2.3) {Gantry driver (interpreter, GPIO)};
+\node[w3store,text width=2.55cm,minimum height=0.9cm,font=\scriptsize] (job) at (0.9,-2.3) {Jobs, uploads, caches};
+\begin{scope}[on background layer]
+\node[w3group,fit=(cam)(seg)(drv)(job),inner sep=8pt] (srv) {};
+\end{scope}
+\node[font=\scriptsize\bfseries,anchor=south west] at (srv.north west) {Web server application on the ODROID N2+};
+\node[w3io,text width=2.0cm,minimum height=0.85cm,font=\scriptsize] (hc) at (5.6,3.3) {USB camera};
+\node[w3io,text width=2.0cm,minimum height=0.85cm,font=\scriptsize] (hg) at (5.6,-2.3) {Gantry, pen, switches};
+\draw[w3arr,<->] (rd) -- (-3.9,3.1) node[midway,above,w3lab] {HTTP, JSON};
+\draw[w3arr,<->] (wr) -- (-3.9,0.5);
+\draw[w3arr,<->] (ms) -- (-3.9,-2.0);
+\draw[w3arr] (hc) -- (seg.east |- hc);
+\draw[w3arr] (cam) -- (seg);
+\draw[w3arr] (seg) -- (ink);
+\draw[w3arr] (seg.south west) -- (txt.north east);
+\draw[w3arr,<->] (syn) -- (shp);
+\draw[w3arr] (txt) -- (syn);
+\draw[w3arr] (prof) -- (syn);
+\draw[w3arr] (syn) -- (gen);
+\draw[w3arr] (gen) -- (drv);
+\draw[w3arr] (gen.east) -- (job.west |- gen.east);
+\draw[w3arr] (drv.south) -- ++(0,-0.55) -| (hg.south);
+\end{tikzpicture}
+\caption{Software architecture. The three browser pages talk to one server application that links the blocks of Sections~\ref{sec:segmentation} to~\ref{sec:gantry}; the text recogniser also reads back every synthesised preview.}
+\label{fig:sys-arch}
+\end{figure}
+
+Figure~\ref{fig:sys-arch} shows the modules.
+The server loads the trained models and the style profiles once at start-up and offers the blocks as HTTP requests with JSON bodies (Table~\ref{tab:sys-endpoints} of the appendix lists the 18 routes).
+The browser pages are static files that can be served by any machine; each reads the server address from a setting stored in the browser, attaches an optional access key to every request, and shows a green or red dot according to whether the list of writers can be fetched.
+The three modes of the proposal map to the pages as follows (Table~\ref{tab:sys-modes} of the appendix gives the chains in detail).
+\emph{Classification} is the Read page: a photograph is captured (with live preview) or uploaded, conditioned and segmented into lines, each line is read by the text recogniser and classified by the ink-based writer classifier, and the mean writer probabilities, text, confidence and number of lines are returned.
+\emph{Reproduction} is the Write page: after one calibration per session, text, writer and $N$ give a best-of-$N$ synthesis, G-code, a preview with read-back text and accuracy, and a ``send to gantry'' action.
+\emph{Training} has no page: it is an offline step (segmentation of photographs, training of the networks and the profile builder of Section~\ref{sec:styleprofile}); the ten writers are pre-built files and the interface contains no training function.
+A third page shows model architectures, sizes and stored accuracies and, for each writer, sample crops and the glyph grid.
+
+\subsubsection{Start-up, caching, job storage and deployment}
+
+At start-up the server loads the text recogniser, the stroke-normalised classifier that judges the synthesis, the ink-based classifier that classifies photographs and all profiles; each network is a from-scratch array-arithmetic implementation of the trained weights (Sections~\ref{sec:textrec} and~\ref{sec:writerid}), so no training library runs on the board.
+A background thread prepares for each writer the glyph-grid image and two sample crops (slow on the first run, stored afterwards), and the two requests that need them answer ``still preparing'' until it finishes, so the other pages are not blocked.
+Photographs and jobs (the G-code and its preview) are stored under random identifiers, and every identifier received from a browser is reduced to alphanumeric characters before use as a file name, which prevents path traversal.
+Because the seed is fixed by default, the same text, writer and $N$ give the same trajectory.
+The server listens on all interfaces on port 5000 and is intended for the single-board computer; the pin interface is imported lazily, so the program also starts on a laptop, where a motion request is answered with ``not connected''.
+A job is refused unless calibration has succeeded in this server session, and the Write page locks its controls until then.
+Security suits a trusted local network only: no accounts, an optional shared key, requests from any origin accepted, and anyone who can reach the port can start a motion.
+\textbf{[TO BE COMPLETED BY STUDENT: the network configuration of the board (address, connection to the laptop), operating system and Python version, how the server is started, and the memory used by the loaded models.]}
+For ergonomics, the live camera preview is a toggle used only while framing the page, the quality field ($N$, 1 to 60, default 20) trades synthesis time against quality, and the read-back of every preview supports checking before the pen moves.
+
+\subsubsection{Timing chains of the two modes}
+
+Requirement R4 limits the classification of $x$ characters as in Equation~\ref{eq:sys-cls}:
+\begin{equation}
+T_{\mathrm{cls}}=T_{\mathrm{cap}}+T_{\mathrm{seg}}+\sum_{\mathrm{lines}}\bigl(T_{\mathrm{text}}+T_{\mathrm{wid}}\bigr)\le2\ \mathrm{s}+0.025\,x\ \mathrm{s},
+\label{eq:sys-cls}
+\end{equation}
+with capture, conditioning and segmentation inside the 2\,s and both network passes inside 25\,ms per character (3.5\,s for 60 characters).
+Requirement R3 limits the reproduction of $x$ characters as in Equation~\ref{eq:sys-rep}:
+\begin{equation}
+T_{\mathrm{rep}}=T_{\mathrm{synth}}+T_{\mathrm{gcode}}+T_{\mathrm{motion}}\le4\,x\ \mathrm{s},\qquad T_{\mathrm{synth}}\approx N\,C,
+\label{eq:sys-rep}
+\end{equation}
+where $C$ is the cost of one candidate (Equation~\ref{eq:syn-cost}), $T_{\mathrm{gcode}}$ is milliseconds and $T_{\mathrm{motion}}$ is the job time of Section~\ref{sec:gan-timing}; the one-off calibration is excluded and $T_{\mathrm{synth}}$ is included, the stricter reading of the proposal.
+Table~\ref{tab:sys-timing} of the appendix lists the stages and the measurements still missing: the server returns the synthesis time of each request, but no timer exists for classification and no timing of any stage on the single-board computer was recorded.
+For a 56-character sentence the budget is $4\cdot56=224$\,s; the search alone took 23 to 137\,s at $N=14$ on the laptop and the motion model gives 2.4 to 2.8\,s per character for the short test word, so the two terms are of the same order and R3 depends on $N$ and the board's speed; it is therefore \emph{not} claimed that R3 or R4 is met.
+\textbf{[TO BE COMPLETED BY STUDENT: the timings of the stages on the single-board computer, listed in Table~\ref{tab:sys-timing} of the appendix.]}

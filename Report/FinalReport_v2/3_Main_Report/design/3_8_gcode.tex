@@ -1,0 +1,59 @@
+\subsection{G-code generation}
+\label{sec:gcode}
+
+This subsection describes how a trajectory in millimetres becomes a machine program (functional unit FU~2.8, first stage; requirements R3 and R5).
+The format is G-code, the standard line-oriented command language of plotters, because it separates the two stages of the motion chain: the generator needs no knowledge of the gantry electronics, the interpreter of Section~\ref{sec:gantry} none of handwriting, and the drawing can be checked on a computer without the machine.
+Both programs were written by the student; the file format itself was not designed.
+
+\subsubsection{Coordinate frames, placement and ordering}
+
+The trajectory (Section~\ref{sec:synthesis}) and the machine frame both have $X$ to the right and $Y$ upwards, so no mirroring is needed (Figure~\ref{fig:gc-frames} of the appendix).
+The origin $(0,0)$ of the G-code is the safe corner 5\,mm inside the minimum switches (Section~\ref{sec:gan-calib}), and the text block is placed with its top-left corner at $(X_{\mathrm o},Y_{\mathrm o})=(10,180)$\,mm, later lines descending.
+For a trajectory with bounding box $(x_0,y_0,x_1,y_1)$, width $w$ and height $h$, the block is shrunk (Equation~\ref{eq:gc-map}), never enlarged, if it would leave the work area $[0,X_{\max}]\times[0,Y_{\max}]$, $X_{\max}=Y_{\max}=200$\,mm:
+\begin{equation}
+s=\min\Bigl(1,\ \frac{X_{\max}-X_{\mathrm o}}{w},\ \frac{Y_{\mathrm o}-Y_{\min}}{h}\Bigr),\qquad X=X_{\mathrm o}+(x-x_0)\,s,\quad Y=Y_{\mathrm o}-(y_1-y)\,s,
+\label{eq:gc-map}
+\end{equation}
+with $Y_{\min}=0$.
+At scale 1 the area holds at most $\lfloor(180-9.2)/12.6\rfloor+1=14$ lines of the default size ($9.2=(A-D)x_{\mathrm{mm}}$, pitch 12.6\,mm).
+A final clamp moves vertices outside the work area onto its border and writes a header warning, and vertices closer than 0.12\,mm to the previous one are dropped (inert in practice, since the synthesiser resamples at 0.35\,mm).
+The strokes are then ordered by a greedy nearest-endpoint rule: they are grouped into text rows and, within a row, the next stroke is the one whose end is nearest to the pen, entered from that end.
+Only order and direction change, so the ink is identical; this is the pen-movement optimisation of R3, whose saving was not measured.
+\emph{Implementation note:} the rows are sorted by ascending $Y$, so a multi-line job starts with the \emph{bottom} line, not in reading order; this was found by reading the code and was not checked on the machine.
+
+\subsubsection{Pen state, feed rates and program structure}
+
+The pen lift is a one-way toggle motor (Section~\ref{sec:gan-pen}), so the generator tracks the pen state in software and emits a command only when the state changes; a pulse where none is needed would invert the pen for the rest of the job.
+Each change emits \texttt{M3} (down) or \texttt{M5} (up) and a dwell of $(260+90)\,\mathrm{ms}=0.350$\,s (the assumed time of one $90^\circ$ rotation and settling), so a stroke costs 0.7\,s of dwell; the interpreter additionally confirms the state with the pen switch.
+Drawing uses 900\,mm/min (15\,mm/s) and travel 2400\,mm/min (40\,mm/s); Table~\ref{tab:gc-config} of the appendix lists all constants.
+A program consists of a comment header, \texttt{G21} (millimetres), \texttt{G90} (absolute), then for each stroke of at least two points a travel \texttt{G0} to its start, pen down, \texttt{G1 F900} and one \texttt{G1} per vertex with three decimals (1\,\textmu m), and finally pen up, parking and \texttt{M2}; an excerpt is shown in Figure~\ref{fig:gc-excerpt} of the appendix (vertices 0.35\,mm apart).
+\emph{Implementation note on feed rates:} the interpreter has one \emph{modal} feed register and no rapid mode (Section~\ref{sec:gantry}).
+The generator emits \texttt{G0 F2400} once at the start and \texttt{G1 F900} before every stroke, so every pen-up travel after the first stroke runs at 900\,mm/min, not 2400; the real job time is longer than the estimate below assumes, and emitting the feed before every travel would remove the discrepancy.
+
+\subsubsection{Time model}
+
+The generator can write a step schedule with a time estimate that assumes each move starts and ends at rest with acceleration $a=400$\,mm/s$^2$ and cruise speed $v$ (15\,mm/s drawing, 40\,mm/s travel).
+The distance needed to reach $v$ is $d_a=v^2/(2a)$; a move of length $d$ is \emph{trapezoidal} if $d\ge2d_a$ and \emph{triangular}, never reaching $v$, otherwise (Figure~\ref{fig:gc-vel} of the appendix):
+\begin{equation}
+T(d)=\begin{cases}\dfrac{2v}{a}+\dfrac{d-2d_a}{v}=\dfrac{d}{v}+\dfrac{v}{a},&d\ge2d_a,\\[2mm]\dfrac{2v_{\mathrm p}}{a}=2\sqrt{\dfrac{d}{a}},\quad v_{\mathrm p}=\sqrt{d\,a},&d<2d_a.\end{cases}
+\label{eq:gc-trap}
+\end{equation}
+For drawing $d_a=0.28$\,mm (moves below 0.56\,mm are triangular, ramp time 37.5\,ms), for travel $d_a=2$\,mm (below 4\,mm, 100\,ms).
+A typical 0.35\,mm segment is always triangular, $T=2\sqrt{0.35/400}=59.2$\,ms, an average of 5.9\,mm/s, not 15.
+For the test word of Figure~\ref{fig:gc-excerpt} (draw path 83.2\,mm in 239 moves, pen-up path 250.3\,mm in 14 moves of which 179.6\,mm is the first approach, 26 pen pulses) the model gives 14.1\,s drawing, 7.5\,s travel and 9.1\,s dwell, 30.7\,s in total, or 2.8\,s per character if the word has 11 characters (assumed from the file name; the text is not stored in the file).
+This is a model, not a measurement: it stops fully between 0.35\,mm segments and assumes 40\,mm/s travel, so it overestimates drawing time and underestimates travel time against the real interpreter (Section~\ref{sec:gan-timing}).
+
+\subsubsection{Verification of the program}
+\label{sec:gc-verify}
+
+An independent parser replays the file (it follows $X$ and $Y$, starts a polyline at \texttt{M3} and closes it at \texttt{M5}; only \texttt{G0} and \texttt{G1} are parsed, which suffices because nothing else is emitted).
+The original trajectory (after placement and clamping) and the replayed polylines are rasterised on a common grid (8 pixels per millimetre), and the measures of Equation~\ref{eq:gc-verify} are reported:
+\begin{equation}
+\mathrm{IoU}=\frac{|M_{\mathrm t}\cap M_{\mathrm g}|}{|M_{\mathrm t}\cup M_{\mathrm g}|},\qquad e_{\mathrm{mean}}=\frac{1}{J}\sum_j\min_i\lVert g_j-s_i\rVert,\qquad e_{\max}=\max_j\min_i\lVert g_j-s_i\rVert
+\label{eq:gc-verify}
+\end{equation}
+where $M_{\mathrm t}$ and $M_{\mathrm g}$ are the masks, $g_j$ the G-code vertices and $s_i$ the trajectory vertices (sub-sampled to at most 4000 and 6000).
+The measure compares vertices with vertices and covers only the loss between trajectory and file (rounding, ordering, clamping), not the mechanical error (Section~\ref{sec:gan-res}).
+The project notes quote $\mathrm{IoU}\approx0.99$ and a text-accuracy change of at most 0.3 percentage points between direct and read-back rendering (an earlier system state; Table~\ref{tab:syn-evid} shows later pairs), judged by the networks of the search; $e_{\mathrm{mean}}$ and $e_{\max}$ were not logged.
+\textbf{[TO BE COMPLETED BY STUDENT: run the comparison for a set of generated programs and report $\mathrm{IoU}$, $e_{\mathrm{mean}}$, $e_{\max}$.]}
+\emph{Implementation note on the work area:} lines wrap at 185\,mm from $X_{\mathrm o}=10$\,mm, so a full-width line reaches $X=195$\,mm, but the driver clamps $X$ to 194\,mm and would distort the last millimetre; $X_{\max}$ or the line width should be reduced.
