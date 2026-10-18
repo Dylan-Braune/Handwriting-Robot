@@ -4,10 +4,14 @@
 #(stage1->pool1->stage2->pool2->stage3) and all of its init/forward/backward/
 #batching code, so that part is written once below and used by both trainers.
 #simplified single-path versions of TrainText.py/TrainAuthor.py's multi-
-#subcommand designs -- text trains on IAMpages671 only (matching the `base`
-#path), author trains the current DATASET_AUTHORS+PERSONAL_AUTHORS set
-#(matching `10authors`, minus the text-model backbone warm start, which
-#would need a text checkpoint already trained from scratch here).
+#subcommand designs -- text trains on either IAMpages671 (`--source pages`,
+#segmented from scratch, matching the old `base` path) or pre-segmented
+#Teklia/IAM-line lines (`--source teklia`, matching the old `hf` path --
+#export once via ExportTekliaLines.py, the one place in this project that
+#needs the `datasets` library, kept outside the actual training pipeline).
+#author trains the current DATASET_AUTHORS+PERSONAL_AUTHORS set (matching
+#`10authors`, minus the text-model backbone warm start, which would need a
+#text checkpoint already trained from scratch here).
 #data loading (IAMLineDatasetRaw, TrainEvalView/AuthorLabeledView,
 #AddPersonalSamples, CollateFn) is reused as-is from TrainText.py/
 #TrainAuthor.py -- that pipeline is pure PIL/numpy throughout, CollateFn's
@@ -23,11 +27,13 @@ import time
 from pathlib import Path
 
 import numpy as np
+from PIL import Image
 
 import NumpyNN as NN
 import Classify as CLS
 from Charset import CHARSET
-from TrainText import IAMLineDatasetRaw,TrainEvalView,CollateFn as TextCollateFn
+from TrainText import IAMLineDatasetRaw,TrainEvalView,CollateFn as TextCollateFn,\
+    ResizeLineImageFixed,AugmentLineImage,TensorFromResized,EncodeText
 from TrainAuthor import AuthorLabeledView,CollateFn as AuthorCollateFn,AddPersonalSamples
 from AuthorsConfig import DATASET_AUTHORS,PERSONAL_AUTHORS
 
@@ -38,8 +44,41 @@ HIDDEN_SIZE = 256   #lstm hidden size, text model only
 
 DEFAULT_TEXT_DATA_DIR = SCRIPT_DIR.parents[1]/"Data"/"Datasets"/"IAMpages671"
 DEFAULT_TEXT_CACHE_DIR = CNN_DATA_DIR/"NOGIT"/"line_image_cache"
+DEFAULT_TEKLIA_DATA_DIR = SCRIPT_DIR.parents[1]/"Data"/"Datasets"/"TekliaIamLines"
 DEFAULT_AUTHOR_DATA_DIR = SCRIPT_DIR.parents[1]/"Data"/"Datasets"/"IAMpages10"
 DEFAULT_AUTHOR_CACHE_DIR = CNN_DATA_DIR/"NOGIT"/"line_cache_authors10"
+
+
+#flat folder of pre-segmented line images + "<stem>_labels.txt" sidecars,
+#produced once by ExportTekliaLines.py -- no page-level segmentation needed
+#here, each file is already a single cropped, labelled line. mirrors
+#TrainEvalView's __getitem__ exactly (same resize/augment/encode calls) so
+#it's a drop-in alternative data source for the same training loop
+class TekliaLineDataset:
+    def __init__(self,rootDir,isTrain):
+        rootDir = Path(rootDir)
+        self.isTrain = isTrain
+        self.items = []
+        for imgPath in sorted(rootDir.glob("*.png")):
+            labelPath = imgPath.with_name(imgPath.stem+"_labels.txt")
+            if labelPath.exists():
+                text = labelPath.read_text(encoding="utf-8").strip()
+                if text:
+                    self.items.append((imgPath,text))
+        if not self.items:
+            raise RuntimeError(f"No line images found under {rootDir} -- run "
+                                f"ExportTekliaLines.py first.")
+
+    def __len__(self):
+        return len(self.items)
+
+    def __getitem__(self,i):
+        imgPath,text = self.items[i]
+        pilImg = ResizeLineImageFixed(Image.open(imgPath))
+        if self.isTrain:
+            pilImg = AugmentLineImage(pilImg)
+        imgTensor = TensorFromResized(pilImg)
+        return imgTensor,EncodeText(text),text
 
 
 #=== parameter init, approximating pytorch's own defaults (annealing over a
@@ -330,15 +369,34 @@ def ValidateTextModel(valSet,params,batchSize,rng):
 #training loop: RMSprop lr=1e-3 wd=1e-5, ReduceLROnPlateau on val loss --
 #same recipe as TrainText.py's Train(), minus warm restarts/resume/HF/joint/
 #personal variants (simplified single path, see module comment)
-def TrainTextModel(numEpochs,batchSize,lr,seed,maxPages,dataDir):
+#builds the train/val split for the `pages` source: raw IAMpages671 scans,
+#segmented from scratch via SegmentLean (through IAMLineDatasetRaw's own
+#LineImageCache), holdout split is per-page (one page per author held out)
+def BuildPagesSplit(maxPages,dataDir):
     dataset = IAMLineDatasetRaw(rootDir=dataDir,cacheDir=DEFAULT_TEXT_CACHE_DIR,maxPages=maxPages)
     if len(dataset)<4:
         raise RuntimeError("Not enough line samples to train.")
     trainIdx,testIdx = dataset.HoldoutSplitIndices()
     if not testIdx:
         raise RuntimeError("No held-out lines found.")
-    trainSet = TrainEvalView(dataset,trainIdx,isTrain=True)
-    valSet = TrainEvalView(dataset,testIdx,isTrain=False)
+    return TrainEvalView(dataset,trainIdx,isTrain=True),TrainEvalView(dataset,testIdx,isTrain=False)
+
+
+#builds the train/val split for the `teklia` source: already-segmented,
+#already-labelled lines exported once by ExportTekliaLines.py -- the split
+#is whatever HuggingFace's own train/validation division was, no holdout
+#logic needed since the dataset already separates them into two folders
+def BuildTekliaSplit(dataDir):
+    trainSet = TekliaLineDataset(Path(dataDir)/"train",isTrain=True)
+    valSet = TekliaLineDataset(Path(dataDir)/"validation",isTrain=False)
+    return trainSet,valSet
+
+
+def TrainTextModel(numEpochs,batchSize,lr,seed,maxPages,dataDir,source="pages"):
+    if source=="teklia":
+        trainSet,valSet = BuildTekliaSplit(dataDir)
+    else:
+        trainSet,valSet = BuildPagesSplit(maxPages,dataDir)
     print(f"[Split] Train lines: {len(trainSet)} | Held-out val lines: {len(valSet)}")
 
     numClasses = len(CHARSET)+1
@@ -609,8 +667,12 @@ def Main():
     textP.add_argument("--batch-size",type=int,default=16)
     textP.add_argument("--lr",type=float,default=1e-3)
     textP.add_argument("--seed",type=int,default=7)
-    textP.add_argument("--max-pages",type=int,default=None)
+    textP.add_argument("--max-pages",type=int,default=None,help="`pages` source only")
     textP.add_argument("--data-dir",type=str,default=None)
+    textP.add_argument("--source",choices=["pages","teklia"],default="pages",
+                       help="`pages`: segment IAMpages671 from scratch (default). "
+                            "`teklia`: pre-segmented Teklia/IAM-line lines, exported "
+                            "once via ExportTekliaLines.py -- no segmentation needed")
     textP.add_argument("--selftest",action="store_true",help="run the synthetic smoke test and exit")
 
     authorP = sub.add_parser("author")
@@ -626,10 +688,12 @@ def Main():
         if args.selftest:
             TextSelfTest()
             return
-        dataDir = Path(args.data_dir) if args.data_dir else DEFAULT_TEXT_DATA_DIR
-        print(f"\n--- Training paper_cnn_bilstm_ctc_scratch (lr={args.lr}, batch_size={args.batch_size}, "
-              f"max_epochs={args.epochs}, data={dataDir}) ---")
-        best = TrainTextModel(args.epochs,args.batch_size,args.lr,args.seed,args.max_pages,dataDir)
+        defaultDir = DEFAULT_TEKLIA_DATA_DIR if args.source=="teklia" else DEFAULT_TEXT_DATA_DIR
+        dataDir = Path(args.data_dir) if args.data_dir else defaultDir
+        print(f"\n--- Training paper_cnn_bilstm_ctc_scratch (source={args.source}, lr={args.lr}, "
+              f"batch_size={args.batch_size}, max_epochs={args.epochs}, data={dataDir}) ---")
+        best = TrainTextModel(args.epochs,args.batch_size,args.lr,args.seed,args.max_pages,dataDir,
+                              source=args.source)
         print(f"\nDone. Best validation loss: {best:.4f}")
     else:
         if args.selftest:
