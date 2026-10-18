@@ -1,0 +1,23 @@
+distribution over characters
+Because the model produces T output positions
+but doesn't know in advance how many of
+those positions correspond to each character.
+It is trained with connectionist temporal classification
+For a target label sequence y and an output
+sequence of length-T alignment, CTC defines
+the probability of y as the sum over every
+possible length-T alignment path that
+collapses (by merging repeated consecutive
+symbols and then removing blanks) to y.
+This is what allows the model to be trained
+from only "this line says X" labels, with no
+annotation of where each character sits inside the
+image.
+Parameters are maintained by keeping a per-parameter
+running average of squared gradients and scales
+each update by its inverse square root with an added
+weight-decay term for regularisation. A learning-rate
+scheduler halves the learning rate whenever validation
+loss fails to improve for a fixed number of consecutive
+checks, and training stops early once that patience
+is exceeded.

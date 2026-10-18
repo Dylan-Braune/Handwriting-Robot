@@ -1,0 +1,21 @@
+Why I can't just compare two means directly
+- Naive comparison techniques (just checking if confidence intervals
+around each filter's mean overlap) are FLAWED because UCM and
+DUCM aren't independent of each other
+- in my setup, both filters are fed the exact same simulated measurement
+sequence in each run
+it means the 2 filters' per-run errors are
+correlated w each other
+- can't treat them as 2 separate independent samples and compare
+their means w a normal two-sample test - the shared randomness
+would corrupt the comparison
+- instead of comparing against directly, the DT works w the
+per-run difference:
+is just "whatever cost/error metric you're measuring
+for filter j on run i" - eg. squared position error
+vs. DUCM on a single run
+Correlated w each other w/i a run (same measurement noise realisation),
+the difference i from run i is independent of k from a different
+run k, because diff runs use fresh, independent random noise. So
+you end up w N independent samples
+do ordinary statistics on.
