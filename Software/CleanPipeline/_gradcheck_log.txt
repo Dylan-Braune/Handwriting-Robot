@@ -1,0 +1,211 @@
+numerical gradient check of the hand-derived backward passes in NumpyNN.py
+dtype            : float64
+numpy version    : 2.4.3
+epsilon          : 1e-05 (central difference)
+tolerance        : 1e-06 on max|ga-gn| / max(1, max|ga|+max|gn|)
+max probes/tensor: 40 randomly chosen elements (all of them if fewer)
+
+--- conv2d ---
+  conv2d 3x3 pad1  B2 C3 8x8 -> 4 / dx           probed  40   relDiff 7.430e-11   elemRel 2.514e-09   PASS
+  conv2d 3x3 pad1  B2 C3 8x8 -> 4 / dweight      probed  40   relDiff 1.350e-11   elemRel 2.106e-10   PASS
+  conv2d 3x3 pad1  B2 C3 8x8 -> 4 / dbias        probed   4   relDiff 2.181e-11   elemRel 3.595e-11   PASS
+  conv2d 3x3 pad0  B2 C3 7x7 -> 5 / dx           probed  40   relDiff 4.126e-11   elemRel 2.933e-09   PASS
+  conv2d 3x3 pad0  B2 C3 7x7 -> 5 / dweight      probed  40   relDiff 1.524e-11   elemRel 7.849e-09   PASS
+  conv2d 3x3 pad0  B2 C3 7x7 -> 5 / dbias        probed   5   relDiff 1.172e-11   elemRel 7.675e-11   PASS
+  conv2d 1x1 pad0  B3 C4 5x6 -> 2 / dx           probed  40   relDiff 4.812e-11   elemRel 4.635e-10   PASS
+  conv2d 1x1 pad0  B3 C4 5x6 -> 2 / dweight      probed   8   relDiff 1.559e-11   elemRel 3.673e-11   PASS
+  conv2d 1x1 pad0  B3 C4 5x6 -> 2 / dbias        probed   2   relDiff 2.076e-12   elemRel 2.076e-12   PASS
+  conv2d 2x4 pad2  B2 C2 6x9 -> 3 / dx           probed  40   relDiff 4.964e-11   elemRel 2.882e-09   PASS
+  conv2d 2x4 pad2  B2 C2 6x9 -> 3 / dweight      probed  40   relDiff 1.442e-11   elemRel 3.122e-10   PASS
+  conv2d 2x4 pad2  B2 C2 6x9 -> 3 / dbias        probed   3   relDiff 6.329e-12   elemRel 1.810e-11   PASS
+  conv2d 3x3 pad1 no-bias B2 C3 6x6 -> 3 / dx    probed  40   relDiff 4.937e-11   elemRel 2.131e-09   PASS
+  conv2d 3x3 pad1 no-bias B2 C3 6x6 -> 3 / dweight probed  40   relDiff 1.664e-11   elemRel 3.654e-10   PASS
+--- batchnorm2d (train mode) ---
+  batchnorm2d  B4 C3 5x5 / dx                    probed  40   relDiff 1.035e-10   elemRel 3.681e-09   PASS
+  batchnorm2d  B4 C3 5x5 / dgamma                probed   3   relDiff 1.304e-11   elemRel 2.093e-11   PASS
+  batchnorm2d  B4 C3 5x5 / dbeta                 probed   3   relDiff 1.981e-11   elemRel 5.185e-11   PASS
+  batchnorm2d  B2 C5 3x7 / dx                    probed  40   relDiff 4.072e-11   elemRel 2.237e-09   PASS
+  batchnorm2d  B2 C5 3x7 / dgamma                probed   5   relDiff 1.780e-11   elemRel 3.843e-11   PASS
+  batchnorm2d  B2 C5 3x7 / dbeta                 probed   5   relDiff 5.668e-12   elemRel 5.204e-11   PASS
+--- relu ---
+  relu  B2 C3 6x6 / dx                           probed  40   relDiff 1.975e-11   elemRel 5.630e-10   PASS
+--- maxpool2d ---
+  maxpool2d k2 s2  B2 C3 8x8 / dx                probed  40   relDiff 2.030e-11   elemRel 9.146e-11   PASS
+  maxpool2d k3 s3  B2 C2 9x9 / dx                probed  40   relDiff 1.746e-11   elemRel 9.032e-11   PASS
+  maxpool2d k2 s2  B2 C2 7x7 (ragged) / dx       probed  40   relDiff 1.557e-11   elemRel 2.814e-11   PASS
+--- adaptive pooling ---
+  adaptiveMaxPoolHeight  B2 C3 5x7 / dx          probed  40   relDiff 4.917e-12   elemRel 2.869e-10   PASS
+  adaptiveAvgPoolWidth  B3 C4 9 / dx             probed  40   relDiff 9.502e-12   elemRel 1.592e-09   PASS
+--- linear ---
+  linear 2D  (6,5) -> 4 / dx                     probed  30   relDiff 3.035e-11   elemRel 1.846e-10   PASS
+  linear 2D  (6,5) -> 4 / dweight                probed  20   relDiff 1.202e-11   elemRel 1.984e-10   PASS
+  linear 2D  (6,5) -> 4 / dbias                  probed   4   relDiff 2.538e-11   elemRel 3.793e-11   PASS
+  linear 3D  (4,3,6) -> 5 / dx                   probed  40   relDiff 6.508e-11   elemRel 4.587e-09   PASS
+  linear 3D  (4,3,6) -> 5 / dweight              probed  30   relDiff 2.759e-11   elemRel 2.114e-09   PASS
+  linear 3D  (4,3,6) -> 5 / dbias                probed   5   relDiff 1.338e-11   elemRel 1.349e-10   PASS
+  linear 2D no-bias  (5,7) -> 3 / dx             probed  35   relDiff 1.220e-11   elemRel 2.770e-10   PASS
+  linear 2D no-bias  (5,7) -> 3 / dweight        probed  21   relDiff 8.618e-12   elemRel 9.356e-11   PASS
+--- dropout ---
+  dropout p0.4 train (fixed mask)  (4,6) / dx    probed  24   relDiff 9.436e-12   elemRel 1.252e-10   PASS
+  dropout p0.4 eval (identity)     (4,6) / dx    probed  24   relDiff 1.995e-11   elemRel 1.056e-10   PASS
+--- lstm (unidirectional, one layer) ---
+  lstm  T5 B2 in4 H3 / dx                        probed  40   relDiff 1.901e-11   elemRel 1.030e-09   PASS
+  lstm  T5 B2 in4 H3 / dweightIh                 probed  40   relDiff 3.625e-11   elemRel 1.773e-09   PASS
+  lstm  T5 B2 in4 H3 / dweightHh                 probed  36   relDiff 2.706e-11   elemRel 1.197e-08   PASS
+  lstm  T5 B2 in4 H3 / dbiasIh                   probed  12   relDiff 3.915e-11   elemRel 3.210e-10   PASS
+  lstm  T5 B2 in4 H3 / dbiasHh                   probed  12   relDiff 3.915e-11   elemRel 3.210e-10   PASS
+  lstm  T7 B3 in3 H5 / dx                        probed  40   relDiff 5.181e-11   elemRel 3.839e-09   PASS
+  lstm  T7 B3 in3 H5 / dweightIh                 probed  40   relDiff 4.311e-11   elemRel 1.729e-08   PASS
+  lstm  T7 B3 in3 H5 / dweightHh                 probed  40   relDiff 7.322e-11   elemRel 6.243e-09   PASS
+  lstm  T7 B3 in3 H5 / dbiasIh                   probed  20   relDiff 3.883e-11   elemRel 1.046e-10   PASS
+  lstm  T7 B3 in3 H5 / dbiasHh                   probed  20   relDiff 3.883e-11   elemRel 1.479e-10   PASS
+--- bidirectional lstm ---
+  bilstm  T5 B2 in4 H3 / dx                      probed  40   relDiff 5.151e-11   elemRel 7.459e-10   PASS
+  bilstm  T5 B2 in4 H3 / fwd dweightIh           probed  40   relDiff 2.211e-11   elemRel 6.975e-09   PASS
+  bilstm  T5 B2 in4 H3 / fwd dweightHh           probed  36   relDiff 4.470e-11   elemRel 2.221e-09   PASS
+  bilstm  T5 B2 in4 H3 / fwd dbiasIh             probed  12   relDiff 1.179e-11   elemRel 1.959e-09   PASS
+  bilstm  T5 B2 in4 H3 / fwd dbiasHh             probed  12   relDiff 1.225e-11   elemRel 1.959e-09   PASS
+  bilstm  T5 B2 in4 H3 / bwd dweightIh           probed  40   relDiff 1.978e-11   elemRel 3.917e-08   PASS
+  bilstm  T5 B2 in4 H3 / bwd dweightHh           probed  36   relDiff 3.562e-11   elemRel 5.900e-09   PASS
+  bilstm  T5 B2 in4 H3 / bwd dbiasIh             probed  12   relDiff 8.539e-12   elemRel 6.860e-10   PASS
+  bilstm  T5 B2 in4 H3 / bwd dbiasHh             probed  12   relDiff 8.539e-12   elemRel 6.860e-10   PASS
+--- multilayer bidirectional lstm ---
+  bilstm x2  T4 B2 in3 H3 / dx                   probed  24   relDiff 3.365e-11   elemRel 4.303e-09   PASS
+  bilstm x2  T4 B2 in3 H3 / L0 fwd dweightIh     probed  36   relDiff 5.270e-11   elemRel 9.808e-09   PASS
+  bilstm x2  T4 B2 in3 H3 / L0 bwd dweightIh     probed  36   relDiff 5.818e-11   elemRel 9.884e-08   PASS
+  bilstm x2  T4 B2 in3 H3 / L0 fwd dweightHh     probed  36   relDiff 3.932e-11   elemRel 1.977e-07   PASS
+  bilstm x2  T4 B2 in3 H3 / L0 bwd dweightHh     probed  36   relDiff 5.538e-11   elemRel 4.805e-08   PASS
+  bilstm x2  T4 B2 in3 H3 / L0 fwd dbiasIh       probed  12   relDiff 4.794e-11   elemRel 3.705e-09   PASS
+  bilstm x2  T4 B2 in3 H3 / L0 bwd dbiasIh       probed  12   relDiff 4.016e-11   elemRel 2.707e-09   PASS
+  bilstm x2  T4 B2 in3 H3 / L0 fwd dbiasHh       probed  12   relDiff 3.975e-11   elemRel 3.705e-09   PASS
+  bilstm x2  T4 B2 in3 H3 / L0 bwd dbiasHh       probed  12   relDiff 4.016e-11   elemRel 2.707e-09   PASS
+  bilstm x2  T4 B2 in3 H3 / L1 fwd dweightIh     probed  40   relDiff 3.319e-11   elemRel 3.651e-08   PASS
+  bilstm x2  T4 B2 in3 H3 / L1 bwd dweightIh     probed  40   relDiff 3.693e-11   elemRel 2.018e-08   PASS
+  bilstm x2  T4 B2 in3 H3 / L1 fwd dweightHh     probed  36   relDiff 3.043e-11   elemRel 2.467e-08   PASS
+  bilstm x2  T4 B2 in3 H3 / L1 bwd dweightHh     probed  36   relDiff 4.527e-11   elemRel 1.180e-08   PASS
+  bilstm x2  T4 B2 in3 H3 / L1 fwd dbiasIh       probed  12   relDiff 2.510e-11   elemRel 2.986e-09   PASS
+  bilstm x2  T4 B2 in3 H3 / L1 bwd dbiasIh       probed  12   relDiff 4.442e-11   elemRel 4.109e-09   PASS
+  bilstm x2  T4 B2 in3 H3 / L1 fwd dbiasHh       probed  12   relDiff 1.913e-11   elemRel 2.042e-09   PASS
+  bilstm x2  T4 B2 in3 H3 / L1 bwd dbiasHh       probed  12   relDiff 4.442e-11   elemRel 4.109e-09   PASS
+--- ctc loss ---
+  ctc  T8 B3 C5 targets[1,2,3 / 2,2 / 4] / dlogits probed  40   relDiff 1.389e-10   elemRel 9.050e-09   PASS
+  ctc  T7 B2 C4 targets[1,1,2 / 3] (S==T tight) / dlogits probed  40   relDiff 7.574e-11   elemRel 2.485e-09   PASS
+  ctc  T6 B1 C3 target[1] (single label) / dlogits probed  18   relDiff 3.089e-11   elemRel 3.366e-10   PASS
+  ctc  T6 B1 C3 target[] (empty label, S==1) / dlogits probed   0   relDiff       n/a   elemRel       n/a   FAIL
+      CtcLoss forward raised ValueError: could not broadcast input array from shape (2,) into shape (1,)
+--- cross entropy loss ---
+  crossEntropy  B5 C7 / dlogits                  probed  35   relDiff 2.614e-11   elemRel 1.535e-09   PASS
+  crossEntropy  B1 C4 / dlogits                  probed   4   relDiff 4.931e-12   elemRel 1.363e-11   PASS
+
+========================================================================================================
+SUMMARY   (relDiff = max|ga-gn| / max(1, max|ga|+max|gn|),  tolerance 1e-06)
+========================================================================================================
+configuration                                  nProbed     maxRelDiff     maxElemRel   result
+--------------------------------------------------------------------------------------------------------
+conv2d 3x3 pad1  B2 C3 8x8 -> 4 / dx                40      7.430e-11      2.514e-09   PASS
+conv2d 3x3 pad1  B2 C3 8x8 -> 4 / dweight           40      1.350e-11      2.106e-10   PASS
+conv2d 3x3 pad1  B2 C3 8x8 -> 4 / dbias              4      2.181e-11      3.595e-11   PASS
+conv2d 3x3 pad0  B2 C3 7x7 -> 5 / dx                40      4.126e-11      2.933e-09   PASS
+conv2d 3x3 pad0  B2 C3 7x7 -> 5 / dweight           40      1.524e-11      7.849e-09   PASS
+conv2d 3x3 pad0  B2 C3 7x7 -> 5 / dbias              5      1.172e-11      7.675e-11   PASS
+conv2d 1x1 pad0  B3 C4 5x6 -> 2 / dx                40      4.812e-11      4.635e-10   PASS
+conv2d 1x1 pad0  B3 C4 5x6 -> 2 / dweight            8      1.559e-11      3.673e-11   PASS
+conv2d 1x1 pad0  B3 C4 5x6 -> 2 / dbias              2      2.076e-12      2.076e-12   PASS
+conv2d 2x4 pad2  B2 C2 6x9 -> 3 / dx                40      4.964e-11      2.882e-09   PASS
+conv2d 2x4 pad2  B2 C2 6x9 -> 3 / dweight           40      1.442e-11      3.122e-10   PASS
+conv2d 2x4 pad2  B2 C2 6x9 -> 3 / dbias              3      6.329e-12      1.810e-11   PASS
+conv2d 3x3 pad1 no-bias B2 C3 6x6 -> 3 / dx         40      4.937e-11      2.131e-09   PASS
+conv2d 3x3 pad1 no-bias B2 C3 6x6 -> 3 / dweight      40      1.664e-11      3.654e-10   PASS
+batchnorm2d  B4 C3 5x5 / dx                         40      1.035e-10      3.681e-09   PASS
+batchnorm2d  B4 C3 5x5 / dgamma                      3      1.304e-11      2.093e-11   PASS
+batchnorm2d  B4 C3 5x5 / dbeta                       3      1.981e-11      5.185e-11   PASS
+batchnorm2d  B2 C5 3x7 / dx                         40      4.072e-11      2.237e-09   PASS
+batchnorm2d  B2 C5 3x7 / dgamma                      5      1.780e-11      3.843e-11   PASS
+batchnorm2d  B2 C5 3x7 / dbeta                       5      5.668e-12      5.204e-11   PASS
+relu  B2 C3 6x6 / dx                                40      1.975e-11      5.630e-10   PASS
+maxpool2d k2 s2  B2 C3 8x8 / dx                     40      2.030e-11      9.146e-11   PASS
+maxpool2d k3 s3  B2 C2 9x9 / dx                     40      1.746e-11      9.032e-11   PASS
+maxpool2d k2 s2  B2 C2 7x7 (ragged) / dx            40      1.557e-11      2.814e-11   PASS
+adaptiveMaxPoolHeight  B2 C3 5x7 / dx               40      4.917e-12      2.869e-10   PASS
+adaptiveAvgPoolWidth  B3 C4 9 / dx                  40      9.502e-12      1.592e-09   PASS
+linear 2D  (6,5) -> 4 / dx                          30      3.035e-11      1.846e-10   PASS
+linear 2D  (6,5) -> 4 / dweight                     20      1.202e-11      1.984e-10   PASS
+linear 2D  (6,5) -> 4 / dbias                        4      2.538e-11      3.793e-11   PASS
+linear 3D  (4,3,6) -> 5 / dx                        40      6.508e-11      4.587e-09   PASS
+linear 3D  (4,3,6) -> 5 / dweight                   30      2.759e-11      2.114e-09   PASS
+linear 3D  (4,3,6) -> 5 / dbias                      5      1.338e-11      1.349e-10   PASS
+linear 2D no-bias  (5,7) -> 3 / dx                  35      1.220e-11      2.770e-10   PASS
+linear 2D no-bias  (5,7) -> 3 / dweight             21      8.618e-12      9.356e-11   PASS
+dropout p0.4 train (fixed mask)  (4,6) / dx         24      9.436e-12      1.252e-10   PASS
+dropout p0.4 eval (identity)     (4,6) / dx         24      1.995e-11      1.056e-10   PASS
+lstm  T5 B2 in4 H3 / dx                             40      1.901e-11      1.030e-09   PASS
+lstm  T5 B2 in4 H3 / dweightIh                      40      3.625e-11      1.773e-09   PASS
+lstm  T5 B2 in4 H3 / dweightHh                      36      2.706e-11      1.197e-08   PASS
+lstm  T5 B2 in4 H3 / dbiasIh                        12      3.915e-11      3.210e-10   PASS
+lstm  T5 B2 in4 H3 / dbiasHh                        12      3.915e-11      3.210e-10   PASS
+lstm  T7 B3 in3 H5 / dx                             40      5.181e-11      3.839e-09   PASS
+lstm  T7 B3 in3 H5 / dweightIh                      40      4.311e-11      1.729e-08   PASS
+lstm  T7 B3 in3 H5 / dweightHh                      40      7.322e-11      6.243e-09   PASS
+lstm  T7 B3 in3 H5 / dbiasIh                        20      3.883e-11      1.046e-10   PASS
+lstm  T7 B3 in3 H5 / dbiasHh                        20      3.883e-11      1.479e-10   PASS
+bilstm  T5 B2 in4 H3 / dx                           40      5.151e-11      7.459e-10   PASS
+bilstm  T5 B2 in4 H3 / fwd dweightIh                40      2.211e-11      6.975e-09   PASS
+bilstm  T5 B2 in4 H3 / fwd dweightHh                36      4.470e-11      2.221e-09   PASS
+bilstm  T5 B2 in4 H3 / fwd dbiasIh                  12      1.179e-11      1.959e-09   PASS
+bilstm  T5 B2 in4 H3 / fwd dbiasHh                  12      1.225e-11      1.959e-09   PASS
+bilstm  T5 B2 in4 H3 / bwd dweightIh                40      1.978e-11      3.917e-08   PASS
+bilstm  T5 B2 in4 H3 / bwd dweightHh                36      3.562e-11      5.900e-09   PASS
+bilstm  T5 B2 in4 H3 / bwd dbiasIh                  12      8.539e-12      6.860e-10   PASS
+bilstm  T5 B2 in4 H3 / bwd dbiasHh                  12      8.539e-12      6.860e-10   PASS
+bilstm x2  T4 B2 in3 H3 / dx                        24      3.365e-11      4.303e-09   PASS
+bilstm x2  T4 B2 in3 H3 / L0 fwd dweightIh          36      5.270e-11      9.808e-09   PASS
+bilstm x2  T4 B2 in3 H3 / L0 bwd dweightIh          36      5.818e-11      9.884e-08   PASS
+bilstm x2  T4 B2 in3 H3 / L0 fwd dweightHh          36      3.932e-11      1.977e-07   PASS
+bilstm x2  T4 B2 in3 H3 / L0 bwd dweightHh          36      5.538e-11      4.805e-08   PASS
+bilstm x2  T4 B2 in3 H3 / L0 fwd dbiasIh            12      4.794e-11      3.705e-09   PASS
+bilstm x2  T4 B2 in3 H3 / L0 bwd dbiasIh            12      4.016e-11      2.707e-09   PASS
+bilstm x2  T4 B2 in3 H3 / L0 fwd dbiasHh            12      3.975e-11      3.705e-09   PASS
+bilstm x2  T4 B2 in3 H3 / L0 bwd dbiasHh            12      4.016e-11      2.707e-09   PASS
+bilstm x2  T4 B2 in3 H3 / L1 fwd dweightIh          40      3.319e-11      3.651e-08   PASS
+bilstm x2  T4 B2 in3 H3 / L1 bwd dweightIh          40      3.693e-11      2.018e-08   PASS
+bilstm x2  T4 B2 in3 H3 / L1 fwd dweightHh          36      3.043e-11      2.467e-08   PASS
+bilstm x2  T4 B2 in3 H3 / L1 bwd dweightHh          36      4.527e-11      1.180e-08   PASS
+bilstm x2  T4 B2 in3 H3 / L1 fwd dbiasIh            12      2.510e-11      2.986e-09   PASS
+bilstm x2  T4 B2 in3 H3 / L1 bwd dbiasIh            12      4.442e-11      4.109e-09   PASS
+bilstm x2  T4 B2 in3 H3 / L1 fwd dbiasHh            12      1.913e-11      2.042e-09   PASS
+bilstm x2  T4 B2 in3 H3 / L1 bwd dbiasHh            12      4.442e-11      4.109e-09   PASS
+ctc  T8 B3 C5 targets[1,2,3 / 2,2 / 4] / dlogits      40      1.389e-10      9.050e-09   PASS
+ctc  T7 B2 C4 targets[1,1,2 / 3] (S==T tight) / dlogits      40      7.574e-11      2.485e-09   PASS
+ctc  T6 B1 C3 target[1] (single label) / dlogits      18      3.089e-11      3.366e-10   PASS
+ctc  T6 B1 C3 target[] (empty label, S==1) / dlogits       0            nan            nan   FAIL
+crossEntropy  B5 C7 / dlogits                       35      2.614e-11      1.535e-09   PASS
+crossEntropy  B1 C4 / dlogits                        4      4.931e-12      1.363e-11   PASS
+--------------------------------------------------------------------------------------------------------
+configurations checked : 78
+passed                 : 77
+failed                 : 1
+worst relDiff anywhere : 1.389e-10
+total elements probed  : 2044
+
+========================================================================================================
+FINDINGS
+========================================================================================================
+FAIL: ctc  T6 B1 C3 target[] (empty label, S==1) / dlogits
+
+The only failure is a shape bug in CtcLoss, not a wrong derivative:
+for an EMPTY label sequence the extended sequence is ext=[0], so S==1, but
+    prev2 = np.concatenate(([NEG,NEG],logAlpha[t-1,:-2]))
+    nextMinus2 = np.concatenate((nxt[2:],[NEG,NEG]))
+are built length 2 instead of length S, so the assignment
+`logAlpha[t] = combined+lp[t,ext]` raises a ValueError. For every S>=3 the
+same expressions come out length S and the gradient is correct, which is why
+all non-empty targets pass. Real-world impact is limited (a transcription
+line with zero characters never appears in the training data), but the
+function is not safe against one.
+
+Separately (not counted as a configuration): when the label is too long for
+the input length (2*L+1 > T) no valid alignment exists, CtcLoss returns
+loss=inf and a gradient containing nan. That is the mathematically correct
+answer for an infeasible alignment and matches what torch reports, but it
+means such samples must be filtered before training rather than relied on
+to produce a finite gradient.
