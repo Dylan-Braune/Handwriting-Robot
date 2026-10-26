@@ -22,6 +22,10 @@ from pathlib import Path
 
 import numpy as np
 
+#run as a script, python does not always put this file's own folder on the
+#import path, so the sibling modules below are found explicitly
+sys.path.insert(0,str(Path(__file__).resolve().parent))
+
 import paths
 import recognise as CLS   #the eval-only forward passes below run on recognise's versions
 from recognise import (CHARSET,CHAR_TO_IDX,IDX_TO_CHAR,INPUT_HEIGHT,INPUT_WIDTH,
@@ -2068,14 +2072,89 @@ def BuildTekliaSplit(dataDir):
     valSet = TekliaLineDataset(Path(dataDir)/"validation",isTrain=False)
     return trainSet,valSet
 
+
+#----------------------------------------------------------------------
+#PersonalLineView: the photographed writers' lines, for the reader
+#AddPersonalSamples cuts those pages into lines and records a transcript
+#for each, which is everything the reader needs.  it is normally called
+#for the namer, so this wraps the same samples in the reader's shape
+#----------------------------------------------------------------------
+class PersonalLineView:
+    def __init__(self,samples,isTrain):
+        self.samples = samples
+        self.isTrain = isTrain
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self,i):
+        item = self.samples[i]
+        pilImg = ResizeLineImageFixed(DecodeCrop(item["imageBytes"]))
+        if self.isTrain:
+            pilImg = AugmentLineImage(pilImg)
+        return TensorFromResized(pilImg),item["target"],item["text"]
+
+
+#---CollectPersonalLines: every photographed line, split train and held out---
+def CollectPersonalLines():
+    holder = type("Holder",(),{})()
+    holder.samples = []
+    AddPersonalSamples(holder)
+    train = [s for s in holder.samples if not s.get("is_holdout")]
+    held = [s for s in holder.samples if s.get("is_holdout")]
+    return train,held
+
+
+#----------------------------------------------------------------------
+#BuildJointSplit: Teklia plus the photographed writers
+#this is the mix the deployed reader was trained on.  the public set
+#supplies the volume a CTC network needs, the photographed pages supply
+#the hands the robot is actually asked to imitate, and without them the
+#reader is weakest on exactly the writing that matters here
+#----------------------------------------------------------------------
+def BuildJointSplit(dataDir):
+    tekTrain,tekVal = BuildTekliaSplit(dataDir)
+    perTrain,perHeld = CollectPersonalLines()
+    print(f"[Mix] {len(tekTrain)} Teklia + {len(perTrain)} personal train lines, "
+          f"{len(tekVal)} Teklia + {len(perHeld)} personal held out")
+    return tekTrain,PersonalLineView(perTrain,isTrain=True),tekVal,PersonalLineView(perHeld,isTrain=False)
+
+
+#----------------------------------------------------------------------
+#IterateMixedBatches: batches drawn from two sets at a fixed ratio
+#every batch holds the same proportion of photographed lines, rather than
+#the two sets being concatenated and shuffled.  concatenating would let
+#whole batches contain no personal lines at all, and with batch
+#normalising that changes what the layer sees, not just the order
+#----------------------------------------------------------------------
+def IterateMixedBatches(mainSet,extraSet,batchSize,fraction,rng,shuffle=True):
+    nExtra = min(len(extraSet),max(1,int(round(batchSize*fraction)))) if len(extraSet) else 0
+    nMain = max(1,batchSize-nExtra)
+    mainOrder = rng.permutation(len(mainSet)) if shuffle else np.arange(len(mainSet))
+    extraOrder = rng.permutation(len(extraSet)) if (shuffle and nExtra) else np.arange(len(extraSet))
+    extraAt = 0
+    for start in range(0,len(mainSet),nMain):
+        batch = [mainSet[int(i)] for i in mainOrder[start:start+nMain]]
+        for _ in range(nExtra):
+            if extraAt>=len(extraOrder):          #the smaller set is reused as often as needed
+                extraOrder = rng.permutation(len(extraSet))
+                extraAt = 0
+            batch.append(extraSet[int(extraOrder[extraAt])])
+            extraAt += 1
+        yield batch
+
 #----------------------------------------------------------------------
 #TrainTextModel: the reader's training run
 #batches, forward, CTC loss, backward, clip, step, validate, save when
 #it improves.  this is the loop that produced the checkpoints the
 #results were measured on
 #----------------------------------------------------------------------
-def TrainTextModel(numEpochs,batchSize,lr,seed,maxPages,dataDir,source="pages",resume=False,warmStart=None):
-    if source=="teklia":
+def TrainTextModel(numEpochs,batchSize,lr,seed,maxPages,dataDir,source="pages",resume=False,
+                   warmStart=None,personalFraction=0.20,tag=None):
+    personalSet = personalVal = None
+    if source=="joint":
+        trainSet,personalSet,valSet,personalVal = BuildJointSplit(dataDir)
+    elif source=="teklia":
         trainSet,valSet = BuildTekliaSplit(dataDir)
     else:
         trainSet,valSet = BuildPagesSplit(maxPages,dataDir)
@@ -2109,7 +2188,10 @@ def TrainTextModel(numEpochs,batchSize,lr,seed,maxPages,dataDir,source="pages",r
     for epoch in range(startEpoch,startEpoch+numEpochs):
         epochStart = time.time()
         epochLoss,nBatches = 0.0,0
-        for batch in IterateBatches(trainSet,batchSize,rng,shuffle=True):
+        batches = (IterateMixedBatches(trainSet,personalSet,batchSize,personalFraction,rng)
+                   if personalSet is not None
+                   else IterateBatches(trainSet,batchSize,rng,shuffle=True))
+        for batch in batches:
             images,targets,_texts = TextNumpyBatch(batch)
             rawLogits,cache = TextModelForward(images,params)
             loss,dRawLogits = CtcLoss(rawLogits,targets)
@@ -2125,6 +2207,11 @@ def TrainTextModel(numEpochs,batchSize,lr,seed,maxPages,dataDir,source="pages",r
         trainLoss = epochLoss/max(1,nBatches)
 
         valLoss,valCharAcc = ValidateTextModel(valSet,params,batchSize,rng)
+        if personalVal is not None and len(personalVal):
+            #the public held-out set says whether it reads handwriting; this one
+            #says whether it reads THESE writers, which is what the robot needs
+            _pLoss,pAcc = ValidateTextModel(personalVal,params,batchSize,rng)
+            print(f"[TrainText] held-out personal char-acc {pAcc:.2%}")
         scheduler.Step(valLoss)
         improved = valLoss<bestValLoss
         savedMsg = ""
@@ -2313,3 +2400,65 @@ def TrainAuthorModel(numEpochs,batchSize,lr,seed,resume=False,warmStart=None):
     print(f"\nBest val author-accuracy: {bestAcc:.3f}")
     print(f"Weights saved to: {outPath}")
     return bestAcc
+
+
+#======================================================================
+#RUNNING A TRAINING JOB
+#python train.py text   --epochs 40
+#python train.py author --epochs 40
+#
+#--resume continues from this module's own checkpoint, and --warm-start
+#begins from any checkpoint on disk.  neither restores the OPTIMISER, only
+#the weights: RMSprop's running average of the squared gradient starts at
+#zero again, and because it divides the step by the square root of that
+#average, the first few steps after a resume are much larger than they
+#would have been.  a lower learning rate for the first epochs avoids
+#undoing the progress that was being resumed
+#======================================================================
+def Main():
+    import argparse
+    ap = argparse.ArgumentParser(description="train the reader or the namer from first principles")
+    ap.add_argument("task",choices=["text","author"])
+    ap.add_argument("--epochs",type=int,default=40)
+    ap.add_argument("--batch",type=int,default=8)
+    ap.add_argument("--lr",type=float,default=1e-3)
+    ap.add_argument("--seed",type=int,default=7)
+    ap.add_argument("--source",choices=["joint","teklia","pages"],default="joint",
+                    help="joint: the pre-cut Teklia lines plus the photographed writers, "
+                         "which is what the deployed reader was trained on. "
+                         "teklia: public lines only. pages: segment the database pages here")
+    ap.add_argument("--personal-fraction",dest="personalFraction",type=float,default=0.20,
+                    help="joint only: share of every batch drawn from photographed lines")
+    ap.add_argument("--pages",type=int,default=None,help="limit how many pages are cut up")
+    ap.add_argument("--data",default=None,help="override where the pages or crops live")
+    ap.add_argument("--resume",action="store_true",
+                    help="continue from this module's own checkpoint")
+    ap.add_argument("--warm-start",dest="warmStart",default=None,
+                    help="start from a named checkpoint, e.g. an earlier scratch run")
+    args = ap.parse_args()
+
+    warm = Path(args.warmStart) if args.warmStart else None
+    if warm and not warm.exists():
+        candidate = WEIGHTS_DIR/warm.name
+        if candidate.exists():
+            warm = candidate
+        else:
+            raise SystemExit("no checkpoint at %s" % args.warmStart)
+
+    if args.task=="text":
+        if args.data:
+            dataDir = args.data
+        elif args.source in ("teklia","joint"):
+            dataDir = str(paths.Data.parents[1]/"Data"/"Datasets"/"TekliaIamLines")
+        else:
+            dataDir = str(DEFAULT_TEXT_DATA_DIR)
+        TrainTextModel(args.epochs,args.batch,args.lr,args.seed,args.pages,dataDir,
+                       source=args.source,resume=args.resume,warmStart=warm,
+                       personalFraction=args.personalFraction)
+    else:
+        TrainAuthorModel(args.epochs,args.batch,args.lr,args.seed,
+                         resume=args.resume,warmStart=warm)
+
+
+if __name__ == "__main__":
+    Main()
