@@ -93,3 +93,52 @@ def GlyphGridPath(author,profile):
             sheet.paste(im.convert("RGB"),(labelW+ci*cell,ri*cell))
     sheet.save(outPath)
     return outPath
+
+
+#----------------------------------------------------------------------
+#SampleCrops: up to n real line crops for one writer, with transcripts
+#the stats page shows these beside the glyph grid, so a viewer can
+#compare the writer's actual hand against what the machine draws.
+#holdout lines are skipped, since those are the measurement set, and only
+#mid length lines are picked because a two word line shows nothing
+#----------------------------------------------------------------------
+def SampleCrops(author,n=2):
+    metaPath = CACHE_DIR/f"sample_{author}_meta.txt"
+    cached = sorted(CACHE_DIR.glob(f"sample_{author}_*.png"))
+    if len(cached)>=n and metaPath.exists():
+        texts = metaPath.read_text(encoding="utf-8").splitlines()
+        return list(zip(cached[:n],texts[:n]))
+
+    import numpy as np
+    from PIL import Image
+    import train as TR
+
+    base = TR.IAMLineDatasetRaw(rootDir=str(TR.DEFAULT_AUTHOR_DATA_DIR),
+                                cacheDir=str(TR.DEFAULT_AUTHOR_CACHE_DIR))
+    if author in paths.DatabaseWriters:
+        base.samples = [s for s in base.samples
+                        if s["page_key"].split("/")[0]==author]
+    else:
+        base.samples = []
+        TR.AddPersonalSamples(base)
+        base.samples = [s for s in base.samples
+                        if s["page_key"].split("/")[0]==author]
+
+    picked = []
+    for s in base.samples:
+        if s.get("is_holdout"):
+            continue
+        if 20<=len(s["text"])<=70:
+            picked.append(s)
+        if len(picked)>=n:
+            break
+
+    outPaths,texts = [],[]
+    for i,s in enumerate(picked):
+        arr = TR.DecodeCrop(s["imageBytes"])
+        path = CACHE_DIR/f"sample_{author}_{i}.png"
+        Image.fromarray(np.asarray(arr,dtype=np.uint8)).convert("L").save(path)
+        outPaths.append(path)
+        texts.append(s["text"])
+    metaPath.write_text("\n".join(texts),encoding="utf-8")
+    return list(zip(outPaths,texts))

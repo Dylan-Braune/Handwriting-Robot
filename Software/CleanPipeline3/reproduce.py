@@ -299,6 +299,20 @@ def ParseGcode(path):
 #from here down needs the real machine.  the imports are guarded so the
 #top half of this file still works on a laptop
 #======================================================================
+#the gpiod v2 python api: request_lines and LineSettings, with the enums
+#in gpiod.line.  on anything that is not the board this fails, and the
+#names are bound to None instead so that Connect() can report it as a
+#missing gantry rather than raising a NameError on the check itself
+try:
+    import gpiod
+    from gpiod.line import Direction,Value
+    _GPIOD_IMPORT_ERROR = None
+except Exception as _e:
+    gpiod = None
+    Direction = None
+    Value = None
+    _GPIOD_IMPORT_ERROR = _e
+
 #---GantryNotConnectedError: raised when something needs hardware that is not there---
 class GantryNotConnectedError(RuntimeError):
     #no gpiod / no gpio chip available -- not the odroid, or the device

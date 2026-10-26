@@ -496,6 +496,27 @@ def ApiTimings():
     return jsonify({"summary": summary, "runs": rows})
 
 
+@app.route("/api/samples/<author>")
+def ApiSamples(author):
+    if author not in PROFILES:
+        abort(404)
+    try:
+        pairs = RENDER.SampleCrops(author, n=2)
+    except Exception as e:
+        return jsonify({"error": str(e), "samples": []}), 200
+    return jsonify({"samples": [{"image_url": "/api/samples/%s/%s" % (author, p.name),
+                                 "text": t} for p, t in pairs]})
+
+
+@app.route("/api/samples/<author>/<filename>")
+def ApiSampleFile(author, filename):
+    safe = "".join(c for c in filename if c.isalnum() or c in "._-")
+    p = RENDER.CACHE_DIR/safe
+    if not safe.startswith("sample_%s_" % author) or not p.exists():
+        abort(404)
+    return send_file(str(p))
+
+
 @app.route("/api/glyphs/<author>")
 def ApiGlyphs(author):
     if author not in PROFILES:
