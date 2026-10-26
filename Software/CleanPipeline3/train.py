@@ -1708,8 +1708,10 @@ def AuthorCollateFn(batch):
 def AddPersonalSamples(base):
     rng = random.Random(paths.SplitSeed)
     nAdded = 0
+    print(f"[Personal] cutting pages for {paths.PersonalWriters} into lines",flush=True)
     for author in paths.PersonalWriters:
         for imgPath,labelPath in paths.PersonalWriterPages(author):
+            print(f"[Personal] {imgPath.name} ...",end="",flush=True)
             leanLines,_ov,_info = SL.SegmentLines(ReadImageFile(imgPath))
             crops = [np.asarray(ln["image"]) for ln in leanLines]
             gt = ReadLabelLines(str(imgPath),str(labelPath))
@@ -1733,7 +1735,7 @@ def AddPersonalSamples(base):
                     "is_holdout": isHoldout,
                 })
                 nAdded+=1
-    print(f"[Personal] added {nAdded} line samples for {paths.PersonalWriters}")
+    print(f"[Personal] added {nAdded} line samples from {len(paths.PersonalWriters)} writers")
 
 #---TekliaLineDataset: the second public source, same interface---
 class TekliaLineDataset:
@@ -1741,12 +1743,16 @@ class TekliaLineDataset:
         rootDir = Path(rootDir)
         self.isTrain = isTrain
         self.items = []
+        #pairing thousands of files with their labels takes a minute or so and
+        #used to say nothing at all, which is indistinguishable from a hang
+        print(f"[Teklia] indexing {rootDir.name} ...",end="",flush=True)
         for imgPath in sorted(rootDir.glob("*.png")):
             labelPath = imgPath.with_name(imgPath.stem+"_labels.txt")
             if labelPath.exists():
                 text = labelPath.read_text(encoding="utf-8").strip()
                 if text:
                     self.items.append((imgPath,text))
+        print(f" {len(self.items)} lines",flush=True)
         if not self.items:
             raise RuntimeError(f"No line images found under {rootDir} -- run "
                                 f"ExportTekliaLines.py first.")
