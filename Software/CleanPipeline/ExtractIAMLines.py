@@ -8,6 +8,7 @@ import os
 import glob
 import re
 import numpy as np
+import MyImage
 from PIL import Image,ImageDraw
 from scipy.signal import find_peaks
 
@@ -84,11 +85,11 @@ def FindRuleLineClusters(binaryImg,rawGrayscaleArray=None):
     return ClusterRows(ruleRows,maxGap=8)
 
 
-#finds the handwriting region's top/bottom rule lines (returnConfidence=True
-#also flags when a bound had to fall back to a fixed-percentage guess
-#instead of a real detected rule line -- see PageBoundsAreUncertain)
-def DetectPageBounds(binaryImg,rawGrayscaleArray=None,returnConfidence=False):
-    h,w = binaryImg.shape
+#finds the handwriting region's top/bottom rule lines: the lowest detected
+#rule in the upper part of the page and the highest one in the lower part,
+#with a fixed-percentage guess if no rule is found there
+def DetectPageBounds(binaryImg,rawGrayscaleArray=None):
+    h,_w = binaryImg.shape
     clusters = FindRuleLineClusters(binaryImg,rawGrayscaleArray)
 
     topCandidates = [c for c in clusters if h*0.12<c<h*0.40]
@@ -96,63 +97,7 @@ def DetectPageBounds(binaryImg,rawGrayscaleArray=None,returnConfidence=False):
 
     topY = topCandidates[-1]+8 if topCandidates else int(h*0.12)
     botY = botCandidates[0]-8 if botCandidates else int(h*0.80)
-
-    if returnConfidence:
-        return topY,botY,len(topCandidates)==0,len(botCandidates)==0
     return topY,botY
-
-
-#content-based check: confirms the rows just above topY are mostly blank,
-#i.e. topY isn't sitting on top of real printed header text
-def HeaderGapIsSafe(binaryImg,topY,minGapPx=10,maxInkFraction=0.05):
-    h = binaryImg.shape[0]
-    zoneStart = max(0,topY-minGapPx)
-    checkZone = binaryImg[zoneStart:topY,:]
-    if checkZone.size==0:
-        return True   #nothing to check against -- topY is at/near the page top
-
-    inkFractionPerRow = np.mean(checkZone>0,axis=1)
-    return not np.any(inkFractionPerRow>maxInkFraction)
-
-
-#true if this page's handwriting region should NOT be trusted for auto-
-#labeling: either the top bound fell back to a fixed-percentage guess, or
-#the gap just above it isn't actually blank (may sit over header text)
-def PageBoundsAreUncertain(imgPath):
-    rawImage = Image.open(imgPath)
-    grayArr = np.array(rawImage.convert('L'))
-    binaryImg = OtsuThreshold(grayArr)
-    topY,_botY,topWasFallback,_botWasFallback = DetectPageBounds(binaryImg,grayArr,returnConfidence=True)
-
-    if topWasFallback:
-        return True
-
-    return not HeaderGapIsSafe(binaryImg,topY)
-
-
-#finds the rule line bounding the TOP of the printed prompt box, rather
-#than assuming a fixed page-height percentage (some form templates place
-#it higher, and a fixed percentage clips/garbles the first printed line's OCR)
-def DetectHeaderTopY(binaryImg,rawGrayscaleArray,topY):
-    h,_w = binaryImg.shape
-    clusters = FindRuleLineClusters(binaryImg,rawGrayscaleArray)
-
-    candidates = [c for c in clusters if h*0.04<c<(topY-8)]
-    if candidates:
-        return max(candidates)+8
-
-    return int(h*0.115)
-
-
-#used to OCR (tesseract) the printed prompt box above topY as a fallback
-#transcript source. removed: the only live caller (ExtractLinePatches, via
-#LineImageCache) always discards this function's result -- real per-line
-#labels come from ReadLabelLines's hand-verified transcript instead, matched
-#to crops by count, so this was pure OCR computation nothing ever consumed.
-#kept as a stub (always empty) so ExtractLinePatches's fallback branch below
-#still has a well-defined, harmless input if label counts ever mismatch
-def ExtractPrintedGroundTruth(rawGrayscaleArray,topY,headerTopY=None):
-    return []
 
 
 #reads a page's per-line hand-verified transcript. labelPath defaults to
@@ -169,71 +114,6 @@ def ReadLabelLines(imgPath,labelPath=None):
     #label lines are "<line_number>\t<text>" -- strip the leading index so
     #it never leaks into training targets as a literal digit character
     return [re.sub(r'^\d+\t','',line) for line in rawLines]
-
-
-#estimates word count from the ink itself: clusters ink columns into
-#letter-runs and counts gaps wide enough (relative to line height) to be
-#a word boundary rather than just the space within a word
-def CountWordsFromInkColumns(inkCols,lineHeight,minGapFactor=0.6,minRunWidth=3):
-    if len(inkCols)==0:
-        return 0
-
-    gaps = np.where(np.diff(inkCols)>1)[0]
-    starts = np.concatenate(([0],gaps+1))
-    ends = np.concatenate((gaps,[len(inkCols)-1]))
-    runs = [(inkCols[s],inkCols[e]) for s,e in zip(starts,ends)]
-
-    #drop tiny specks that aren't real letters
-    runs = [(s,e) for s,e in runs if (e-s+1)>=minRunWidth]
-    if not runs:
-        return 0
-
-    wordGapThreshold = max(1,lineHeight*minGapFactor)
-    wordCount = 1
-    for i in range(1,len(runs)):
-        gapWidth = runs[i][0]-runs[i-1][1]
-        if gapWidth>wordGapThreshold:
-            wordCount+=1
-
-    return wordCount
-
-
-#distributes the page's known words across N line crops in proportion to
-#each line's ink-based word-count estimate (scaled so the total matches
-#the real word count exactly), rather than by pixel-width proportion
-def SplitWordsIntoLines(words,lineWordCounts):
-    numLines = len(lineWordCounts)
-    if numLines==0 or not words:
-        return [""]*numLines
-
-    numWords = len(words)
-    totalEstimated = sum(lineWordCounts)
-
-    #ink-based counting found nothing usable (e.g. very faint scan) --
-    #fall back to an even split rather than collapsing to all-blank lines
-    if totalEstimated<=0:
-        lineWordCounts = [1]*numLines
-        totalEstimated = numLines
-
-    scale = numWords/float(totalEstimated)
-
-    allocatedLines = []
-    wordIdx = 0
-    for i in range(numLines):
-        if wordIdx>=numWords:
-            allocatedLines.append("")
-            continue
-
-        if i==numLines-1:
-            allocatedLines.append(" ".join(words[wordIdx:]))
-            break
-
-        count = max(1,round(lineWordCounts[i]*scale))
-        count = min(count,numWords-wordIdx)
-        allocatedLines.append(" ".join(words[wordIdx:wordIdx+count]))
-        wordIdx+=count
-
-    return allocatedLines
 
 
 #blanks out any long straight printed rule left inside the writing region
@@ -367,10 +247,12 @@ def SplitLinesByPeriodicity(binaryRegion,ruleLineHints=None,smoothWindow=9,minLi
 
 #full page-to-line-crops pipeline, the main entry point for this file.
 #isDataset=True (default) assumes the IAM form layout (printed prompt box
-#bounded by rule lines, OCR'd for ground truth); isDataset=False is for a
-#personal non-IAM page (no printed prompt box) -- skips that header/footer
-#detection entirely (it actively misfires on ordinary ruled paper) and
-#uses almost the whole page, splitting lines by periodicity instead
+#bounded by rule lines, so the writing region is fenced by them);
+#isDataset=False is for a personal non-IAM page (no printed prompt box) --
+#skips that header/footer detection entirely (it actively misfires on
+#ordinary ruled paper) and uses almost the whole page, splitting lines by
+#periodicity instead. per-line label text comes from labelLines, the
+#hand-verified transcript, matched to the detected crops by index
 def ExtractLinePatches(imgPath,targetHeight=32,maxWidth=1024,expectedLineCount=None,labelLines=None,
                         isDataset=True):
     rawImage = Image.open(imgPath)
@@ -384,13 +266,8 @@ def ExtractLinePatches(imgPath,targetHeight=32,maxWidth=1024,expectedLineCount=N
         #whole page, trimming a small margin for scan/photo edge artifacts
         margin = int(h*0.01)
         topY,botY = margin,h-margin
-        headerTopY = None
-        printedWords = []
     else:
         topY,botY = DetectPageBounds(BinaryInvertedImage,RawGrayscaleArray)
-        headerTopY = DetectHeaderTopY(BinaryInvertedImage,RawGrayscaleArray,topY)
-
-        printedWords = ExtractPrintedGroundTruth(RawGrayscaleArray,topY,headerTopY)
 
     #handwriting extraction starts this many px below topY, a hard buffer
     #so a rule-line detection off by a few px can't pull header pixels into
@@ -452,8 +329,6 @@ def ExtractLinePatches(imgPath,targetHeight=32,maxWidth=1024,expectedLineCount=N
     drawObj.line([(0,botY),(w,botY)],fill=(0,0,255),width=2)
 
     ExtractedLineSamples = []
-    lineWidths = []
-    lineWordCounts = []
 
     for idx,(s,e) in enumerate(mergedLines):
         #offset from handwritingStartY (not topY), since hwRegion/s/e start there
@@ -469,8 +344,6 @@ def ExtractLinePatches(imgPath,targetHeight=32,maxWidth=1024,expectedLineCount=N
         absX1 = max(0,inkCols[0]-8)
         absX2 = min(w,inkCols[-1]+8)
         cropW = absX2-absX1
-        lineWidths.append(cropW)
-        lineWordCounts.append(CountWordsFromInkColumns(inkCols,cropH))
 
         #numbered red box on the preview, matching this line's returned index
         drawObj.rectangle([absX1,absY1,absX2,absY2],outline=(255,0,0),width=2)
@@ -481,7 +354,10 @@ def ExtractLinePatches(imgPath,targetHeight=32,maxWidth=1024,expectedLineCount=N
         newWidth = min(maxWidth,max(1,int(cropW*scaleRatio)))
 
         cropPIL = Image.fromarray(rawLineCrop)
-        resizedPIL = cropPIL.resize((newWidth,targetHeight),Image.Resampling.LANCZOS)
+        #my own resampler.  linear not lanczos: lanczos overshoots at a hard
+        #ink edge and leaves a pale halo beside every stroke, which then
+        #reads as ink to the threshold further down the pipeline
+        resizedPIL = Image.fromarray(MyImage.Resize(np.asarray(cropPIL,dtype=np.uint8),newWidth,targetHeight,'linear'))
 
         paddedCanvas = Image.new('L',(maxWidth,targetHeight),color=255)
         paddedCanvas.paste(resizedPIL,(0,0))
@@ -493,7 +369,12 @@ def ExtractLinePatches(imgPath,targetHeight=32,maxWidth=1024,expectedLineCount=N
             'label_text': labelLines[idx] if labelLines is not None and idx<len(labelLines) else ""
         })
 
-    formattedTextLines = labelLines if labelLines is not None and len(labelLines)==len(ExtractedLineSamples) else SplitWordsIntoLines(printedWords,lineWordCounts)
+    #the transcript is returned alongside the crops only when the two agree on
+    #line count, so a caller can never pair n crops with a different number of
+    #label lines by index
+    formattedTextLines = (labelLines if labelLines is not None
+                          and len(labelLines)==len(ExtractedLineSamples)
+                          else [""]*len(ExtractedLineSamples))
 
     return ExtractedLineSamples,formattedTextLines,drawCanvas
 

@@ -13,14 +13,10 @@ from pathlib import Path
 sys.path.insert(0,os.path.dirname(os.path.abspath(__file__)))
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-#this file lives in Software/CleanPipeline, a sibling of Software/CNN.
-#SampleCrops below still reaches into BuildStyleProfile.py/TrainAuthor.py/
-#TrainText.py, which have NOT been migrated into CleanPipeline yet (out
-#of scope for this pass) -- so their original CNN-tree locations need to
-#stay on sys.path for those imports to keep resolving
+#this file lives in Software/CleanPipeline, a sibling of Software/CNN,
+#where only the DATA (profiles, caches, weights) lives -- every module
+#SampleCrops below needs is a sibling of this file
 CNN_DATA_DIR = Path(__file__).resolve().parent.parent/"CNN"
-sys.path.insert(0,str(CNN_DATA_DIR))
-sys.path.insert(0,str(CNN_DATA_DIR/"AuthorReproductionStuff"))
 
 from PIL import Image,ImageDraw,ImageFont
 
@@ -111,19 +107,17 @@ def SampleCrops(author,n=2):
         texts = metaPath.read_text(encoding="utf-8").splitlines()
         return list(zip(cached[:n],texts[:n]))
 
-    #BuildStyleProfile/TrainAuthor/TrainText are still the old, unconverted
-    #CNN-tree modules (see the sys.path note above) -- their own names are
-    #untouched here since we don't own that file yet
     import BuildStyleProfile as SP
-    from TrainAuthor import add_personal_samples,DATASET_AUTHORS
-    from TrainText import IAMLineDatasetRaw,_decode_png
+    from TrainAuthor import AddPersonalSamples
+    from TrainText import IAMLineDatasetRaw,DecodePng
+    from AuthorsConfig import DATASET_AUTHORS
 
-    base = IAMLineDatasetRaw(root_dir=str(SP.DATA_DIR),cache_dir=str(SP.CACHE_DIR))
+    base = IAMLineDatasetRaw(rootDir=str(SP.DATA_DIR),cacheDir=str(SP.CACHE_DIR))
     if author in DATASET_AUTHORS:
         base.samples = [s for s in base.samples if s["page_key"].split("/")[0]==author]
     else:
         base.samples = []
-        add_personal_samples(base)
+        AddPersonalSamples(base)
         base.samples = [s for s in base.samples if s["page_key"].split("/")[0]==author]
 
     picked = []
@@ -138,7 +132,7 @@ def SampleCrops(author,n=2):
     results = []
     texts = []
     for i,s in enumerate(picked):
-        im = _decode_png(s["image_png"]).convert("L")
+        im = DecodePng(s["image_png"]).convert("L")
         path = CACHE_DIR/f"sample_{author}_{i}.png"
         im.save(path)
         results.append(path)
@@ -146,10 +140,3 @@ def SampleCrops(author,n=2):
     metaPath.write_text("\n".join(texts),encoding="utf-8")
     return list(zip(results,texts))
 
-
-#delete cached renders (call after rebuilding profiles/labels so stale
-#images aren't served)
-def ClearCache(author=None):
-    pattern = f"*{author}*" if author else "*"
-    for p in CACHE_DIR.glob(pattern):
-        p.unlink()

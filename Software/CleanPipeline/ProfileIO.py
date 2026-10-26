@@ -3,7 +3,6 @@
 #text, and the binarize/skeletonize/band primitives used for stroke normalisation.
 #kept separate from BuildStyleProfile.py's ~1000 lines of offline glyph library
 #building code, which is only ever run by hand, never touched by a live request
-import json
 from pathlib import Path
 
 import numpy as np
@@ -172,13 +171,6 @@ def LabelComponents(mask,connectivity=8):
         for i in range(len(starts)):
             labels[r,starts[i]:ends[i]] = runLabel[base+i]
     return labels,nextLabel-1
-
-
-#loads one author's saved style profile json
-def LoadProfile(authorId):
-    p = PROFILE_DIR/f"{authorId}.json"
-    with open(p,encoding='utf-8') as f:
-        return json.load(f)
 
 
 #ctc forced alignment: viterbi over the blank interleaved label sequence,

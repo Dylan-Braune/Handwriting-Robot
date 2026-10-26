@@ -1,593 +1,342 @@
-# Code Explained A: Segmentation (Image Processing & Line Segmentation)
+# Block A — Segmentation and image primitives
 
-This document walks through, function by function, the two line-segmentation modules in `Software/CNN/`:
+How a page of handwriting becomes a set of single-line images.
 
-1. **`SegmentLean.py`** — the production segmenter. Documented in full depth.
-2. **`SegmentPage.py`** — the older, more elaborate segmenter. No longer the main server/training path, but still reachable through one caller. Documented per-function but more concisely, with the still-live call path flagged explicitly.
+| File | Lines | Role |
+|---|---|---|
+| `SegmentLean.py` | 575 | **Production** page-to-line segmenter. The only segmenter a live web request touches. |
+| `ProfileIO.py` (primitives half) | 348 | The reusable binary-image toolbox: integral images, Otsu, morphology, connected components, Zhang–Suen thinning, slant estimation, stroke normalisation. |
+| `ExtractIAMLines.py` | 448 | **Offline only.** Cuts scanned IAM database pages, and personal ruled-paper pages, into labelled line crops to build the training set. |
 
-Both modules sit in **Block 1 (Image processing & Line Segmentation)** of the 4-block pipeline architecture: raw photographed page in, ordered line-crop images out, with nothing downstream (text recognition, author classification, style synthesis) touching a pixel of the original photo again.
-
----
-
-## Part 1 — `SegmentLean.py` (production segmenter)
-
-### Role in the pipeline
-
-`SegmentLean.SegmentLines(path)` is the single entry point called by the server for every live segmentation request, and by essentially all current training code (`TrainText.py`, `TrainAuthor.py`, and — via `BuildStyleProfile.py` in `ReproductionImprovement/` — the author-style pipeline). It takes a file path to a photographed page and returns `(lines, overlay, meta)`:
-
-- `lines`: an ordered list of dicts, one per detected handwritten line, each holding a native-resolution crop (`image`), a fixed-size classifier-ready crop (`clf`, 640×64), the crop's bounding box in original-image pixel coordinates, and its line order.
-- `overlay`: an RGB debug image showing the ink/paper ratio with the paper-boundary and all internal line-cut curves drawn on top.
-- `meta`: a dict of diagnostic scalars (skew angle, line pitch, paper coverage, counts of removed pixels, timing).
-
-Downstream, `lines[i]["clf"]` feeds directly into the CNN text/author classifiers (`TrainText.py`/`TrainAuthor.py`-trained models expect exactly 64×640 grayscale), and `lines[i]["image"]` is what a human or a later OCR/handwriting-synthesis stage sees.
-
-The module is a **self-contained, from-scratch numpy/PIL** image pipeline — no OpenCV, no scipy. Every low-level operation (box blur, dilation, connected components, DP shortest path) is reimplemented with vectorised numpy primitives for speed, which is itself worth noting in a literature/implementation discussion: the whole file is built from three families of classical algorithms — (1) **integral-image / summed-area-table** convolution tricks, (2) **union-find connected-component labelling**, and (3) **dynamic-programming shortest-path ("seam") search** — combined with **Otsu thresholding** and a long tail of hand-tuned heuristic rules for real-world photographed-page artifacts (shadows, binder clips, ruled paper, i-dots).
-
-The six pipeline stages (from the module docstring) are:
-1. Normalise lighting (divide by a blurred local background), Otsu-threshold ink, deskew; keep only ink actually on the paper.
-2. Discard long, thin, perfectly straight strokes (underlines, ruled lines, binder edge) and page-boundary debris.
-3. Estimate line pitch `P` from the row-ink profile; line centres = its peaks.
-4. Between neighbouring centres, find the least-ink path via dynamic programming: a rough boundary.
-5. Assign each connected ink fragment to a line, with special-case fixes for cut-off tails, stray marks, and i-dots.
-6. Render each line's own ink into a clean, contrast-enhanced crop; white out everything else.
+Two segmenters exist because they solve different problems. `ExtractIAMLines.py` exploits the IAM form layout — a printed prompt box fenced by horizontal rule lines — which is a flat scan of a known template. `SegmentLean.py` assumes nothing but a photographed sheet of paper under uneven light, which is what the robot's camera actually produces.
 
 ---
 
-### `_toClassifierFormat(img, height=CLF_HEIGHT, width=CLF_WIDTH, pad_value=255)`
+## A.0 Conventions that hold throughout the block
 
-**Purpose.** Produces the fixed-size (64×640) grayscale image that `TrainText.py`/`TrainAuthor.py` were trained to expect, from a line crop of arbitrary aspect ratio, without ever distorting letter shapes.
+**Ink is `True`.** Every mask here is a boolean array where `True` means "this pixel is ink". Grey images are `float64` in 0–255, not 0–1, because the code divides by a local mean and guards it with `np.maximum(..., 1.0)`; on a 0–1 scale that guard would clamp everything.
 
-**Inputs.**
-- `img`: a PIL `"L"` (8-bit grayscale) image, the native-resolution crop of one handwritten line (ink dark, background near-white).
-- `height, width`: target canvas size, defaulting to the module constants `CLF_HEIGHT=64, CLF_WIDTH=640`.
-- `pad_value`: the grey level used to fill unused canvas (255 = white/paper).
+**`P` is the unit of length.** `P` is the line pitch in pixels — the centre-to-centre spacing of consecutive text lines — and almost every threshold in `SegmentLean.py` is a fraction of it (`0.5*P`, `2.2*P`, `0.065*P*P` for areas). This is the most important single decision in the file: it makes the segmenter independent of both image resolution and handwriting size with no calibration step. A 12 MP phone photo and a 2 MP one make the same decisions, because each measures its own `P` from its own row profile first. Where a bare pixel constant appears instead (`max(3, ...)`, `max(8, min(40, ...))`) it is a floor or ceiling guarding a degenerate case, never the operating value.
 
-**Outputs.** A PIL `"L"` image of exactly `(width, height)` pixels: the input resized by one uniform scale factor to fit inside the canvas, then padded with `pad_value`.
-
-**Inner workings.** `s = min(height/h, width/w)` — a single isotropic scale (never stretches x and y differently, preserving letter proportions). New size `= round(w*s), round(h*s)`. The resized image is pasted onto a blank `pad_value` canvas at `x=0` and vertically centred: `y = (height - new_h)//2`. This is a standard "letterbox" resize, identical in spirit to how YOLO-style object detectors prepare inputs of mismatched aspect ratio for a fixed-size network input.
-
-**Literature connection.** Aspect-ratio-preserving letterbox resizing is a standard CNN input-normalisation technique; no deeper named algorithm applies here.
+**Analysis runs at half resolution; crops are cut from full resolution.** `SegmentLines` immediately builds `half = full.resize((w//2, h//2), Image.BOX)` and does *all* analysis on `half`. Only the final crop stage returns to `full`, scaling coordinates by `f = full.width/W`. `Image.BOX` is a 2×2 box average — exact 2:1 decimation with no resampling ringing — so the halved image's ink statistics are the true means of the full image's. The analysis makes several O(pixels) passes, half resolution is four times less work, and `P` is still tens of pixels there, which is ample for every threshold.
 
 ---
 
-### `_box(a, r)`
+## A.1 `SegmentLean.py` — photographed page to line crops
 
-**Purpose.** Computes a fast local mean (box blur) over a `(2r+1)×(2r+1)` window centred at every pixel — the core primitive used throughout the file for local-background estimation, dilation/erosion-like operations, and smoothing.
+Six stages, implemented in order by `SegmentLines(path)`.
 
-**Inputs.** `a`: 2D numpy array (float or castable), any real-valued image. `r`: integer radius of the square window.
+### A.1.1 The primitives
 
-**Outputs.** A 2D float64 array, same shape as `a`, where each pixel holds the mean of the `(2r+1)×(2r+1)` neighbourhood around it in the *edge-padded* input.
+**`BoxMean(a, r)` — mean over a `(2r+1)²` window in O(pixels), independent of `r`.**
 
-**Inner workings and maths.** This is the classical **summed-area table** (integral image) trick (Crow, 1984, used extensively in Viola–Jones-style vision). `a` is first edge-padded by `r` on all sides. A 2D prefix sum (cumulative sum along both axes, with an extra leading zero row/column) is built: `ii[y,x] = Σ_{y'<y, x'<x} p[y',x']`. The sum over any axis-aligned rectangle `[y1,y2)×[x1,x2)` is then obtained in O(1) via the inclusion–exclusion identity
-`S = ii[y2,x2] - ii[y1,x2] - ii[y2,x1] + ii[y1,x1]`,
-and dividing by the window area `k² = (2r+1)²` gives the mean. The function evaluates this formula for every pixel's window simultaneously via array slicing, so the whole box-blur is O(HW) regardless of `r`.
+```python
+def BoxMean(a,r):
+    p = np.pad(a,r,mode="edge").astype(np.float64)
+    ii = np.pad(p.cumsum(0).cumsum(1),((1,0),(1,0)))   #integral image
+    k = 2*r+1
+    return (ii[k:,k:]-ii[:-k,k:]-ii[k:,:-k]+ii[:-k,:-k])/(k*k)
+```
 
-**Literature connection.** Summed-area tables (Crow, 1984); the same O(1)-per-pixel box-filter trick underlies Viola & Jones (2001) feature computation and is a textbook image-processing primitive (Gonzalez & Woods).
+This is the summed-area table of Crow (1984). With `ii[y,x] = Σ_{y'<y, x'<x} a[y',x']`, the sum over any axis-aligned rectangle is four lookups:
+
+$$\sum_{y_0 \le y < y_1,\ x_0 \le x < x_1} a = ii[y_1,x_1] - ii[y_0,x_1] - ii[y_1,x_0] + ii[y_0,x_0]$$
+
+The cost does not depend on window size, which matters because `r` is around 25 px on a typical page — a naive window mean would be ~2,600 operations per pixel. `mode="edge"` pads with the border value rather than zero, so the estimated background near the page edge is not dragged towards black.
+
+**`AnyWithinRadius(m, r, axis)` — binary dilation by a 1-D structuring element of length `2r+1` along one axis.** The same prefix-sum trick on a boolean array: a pixel is set if the count of set pixels in its window exceeds zero. Two calls, `axis=0` then `axis=1`, give a separable rectangular dilation — which is what every "dilate" in this file is. Erosion is the same operation on the complement, which is why closings read as `~AnyWithinRadius(AnyWithinRadius(~dil, r, 0), r, 1)`.
+
+**`LongRunMask(m, n, axis)` — marks every pixel lying *on* a run of at least `n` consecutive set pixels.** Two stacked prefix sums. The first finds windows of length `n` that are entirely ink (`(c[n:]-c[:-n])==n`), giving run *start* positions. The second converts "a run starts here" into "a run covers here" by asking whether any start lies in `[j-n+1, j]`. The coverage form is what the rule-line remover needs: a 400 px underline must have all 400 of its pixels removed, not just the first.
+
+**`OtsuThreshold(v)` — Otsu (1979), vectorised.**
+
+```python
+h,_ = np.histogram(np.clip(v,0,1.2),bins=256,range=(0,1.2))
+p = h/h.sum()
+w,m = np.cumsum(p),np.cumsum(p*np.arange(256))
+s = (m[-1]*w-m)**2/np.maximum(w*(1-w),1e-12)
+return (int(np.argmax(s))+0.5)*1.2/256
+```
+
+Otsu picks the threshold maximising between-class variance $\sigma_B^2 = \omega_0\omega_1(\mu_0-\mu_1)^2$. Writing $\omega(t)$ for cumulative mass and $m(t)$ for the cumulative first moment, the standard rearrangement is
+
+$$\sigma_B^2(t) = \frac{\big(\mu_T\,\omega(t) - m(t)\big)^2}{\omega(t)\big(1-\omega(t)\big)}$$
+
+which is exactly what is coded, with `m[-1]` as the total mean $\mu_T$. In this form the whole 256-bin search is three cumulative sums and one `argmax`.
+
+The range is `(0, 1.2)` rather than `(0, 255)` because this Otsu is applied to a **ratio** image, not a grey one. `v = gray / BoxMean(gray, r)` sits near 1.0 on paper and near 0 on ink, and can exceed 1 slightly where a pixel is brighter than its own neighbourhood; 1.2 is the clip ceiling. The `+0.5` returns the bin centre rather than its edge.
+
+**`InkMask(gray)` — the binarisation that makes everything after it possible.**
+
+```python
+r = max(8,min(40,round(gray.shape[0]/41)))
+ratio = gray/np.maximum(BoxMean(gray,r),1.0)
+mask = ratio<OtsuThreshold(ratio)
+solid = BoxMean(mask.astype(np.float64),4)>0.999
+return mask&~(BoxMean(solid.astype(np.float64),3)>0),ratio
+```
+
+This is a *relative* threshold, and that is the whole point. A global Otsu on a phone photo fails because one corner of the sheet is in shadow and darker than the ink in the bright corner. Dividing by the local background mean removes the illumination field first, after which one global threshold on the ratio is valid everywhere. It is the division form of adaptive thresholding in the Sauvola/Wellner family.
+
+- `r = height/41` — the blur radius must be large compared with a pen stroke, or the stroke becomes its own background and vanishes, and small compared with the illumination gradient. One forty-first of the page height is roughly one line pitch, which satisfies both. Clamped to `[8, 40]` so a thumbnail or a very large scan still behaves.
+- `np.maximum(..., 1.0)` guards a zero local mean in a genuinely black region.
+- The `solid` step removes large solid black areas. A 9×9 window (`r=4`) that is 99.9% ink is not handwriting, because handwriting is thin — it is the dark surround outside the sheet, the binder's interior, or a hard shadow. The second `BoxMean(solid, 3) > 0` grows that detection by 7×7 so the whole blob including its soft edge goes, not just the solid core.
+
+`ratio` is returned alongside the mask and reused twice later: for the `faint` test in stage 2b, and as the debug overlay's background.
+
+### A.1.2 `LinePitch(mask)` — measuring `P`
+
+```python
+prof = mask[:,int(0.05*W):int(0.97*W)].sum(1).astype(float)
+k = np.exp(-0.5*(np.arange(-12,13)/4.0)**2)
+sm = np.convolve(prof,k/k.sum(),"same")
+```
+
+`prof` is the **row ink profile** — ink pixel count per image row. The 5%/97% column crop discards the left and right margins, where a binder edge or shadow sliver would add a constant to every row and flatten the profile. It is smoothed with a Gaussian of σ = 4 px truncated at ±12 px (±3σ), which suppresses the within-line ripple from individual letters while preserving line-to-line structure.
+
+Three strategies, in strict precedence order:
+
+1. **Direct peak gap (preferred).** Local maxima of `sm` above 6% of the profile peak are line centres, and `P` is the *median* of consecutive differences. Checked against 16 real pages. Autocorrelation is deliberately demoted below this because it can lock onto a multiple of the true spacing on a page with uneven paragraph gaps. Using the median rather than the mean makes one paragraph break harmless, and the 6% floor rejects noise bumps between lines.
+2. **Autocorrelation**, used only when fewer than two peaks resolve. The first local maximum of the autocorrelation at lag ≥ 15 that reaches 70% of its own peak. Searching `ac[15 : min(200, len//3)]` sets a 15 px minimum pitch — below that the "lines" would be thinner than a letter — and a one-third-of-page maximum, beyond which a lag cannot be measured from a handful of periods.
+3. **Letter size**, for a page with a single text line, where there is no spacing to measure. Components with `area ≥ 8` and height ≥ 3 are kept, and `P = 2.2 × median height`. A text line occupies roughly an x-height while the pitch also contains ascender, descender and leading, so an x-height-dominated median letter height times 2.2 lands close to the real pitch.
+4. `return 48, sm` when there is no usable ink at all — arbitrary, and it only has to be harmless, since the line loop will find nothing anyway.
+
+### A.1.3 Stage 1 — deskew
+
+```python
+best = max(np.arange(-4,4.01,0.5),
+           key=lambda a: float((np.asarray(q.rotate(a)).sum(1).astype(float)**2).sum()))
+```
+
+The rotation angle is the one that **maximises the sum of squares of the row ink profile**. That criterion is exactly right: for a fixed total ink $\sum_y p(y)$, the quantity $\sum_y p(y)^2$ is maximised when the ink is concentrated into as few rows as possible, which happens when the text lines are horizontal. The same sharpness functional reappears in `EstimateSlantDeg` for shear.
+
+The range is ±4° in 0.5° steps, since a hand-held photograph of a sheet on a desk is not out by more than a few degrees. The search runs on `q`, a *quarter*-resolution mask, because the criterion is a coarse 1-D statistic and seventeen rotations are being tried. Both `full` and `half` are then rotated by the winning angle with `fillcolor=255`, and the mask is **recomputed** on the rotated image rather than rotated itself, so no interpolation artefacts enter the binary mask.
+
+### A.1.4 Stage 2 — removing what is not handwriting
+
+**`PaperRegionMask(g, P)`** finds the sheet. It decimates by `s=4` (mean over 4×4 blocks), blurs by `0.15*P/s`, and calls anything below `0.45 × median` brightness "dark surround". If less than 0.2% of the page is dark it concludes there is no surround and returns all-ones — the common case of a scan, or a photo that is all paper. Otherwise it labels the *complement*, keeps the largest component as the sheet, and shrinks it by `0.4*P` on both axes so the paper's own edge shadow falls outside. Taking the largest bright component rather than a bounding box is what lets it handle a sheet photographed at an angle on a dark desk.
+
+**Straight-stroke removal** does the most work in the file:
+
+```python
+flat     = AnyWithinRadius(LongRunMask(AnyWithinRadius(mask,1,0),int(1.25*P),1),1,0)&mask
+upright  = AnyWithinRadius(LongRunMask(AnyWithinRadius(mask,3,1),int(1.4*P),0),3,1)&mask
+mask = mask&~flat&~upright
+```
+
+Read `flat` inside-out: dilate vertically by 1 px so a *slightly tilted* horizontal line still contains an unbroken horizontal run; find horizontal runs of at least `1.25*P`; dilate the result vertically by 1 to recover the line's full thickness; intersect with the original mask so only real ink is removed. A horizontal ink run longer than 1.25 line pitches cannot be a letter — the longest plausible letter is a fraction of a pitch — so it is an underline, a ruled line, or the sheet's edge. `upright` is the same construction transposed, with a 3 px tolerance because a page edge or margin rule in a hand-held photo wobbles more vertically than a printed horizontal rule does, and a threshold of `1.4*P` because a tall letter plus its descender can approach one pitch.
+
+**Stage 2b — page-boundary artefacts.** First the mask is *closed* with radius `rc = 0.1*P` and that closed version labelled, so a letter broken into pieces by threshold noise counts as one component for ownership purposes. Then per component:
+
+| Test | Definition | What it is |
+|---|---|---|
+| `tall` | height > `2.2*P` | spans more than two lines, so not a letter |
+| `thin` | width ≤ `0.5*P` | narrower than half a pitch |
+| `touchL/R/T/B` | within `edgeTol = max(3, 0.5*P)` of a page border | candidate page furniture |
+| `vbar` | width ≤ `0.12*P` **and** height ≥ `1.2*P` | thinner than any letter and taller than any letter: a margin rule |
+| `faint` | mean `ratio` > `0.85 × otsuT` | only just crossed the ink threshold; real pen ink is far darker |
+| `faintVbar` | `faint`, width ≤ `0.2*P`, height ≥ `0.6*P` | a printed margin rule or a fold crease |
+| `edgeShadow` | touches top/bottom, height ≤ `1.2*P`, `density < 0.15`, `faint`, width > `P` | a fold or crease: wide, sparse, pale, at the edge |
+| `xmax < xL - 1.2*P` | ends more than a pitch left of the text block's left margin | a page-left artefact outside the writing |
+
+`density = area / (bbox height × bbox width)` is what separates a crease — a thin line through a large box, so sparse — from a letter, which is dense in its own box. `xL = np.percentile(xmin[letters], 5)` establishes the text block's left margin from the letters themselves, using the 5th percentile rather than the minimum so one stray mark cannot move it. `drop[0] = False` protects label 0, the background.
+
+The drop rule is deliberately asymmetric: `touchL` drops unconditionally, while `touchR` drops only together with `thin`. The binder and edge artefacts in this rig are consistently on the left, while real writing frequently runs right up to the right margin.
+
+### A.1.5 Stages 3–4 — line centres and seams
+
+`P` and the smoothed profile are recomputed on the *cleaned* mask, which matters because rule lines and page edges would otherwise contribute spurious profile peaks. Centres are picked greedily from the strongest peak downwards with a `0.6*P` exclusion radius, so one line's ascender peak and baseline peak cannot both become centres.
+
+**`LeastCostSeam(cost, step)` — dynamic programming for the minimum-cost left-to-right path.** With $C(y,x)$ the cost image, the recurrence is
+
+$$A(y,x) = C(y,x) + \min_{|d| \le \text{step}} \Big( A(y+d,\,x-1) + 0.02\,|d| \Big)$$
+
+and the path is recovered by backtracking from `argmin A(·, W-1)`. This is the seam-carving formulation of Avidan & Shamir (2007) used as a text-line separator: the cheapest path through an ink-cost image threads *between* lines rather than through letters. The `0.02·|d|` term penalises vertical movement, so the seam runs straight unless deviating genuinely saves ink crossings — without it the seam wanders through equal-cost whitespace and produces ragged boundaries.
+
+The cost image handed to it is the most carefully reasoned expression in the file:
+
+```python
+mdil    = AnyWithinRadius(AnyWithinRadius(mask,tailR,0),tailR,1)
+mClosed = ~AnyWithinRadius(AnyWithinRadius(~mdil,tailR,0),tailR,1)
+...
+cuts.append(c0+LeastCostSeam(4.0*m[c0:c1+1]+0.012*((yy-mid)/half_w)**2, step=7))
+```
+
+- **Closing, not dilation** (`tailR = max(2, 0.07*P)`). Closing fills the thin gap a seam could otherwise thread through beside a letter stem, while leaving the stroke's outer shape close to real, so the cut traces the letter instead of a bloated blob around it. Plain dilation would also fill the gap but would inflate every stroke, and the seam would then detour around a fat halo and clip the neighbouring line.
+- `4.0 * m` — ink costs 4 units per pixel against the positional term's maximum of 0.012. Crossing ink is strongly discouraged but not forbidden, which is necessary because on a dense page some crossing is unavoidable and an infinite cost would make the problem infeasible.
+- `0.012*((yy-mid)/half_w)²` — a weak quadratic pull towards the midline between the two centres, normalised to equal 0.012 at either centre. It keeps the seam tracing real ink instead of collapsing to a generic V shape: with no prior a seam in a blank region is unconstrained, and with too strong a prior it ignores ink and cuts straight through. At 1:333 against the ink term, the prior only decides between near-tied paths.
+- `step=7`, against the function's own default of 3. A bigger per-column step lets the cut react fast enough to get around a tall narrow descender; at half resolution with `P` ≈ 40–60 px, three rows per column cannot.
+
+The first and last cuts are flat lines `0.75*P` above the first centre and below the last.
+
+### A.1.6 Stage 5 — deciding which line owns which ink
+
+`region` is the integer line index per pixel, built by summing step functions: `region = Σ_n (Y >= cuts[n])`, which evaluates to `n` between cut `n` and cut `n+1`. Ownership starts as "whichever band the pixel is in" and is then corrected by a series of rules, each handling one specific class of mistake. This is where most of the file's accumulated empirical knowledge lives.
+
+**Majority band, biased upward.** `cnt[c, n]` is component `c`'s pixel count in band `n`. A band is `substantial` if it holds ≥ 15% of the component's ink. For a component substantial in more than one band, `major = regionIdx.min(1)` — the *topmost* such band, not the largest. When a piece's ink genuinely spans two lines it is reserved for the topmost line it touches, because that is the crop that goes wrong if it loses the piece: a descender belongs to the line above, and giving it to the line below both corrupts the lower crop and robs the upper one.
+
+**`minor` fragments rejoin their parent.** A piece of a component sitting in a neighbouring band (`|n - major| == 1`), smaller than `0.12*P*P`, holding under 35% of the component's ink, and no wider than `0.55*P`, is a cut-off tail. The width test is the discriminating one: a cut-off tail is narrow, while a word-wide part is its own line.
+
+**Strays.** Components with total ink below `0.06*P*P` are examined individually. `near` is the set of substantial components (`≥ 0.05*P*P`) assigned to the same line within `6*P` horizontally. With no such writing nearby, the stray is dropped (`major = -1`). Otherwise its y-centre is compared against the local median y-centre of that line's real writing, and if it sits more than `0.5*P` below or `0.7*P` above it moves to the adjacent line — or is dropped outright if it is a `speck` under `0.01*P*P`. The asymmetry between 0.5 and 0.7 reflects that descenders legitimately hang further below a line than anything rises above it. A second pass handles the `[0.06, 0.15]*P*P` band more gently: always reassign to the nearest of the three candidate lines by median y, never drop.
+
+**Dots follow their stems.** A component is a `dot` when its area is under `0.1*P*P`, its larger dimension is at most `0.45*P`, and it is roughly round (`max(h,w) ≤ 2.2 × min(h,w)`). For each dot, walk downward up to `0.4*P` looking for a `stem` component in the columns beneath it; if one is found, adopt that stem's line, but only when the geometry agrees — an *i* dot floats 0.25 to 0.7 pitches above its line's centre. Without this, a dotted *i* on the first line of a paragraph is frequently given to the line above, because the dot sits above the seam.
+
+**The two connected-dot cases.** These handle a dot that has become *physically joined* to the line above, and they run on `raw` (the un-closed mask) alongside `lab` (the closed one), which is why both labellings are kept.
+
+- An *i* dot touching a descender from the line above is a single component in the closed mask, so the dot rule above cannot see it. This step finds the dot in the *raw* mask, finds the stem below it, and moves only those pixels. `wholeWord = area[closedPiece] >= 0.2*P*P` prevents it firing on a genuinely large component, `(rt+rb)/2 >= centres[n1]+0.45*P` requires the dot to sit in the lower part of its current band, and `keep = ov == n1` moves only the pixels currently owned by the line above.
+- The same situation where the dot has merged into a *ring-shaped* blob at the bottom of a descender. The code walks up from each column's lowest pixel while the blob stays wide, finds where it narrows (`wd < 0.45*widest`) to locate the stem junction, requires roundness (`0.2*P ≤ widest ≤ 0.45*P`, `0.6 ≤ h/widest ≤ 1.6`), and crucially requires the blob to **enclose a hole**:
+
+  ```python
+  if LabelConnectedComponents(~np.pad(blob[...],1))[1]<2:
+      continue   #a dot ring encloses a hole, a hook does not
+  ```
+
+  A dot ring has an interior background component; a descender hook does not. That topological test is what separates the two cases.
+
+**Fragments with no ink in their own line's x-height band.** For each line, its assigned pixels are re-labelled and components found that have *zero* pixels within `0.28*P` of the line centre and size ≥ `0.006*P*P`. Such a component cannot be one of this line's letters. It moves to the line whose ink it actually touches — found by dilating by 2 px and taking the majority neighbour, requiring at least 3 touching pixels — with a direction-consistency check `(m>n)==(cy_>centres[n])`; failing that, to whichever neighbour's x-height band it sits in, within `0.2*P`. `locked` records pixels already placed by the two dot rules so this step cannot undo them, guarded further by a size and extent test so only a small dot is protected, not a tail loop.
+
+### A.1.7 Stage 6 — building the crops
+
+A line's crop is not a plain rectangle of the original image; it is composited:
+
+1. **Illumination-normalised page.** `BoxMean(g, r)` (the half-res background) is upsampled to full size and the full image divided by it — the same model as `InkMask`, applied to grey values instead of to a threshold. `r` uses the identical `max(8, min(40, H/41))` rule so the two agree.
+2. **Contiguity trim.** Row runs of this line's ink are found and only the tallest-ink contiguous run is kept — but only when the discarded part exceeds `0.8*P`, so a legitimate gap between an ascender and the body is never trimmed, while a stray mark a paragraph away is.
+3. **Alpha matte.** `alpha` is the line's own ink, resized bilinearly to full resolution, then *extended* by `alpha = max(alpha, localMask * haloAlpha * notOtherFull)`:
+   - `localMask` re-thresholds the crop region with its own local Otsu at radius `max(3, min(20, h/8))` — this line's own contrast rather than the whole page's — which recovers a faint letter the page-level threshold missed;
+   - `haloAlpha` restricts that recovery to within `0.20*P` of ink this line already owns, so it cannot pull in a neighbour's stroke;
+   - `notOtherFull` (resized with `NEAREST`, so ownership labels are never interpolated) forbids recovering any pixel the page already assigned to another line.
+
+   Together: be greedy about faint ink, but only locally and only where unclaimed.
+4. **Contrast stretch and gamma.** `black = percentile(inkPix, 40)` is typical ink darkness, robust against the single darkest pixel; `white = percentile(region, 75)` is paper. After the linear stretch, `darkness**0.55` applies a gamma below 1, compressing the bright end and expanding the dark end so a 20%-dark stroke comes out around 40% — which pulls faint strokes much darker.
+5. **Left-margin normalisation.** Every crop is shifted so its first ink column sits exactly `pad*f` from the left edge. This matters downstream: the classifier sees a fixed 64×640 canvas, and a varying left offset would be a nuisance variable it had to learn to ignore.
+
+`ToClassifierFormat` then fits the crop into exactly 64×640 using a **single** scale factor `s = min(64/h, 640/w)` for both axes — never an anisotropic stretch, because aspect ratio is a style feature the writer-ID classifier depends on — pasted at the left edge, vertically centred, padded white.
+
+The returned `info` dict (`angle`, `pitch`, `paperCoverage`, `inkOutsidePaper`, `removedStraightPixels`, `artifactPieces`, `nLines`, `seconds`) is the per-page diagnostic record, and `_cuts_overlay.jpg` draws the seams in alternating red and blue over the ratio image with the non-paper region tinted. On a real personal page this reports, for example, `angle -0.5°, pitch 48, paperCoverage 0.976, removedStraightPixels 6376, artifactPieces 34, nLines 26` in 6.5 s.
 
 ---
 
-### `_any(m, r, axis)`
+## A.2 `ProfileIO.py` — the shared binary-image toolbox
 
-**Purpose.** A fast 1D binary "is there any set pixel within `r` positions along `axis`" test — functionally a **binary dilation** by a line-segment structuring element of length `2r+1` along one axis, used repeatedly to grow/dilate masks cheaply.
+This is the subset of the style-profile machinery that a *live request* needs, kept separate from `BuildStyleProfile.py`'s offline glyph-library code. `Charset.py` exists for the same reason one level down: `CHARSET` is needed by both `ProfileIO.CtcForcedAlign` and `Classify`, and putting it in either would create an import cycle.
 
-**Inputs.** `m`: boolean (or 0/1) array of any dimensionality. `r`: radius (half-width) of the 1D neighbourhood. `axis`: which axis to dilate along.
+### A.2.1 Integral-image morphology
 
-**Outputs.** Boolean array, same shape as `m`: `True` at position `i` along `axis` if any of the `2r+1` positions `[i-r, i+r]` (clipped/zero-padded at the ends) is `True` in `m`.
+`BoxIntegral`/`BoxSum`/`BoxCount` are the summed-area table again, but with **edge-clamped** windows instead of padding: `BoxSum` clips the window corners into range, and `BoxCount` returns the *actual* number of pixels in each clamped window. That pair is what makes erosion correct at the border:
 
-**Inner workings and maths.** The target axis is moved to position 0. A prefix sum `c` of the (zero-padded by `r` on both ends) array along that axis is taken. Then for each output index `n` in `[0, L)`, the windowed sum is `c[n + 2r+1] - c[n]` (using the padded indexing offset), and the result is thresholded `>0`. This is exactly the summed-area-table trick in 1D: a windowed OR-over-a-binary-array computed as "windowed sum greater than zero."
+```python
+def Dilate(mask,ky,kx):  return BoxSum(mask,ry,rx) > 0.5                     # any pixel set
+def Erode(mask,ky,kx):   return BoxSum(mask,ry,rx) >= BoxCount(...) - 0.5    # all set
+def Close(mask,ky,kx):   return Erode(Dilate(mask,ky,kx),ky,kx)
+```
 
-**Literature connection.** Equivalent to binary morphological dilation with a 1D line structuring element (Serra, 1982, mathematical morphology), implemented via a prefix-sum shortcut instead of an explicit max-filter.
+Erosion as "the window sum equals the window's own pixel count" is exact for a clamped window, where comparing against a fixed `k*k` would erode the entire border away. The `±0.5` are float-comparison slack on integer-valued sums.
+
+### A.2.2 `LabelComponents` — run-based union–find
+
+`RowRuns` reduces each row to `(starts, ends)` column index arrays by differencing the padded mask. Then for each adjacent row pair the two sorted run lists are merged in one linear sweep — the two-pointer walk, advancing whichever run ends first — and overlapping runs unioned:
+
+```python
+if s1[i] < e2[j]+pad and s2[j] < e1[i]+pad:
+    uf.union(runIdStart[r-1]+i, runIdStart[r]+j)
+```
+
+`pad = 1` for 8-connectivity and `0` for 4-connectivity: the one-pixel slack is exactly what diagonal adjacency means in run terms. This is the Rosenfeld–Pfaltz two-pass scheme with runs instead of pixels, so the union–find holds one node per *run* rather than per pixel — typically two orders of magnitude fewer — and `RunUnionFind.find` does path compression by halving (`p[a] = p[p[a]]`), giving near-constant amortised lookups.
+
+`SegmentLean.LabelConnectedComponents` is the same algorithm with the union–find inlined as a `parent` list and a `find` closure, additionally re-indexing labels densely via `np.unique(roots, return_inverse=True)` so the returned count is exact. The two files are deliberately decoupled, so each carries its own copy.
+
+### A.2.3 `Skeletonize` — Zhang & Suen (1984), vectorised
+
+The classic two-subiteration thinning. `neighbours(P)` returns the eight shifted views $P_2 \ldots P_9$ clockwise from north, obtained by padding once and slicing, so all eight neighbour arrays come with no Python loop over pixels. Per subiteration a pixel is deleted when all of:
+
+- $2 \le B(p) \le 6$, where $B = \sum_{k=2}^{9} P_k$ counts set neighbours. The lower bound protects line endpoints; the upper bound protects interior pixels.
+- $A(p) = 1$, where $A$ counts 0→1 transitions around the ring — hence `ring = [...P9, P2]`, closing the circle. This is the **connectivity-preservation** condition: deleting a pixel with exactly one transition cannot disconnect its neighbourhood. It is the heart of the algorithm.
+- step 0: $P_2P_4P_6 = 0$ and $P_4P_6P_8 = 0$. Step 1: $P_2P_4P_8 = 0$ and $P_2P_6P_8 = 0$. The two subiterations strip from opposite sides, and alternating them keeps the skeleton centred instead of eroding it towards one corner.
+
+Iterating until no pixel changes leaves a one-pixel-wide centreline with the same topology as the input.
+
+### A.2.4 `BinarizeLine`, `CoreBand`, `StrokeNormalize`
+
+`HorizontalRunLength` gives every ink pixel the length of its horizontal run, by labelling runs with a cumulative sum of run-starts and then a `bincount` lookup — O(pixels), no loop. Applied to the transpose it gives vertical run length.
+
+`BinarizeLine` thresholds with Otsu and then removes rules:
+
+```python
+rule = (hRun >= max(24, int(1.1*h))) & (vRun <= max(3, int(0.12*h)))
+```
+
+Long horizontally (≥ 1.1 × the crop height) **and** thin vertically (≤ 12% of it) — the same "a rule is long and thin, a letter is not" logic as `LongRunMask`, but expressed per pixel and scaled to the crop rather than to `P`. Leaving rules in would glue every letter together and drag the slant estimate flat. The intersection with `vRun <= ...` is what preserves a real stroke *crossing* a rule: at the crossing the vertical run is long, so those pixels survive.
+
+The closing kernel `k = clip(round(0.045*h), 2, 4)` repairs the hairline breaks a fast hand leaves in a scan, capped at 4 px so neighbouring letters do not merge. Components under 6 pixels are then dropped as speckle.
+
+`CoreBand(ink)` returns the x-height band as the first and last rows whose ink count is ≥ 45% of the peak row's. The row profile of a text line has a characteristic plateau between baseline and x-height line, where most strokes are, with thin tails for ascenders and descenders; 45% of peak cuts in the tails' shoulder. It returns `None` when the band is under 3 px, i.e. unusable.
+
+`StrokeNormalize` is the function that makes writer identification about *shape* rather than *pen*:
+
+```python
+ink = BinarizeLine(gray)
+xh  = band height (or a fallback: max(8, h/3))
+w   = clip(round(penWidthXh*xh), 2, 9)
+sk  = Skeletonize(ink)
+out = Dilate(sk, 2*(w//2)+1, 2*(w//2)+1)
+```
+
+Real ink → centreline → re-inked at **one constant width** → inverted back to a white-paper image. `PEN_WIDTH_XH = 0.14` makes the re-inked stroke 14% of the x-height, clamped to 2–9 px, and `k = 2*(w//2)+1` forces an odd kernel so the dilation is centred.
+
+This is the same transform the gantry performs when it redraws a hand with its own pen. The classifier has to identify a writer from geometry that survives being redrawn by one 0.5 mm pen at constant pressure, so training and inference both see stroke-normalised images and the author's own pen width and pressure variation are removed as nuisance variables.
+
+### A.2.5 `EstimateSlantDeg` — shear search
+
+```python
+for deg in np.arange(-45,45.5,1.5):
+    xsh = (xs + (ys-yc)*-tan(radians(deg)))
+    score = (bincount(xsh - xsh.min())**2).sum()
+return -best
+```
+
+The same sharpness functional as the deskew, applied to the *column* projection under a shear about the ink's own vertical centroid `yc`. A sheared column histogram is sharpest when the shear has made the dominant strokes vertical, which is the definition of the slant. The search runs over the ink coordinate lists rather than the image, so each of the 61 candidates is one `bincount`. The sign convention matters downstream: positive is a normal forward lean, so deslanting is `x -= tan(slant)*y` with y measured up from the baseline — which is why the function returns `-best`.
+
+### A.2.6 `CtcForcedAlign` — Viterbi over the CTC lattice
+
+This is the bridge from recognition to style extraction. Given per-frame log-probabilities and the *known* text, it returns the timestep span of each character.
+
+The label sequence is blank-interleaved into `ext = [0, l₁, 0, l₂, 0, ..., 0]` of length `S = 2L+1`, the standard CTC extension. Then a **max**-product recursion (Viterbi, 1967) runs where CTC training uses a sum:
+
+$$\delta_t(s) = \log p_t(\text{ext}[s]) + \max\begin{cases} \delta_{t-1}(s) & \text{stay} \\ \delta_{t-1}(s-1) & \text{advance one} \\ \delta_{t-1}(s-2) & \text{skip a blank} \end{cases}$$
+
+The skip is forbidden when `ext[s] == 0` — you cannot skip *into* a blank — and when `ext[s] == ext[s-2]`, because two identical labels must be separated by a blank or they collapse under CTC's repeat-merging rule. Those two conditions *are* the CTC topology, and they are the same two conditions as in `NumpyNN.CtcLoss`: one file takes the max over the predecessor set, the other the log-sum-exp. The forward–backward and the forced alignment are the same lattice under different semirings.
+
+Backtracking `s -= bp[t,s]` recovers the best path, and each character's span is the first and last frame at which the path occupies its odd position `1+2i`. A character the path never occupies gets `None`, which happens legitimately when the recogniser compressed two characters into one frame.
+
+`conf` is the mean per-frame log-probability along the chosen path. That is what `BuildStyleProfile`'s `ALIGN_CONF_PCT = 25` thresholds against, discarding the worst-aligned quarter of an author's lines before harvesting glyphs.
+
+Guards: characters outside the charset are dropped (`if c in CHAR_TO_IDX`), and `T < len(labels)` returns `None` because a path cannot emit more labels than there are frames. `NEG = -1e30` is a finite sentinel rather than `-np.inf`, since this is a max recursion where a finite value keeps `argmax` well-defined.
 
 ---
 
-### `_long_runs(m, n, axis)`
+## A.3 `ExtractIAMLines.py` — offline dataset construction
 
-**Purpose.** Flags every pixel that lies on a run of **at least `n` consecutive `True`** values along `axis` — used to detect long straight strokes (underlines, ruled lines, binder edges) that are far longer than any genuine pen stroke.
+Run only to build training data. Its single entry point `ExtractLinePatches` has two modes, and the difference between them is the point of the file.
 
-**Inputs.** `m`: boolean array. `n`: minimum run length to qualify (an integer length in pixels). `axis`: direction to scan runs along.
+**`isDataset=True` (IAM pages).** An IAM form has a printed prompt box fenced top and bottom by horizontal rules. `FindRuleLineClusters` finds rows whose longest ink run exceeds 25% of the page width *and* whose total ink exceeds 10% of it — the conjunction matters, since one long run with little other ink is a crease, while much ink with no long run is text. `ClusterRows(maxGap=8)` collapses the several rows of one thick printed rule into a single centre. `DetectPageBounds` then searches restricted bands — the top rule within 12–40% of page height, the bottom within 55–92% — taking the lowest top candidate and the highest bottom one, and falling back to fixed 12%/80% guesses if a band holds no rule.
 
-**Outputs.** Boolean array, same shape as `m`, `True` exactly on pixels belonging to *some* run of ≥`n` consecutive `True` values.
+Lines are found by a blank-gap detector: `hasInk = rowInkCount > max(10, 0.006*w)`, dilated by 7 rows (the `for dy in range(7)` OR-loop) to bridge within-line gaps, then differenced to get run boundaries. Runs shorter than 8 px are dropped, and consecutive runs closer than 18 px are merged to reattach descender fragments from *y*, *p* and *g*.
 
-**Inner workings and maths.** Internally this performs a **binary opening** with a line structuring element of length `n`, computed via prefix sums rather than an explicit erode+dilate pass:
-1. A prefix sum `c` of `m` (axis moved to front, zero-padded by one at the start) is built.
-2. `hit[i] = 1` iff `c[i+n] - c[i] == n`, i.e. the window `[i, i+n)` is *entirely* `True` — this is exactly a 1D **erosion** by a length-`n` structuring element, anchored at the window's start.
-3. A second prefix sum `ch` of `hit` is taken, and for each position `j`, the valid window-start range that could cover `j` is `lo = max(0, j-n+1)`, `hi = min(j, L-n)`; position `j` is marked covered if `ch[hi+1] - ch[lo] > 0` (i.e. at least one qualifying run-start exists in range) — this is the **dilation** of the eroded hit-map back out by the same footprint, reconstituting the full extent of every qualifying run.
+**`isDataset=False` (personal ruled paper).** Header and footer detection is skipped entirely, because it actively misfires on ordinary ruled paper, and line splitting switches to `SplitLinesByPeriodicity`. That smooths the row ink profile with a 9-tap box, estimates the pitch by autocorrelation (`EstimateLinePitch`, lag search 40–400), and takes
 
-Together, steps 2–3 implement **binary opening** (erode-then-dilate) with a 1D structuring element of length `n`, which is exactly the standard way to isolate "runs at least this long" while discarding shorter ones.
-
-**Literature connection.** Morphological opening (Serra, 1982) with a line structuring element — the standard tool for detecting/removing long thin linear structures (used here for straight-line artifact removal, analogous to its use in document de-ruling literature, e.g. removing form/table lines before OCR).
-
----
-
-### `_otsu(v)`
-
-**Purpose.** Finds the grey-level (or here, ink/background ratio-level) threshold that best separates two populations (ink vs. paper) in a 1D distribution, by maximising between-class variance. Used both for the main ink/paper split and for several secondary thresholding decisions (darkness-based artifact filtering, per-line local re-thresholding).
-
-**Inputs.** `v`: any real-valued numpy array (here, a "ink/background ratio" image, values expected roughly in `[0, 1.2]`).
-
-**Outputs.** A single float: the threshold value, in the same units as `v`, at the centre of the best-scoring histogram bin.
-
-**Inner workings and maths.** A 256-bin histogram `h` of `v` clipped to `[0, 1.2]` is built, normalised to a probability mass function `p = h / Σh`. Define the cumulative weight `w(t) = Σ_{i≤t} p(i)` (the background-class fraction below bin `t`) and cumulative first moment `m(t) = Σ_{i≤t} i·p(i)`. Writing `μ_T = m(255)` (the global mean bin index), Otsu's between-class variance at threshold `t` simplifies algebraically to:
-
-```
-σ_B²(t) = (μ_T·w(t) − m(t))² / [ w(t)·(1 − w(t)) ]
+```python
+find_peaks(-smoothed, distance=max(30, 0.55*pitch), prominence=max(1, 0.03*max))
 ```
 
-which is exactly the quantity the code computes as `s = (m[-1]*w - m)**2 / max(w*(1-w), 1e-12)`. The optimal threshold is `t* = argmax_t σ_B²(t)`, and the returned value converts the winning bin index back to the original units: `(t* + 0.5) * 1.2 / 256` (bin centre, rescaled from the 256-bin, `[0,1.2]`-range histogram back to real ratio units).
+— the *minima* of the ink profile, spaced at least 55% of a pitch apart. The switch is necessary because a densely written cursive page has no blank row between lines, since ascenders and descenders interleave, so a blank-gap detector finds one enormous line. `ruleLineHints` optionally snaps a detected valley to a nearby printed rule within `0.12*pitch`. This is the only place in the pipeline that calls SciPy, and only for peak finding.
 
-**Literature connection.** This is **Otsu's method** (Otsu, 1979, *"A threshold selection method from gray-level histograms"*, IEEE Trans. SMC) in its standard closed-form, cumulative-moments implementation — the most widely used automatic global-thresholding algorithm in document/image binarisation.
+**Labels.** Per-line labels come from `ReadLabelLines`, a hand-verified transcript file, matched to crops by index. `ReadLabelLines` strips a leading `^\d+\t` index so a line number can never leak into a training target as a literal digit. The transcript is returned alongside the crops only when the two agree on line count, so a caller can never pair *n* crops with a different number of label lines.
 
----
+Two count-reconciliation helpers run before that comparison:
 
-### `_ink(gray)`
+- `MergeUndersizedFragments` merges any detected "line" shorter than 40% of the median height into its closer neighbour — a descender tail or stray mark, distinguishable from a real line by height alone. Neighbour choice is by the smaller gap.
+- `MergeOrSplitToExpectedLineCount` forces the detected count to match the transcript's: merge the pair with the smallest `gap + mean gap ink`, which is the cheapest boundary to erase, or split the tallest line (minimum 42 px) at its thinnest-ink row, staying 18 px clear of either end.
 
-**Purpose.** Converts a raw grayscale photo into a clean binary ink mask, correcting for uneven lighting (vignetting, shadows, desk lamps) and excluding large solid dark regions (binder clips, deep shadow pools) that are not pen strokes.
+Output geometry: crops are resized to `targetHeight=32` preserving aspect ratio, capped at `maxWidth=1024`, and pasted left-aligned onto a white 1024×32 canvas. These are archival line crops; `TrainText.ResizeLineImageFixed` does the final 64×640 fit at load time. The preview image draws the detected bounds in blue, the handwriting start line in cyan, and a numbered red box per returned line.
 
-**Inputs.** `gray`: 2D float64 array, grayscale pixel values (0–255-ish), the photographed page (or a downsampled copy of it).
-
-**Outputs.** A tuple `(mask, ratio)`:
-- `mask`: boolean array, same shape, `True` = ink.
-- `ratio`: float array, same shape — the illumination-normalised "darkness ratio" used both here and reused later (for Otsu-based artifact scoring and for the debug overlay).
-
-**Inner workings and maths.** First, a **local background** is estimated via `_box(gray, r)` with radius `r = clip(round(H/41), 8, 40)` — i.e. the blur radius scales with image resolution (so a small crop isn't swallowed by an oversized blur). The illumination-normalised ratio is
-
-```
-ratio(y,x) = gray(y,x) / max(background(y,x), 1)
-```
-
-— pixels much darker than their local surroundings (ink) have `ratio ≪ 1`; paper has `ratio ≈ 1`. This is a classic **flat-field / shading correction** (dividing out a low-frequency illumination estimate), equivalent in spirit to adaptive thresholding methods (e.g. Niblack/Sauvola-style local normalisation) but using a *multiplicative* ratio rather than a local mean/standard-deviation band.
-
-`mask = ratio < Otsu(ratio)` applies Otsu's method (see `_otsu` above) directly to the ratio image, picking a single global cutoff on the normalised distribution — effectively a "locally-adaptive, globally-thresholded" binarisation.
-
-A second pass removes large **solid dark blobs**: `solid = _box(mask, 4) > 0.999` marks pixels whose entire 9×9 neighbourhood is ink (i.e. not individual pen strokes, which always have paper gaps between letters, but a uniformly dark region like a binder clip's shadow or interior). The final mask drops not just those solid pixels but a 7×7 ring around them too (`_box(solid, 3) > 0`, i.e. dilated by 3), so the solid region's blurred edge doesn't survive as a ragged halo.
-
-**Literature connection.** Shading/illumination correction via division by a blurred background is a standard document-image preprocessing step (closely related to "flat-fielding" in photography and to local/adaptive binarisation families like Sauvola, 2000); the thresholding step itself is Otsu's method (Otsu, 1979).
-
----
-
-### `_pitch(mask)`
-
-**Purpose.** Estimates `P`, the line spacing (vertical distance between consecutive handwritten lines) — the single most important scale parameter in the whole pipeline, since almost every later geometric threshold ("long enough to be an underline," "close enough to belong to this line," etc.) is expressed as a fraction/multiple of `P`.
-
-**Inputs.** `mask`: boolean ink mask, 2D array, shape `(H, W)`.
-
-**Outputs.** Tuple `(P, sm)`:
-- `P`: integer, estimated line pitch in pixels.
-- `sm`: the smoothed row-ink profile (float array of length `H`), reused by the caller to find line centres (peaks) directly without recomputation.
-
-**Inner workings and maths.** A **row-ink profile** is built by summing ink pixels per row over the central 92% of the page width (trimming 5%/3% margins to avoid edge artifacts): `prof(y) = Σ_{x∈[0.05W,0.97W]} mask(y,x)`. This profile is smoothed with a **Gaussian kernel** of σ=4 (support `±12`, i.e. a 25-tap kernel `k(i) = exp(-0.5(i/4)²)`, normalised), via `np.convolve(..., "same")`.
-
-Three fallback strategies are tried, in order of preference:
-1. **Direct peak-to-peak measurement.** Local maxima of `sm` (points where `sm[i]≥sm[i-1]` and `sm[i]>sm[i+1]`, with a noise floor `sm[i] > 0.06·max(sm)`) are found; if at least two exist, `P = median(diff(sorted(peak positions)))`. This directly measures spacing, so it correctly handles a page with *irregular* spacing (e.g. mixed single- and double-spaced paragraphs) — the chosen value is the median gap, not an assumed uniform grid.
-2. **Autocorrelation.** If fewer than two peaks are resolvable (lines packed so tight the profile between them never dips), the **autocorrelation function** of the mean-centred profile is computed: `ac(τ) = Σ_y a(y)·a(y+τ)` via `np.correlate(a, a, "full")`, keeping only non-negative lags. The function looks for the first local maximum in the lag range `[15, min(200, L/3)]` whose value is within 70% of the segment's own maximum — i.e. the first strong periodic peak, which corresponds to the fundamental line-spacing period. Autocorrelation at lag 15+ is used only as a fallback because on a page with uneven paragraph gaps it can lock onto a harmonic (an integer multiple of the true spacing) rather than the true spacing itself, which direct peak measurement avoids.
-3. **Letter-size heuristic.** If there's effectively only one line (nothing to compare periodicity against), connected components of `mask` are measured (via `_label`, below) and a pitch is extrapolated from the median height of "letter-sized" components (`P ≈ 2.2 × median(height)`), an empirically calibrated ratio between typical line pitch and typical x-height-to-ascender letter height.
-4. **Hard default.** `P = 48` if there's no usable ink at all (an arbitrary but harmless fallback that avoids a crash).
-
-**Literature connection.** Row-ink (horizontal) **projection profiles** are the classical technique for text-line segmentation in document image analysis (going back to Ohta et al. 1988 / Wong, Casey & Wahl 1982's X-Y cut and profile-based layout analysis); the autocorrelation fallback for estimating a fundamental spatial period is a standard signal-processing technique (Wiener–Khinchin-style periodicity detection).
-
----
-
-### `_seam(cost, step=3)`
-
-**Purpose.** Finds the minimum-total-cost path from the left edge of a cost map to the right edge, allowing the path's row index to change by up to `step` per column — this is the core geometric primitive used to carve a rough boundary between two adjacent handwritten lines that threads through blank paper (low cost) and avoids ink (high cost).
-
-**Inputs.** `cost`: 2D float array, shape `(h, W)` — a per-pixel cost (built by the caller so that ink pixels are expensive and paper is cheap, plus a mild positional regularisation term). `step`: maximum allowed vertical displacement (in rows) between consecutive columns.
-
-**Outputs.** A 1D integer array `y` of length `W`: for every column `x`, the row index of the minimum-cost path.
-
-**Inner workings and maths.** This is a textbook **dynamic-programming shortest path**, structurally identical to Avidan & Shamir's seam carving (2007), but run horizontally (left→right) instead of vertically, and with a *bounded* step set rather than the usual `{-1,0,+1}`. The recurrence is:
-
-```
-acc(y, x) = cost(y, x) + min_{d ∈ [-step, step]} [ acc(y+d, x−1) + 0.02·|d| ]
-```
-
-i.e. the cheapest way to reach pixel `(y,x)` is the cheapest way to reach any of the `2·step+1` candidate predecessors in the previous column, plus that column's own cost, plus a small linear "steering penalty" `0.02·|d|` proportional to how far the path jumps — this discourages (but does not forbid) sharp vertical moves, so the path still snaps around tall ascenders/descenders when ink forces it to, without being needlessly jagged in blank regions. `back(y,x)` records which `d` was chosen (as an `int8`, offset to the 0-based shift index) for backtracking. The path is initialised at the column `W-1` by taking the global minimum of `acc[:, -1]`, then traced backwards: `y[x-1] = y[x] + back[y[x], x]`.
-
-**Literature connection.** This is the **seam-carving** dynamic-programming shortest-path algorithm (Avidan & Shamir, 2007, *"Seam carving for content-aware image resizing"*), which is itself a direct descendant of classical DP shortest-path/edit-distance recurrences; using a minimum-cost seam to separate adjacent text lines through ink-sparse "valleys" is a documented line-segmentation technique in the handwritten-document-analysis literature (e.g. Likforman-Sulem et al.'s surveys on text line extraction use exactly this "valley path" / seam idea for touching/overlapping lines).
-
----
-
-### `_label(mask)`
-
-**Purpose.** Labels 8-connected groups of ink pixels (connected-component analysis) — the fundamental grouping primitive used throughout the file to treat "a blob of ink" as a single object with measurable area/bounding box, rather than a cloud of independent pixels.
-
-**Inputs.** `mask`: 2D boolean array.
-
-**Outputs.** `(labels, count)`: `labels` is an `int32` array, same shape, `0` = background and `1..count` identify each connected component; `count` is the number of components found.
-
-**Inner workings and maths.** This is a **run-length-encoded, two-pass union-find connected-component labelling** algorithm:
-1. **Run extraction (per row).** For each row `y`, the boundaries of contiguous ink runs are found via a first difference of the (zero-padded) row (`diff` of `[0, mask[y], 0]`): `+1` marks a run start, `-1` marks a run end.
-2. **Union across rows.** Each run on row `y` is compared against the runs of row `y-1` (`prev`), and unioned via a union-find `parent[]` array whenever their column ranges overlap (or touch) — this is the standard "merge the labels of touching runs in the row above" step of run-based connected-component labelling.
-3. **Path-compressed find.** `find(a)` walks up the `parent` chain with path halving (`parent[a] = parent[parent[a]]`) for near-O(1) amortised lookups — the classical **union-find / disjoint-set** data structure (with path compression, no explicit union-by-rank, but the compression alone keeps it efficient at this scale).
-4. **Label compaction.** After all rows are processed, every run's root is resolved via `find`, and `np.unique` on the roots produces compact, contiguous output labels `1..count`.
-
-**Literature connection.** This is a vectorised variant of the classical **two-pass connected-component labelling algorithm** (Rosenfeld & Pfaltz, 1966) using **union-find / disjoint-set forests** (Tarjan, 1975) for the equivalence-class resolution, specialised to row-run representation for speed — the same family of algorithm underlies `scipy.ndimage.label`/`cv2.connectedComponents`.
-
----
-
-### `_paper(g, P)`
-
-**Purpose.** Finds the region of the photo that is actually the paper, so that anything outside it (desk, clamp, binder, page edge, cast shadow) is excluded before ink detection runs — otherwise a dark tabletop or clamp could be mistaken for a huge block of "ink."
-
-**Inputs.** `g`: 2D float array, grayscale page image. `P`: estimated line pitch (used to scale the morphological radii).
-
-**Outputs.** Boolean array, same shape as `g`: `True` = paper.
-
-**Inner workings and maths.** The image is block-averaged by a factor `s=4` (reshape-and-mean downsampling) for speed, then smoothed with `_box` at a radius proportional to the line pitch (`~0.15·P/s`). A pixel is flagged `dark` if it is less than 45% of the image's **median** brightness: `dark = c < 0.45·median(c)`. If almost nothing is "dark" (`<0.2%` of pixels), the function assumes there's no surrounding clutter and returns an all-`True` mask (a photo that's already cropped tight to the page). Otherwise, the **largest connected bright (non-dark) region** is taken as the paper (`_label` on `~dark`, picking the component with the largest pixel count via `np.bincount`). That low-resolution blob is upsampled back to full resolution with nearest-neighbour block expansion (`np.kron`). Finally, the paper boundary is pulled inward by eroding it with radius `r=0.4·P` (implemented as `~_any(_any(~full, r, 0), r, 1)`, i.e. dilating the *inverse* mask and inverting — mathematically equivalent to eroding the paper mask), which trims a margin a bit less than half a line-spacing wide, keeping shadowed/ambiguous edge pixels out of the detected text region.
-
-**Literature connection.** A brightness threshold followed by largest-connected-component selection is a standard "foreground region of interest" extraction technique in document scanning/photo-rectification pipelines; the final erosion is classical binary morphology (Serra, 1982).
-
----
-
-### `SegmentLines(path)` — the main pipeline
-
-This function is long and does the real work of all six pipeline stages described in the module docstring. It is broken down stage-by-stage below; line numbers refer to the source file.
-
-#### Inputs / outputs
-- **Input:** `path`, a filesystem path (string or `Path`) to a photographed page image (any format PIL can open).
-- **Output:** `(lines, ov, info)` as described in "Role in the pipeline" above.
-
-#### Setup and deskew (stage 1)
-
-The image is loaded as 8-bit grayscale (`full`) and a half-resolution copy (`half`, via PIL's `BOX` resampling — an area-averaging downsample) is made for cheap geometric analysis. `_ink` computes an ink mask on the half-res image; that mask is resized down by another factor of 2 (quarter-res) and, for candidate rotation angles `a ∈ {-4, -3.5, ..., +4}` degrees, the image is rotated and scored by
-
-```
-score(a) = Σ_y [ rowInkCount_a(y) ]²
-```
-
-i.e. the sum of squared per-row ink counts of the rotated mask — maximised exactly when text rows are horizontal and their ink is concentrated into sharp, high-contrast horizontal bands (any rotation that tilts rows "smears" ink across more rows, lowering each row's count and hence the sum of squares). The angle `best` that maximises this score is applied (bilinear rotation, white fill) to both `full` and `half`, and `_ink` is recomputed on the now-deskewed `half` image to get the working `mask`/`ratio`.
-
-**Literature connection.** Maximising the energy (sum of squared profile values) of a horizontal projection profile over a small angle search is a classical **projection-profile skew-estimation method** (Postl, 1986; Baird, 1987) — one of the oldest and most widely used document-deskewing techniques.
-
-#### Straight-line and boundary artifact removal (stage 2)
-
-`P` (pitch) and the `paper` mask are computed; ink outside `paper` is dropped (`paperRemoved` logged as a diagnostic). Then:
-
-```
-flat    = pixels on a (row-tolerant) horizontal run ≥ 1.25·P long
-upright = pixels on a (column-tolerant) vertical run ≥ 1.4·P long
-```
-
-built with `_any(mask, 1, 0)` / `_any(mask, 3, 1)` pre-dilation (to tolerate a slight residual tilt or wobble) followed by `_long_runs` (morphological opening, see above) and a matching post-dilation to restore the flagged region's full extent. These catch **underlines, ruled-paper lines, and the binder/page edge** — structures far straighter and longer than any real pen stroke can sustain. Both are subtracted from `mask`.
-
-**Stage 2b** then does component-level artifact filtering. A *closed* version of the mask (`closed`: dilate then erode by `rc≈0.1P`, i.e. a **morphological closing** that bridges small pen-lift gaps within one stroke/word without materially growing its outline) is labelled with `_label`. For each resulting component, a battery of geometric/photometric features is computed from vectorised `bincount`/`minimum.at`/`maximum.at` reductions — area, bounding box, mean ink-ratio darkness — and a set of hand-tuned, pitch-relative heuristic rules (documented inline in the source, lines 251–274) flags components as artifacts: too tall and too thin (page-edge/binder strips), a narrow vertical bar taller than any letter (`vbar`), a faint thin-tall sliver that only survived straight-line removal because it has small gaps (`faintVbar`, a printed margin rule), a short/sparse/faint band right at the page edge (`edgeShadow`, a crease or shadow), anything touching the page's left border, or anything stranded far to the left of the measured left text margin (`xL`, the 5th percentile of left edges among "letter-sized" components). All flagged components are removed from `mask`.
-
-This stage is best understood as a small **rule-based classifier** over per-component shape/darkness features — not a named classical algorithm, but structurally the same idea as heuristic document-layout-analysis rules (c.f. Nagy's surveys of layout analysis), expressed relative to the measured pitch `P` so it self-calibrates to each page's handwriting scale.
-
-#### Line centres (stage 3)
-
-Pitch and the smoothed row profile are recomputed on the cleaned mask (`_pitch`). Local maxima of the profile above a noise floor are candidate centres; they are then **greedily non-max-suppressed**: sorted by descending peak strength, and a peak is accepted only if it is at least `0.6·P` away from every already-accepted centre. This is a standard 1D peak-picking technique (closely related to the non-maximum suppression used in blob/keypoint/object detectors) that prevents two adjacent noisy sub-peaks within one real line from being counted as two separate lines.
-
-#### Rough boundaries by DP seam (stage 4)
-
-The outermost boundaries are flat lines offset `0.75·P` above the first centre and below the last. Between each pair of adjacent centres, a **cost map** is built from a **closed** version of the mask:
-
-```
-mdil    = dilate(mask, tailR)         where tailR = max(2, 0.07·P)
-mClosed = erode(mdil, tailR)          (= mask closed by radius tailR)
-```
-
-This closing (not a plain dilation) is the fix for a documented bug: narrow internal necks in handwriting — e.g. beside a descender's stem, or the narrow neck of a "y" tail, or the gap between the strokes of letters like "x"/"p" in a word such as **"express"** — can otherwise leave a thin channel of pure background (cost-0) running right past or through a letter. A plain dilation would widen the *whole* silhouette (hiding real ink boundaries under a bloated blob), while closing only fills gaps *smaller than* `2·tailR` and leaves the stroke's true outer boundary essentially unchanged. Before this fix, the DP seam (which simply minimises total ink crossed) could find that zero-cost channel and thread straight through the middle of a word instead of around it; after closing, that channel is filled with "ink" cost, forcing the seam out and around the letter's real silhouette. **This is the "closing-based ink-cost map" fix referenced in the project's known-issues notes.**
-
-The actual per-column cost fed to `_seam` is
-
-```
-cost(y,x) = 4.0·mClosed(y,x) + 0.012·((y − mid)/half_w)²,   mid = c0 + (c1−c0)/2,  half_w = max(1, (c1−c0)/2)
-```
-
-i.e. ink cost dominates, plus a weak quadratic penalty that pulls the seam back toward the midline between the two centres when ink cost is tied (so ambiguous blank regions get a sensible default boundary rather than an arbitrary jagged one). `_seam` is invoked with `step=7` — a larger-than-default per-column jump allowance — specifically so the seam can follow a tall, narrow ascender/descender tail quickly enough to hug it rather than cutting through it.
-
-#### Piece ownership (stage 5)
-
-This is the densest part of the file; it resolves, for every ink pixel, which of the `L` lines "owns" it, starting from the rough DP boundaries and then correcting several predictable failure modes.
-
-- `region(y,x)` = count of inner boundary curves (`cuts[1..L-1]`) at or above `(y,x)` — i.e. the pixel's *rough* line index directly from the DP seams.
-- Per closed-component (`pl`, from stage 2b's `lab`) statistics are built: centroid `(cx, cy)`, and a histogram `cnt[piece, region]` of how many of a piece's pixels (within the overall ink band) fall in each rough region.
-- **`substantial`**: a region holds ≥15% of a piece's total pixel count. **`major`** = the *topmost* substantial region if the piece substantially spans more than one rough region (reasoning: when a letter's tail or a word's rough cut genuinely straddles two lines, it is the line *above* that loses the piece's crop content if it isn't reserved for it — not whichever side happens to have more raw pixels), else the region with the most raw pixels.
-- **Case "minor"** (cut-off tails): a small (`<0.12P²`), narrow (`≤0.55P` wide — a tail, not a whole word) sliver of a piece sitting in a region adjacent to its `major` region is folded wholesale into `major`.
-- **Case B** (stray tiny pieces, lines 345–357): very small components are either dropped (if far from any of their nominal line's substantial ink, or if "speck"-sized and not even near a close substantial component) or shifted to the next/previous line if their centroid sits clearly (`>0.5P`/`>0.7P`) above/below the nearby ink of their current line.
-- **Case D** (medium pieces — brackets, quote marks, isolated tails, lines 358–364): assigned to whichever of the three candidate lines (`major-1, major, major+1`) has a substantial component whose centroid `y` is nearest.
-- **Case C / "dot"** (lines 365–386): closed pieces small and roughly square are classed `dot` (candidate i-dots/full-stops); larger pieces are `stem`. For each `dot`, the code scans directly below it (within `0.4P`) for a `stem` belonging to some line `n2`; if the vertical offset between the dot and that line's ink sits in the empirically-typical i-dot range `[0.25P, 0.7P]` above the line, the dot is reassigned to `n2`.
-- `own[y,x]` is finally built: `major[piece]` for any piece flagged tiny/minor, otherwise the raw `region(y,x)` value — i.e. ownership defaults to the geometric DP split except where a small, clearly-misattributed fragment has been explicitly reassigned.
-
-**Case E** (lines 390–418) and **Case F** (lines 420–467) correct a side effect specifically introduced by the *closing* used to build the stage-4 cost map (and stage-2b's artifact-filtering closing): closing can physically weld a genuine floating i-dot onto the descender of the line above it, or weld it into a ring-like blob at the bottom of a stroke. Both cases re-examine the **raw** (un-closed) components:
-- **E** looks for a small raw `dot`-shaped component sitting just above a raw `stem` component; if the stem's line differs from where `own` currently (post-DP) puts the dot, and the apparent "whole-word" area test rules out the dot being an artifact of closing a real word shut, the dot's pixels are moved onto the stem's line.
-- **F** looks for a *ring*-shaped blob at the bottom of a stroke (walking up column-wise from the bottom of a component while it stays wide, stopping where it narrows sharply to roughly half its widest span — the "neck") and verifies the blob is genuinely enclosed (its background, after padding, has ≥2 connected background regions — i.e. a literal hole — rather than 1, which would mean an open hook/tail end, not a ring) before reassigning it the same way as E.
-
-**Case H** (lines 469–503) is a final geometric sanity pass: for every line, pixels currently `own`ed by it are re-labelled into connected fragments, and any fragment with no ink at all inside that line's expected x-height band (`|y − centre| ≤ 0.28P`) — i.e. a fragment floating entirely in the gap between lines — is examined. Dot-sized fragments explicitly placed by E/F are left alone (the `locked` flag tracks which pixels E/F touched). Otherwise, the fragment's immediate neighbourhood (a small dilation) is checked for which *other* line's ink dominates nearby — if a clear majority neighbour exists and is adjacent and geometrically consistent, the fragment moves there; failing that, it falls back to whichever adjacent line's centre the fragment's mean `y` is closest to, if within `0.2P`.
-
-#### Crop rendering (stage 6)
-
-Each line's final crop is rendered from the **full-resolution** image, not the half-res working copy, for maximum print quality:
-- A full-resolution lighting-normalisation background is built by upsampling the half-res `_box` blur back to full size (bilinear), and `norm = clip(full/bg, 0, 1)·255` reproduces the same flat-field correction idea as `_ink`, but kept as continuous grayscale (not thresholded) so pen-pressure shading is preserved.
-- Lines with too little ink (`< max(60, 0.12·median(per-line counts))`) or too little vertical extent are dropped as noise.
-- **Paragraph-gap trimming:** if a line's row-ink profile has a large enough blank gap (bigger than the vertical extent minus `0.8P`) splitting it into separate runs, only the largest contiguous ink run (by total ink area) is kept for the crop — this prevents a stray mark from a different paragraph (picked up by the generous DP band) from dragging the crop's bounding box out.
-- The crop box is padded by `0.15P` and mapped from half-res to full-res coordinates by the scale factor `f = full.width / W`.
-- **Alpha mask construction:** the binary line-ownership mask is upsampled (bilinear) to full resolution as a base alpha; a **halo** (the ink mask dilated by `0.2P`) is also upsampled, and a **local Otsu re-threshold** is computed *within this crop only* (not the whole-page Otsu) to recover full-resolution detail the half-res global threshold may have missed. The union `alpha = max(upsampledMask, localMask ∧ haloMask ∧ notOwnedByAnotherLine)` is the final per-pixel opacity — gated so recovery can never "steal" a neighbouring line's confirmed ink.
-- **Contrast enhancement:** the typical ink darkness (`black`, 40th percentile of region values under `alpha>0.5`) and typical paper brightness (`white`, 75th percentile over the whole crop) define a **linear contrast stretch**:
-
-```
-linear(x) = clip( (region(x) − black) · 255/(white − black), 0, 255 )
-```
-
-followed by a **gamma correction** (γ=0.55 < 1) applied to the normalised darkness:
-
-```
-darkness(x) = ( (255 − linear(x)) / 255 )^0.55
-enhanced(x) = 255·(1 − darkness(x))
-```
-
-Because γ<1 expands low-darkness (faint, lightly-pressed) values disproportionately while leaving already-saturated ink near-black, this pulls faint strokes much darker while leaving solid ink unchanged — a perceptual non-linear remap standard in image processing (the same mathematical form as monitor/print gamma correction, just applied to "inkiness" instead of display luminance).
-- **Compositing:** `crop = alpha·enhanced + (1−alpha)·255` is the standard alpha-blend ("over") equation (Porter & Duff, 1984) compositing the enhanced ink over a pure-white background.
-- **Left-margin normalisation:** the crop is shifted horizontally so the first column with meaningful alpha lines up with the same left margin every crop starts with, regardless of exactly where the ink happened to sit inside its padded bounding box — keeping training/visual outputs visually consistent.
-- The final `(order, image, clf, bbox)` dict is appended to `lines`.
-
-Finally, a debug overlay (`ov`) is built from the illumination ratio image (tinted red outside the detected paper region) with every DP cut curve drawn as an alternating red/blue polyline, and `info` collects the run's diagnostic scalars.
-
----
-
-## Part 2 — `SegmentPage.py` (legacy segmenter)
-
-### Role in the pipeline and current status
-
-`SegmentPage.py` was the **original** first-principles page segmenter — more elaborate than `SegmentLean.py`, structured around MESS-vs-TEXT component classification and a chain-based line-grouping algorithm, with ten additional "override" stages layered on top of a baseline algorithm to cope with real camera-photo artifacts (shadow, ruled paper, facing-page bleed, bleed-through, coloured ink). Its entry point is `ProcessPage(imgPath) -> (results, preview, meta)`.
-
-**It is no longer the production path.** `SegmentLean.py` (Part 1) replaced it for the server and for all current `TrainText.py`/`TrainAuthor.py` training. The **one place it is still reachable** is `Software/CNN/AuthorReproductionStuff/BuildStyleProfile.py`'s `build_personal_line_items(author)`, which calls `F.ProcessPage(str(img_path))` (where `F` is `SegmentPage`, imported at the top of that file) to segment each personal author's photographed pages before forced-aligning them for style-profile extraction. (Note: the parallel file `Software/CNN/ReproductionImprovement/BuildStyleProfile.py` has since been updated to call `SegmentLean.SegmentLines` instead for the same purpose — only the `AuthorReproductionStuff` copy still depends on `SegmentPage`.) Because `ProcessPage` is the one live call, and its body exercises essentially every function in the file's "baseline primitives" and "override stages" sections (per the module's own docstring, every stage listed was kept specifically because it was shown to still change real output), the *entire file* is, in practice, on that one live code path — nothing below is dead code, it is simply no longer the main pipeline.
-
-Given the brief for this file ("more briefly... but do not skip the still-live parts"), each function below gets a compact purpose/mechanism entry; the overall architecture is explained once, up front, rather than re-derived per function.
-
-### Architectural overview
-
-`SegmentPage.py` is organised in three sections (per its own header comments):
-1. **Low-level numpy image primitives** (`RawImageOps`-equivalent): box blur via integral images, Gaussian blur via iterated box blur, binary morphology via box sums, run-based union-find connected components, hole-filling, and inverse-mapped bilinear rotation/resize.
-2. **Baseline segmentation primitives** (`SegmentPageCore`-equivalent): load/normalise, Otsu/adaptive thresholding, deskew-by-profile-variance, rule-line removal by chaining colinear components, a MESS-vs-TEXT component classifier based on enclosed-hole area, and `GroupLines`, a chain-then-merge line-grouping algorithm.
-3. **Override stages** that `SegmentPage.py` itself adds on top: a more careful page-mask detector, facing-page-bleed removal, sparse-rule-network stripping, a post-grouping refinement pass (`RefineItems`), weak-ink hysteresis recovery for faint/coloured ink, and ownership-aware rendering that forbids one line's crop from stealing another's pixels.
-
-`ProcessPage` wires all of this together; its stage order is documented inline in its own write-up below.
-
----
-
-### Section A — low-level image primitives
-
-#### `_Integral(img)`
-One-line helper: builds a padded 2D prefix-sum ("summed-area table") of `img`, with an extra zero row/column so rectangle sums can be read off directly by index arithmetic. Same mathematical idea as `_box`'s integral image in `SegmentLean.py` (Crow, 1984).
-
-#### `BoxSum(img, ry, rx)` / `BoxCount(ry, rx, h, w)` / `BoxMean(img, ry, rx)`
-`BoxSum` returns the sum over a `(2ry+1)×(2rx+1)` window per pixel, using the integral image and the same inclusion–exclusion rectangle-sum formula as `_box` in Part 1, but with edge-*clamping* (the window truncates at the border) rather than edge-padding. `BoxCount` returns how many real pixels contributed to that window at each position (needed because of the clamping). `BoxMean = BoxSum / BoxCount` gives the true local mean even near borders. Same literature connection as `_box` (summed-area tables).
-
-#### `GaussianBlur(img, sigma)` / `GaussianBlur1D(arr, sigma)`
-Approximates a Gaussian blur of standard deviation `sigma` by applying a box blur **three times in succession**. The box radius is chosen so the variance after 3 passes matches `sigma²`: for a box of full width `W`, a single pass has variance `(W²−1)/12`; three passes combine (by independence) to variance `3·(W²−1)/12 = (W²−1)/4`, so solving `(W²−1)/4 = σ²` gives `W ≈ √(4σ²+1)`, which is exactly the radius formula in the code (`r = round(√(4σ²/3 + 1)/2)` — matching the `GaussianBlur1D` comment's derivation precisely). This is justified by the **Central Limit Theorem**: repeated convolution of a box (uniform) kernel converges rapidly to a Gaussian shape. `GaussianBlur1D` is the identical idea along a single axis, via `np.convolve`.
-
-**Literature connection.** Iterated box blur as a fast Gaussian approximation is a well-known image-processing trick (e.g. used in real-time graphics; theoretically grounded in the CLT, as the code's own comment states).
-
-#### `RgbToGray(rgb)`
-Standard **luma** conversion: `Y = 0.299R + 0.587G + 0.114B` (the ITU-R BT.601 luma coefficients), clipped to `[0,255]`.
-
-#### `Saturation(rgb)`
-HSV **S** channel: `S = (max(R,G,B) − min(R,G,B)) / max(R,G,B)`, scaled to 0–255 to match OpenCV's convention. Used to distinguish neutral paper/pencil from saturated coloured ink or background clutter.
-
-#### `OtsuThresholdValue(gray)`
-The same **Otsu's method** as `_otsu` in Part 1 (Otsu, 1979), but implemented as an explicit loop over 256 integer bins accumulating `wB` (background weight), `sumB` (background first moment), and tracking the `t` that maximises `wB·wF·(mB−mF)²` — an unvectorised but mathematically identical formulation of between-class variance maximisation.
-
-#### `AdaptiveThresholdInv(gray, blockSize, C)`
-Mirrors OpenCV's `ADAPTIVE_THRESH_GAUSSIAN_C`: a pixel is "ink" if it is darker than its own **locally Gaussian-weighted mean** minus a constant margin `C`:
-```
-ink(y,x) = gray(y,x) < GaussianBlur(gray, σ)(y,x) − C
-```
-with `σ` derived from `blockSize` via OpenCV's own formula `σ = 0.3·((blockSize−1)·0.5 − 1) + 0.8`. This is the classical **adaptive/local thresholding** family (Niblack 1986 and successors use local mean ± offset; this is the Gaussian-weighted variant), useful where illumination varies across the page.
-
-#### `Dilate(mask, ky, kx)` / `Erode(mask, ky, kx)` / `Open` / `Close`
-Binary morphology implemented via `BoxSum`: `Dilate` is "any pixel set in the window" (`sum > 0.5`), `Erode` is "all pixels set in the window" (`sum ≥ count − 0.5`). `Open = Dilate(Erode(...))`, `Close = Erode(Dilate(...))` — the textbook definitions of morphological opening/closing (Serra, 1982) with a rectangular structuring element, built on the same box-sum trick used everywhere else in the file.
-
-#### `_RunUF` (class)
-A minimal **union-find / disjoint-set** structure (`parent` array, `find` with path halving, `union` by arbitrary root pointer reassignment — no union-by-rank). Textbook Tarjan-style disjoint-set forest.
-
-#### `_RowRuns(mask)`
-Per row, extracts the `(start, end)` column index pairs of contiguous ink runs via a first-difference of the zero-padded row — identical technique to `_label`'s row-run extraction in Part 1.
-
-#### `LabelComponents(mask, connectivity=8)`
-The connected-component labeller used throughout `SegmentPage.py` (and, notably, still the function called by `BuildStyleProfile.py`'s own import, `from SegmentPage import LabelComponents`, for other purposes). Runs are extracted per row (`_RowRuns`), then runs in adjacent rows are unioned whenever their column ranges touch (with an extra 1-pixel tolerance when `connectivity=8`, allowing diagonal touches) using `_RunUF`. Final labels are compacted via a dictionary mapping each resolved root to a sequential output label. This is the same family of algorithm as `_label` in Part 1 (Rosenfeld & Pfaltz, 1966, run-based union-find connected components), implemented with an explicit Python-level union/compaction loop rather than Part 1's fully-vectorised version.
-
-#### `ComponentStatsFromLabels(labels, count)`
-For each label `1..count`, computes bounding box (`x,y,w,h`), pixel `area`, and centroid (`cx,cy`) by sorting pixel coordinates by label and slicing contiguous blocks (`np.searchsorted` on the sorted label array) — an efficient batched alternative to `cv2.connectedComponentsWithStats`.
-
-#### `FillHoles(mask)`
-Fills every background region that is **not connected to the image border** — the classical **hole-filling via background flood-fill** technique: label the background (`~mask`) with 4-connectivity, mark every background component touching any of the four image edges as "outer," and treat every other background component as a "hole" to be filled in. Equivalent to `cv2.floodFill` from a corner, or to morphological reconstruction by dilation from the border mask (Vincent, 1993) restricted to background components.
-
-#### `ResizeBilinear(img, newH, newW)`
-Inverse-mapped **bilinear interpolation** resize: for each output pixel, the corresponding fractional source coordinate is computed (`(i+0.5)·h/newH − 0.5`), its four surrounding integer neighbours are read, and the result is their weighted average by fractional distances (`fy, fx`) — the standard bilinear resampling formula used in essentially all image-resizing libraries.
-
-#### `DownsampleArea(mask, factor)`
-Block-mean downsampling: reshapes the (factor-cropped) array into `(h/f, f, w/f, f)` blocks and averages over the two factor axes — equivalent to OpenCV's `INTER_AREA` for integer downsampling factors.
-
-#### `RotateRaw(arr, angleDeg, nearest=False, fill=0)`
-Rotation about the image centre via **inverse mapping**: for each output pixel, the source coordinate under the inverse rotation is computed (`srcX = cosθ·dx − sinθ·dy + cx`, `srcY = sinθ·dx + cosθ·dy + cy`), then either nearest-neighbour or bilinear sampling is applied, with out-of-bounds pixels filled with `fill`. This is the standard affine-warp-by-inverse-mapping technique (identical in spirit to `cv2.warpAffine`). The function's docstring flags an important historical gotcha: `Rotate()` below (the pipeline-facing wrapper) flips the angle's sign relative to this raw primitive, and a direction mismatch between the two was a real, since-fixed bug (see `ProcessPage` below).
-
----
-
-### Section B — baseline segmentation primitives
-
-#### `LoadImage(imgPath, targetLongSide=TARGET_LONG_SIDE)`
-Loads an image file, applies EXIF orientation correction (`ImageOps.exif_transpose`), converts to RGB, and resizes (via `ResizeBilinear`) so its longest side is `TARGET_LONG_SIDE=2400` px — a fixed working resolution so all the pitch-relative heuristics downstream behave consistently regardless of the camera's native resolution.
-
-#### `_LargestGoodBlock(good)`
-Given a 1D boolean array, finds the single longest contiguous run of `True` and returns a mask that is `True` only over that run — a simple longest-run-of-ones scan, used to pick the dominant "paper" band along one axis while discarding shorter disconnected good-looking bands (shadow islands, etc.).
-
-#### `CorrectIllumination(gray)`
-The same **flat-field correction** as `_ink` in Part 1: divides the grayscale image by a wide Gaussian blur of itself (`σ = width/30`) and rescales to 0–255, removing slow lighting gradients while preserving local contrast (ink vs. paper).
-
-#### `RedInkMask(rgb)`
-A colour-based rule classifying pixels as "red ink" if the red channel sufficiently dominates both green and blue by a multiplicative margin (`r > 1.30g` and `r > 1.30b`, with an absolute gap `> 22`) for bright red, or a looser version (`1.18×`, gap `>14`, `r<190`) for darker red — used to exclude red-pen annotations/corrections from the main ink mask (since they're not the handwriting sample of interest and would otherwise bias e.g. deskew/line-grouping statistics).
-
-#### `BinarizeInk(illum, pageMask)`
-Applies `AdaptiveThresholdInv` (Gaussian-local adaptive threshold, margin `C=12`, block size scaled to image width) to the illumination-corrected image, restricted to the page mask — the main ink/paper binarisation used as the pipeline's "ground truth" ink before any recovery/cleanup stages run.
-
-#### `RemoveSpeckles(ink, minSize=10)`
-Labels connected components and drops any smaller than `minSize` pixels — a standard **area-opening** noise filter (remove small connected components, c.f. morphological area opening, Vincent 1993) to kill binarisation speckle.
-
-#### `EstimateSkew(ink, searchRange=5.0)`
-A coarse-to-fine angle search: downsample the ink mask by 4, and for a grid of candidate angles (first coarse, `0.5°` steps over `±searchRange`; then fine, `0.1°` steps over `±0.5°` around the coarse best), rotate (nearest-neighbour) and score by `var(rowInkProfile)` — maximising the **variance of the horizontal projection profile**, exactly the same projection-profile skew-estimation principle as `SegmentLean`'s deskew step (Postl, 1986), just using variance instead of sum-of-squares (closely related quantities; variance subtracts the mean first, sum-of-squares does not, but both are maximised by the same sharply-peaked-profile condition).
-
-#### `Rotate(arr, angle, isMask=False, fill=0)`
-A thin wrapper: `Rotate(arr, angle) = RotateRaw(arr, −angle, ...)`. The docstring block at the top of the file explains this sign flip was historically a source of a real bug: `EstimateSkew` scores candidates using `RotateRaw(ink, a)` directly, so correcting the page must use that *same* direction; an earlier version of the pipeline corrected with `Rotate(rgb, a) == RotateRaw(rgb, −a)` — the wrong sign — which silently **doubled** every tilted page's effective skew (since the per-line deskew in `RenderLine`, applied later, partially masked the damage rather than exposing it). `ProcessPage` (documented below) now explicitly rotates using the same convention `EstimateSkew` scored with.
-
-#### `_HorizontalRunLengths(ink)` / `_VerticalRunLengths(ink)`
-For every ink pixel, computes the length of the contiguous horizontal (resp. vertical, via transpose) run of ink it belongs to, using a cumulative run-id trick: assign each run a unique increasing integer id via `cumsum` of run-start flags, then `bincount` run ids to get each run's length and broadcast that length back to every pixel of the run. Used to distinguish thin, long structures (rules, underlines) from the blockier shapes of ordinary letters.
-
-#### `UnderlineLike(c, textH, labels=None)`
-A component is "underline-like" if its width is **not** disproportionately larger than `4×textH`, or if its area-to-width ratio exceeds 6.5 (would indicate it's not a thin line)... more precisely, the function returns `False` (not underline-like) when `c['w'] ≤ 4·textH` AND the component is NOT abnormally "thick for its width" (`area/w > 6.5`); when `labels` is given it refines further by checking the **median vertical span per column** is small relative to `textH` (`≤ max(8, 0.4·textH)`), i.e. the component is thin everywhere along its length, not just overall wide.
-
-#### `RemoveRuleLines(ink, textH, illum=None)`
-Detects printed/hand-ruled lines: candidate horizontal pixels are those on a long-enough horizontal run (`≥max(20,0.8·textH)`) that are also thin vertically (`vRun ≤ thkCut`, where `thkCut` is derived from the median thickness of genuinely long (`≥3.5·textH`) horizontal runs); candidate vertical pixels are the transposed equivalent. Both candidate sets are passed to `_ChainLongStructures` (below) to merge nearly-colinear fragments into full rule lines (handling rules broken by crossing pen strokes), and the detected `ruleMask` (slightly dilated, then re-restricted to genuinely thin pixels) is subtracted from `ink`.
-
-#### `_ChainLongStructures(cand, minSpan, axis, textH, thk, lo=None, hi=None, illum=None)`
-Given candidate rule-line pixels, labels them into components, optionally records each component's **darkness** (`255 − median illum`), then **chains** components along `axis` using a union-find: two components are joined if the gap between them is within `2.5·textH`, their centreline deviation is within a slope-tolerant allowance (`slopeAllow = 2·thk + 0.08·gap + 0.04·(widths)`, i.e. a generous allowance that grows with distance and width, approximating how much a *slightly sloped* straight rule line can legitimately drift), and (if darkness is tracked) the two components are similarly dark (`|Δdark| ≤ 55`, since real ruled lines are consistently printed/drawn, unlike handwriting touching them). Chained groups spanning at least `minSpan` (and, if given, starting before `lo`/ending after `hi` — i.e. running most of the way across the page/column) are kept as "this is a rule line" and their original component ids are returned as a boolean keep-mask.
-
-#### `_Otsu1D(values, bins=64)`
-Otsu's method (same derivation as `_otsu`/`OtsuThresholdValue`) applied to an arbitrary 1D array of continuous `values` via a 64-bin histogram — used later to threshold component **darkness** values rather than pixel grey levels (an interesting reuse: Otsu's method is a general bimodal-separation technique, not inherently tied to pixel intensity).
-
-#### `ComponentStats(ink)`
-Thin wrapper combining `LabelComponents` + `ComponentStatsFromLabels` into one call returning `(labels, comps)` as a list of per-component dicts.
-
-#### `EstimateTextHeight(comps)`
-Estimates the typical glyph height `textH`: takes components with area ≥30 and aspect ratio not extremely wide (`w < 12h`, excluding rule-like shapes), takes the **median** height, then refines by taking the median again restricted to heights within `[0.3, 3.0]×` that first median (trimming outliers) — a two-pass robust median, defaulting to `30.0` if no components qualify.
-
-#### `ScoreComponentMess(comp, labels, textH)`
-Produces a 0–1 "diagram-ness" (MESS, i.e. non-text) score for one component, combining two signals: (1) **enclosed-hole area** relative to glyph scale — `FillHoles` on the padded component finds background "holes," the largest hole's area is compared to `textH²`, and a hole bigger than `0.7×` that reference area starts contributing score, saturating at `1.5×`; letters like "o"/"a"/"e" have small holes relative to a whole diagram's enclosed area, so this distinguishes genuine line-art/diagram loops from ordinary letterforms; and (2) a **"wide and sparse" fallback** — a component much wider and taller than a glyph (`w>6·textH`, `h>1.8·textH`) with low fill fraction (`area/(wh) < 0.05`) scores `0.7`, catching open line-art that has no enclosed area at all. The final score is the max of the two signals.
-
-#### `_UnionFind` (class)
-A second, near-identical union-find implementation (used by the baseline `GroupLines`/`_ChainLongStructures` code, separate from `_RunUF` used by `LabelComponents`) — same path-halving `find`, arbitrary-direction `union`.
-
-#### `_CompMask(labels, c)`
-Returns the exact boolean pixel mask of one component: either its pre-computed `pixmask` (for components that were split pixel-wise during grouping, see `GroupLines` stage 4) or, failing that, `labels[bbox] == c['id']`.
-
-#### `_LineCurve(comps)` / `_CurveY(curve, x)`
-`_LineCurve` builds a smoothed **baseline curve** for a set of components: sorts them by x-centre, then for each, takes a **width-5 sliding window** (`i−2..i+2`) weighted average of `cy` by component `area` — a simple local weighted-moving-average smoother robust to any one component's noisy vertical position. `_CurveY` then linearly interpolates (`np.interp`) that sparse curve to any query x. Together these implement a piecewise-linear approximation of each line's local baseline, used throughout the grouping/refinement code to test "does this point sit on this line's curve."
-
-#### `GroupLines(ink, labels, comps, textH, imgH)`
-The baseline line-grouping algorithm, in six numbered sub-stages (inline comments `# 1.`–`# 6.` in the source):
-1. **MESS candidate detection**: components scoring ≥0.5 on `ScoreComponentMess` and large/tall enough are MESS candidates, but a `_NeighborVeto` check demotes a candidate back to TEXT if it has ≥3 plausible nearby glyph-shaped neighbours no taller than `1.9×` their 75th-percentile height (catching large heading letters that would otherwise look "sparse enough" to be mistaken for a diagram). Surviving MESS components are grouped into spatial `messBlocks` by greedy nearest-block gap-merging, and each block's "core" bounding box is refined by keeping only columns genuinely spanning more than `textH` vertically (trimming thin connecting wisps from the headline bbox).
-2. **Core-component chaining**: "core" text components (near-glyph height, not underline-shaped) are **sorted left-to-right** and unioned via a greedy nearest-neighbour **minimum-cost chain**: for each component, the best candidate to its right is the one minimising `cost = max(0,gap) + 3·|Δcy|` within a horizontal search window (`gap ≤ 6·textH`) and vertical tolerance (`|Δcy| ≤ 0.75·textH`) — this is a greedy 1D chaining heuristic (not a true shortest-path/MST, but structurally similar to word/line segmentation "nearest component" chaining used in classical OCR layout analysis).
-3. **Chain merging by shared baseline** (two passes): chains whose `x`-spans overlap are merged if their baseline curves (`_LineCurve`/`_CurveY`) agree within `0.55·textH` (or, for non-overlapping chains, if their curves extrapolate to meet within `0.6·textH` at the midpoint of the gap); a **second, pitch-aware** pass repeats this with a tolerance scaled to the just-estimated line pitch (`0.4–0.45×` pitch) rather than `textH`, catching lines whose spacing differs from the typical glyph size.
-3c. **Weak-chain demotion**: chains with fewer than 3 components and not wide/large enough are only kept if no other chain's centre line is within `0.8×` pitch of them (otherwise they're too likely a fragment of a real line rather than their own line).
-4. **Leftover assignment**: non-core components not yet in any chain are handled by shape — underline-shaped ones attach to whichever chain's curve they sit a short, consistent distance below (interpreted as "this chain's underline"), or fall back to a MESS block; moderate-height components join the `nearestChain` (a penalised distance metric that adds a penalty for falling outside the chain's own x-span, discouraging over-reaching matches); and components taller than `1.8·textH` (likely interline components spanning two text rows) are split **pixel-by-pixel**, assigning each individual ink pixel to its own nearest chain and creating a new partial-component (`pixmask`-carrying) entry for each chain that claims a substantial (`≥8px`) share.
-5. **Finalisation**: chains are converted into `textLines` if they have enough total area (`≥0.35·textH²`) and at least one component tall enough (`≥0.35·textH`); very small, very dense (`fill>0.45`), narrow (`<3.5·textH`) chains of ≤3 components are dropped as noise rather than real lines.
-6. **MESS block consolidation**: overlapping-in-x MESS blocks whose vertical gap doesn't straddle a real text line's centre and isn't wider than either block's own height are merged (treating them as fragments of one larger diagram), and any "text line" whose bounding box sits mostly (`>70%` overlap) inside a MESS block's core is absorbed into that block instead (text-looking squiggles that are actually part of a drawing).
-
-**Literature connection.** This whole function is a bespoke **connected-component chaining and merging** approach to text-line segmentation — conceptually related to the classical "nearest-neighbour component chaining" and "smearing" families of document layout analysis (e.g. RLSA — Run-Length Smoothing Algorithm, Wong, Casey & Wahl 1982 — achieves a similar grouping effect by morphological smearing rather than explicit graph chaining), combined with a bespoke diagram/MESS classifier based on topological hole area (loosely related to Euler-number / genus-based shape descriptors used in document image analysis for distinguishing text from graphics).
-
----
-
-### Section C — override stages (`SegmentPage.py`'s own improvements)
-
-#### `_TrimRaggedGentle(mask, factor=0.30)`
-Trims a page mask's ragged edges along each axis by keeping only the largest contiguous block of rows/columns whose ink-density profile exceeds `0.30×` the profile's own (high-percentile-filtered) median — a gentler version of an earlier, stricter (`0.55`) cutoff, chosen so a page that runs off the photo frame doesn't lose its first/last real line of text to over-aggressive trimming.
-
-#### `_ConvexFill(mask)`
-Fills the **convex hull** of a mask: extracts the left/right boundary points per row, computes the 2D convex hull via the standard **Andrew's monotone chain algorithm** (sorting points, building upper and lower hull chains with a cross-product turn test `cross(o,a,b) = (a−o)×(b−o)` to discard non-left-turns), then fills it in by scanline rasterisation (per-row min/max x along each hull edge). Justified because a photographed page is geometrically a convex quadrilateral, so any concave notch in the detected mask (e.g. a shadowed corner that failed the brightness threshold) is necessarily a detection error, not a real page shape, and can safely be filled back in.
-
-**Literature connection.** Convex hull via Andrew's monotone chain (a variant of the Graham scan family; Andrew, 1979) — standard computational geometry.
-
-#### `_TrimDarkEdgesAdaptive(mask, blur)`
-Trims mask rows/columns whose median brightness falls below a cutoff set **relative to the page's own median brightness and the true off-page background's median** (`cut = min(pageMed−45, max(pageMed−85, 0.5(pageMed+bgMed)))`) rather than an absolute darkness value — so a page edge in soft shadow (which can still be ~70% as bright as the rest of the page) is correctly kept, while genuinely different (table/desk) background is trimmed.
-
-#### `DetectPageMask(rgb)`
-The full page-boundary detector: Otsu-threshold a blurred grayscale+low-saturation image to find "paperish" regions, take the largest connected component (twice — a second pass re-thresholds relative to the first pass's own median brightness, correcting for the first pass's threshold being biased by non-paper pixels), fill holes and close small gaps, then apply `_TrimRaggedGentle` and `_TrimDarkEdgesAdaptive`. A further repair step handles shadowed bands **inside** the page: it forces the mask to be contiguous along both column and row axes (closing off any internal hole/notch), applies `_ConvexFill`, and only re-admits newly-filled pixels that are still at least `0.55×` the page's own median brightness (so true off-page background — a desk strip, a spine gap — is never wrongly pulled in), then runs `FillHoles` once more so ink strokes inside a newly-recovered shadow region are preserved rather than treated as background holes. A final light erosion (scaled to image size) trims the boundary by a few pixels; if the detected mask covers implausibly little of the frame (`<15%`), the function gives up and returns "the whole image is paper."
-
-#### `RemoveEdgeComponentsWide(ink, pageMask, textH)`
-Drops ink components that are implausibly close to the detected page-mask's boundary — either narrow components touching the left/right mask edge, or components touching both a horizontal and a vertical mask edge simultaneously (a corner rule, catching junk binarised in a hull-filled page corner, which can never be real handwriting since text doesn't originate exactly at a page corner).
-
-#### `RemoveOffPageColumns(ink, textH, alsoClip=None)`
-Detects a **facing notebook page** peeking in at the image border: the smoothed column-ink-density profile is thresholded, broken into contiguous "on" blocks, and the single densest block is assumed to be the real page's text columns; any other block that **touches the image border** (not an interior block, which would be legitimate marginalia like paragraph numbering) is treated as bleed from a facing page and its components are dropped (and, if given, `alsoClip` — the recovery mask — is also clipped to the same column range).
-
-#### `_StripThinRuns(ink, labels, stats, sel, textH)`
-For each selected (rule-suspect) component, finds, **per column**, the vertical span of ink (`ymax−ymin+1`); columns where that span is below a threshold (`thinSpan = max(6, 0.35·textH)`) are "thin" (rule-like, not glyph-like); contiguous thin-column runs of at least `2·textH` are stripped from the mask. Operating **per-column rather than globally** is what lets this catch a **sloped or wavy rule** — a whole-component run-length test would see a sloped line as many short horizontal segments and miss it, but the per-column vertical-span test doesn't care about slope at all.
-
-#### `_MaxHole(labels, st, i)`
-Same enclosed-hole measurement as used inside `ScoreComponentMess`: pads and fills a component's mask, labels the resulting holes, and returns the largest hole's pixel area (or 0 if none) — reused here to distinguish rule-glue networks (no real enclosed area) from genuine diagrams.
-
-#### `_CompDarkness(labels, n, illum)`
-Per labelled component, computes "darkness" as `255 − 25th-percentile(illum values)` — the 25th percentile (rather than the mean) is a robust proxy for the component's *darkest, most ink-like* pixels, insensitive to anti-aliased/faded edge pixels pulling the average up.
-
-#### `HysteresisRecoverInkWide(illum, pageMask, strong, textH)`
-Classic **hysteresis thresholding** (as in Canny edge detection): a looser adaptive threshold (`C=3`, more permissive than the main `C=12` binarisation) produces a `weak` ink mask; any weak component touching the `strong` (confirmed) ink mask within a near-range dilation is promoted. The "wide" variant here additionally promotes weak components reachable within a much larger **horizontal-only** dilation (`reach = 2·2·textH+1`, i.e. roughly a word-gap), but only if the weak component is substantial (`area ≥ 40`) — so a lightly-pressed trailing word one word-gap away from its row's strong ink gets recovered for crop rendering, while isolated speckle noise far away does not, and nothing bridges vertically between rows (which would wrongly merge lines).
-
-**Literature connection.** Hysteresis thresholding (strong seeds + weak-but-connected growth) is the same two-threshold linking principle used in Canny's edge detector (Canny, 1986), applied here to ink recovery instead of edges.
-
-#### `CleanRecoveredInk(inkRaw, ink0, illum, textH)`
-Cleans the hysteresis-recovered "weak-only" pixels (`inkRaw & ~ink0`) of three artifact types that the permissive weak threshold otherwise lets through: (1) long thin near-horizontal runs within wide weak components (rule-line remnants glued to real ink, stripped via the same per-column `_StripThinRuns` technique used elsewhere), (2) components far **fainter** than the page's own established "real ink" darkness (`strongDark`, from `ink0`) — a component below `0.40×` that reference darkness is dropped outright as a bleed-through ghost, one between `0.40×` and `0.55×` is dropped only if it is also *shaped* like a rule or margin stub (flat-wide, tall-thin, or simply tiny), while anything ≥`0.55×` as dark as real ink is kept regardless of shape (it's probably genuinely faded ink, not a ghost).
-
-#### `FaintFilterRuleAware(ink, illum, textH)`
-Replaces a hypothetical naive "drop all faint components" filter with a **rule-aware** version: first detects wide, low-fill, hole-free components (candidate residual rule+word glue) and strips their thin per-column runs via `_StripThinRuns` (separating the actual rule pixels from any real letters glued to it), *then* measures the darkness distribution of the resulting (now rule-stripped) components, and applies **Otsu's method to the darkness values themselves** (`_Otsu1D`) to split "genuinely faint" from "ink-dark" components — but only if the darkness distribution is actually bimodal enough (`90th percentile − 10th percentile ≥ 60`, and the computed threshold must fall strictly between those percentiles) to trust a single global cut; otherwise it conservatively keeps everything. This two-step detach-then-threshold design is what lets faint printed rules be discarded while real (possibly lightly pressed) words glued to them survive — a single whole-component darkness test would have thrown both away together.
-
-#### `StripSparseRuleNetworks(ink, textH)`
-A simpler, earlier-stage relative of `FaintFilterRuleAware`: finds wide, tall-ish, low-fill, hole-free components (candidate glue-networks — rules that have merged multiple words/rows together into one blob) and strips their thin per-column runs via `_StripThinRuns`, without any darkness reasoning — this runs before illumination-based darkness is trustworthy (right after the main binarisation), so it relies purely on shape (thin-ness, lack of enclosed holes) to identify rule material.
-
-#### `_LineSpan(l)` / `_Recenter(l)` / `_LinePitch(textLines, textH)` / `_LineYRange(l)` / `_SharedColumnsFrac(a, b)`
-Small geometry helpers used by the refinement pass below: `_LineSpan`/`_LineYRange` give a line's x/y extents from its components; `_Recenter` recomputes a line's area-weighted mean `cy` after its component list changes; `_LinePitch` estimates line spacing the same way `_pitch`'s direct-peak-difference method does in Part 1 (median gap between sorted line centres, restricted to gaps `>0.5·textH` to avoid counting near-duplicate centres); `_SharedColumnsFrac` computes what fraction of the smaller line's occupied x-columns are also occupied by the other line (`|A∩B| / min(|A|,|B|)`) — a proxy for whether two "lines" are stacked (would share almost all columns) versus interleaved (side-by-side words on one true row, sharing almost none).
-
-#### `MergeSameRow(textLines, textH)`
-Detects and merges two detected "lines" that are really one physical row that chaining (in `GroupLines`) split apart — e.g. a dense page, an unusually large word gap, or a short word written slightly higher after a question mark. Four independent signals, any one of which triggers a merge (tiered, from strictest to most permissive):
-1. **Near-identical centres** (`|Δyc| < 0.5·textH`).
-2. **Containment**: the shorter line's y-range sits almost entirely (`≥70%`) inside the taller line's y-range, and both lines are individually small (total area `<4·textH²`) — i.e. a small fragment plausibly nested inside a bigger line's vertical extent.
-3. **Curve-meeting at the seam**: if the two lines barely overlap in x (`≤55%` of the narrower's width), their baseline curves (`_LineCurve`/`_CurveY`) are compared at the midpoint of their gap; if they'd meet within a pitch-scaled tolerance, they're treated as one row continuing past a gap.
-4. **Low column overlap** (`_SharedColumnsFrac < 0.3`) combined with close centres (`<0.6·pitch`) — interleaved words at the same height, which stacked separate rows would never exhibit.
-
-This runs in an outer fixed-point loop (`while changed`) since one merge can change the pitch estimate and enable further merges.
-
-#### `_UnderlineShaped(c, textH, labels)`
-A geometric test for "is this component shaped like an underline (flat and wide)": too narrow (`w < 1.5·textH`) disqualifies it outright; very flat (`h ≤ max(4, 0.45·textH)`) qualifies immediately; otherwise (for moderate heights, `≤1.2·textH`) it checks the **median per-column stroke span**, qualifying only if that's thin (`≤ max(3, 0.2·textH)`) — this is what lets a double/triple underline (tall overall bounding box, but each individual stroke thin) still register as underline-shaped, which a simple height check would miss.
-
-#### `ReassignUnderlines(textLines, textH, labels=None)`
-Fixes a specific chaining failure: an underline sitting **between** the text it underlines and the row below can get chained into the row *below* instead (because it's geometrically between them). For each line, the "solid" (non-underline-shaped) components define that line's true baseline curve; any remaining (underline-shaped) component sitting noticeably **above** that curve (`curveY(x) − cy ≥ 0.5·textH`, i.e. well above where this line's own text sits — exactly where an underline *of the line above* would be) is reassigned to whichever *other* line's curve it sits the right small distance (`0.15–2.2·textH`) below.
-
-#### `AttachFaintToLines(preInk, postInk, textH, textLines)`
-Recovers components that `FaintFilterRuleAware` legitimately removed as "too faint" but that actually belong to a real text line (e.g. a lightly-pressed trailing word at the end of a row). Computes the diff mask `preInk & ~postInk` (exactly what was removed), and — in **two passes** (so a word attached in pass 1 extends a line's known span/curve for pass 2 to catch an even-further word) — re-attaches diff components that sit close (`< 0.75·textH`) to some line's baseline curve, within or a bit beyond (`8·textH`) that line's known x-span.
-
-#### `RefineItems(textLines, messBlocks, textH, labels=None)`
-A thin orchestration wrapper: `MergeSameRow` → `ReassignUnderlines` → `MergeSameRow` again (since reassigning underlines can change what should be merged), then refreshes each MESS block's vertical centre.
-
-#### `BuildOwnerMap(shape, items, labels)`
-Builds a per-pixel "owner" map (`int16`, `-1`=unowned) by painting each item's (line's or MESS block's) component pixels with that item's index, in item order — the authoritative record of "this pixel belongs to this specific crop" used to prevent later rendering/recovery stages from leaking pixels between adjacent crops.
-
-#### `ExtendOwnerToWeak(owner, inkRawLabels, nRaw)`
-Extends ownership to an entire hysteresis-recovered weak component if **all** of the strong (owned) ink underneath it belongs to a single item — reasoning that a weak component is the faint halo/fade of whichever strong ink it's physically touching, so if that's unambiguous, the whole halo should belong to the same owner (implemented via an encoding trick: pack `(componentLabel, owner)` pairs into single integers via `label*(maxOwner+2)+owner`, then use `np.unique`/`bincount` to detect, per weak component, whether exactly one distinct owner touches it). Components touching **multiple** owners, or none, are deliberately left unresolved (`-2`/`-1`) rather than guessed at.
-
-#### `AttachWeakTrailing(items, owner, sole, inkRawLabels, nRaw, textH, weakLabels=None, nWeak=0, illumRef=None, labels=None)`
-Handles pale trailing words that are too far from any strong ink anchor for even the wide hysteresis reach to connect them. For each raw recovered component (and, separately, for an even-weaker "anchor-free" pool `weakLabels`), a nested `place()` helper rejects implausible shapes (too small, too wide, not glyph-height, or flat-and-wide like a rule dash), then finds the best-matching text line by proximity to its baseline curve (within a generous rightward reach of `12·textH`, since a trailing word can be well past a line's last confirmed component) and — when illumination data is available — rejects the match if the candidate is far fainter than that line's own established ink darkness (`< 0.5× rowDark`, filtering out bleed-through ghosts that happen to sit on the same curve). Matches are appended directly as new pixmask-carrying components of the chosen line, and the owner map is updated in place.
-
-#### `_CompDark(c, labels, illum)`
-One-line helper: 25th-percentile-based component darkness (same formula as `_CompDarkness`, but for a single component rather than a batch).
-
-#### `FilterFaintFlatComps(comps, labels, illum, textH)`
-A final per-line cleanup: computes an **area-weighted median darkness** across a line's "glyph" components (excluding underline-/stub-shaped ones) as the line's own reference darkness (`ref`), then drops any flat (underline-shaped) or thin-tall "stub" component that is markedly fainter (`<0.72×ref`) than that reference — catching residual printed-rule fragments that ride along a row as flat faint comps, while leaving genuine ink-dark pen underlines (which are as dark as the line's own writing) untouched.
-
-#### `RenderLine(gray, labels, comps, pad=6, inkRaw=None, inkRawLabels=None, gapPx=6, deskew=False, forbid=None)`
-Renders one item's final crop. Builds a tight mask from exactly its components' pixels, optionally dilates it slightly and pulls in nearby raw/recovered ink within a column-reach of `gapPx·3` (so faint recoverable pixels just outside the strict component boundary still make it into the crop) — but **never** across a `forbid` mask (pixels already confirmed to belong to a *different* item), which is the key fix preventing a neighbouring line's descender/ascender from leaking into this crop even when it geometrically dips into this row's band. The crop is cropped tightly back down to its actual non-white extent after recovery. If `deskew=True` and the crop is wide and has enough components, a **per-line residual deskew** is applied: a weighted linear fit (`np.polyfit`, weighted by `√area`) of component centres gives a local slope, converted to an angle, and if it's a plausible small residual tilt (`0.4°–12°`) the crop is padded and rotated (`RotateRaw`) to level it — catching any small per-line tilt the single global deskew didn't fully correct.
-
-#### `_InkGray(rgb)`
-A colour-aware grayscale variant: `0.5·luma + 0.5·min(R,G,B)` — blue (or other saturated) ink can be nearly invisible in pure luma in a dim photo corner (since luma weights green heavily) yet is obviously dark in at least one colour channel; blending in the channel-minimum recovers that contrast for *recovery* purposes specifically (the main *detection* binarisation stays luma-pure, to avoid false ink from colour noise).
-
-#### `ProcessPage(imgPath)` — the entry point
-
-Ties every stage above together in this order:
-1. `LoadImage` → `DetectPageMask` → `RgbToGray` → `CorrectIllumination` → `BinarizeInk` (minus `RedInkMask`) → `RemoveSpeckles`: the initial strong ink mask `ink0`.
-2. **Deskew, with the historical sign-bug explicitly avoided**: `EstimateSkew(ink0, searchRange=8.0)` finds the angle, then the page is rotated with `Rotate(rgb, -a, ...)` in a loop that re-estimates and re-applies a residual correction (`searchRange=3.0`) a second time to mop up any remainder — explicitly matching the direction `EstimateSkew` itself scored with, which the file's docstring flags as the fix for the old (silently doubling) sign-mismatch bug. `ink0` is fully recomputed (illumination, binarisation, speckle removal) after each rotation since geometry changed.
-3. Estimate a rough text height (`EstimateTextHeight`), then build a **colour-aware recovery mask**: `_InkGray`/`CorrectIllumination` on the colour-blended grayscale, and `HysteresisRecoverInkWide` run **twice** — once from pure-luma illumination, once from colour-aware illumination — unioned together, so faint luma ink and faint-but-colourful (blue pen) ink are both recovered; long thin runs are stripped back out of the recovered mask immediately (catching rule lines the weak threshold reintroduced).
-4. `FaintFilterRuleAware` then `RemoveEdgeComponentsWide` clean up `ink0`; `RemoveOffPageColumns` removes any facing-page bleed (also clipping the recovery mask to the same bounds); `RemoveRuleLines` is run **twice** (a second pass catches rule fragments only exposed after the first pass's removals) followed by `RemoveSpeckles` and `StripSparseRuleNetworks` (another speckle pass after).
-5. The recovery mask has all now-detected rule pixels dilated out (`inkRaw &= ~Dilate(rmAll,3,3)`), then is cleaned of residual rule/ghost material via `CleanRecoveredInk`.
-6. `ComponentStats` + `EstimateTextHeight` on the final cleaned `ink` feed `GroupLines` (the baseline chaining algorithm) to get `textLines`/`messBlocks`, which are then run through `RefineItems` (the `MergeSameRow`/`ReassignUnderlines` fixups) and `AttachFaintToLines` (recovering legitimately-removed faint trailing words).
-7. `TEXT` and `MESS` items are merged into one ordered `items` list (sorted top-to-bottom by vertical centre), with one explicit reordering rule: a `MESS` block whose top edge is just above (within `40%` of its own height) a `TEXT` item's centre is swapped to come *after* that text item (handling the case of a drawing whose top slightly overlaps the row above it).
-8. Each `TEXT` item's components get a final `FilterFaintFlatComps` pass; `BuildOwnerMap` establishes authoritative per-pixel ownership; `ExtendOwnerToWeak` extends it onto unambiguous recovered-ink halos; a second, even-weaker "anchor-free" recovery pool (`weakAll`, rule-stripped via `CleanRecoveredInk` again) is built specifically to catch pale words with literally no strong-ink anchor; `AttachWeakTrailing` resolves both recovery pools onto the nearest plausible line.
-9. Final rendering uses `renderGray = min(illum, illumC)` (the darker, hence more conservative/contrast-preserving, of the pure-luma and colour-aware illumination corrections) so backgrounds render uniformly white while dim-corner coloured ink keeps visible contrast; `RenderLine` is called per item with the `forbid` mask set to "every pixel owned by a different item" so crops never bleed into each other; a debug `preview` image is drawn with coloured bounding boxes (orange = MESS, green = TEXT) and order/tag labels.
-10. Returns `(results, preview, meta)` where each `results[i]` carries `order`, `tag` (`"TEXT"`/`"MESS"`), `bbox`, the raw crop array, and its component count, and `meta` carries the applied skew angle, estimated text height, and TEXT/MESS counts.
-
----
-
-## Known limitations / honest caveats
-
-- **The documented DP-seam-through-thin-strokes bug and its fix (`SegmentLean.py`).** The design history of `SegmentLean.py` includes a real bug: on words with narrow internal strokes very close together — the worked example in the code's own comments is **"express"** (letters like "x" and "p" whose strokes come close to touching, and the narrow neck of a descender like "y") — a naive ink-cost map for the line-separating DP seam (built straight from the raw ink mask) could contain a thin channel of zero-cost background running right past or through the letter's interior. Because `_seam`'s DP objective simply minimises total ink crossed, it would happily route the boundary seam through that channel, slicing through the middle of a word instead of around it. The fix, implemented in `SegmentLines` stage 4 (source lines 289–298), is to build the seam's cost map from a **morphologically closed** version of the mask (`dilate` by `tailR=max(2,0.07·P)` then `erode` by the same radius) rather than the raw mask: closing fills any gap *smaller than* `2·tailR` (exactly the kind of narrow internal neck that caused the bug) while leaving the stroke's true outer silhouette essentially unchanged (unlike a plain dilation, which would also bloat the outer boundary and hide real separating whitespace). This is a textbook application of morphological closing to "heal" small defects without altering overall shape (Serra, 1982) — but it is worth being explicit in the report that this was arrived at empirically (ablating against real failure cases), not derived from a formal model of handwriting geometry.
-- **`SegmentLean.py`'s stage-5 piece-ownership logic (cases A–H) is a long, hand-tuned heuristic cascade**, not a single clean algorithm — it exists because the simple "DP boundary splits pixels into lines" model breaks down for several predictable real handwriting shapes (i-dots, cut-off tails, stray marks, components the closing operation itself accidentally welds together). Each case is independently justified and testable, but the overall design is closer to an expert system / decision list than to a textbook segmentation algorithm, and a report writer should present it as such rather than implying it follows from first principles.
-- **`SegmentPage.py` is legacy/superseded** for the server and for current training (`TrainText.py`/`TrainAuthor.py`), both of which now use `SegmentLean.SegmentLines`. Its **one remaining live caller** is `build_personal_line_items` in `Software/CNN/AuthorReproductionStuff/BuildStyleProfile.py`, which still imports `SegmentPage` as `F` and calls `F.ProcessPage(...)` to segment personal authors' photographed pages before forced-alignment for style-profile extraction. The parallel, more recently touched copy of that build script (`Software/CNN/ReproductionImprovement/BuildStyleProfile.py`) has already been switched over to `SegmentLean.SegmentLines` for the same purpose, which should be read as a signal that `SegmentPage.py`'s remaining usage is itself likely to be migrated away eventually — it is retained today only because that particular script path hasn't been updated yet.
-- **`SegmentPage.py`'s own module docstring claims every remaining stage was validated by ablation** against real camera photos ("functions that turned out to have no effect... have been removed"); this document takes that claim at face value since no ablation logs were available to re-verify it directly, but it means essentially the whole file should be treated as "live," not merely "legacy code nobody reads."
-- Several thresholds throughout both files (e.g. `0.85×otsuT` for "faint," `2.2×` for pitch-from-letter-height, the `0.15P`/`0.35P` ownership-share cutoffs, `MergeSameRow`'s four signal tiers) are empirically tuned constants rather than values derived from a model — accurate to report as engineering calibration against real scanned/photographed pages, not as theoretically optimal constants.
+On a real IAM page this yields 8 crops against 8 transcript lines, the first reading *"The film version of Miss Shelagh Delaney"*.

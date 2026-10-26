@@ -1,0 +1,1559 @@
+
+\chapter{synthesise.py}
+This file does the reverse of style.py. Given a style profile and some text, it produces a pen path: an ordered list of strokes in millimetres that a plotter can draw, written in the hand the profile describes.
+
+
+\paragraph{The central tension of the whole project}
+Two goals pull against each other here, and most of the design is a response to that. The output should \textbf{look like the writer}, which argues for using their own stored letterforms exactly as extracted. And the output should \textbf{be readable}, which argues for clean, well-formed letters. These conflict because the stored letterforms are not clean: they were cut from joined-up writing at boundaries that often do not exist, so a proportion of them are fragments or carry part of a neighbour. Drawing those faithfully reproduces the writer's hand and some of the extraction's mistakes along with it.
+
+The file resolves this with a single number, called the \textbf{legibility lambda} and written as lam, running from 0 to 1. At 0 the writer's own shapes are always used. At 1 they are abandoned entirely in favour of a fallback letterform. In between, each glyph is swapped with a probability that depends both on lam and on how far that particular shape sits from what the letter should look like. The value is derived automatically per writer, so a hand whose library extracted cleanly keeps its own shapes and one whose library is mostly fragments does not.
+
+
+\paragraph{The three sources a letter can come from}
+
+\begin{itemize}\setlength\itemsep{0pt}
+  \item \textbf{own:} a variant cut from this writer's own pages. The most faithful and the least reliable.
+  \item \textbf{core, the anchor:} a single clean letterform. Preferably the writer's own most typical variant of that letter, falling back to a built-in alphabet when even that is too rough.
+  \item \textbf{fallback:} the built-in alphabet directly, used when the writer has no example of a character at all.
+\end{itemize}
+Every rendered glyph records which source it came from, and the counts are returned in the trajectory's metadata. That is what makes the trade-off measurable rather than a matter of impression: a page drawn mostly from the anchor is readable but is not really the writer's hand, and the counts say which happened.
+
+
+\paragraph{Units}
+Glyphs arrive in x-heights, as stored. Layout converts them to millimetres using the requested x-height size, and the rasteriser converts millimetres to pixels. So three coordinate systems appear in this file, in that order, and the conversions happen at exactly two points.
+
+
+\section{SCRIPT\_DIR}
+\begin{lstlisting}[style=sig]
+SCRIPT_DIR = Path(__file__).resolve().parent
+\end{lstlisting}
+
+\noindent\textbf{Output.} the directory this file sits in.
+
+
+\paragraph{What it is for}
+Records the module's own location, from which a path to data beside the code could be built. The project's paths are otherwise defined centrally in paths.py, which is the better practice, since one definition serves the whole project.
+
+
+\begin{quote}\small\itshape This constant is assigned and never read anywhere in the module. It is a remnant of an earlier layout, before the paths module existed. It is harmless, but a reader should not take its presence as evidence that the file locates its data this way.\end{quote}
+
+\section{CNN\_DATA\_DIR}
+\begin{lstlisting}[style=sig]
+CNN_DATA_DIR = Path(__file__).resolve().parent.parent / 'CNN'
+\end{lstlisting}
+
+\noindent\textbf{Output.} a path to a sibling directory of network data.
+
+
+\paragraph{What it is for}
+Points at a folder beside the pipeline holding network-related data, built by stepping up from this file's own location.
+
+
+\begin{quote}\small\itshape Like the constant above, this is assigned and never read. Both are left in place rather than removed because removing a name is a change that has to be checked against every caller, and neither does any harm; but neither describes how the module actually finds anything.\end{quote}
+
+\section{\_FB}
+\begin{lstlisting}[style=sig]
+_FB = {'a': [[(0.75,0.75),(0.45,0.95),(0.15,0.75),(0.1,0.4),(0.35,0.05),(0.65,0.1),
+        (0.78,0.35),(0.78,0.0)],[(0.78,0.3),(0.95,0.0)]],'b': [[(0.1,1.8),(0.1,
+        0.0)],[(0.1,0.55),(0.35,0.85),(0.7,0.7),(0.75,0.3),(0.5,0.0),(0.15,0.1)]],
+        'c': [[(0.8,0.75),(0.5,0.95),...}
+\end{lstlisting}
+
+\noindent\textbf{Output.} a dictionary mapping a character to a built-in printed letterform, as a list of strokes in x-heights.
+
+
+\paragraph{What it is and why it exists}
+A hand-written alphabet of 47 characters: the 26 lowercase letters, the ten digits, and eleven punctuation marks, each given as one or more strokes of points in the same x-height convention the extracted glyphs use. These are the letterforms of last resort.
+
+Three situations require them. A writer may have no example of a character at all, which is common: a page of ordinary English contains no q, z or semicolon. A writer's examples of some character may all have been rejected by the filters. And the legibility mechanism may decide a stored shape is too far from a letter to be drawn, in which case something must take its place.
+
+
+\paragraph{Why they are written out by hand}
+They could not be obtained any other way. A font is not usable: a font describes letters as filled outlines, and what is needed here is the path a pen travels along the centre of a stroke, which is a different object. Deriving centre lines from a font by thinning would reintroduce every artefact that the extraction pipeline exists to deal with, for letters that are supposed to be the clean reference. So the coordinates were laid out directly, in the same coordinate system as the stored glyphs, so that a fallback letter can be substituted for an extracted one with no conversion at all.
+
+
+\paragraph{The coordinate convention}
+A point of (0.4, 0.7) means four tenths of an x-height to the right of the glyph's origin and seven tenths of an x-height above the baseline. A y above 1.0 is in the ascender zone and a negative y is below the baseline, in the descender zone. Being in the same convention is what allows \_BaselineGlyph to stretch these shapes to a particular writer's reach by rescaling only the parts outside the band.
+
+
+\begin{quote}\small\itshape There are no uppercase letters in this dictionary. A capital is handled instead by taking the lowercase form and scaling it up to the writer's ascender height, which is what \_GlyphSource does under the label \texttt{case}. That is correct for letters whose capital is a larger version of the lowercase, such as C, O, S and W, and is a visible approximation for the ones where it is not, such as A, E and R.\end{quote}
+
+\section{\_CURSIVE}
+\begin{lstlisting}[style=sig]
+_CURSIVE = {'a': [[(0.0,0.3),(0.2,0.62),(0.46,0.72),(0.62,0.52),(0.6,0.18),(0.42,
+        0.02),(0.2,0.1),(0.16,0.34),(0.3,0.52),(0.52,0.46),(0.62,0.2),(0.64,0.02),
+        (0.86,0.3)]],'b': [[(0.0,0.3),(0.14,1.1),(0.24,1.66),(0.3,1.2),(0.26,0.44),
+        (0.34,0.1),(0.56,0.04),(0.7,...}
+\end{lstlisting}
+
+\noindent\textbf{Output.} a dictionary mapping each lowercase letter to a joined-up letterform.
+
+
+\paragraph{Why a second alphabet is needed}
+The printed alphabet above is wrong for a cursive hand, and not merely in appearance. A printed letterform begins and ends wherever is convenient, often at the top, and has no provision for a stroke arriving from the previous letter or leaving toward the next. Substituting one into joined writing produces a letter that cannot be connected: the join from the preceding letter has nowhere to attach, so either it is omitted, leaving a visible break in the middle of a word, or it is drawn to a point on the letter that no writer would join to.
+
+These forms are drawn to enter near the baseline on the left and leave near the baseline on the right, which is what a cursive letter does, so a ligature can be drawn to and from them naturally.
+
+
+\paragraph{Which alphabet is chosen}
+The choice is made per writer, from their measured connectedness: a hand at or above 0.5 gets the cursive forms and one below gets the printed ones. Using a single number measured from their own writing, rather than a setting, means the decision follows the evidence; see CORE\_CURSIVE\_CONN.
+
+
+\begin{quote}\small\itshape This alphabet holds only the 26 lowercase letters, where the printed one also holds digits and punctuation. That is sufficient because joining only ever applies between two adjacent alphabetic characters, so a digit or a comma never needs a joinable form. Where a cursive writer needs one of those, the lookup falls through to the printed alphabet.\end{quote}
+
+\section{\_FB\_ADV}
+\begin{lstlisting}[style=sig]
+_FB_ADV = 1.0
+\end{lstlisting}
+
+\noindent\textbf{Output.} 1.0, the advance after a fallback letter, in x-heights.
+
+
+\paragraph{What an advance is}
+The \textbf{advance} is how far the pen origin moves to the right after drawing a character, before the next one is placed. It is not the same as the character's width: it includes the space that belongs between this letter and the next, so advancing by the width alone would butt every letter against its neighbour.
+
+For extracted glyphs the advance is measured from the cell the character was cut from, which is what preserves the writer's own spacing. A built-in letterform has no such measurement, so this constant supplies one: one x-height, which is approximately the advance of a lowercase letter in ordinary handwriting.
+
+
+\begin{quote}\small\itshape It is used only when the writer's profile has no recorded advance for the character either. Where the profile does have one, even though the shape is a fallback, the writer's own figure is preferred, so the spacing stays theirs even when the letterform is not.\end{quote}
+
+\section{\_SIMILAR}
+\begin{lstlisting}[style=sig]
+_SIMILAR = {'I': 'l','O': '0','l': 'I','0': 'O','o': '0',';': ':','"': "'",'!': 'l'}
+\end{lstlisting}
+
+\noindent\textbf{Output.} a mapping from a character to another whose letterform can stand in for it.
+
+
+\paragraph{What it is for}
+Some characters are near-identical in handwriting, so one writer's example of the one can serve for the other. A capital I and a lowercase l are the same vertical stroke in most hands. A capital O and a zero differ by convention rather than by shape. A semicolon is a colon with a tail, an opening quote is a pair of apostrophes, and an exclamation mark is a vertical stroke with a dot.
+
+
+\paragraph{Where it sits in the order of preference}
+It is consulted after the writer's own examples of the character itself and after the opposite case of it, and before resorting to the anchor or the built-in alphabet. The ordering reflects how much of the writer's own hand each option preserves: their own l really is their own stroke, so borrowing it for an I is closer to their writing than substituting a designed letterform would be.
+
+
+\begin{quote}\small\itshape The mapping is deliberately not symmetric in every case. An exclamation mark may borrow an l, but an l may not borrow an exclamation mark, because the dot would come with it. Substitution is only valid in the direction where nothing spurious is inherited.\end{quote}
+
+\section{\_BaselineGlyph}
+\begin{lstlisting}[style=sig]
+def _BaselineGlyph(ch, profile, printOnly=False)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{ch}] \normalfont the character wanted
+  \item[{profile}] \normalfont the writer's style profile
+  \item[{printOnly}] \normalfont force the printed alphabet even for a cursive hand
+\end{description}
+
+\noindent\textbf{Output.} a pair of the strokes and the advance, scaled to this writer's reach; or nothing if the character is in neither alphabet.
+
+
+\paragraph{What it is for}
+Fetches a built-in letterform and adapts it to the writer. Without the adaptation a substituted letter would be visibly foreign: a generic l reaching 1.75 x-heights dropped into a hand whose own ascenders reach 2.4 looks short, and in a hand that reaches only 1.4 it towers over its neighbours. The letterform itself is generic; its proportions should not be.
+
+
+\paragraph{Why only the zones outside the band are rescaled}
+
+\begin{equation}
+y' \;=\; \begin{cases} 1 + (y-1)\,\max\!\big(0.35,\, \tfrac{\mathrm{asc}-1}{0.75}\big) & y > 1 \\[4pt] y \cdot \max\!\big(0.35,\, \tfrac{|\mathrm{desc}|}{0.55}\big) & y < 0 \\[4pt] y & 0 \le y \le 1 \end{cases}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$y$}] \normalfont the built-in letterform's height at this point, in x-heights
+  \item[{$y'$}] \normalfont the adapted height
+  \item[{$\mathrm{asc}$}] \normalfont this writer's measured ascender reach, in x-heights above the baseline
+  \item[{$\mathrm{desc}$}] \normalfont their measured descender reach, negative
+  \item[{$0.75$}] \normalfont the ascender reach above the band that the built-in forms were drawn with, so dividing by it gives a ratio of 1 for a writer matching them
+  \item[{$0.55$}] \normalfont the same for the descender zone
+  \item[{$\max(0.35,\cdot)$}] \normalfont a floor, so a writer with very little measured reach does not collapse the zone to nothing
+\end{description}
+The x-height band itself, from 0 to 1, is left untouched, and that is the point of the piecewise form. The band is the reference against which everything is measured, so it is 1 by definition and rescaling it would be meaningless. What varies between writers is how far they reach \emph{beyond} the band, and those are exactly the two zones the formula adjusts. A letter like an o, entirely inside the band, is therefore unchanged, while an l is stretched or compressed only above y = 1, leaving its body the same size as its neighbours'.
+
+
+\paragraph{Why there is a floor of 0.35}
+A writer whose measured ascender is close to 1.0, which happens when the measurement failed or when most of their ascender letters were rejected, would otherwise give a ratio near zero and flatten every ascender to the height of the band. An l indistinguishable from an e is worse than a slightly wrong l, so the floor keeps at least a third of the designed reach whatever the measurement says.
+
+
+\paragraph{How the advance is derived}
+The advance is the shape's own horizontal extent plus 0.12 x-heights of spacing, computed from the points rather than stored. Deriving it means the two alphabets need no advance table to be maintained alongside them, and the margin is added so that consecutive fallback letters do not touch.
+
+
+\section{UNIFORM\_INK}
+\begin{lstlisting}[style=sig]
+UNIFORM_INK = True
+\end{lstlisting}
+
+\noindent\textbf{Output.} true, meaning every writer is drawn at the same pen width.
+
+
+\paragraph{Why the ink is uniform, and why that is not a limitation}
+The profile records the writer's own stroke width, so the renderer could vary the pen width per writer. By default it does not, and the reason is that the machine cannot. The plotter has one pen fitted in one holder; every stroke it draws is the same width. Rendering a writer with a thick pen when the machine will draw them with the standard one would produce an image unlike the thing being built.
+
+That matters because the rendered image is not only for display: it is what the two judging networks score during the best-of-N search. A search that optimised against images the machine cannot produce would be optimising the wrong quantity. So the renderer is made to match the hardware, and the search then measures what will actually be drawn.
+
+
+\begin{quote}\small\itshape The non-uniform path is retained and is reachable by passing the flag, because it is the right choice when rendering a comparison against a real photographed page, where the real page does have the writer's own pen width. The default matches the machine; the option matches the camera.\end{quote}
+
+\section{UNIFORM\_PEN\_WIDTH\_XH}
+\begin{lstlisting}[style=sig]
+UNIFORM_PEN_WIDTH_XH = 0.085
+\end{lstlisting}
+
+\noindent\textbf{Output.} 0.085, the uniform pen width as a fraction of the x-height.
+
+
+\paragraph{Why the width is relative to the x-height}
+A width in pixels or millimetres would be right at one writing size only. Expressed as a fraction of the x-height it scales with the writing, so text drawn large and small both look like the same pen, which is what a real pen does.
+
+
+\paragraph{Why it is thin}
+The code comment records that this value was reduced from 0.11, and the reason is specific: a heavy stroke fills small loops. The enclosed white space inside an a, e or o is only a fraction of an x-height across, and a pen drawn at 0.11 closes it, turning an e into a c with a filled top and an a into a blob. Those are precisely the confusions that cost character accuracy, so the thinner pen is chosen to keep the counters open.
+
+The trade-off is that a thinner stroke carries less ink, so a rendered line is lighter than a photographed one. That is addressed separately, by the soft edge below and by the ink density matching, rather than by thickening the pen.
+
+
+\section{UNIFORM\_SOFT\_FRAC}
+\begin{lstlisting}[style=sig]
+UNIFORM_SOFT_FRAC = 0.3
+\end{lstlisting}
+
+\noindent\textbf{Output.} 0.30, the blur radius as a fraction of the pen width.
+
+
+\paragraph{Why a drawn stroke is blurred}
+A rasterised stroke has a hard edge: a pixel is ink or paper with nothing in between. A photographed pen stroke does not. Ink spreads slightly into the paper, the camera's optics are not perfect, and the sensor averages over each pixel's area, so a real stroke edge is a gradient a pixel or two wide.
+
+This is the domain-shift problem described under RenderRefStats. The networks judging the output were trained on photographs, so they have learned what a real stroke edge looks like. A hard-edged synthetic stroke is unlike anything in their training data, and their response to it is unreliable, which would corrupt the very scores the search is optimising. Blurring makes the rendered stroke statistically closer to a photographed one.
+
+
+\paragraph{Why the radius is a fraction of the pen width}
+Because the physical cause scales that way. The spread of ink and the softness of a stroke edge are roughly proportional to how much ink was laid down, so a thick stroke has a wider soft edge than a thin one. A fixed blur radius would over-soften a thin stroke, which at this pen width would close the small loops the thin pen was chosen to keep open, and under-soften a thick one.
+
+
+\section{JOIN\_PROB\_CAP}
+\begin{lstlisting}[style=sig]
+JOIN_PROB_CAP = 1.0
+\end{lstlisting}
+
+\noindent\textbf{Output.} 1.0, the greatest probability with which two letters may be joined.
+
+
+\paragraph{What it would do}
+Joining is decided per pair of letters by a random draw against the writer's connectedness, so a hand measured at 0.8 joins about four pairs in five. This constant caps that probability, so a value below 1 would force even a fully joined hand to leave some pairs unjoined.
+
+
+\paragraph{Why it is set to 1, which disables it}
+At 1.0 the cap never binds and the writer's measured connectedness is used as it stands. It is kept as a named constant rather than removed because it is the natural place to intervene if fully joined output proves unreadable, and because the alternative of editing the join condition itself is a change in behaviour hidden inside a long function. A constant at its neutral value documents an available adjustment.
+
+
+\begin{quote}\small\itshape Deciding each pair by a random draw, rather than by comparing connectedness against a threshold, is the substantive choice here. A threshold would make a hand either fully joined or fully separated, with nothing in between, whereas real writing of intermediate connectedness joins some pairs and not others. The draw reproduces that.\end{quote}
+
+\section{CORE\_SLANT\_CAP\_DEG}
+\begin{lstlisting}[style=sig]
+CORE_SLANT_CAP_DEG = 22.0
+\end{lstlisting}
+
+\noindent\textbf{Output.} 22.0, the greatest lean in degrees applied to a printed anchor letterform.
+
+
+\paragraph{What it is for}
+Every glyph is sheared to the writer's measured slant, so the page leans as they do. An anchor letterform is sheared too, because a perfectly upright substitute in a slanted hand is conspicuous. But it is sheared less, and this constant is the limit.
+
+
+\paragraph{Why the anchor is treated differently}
+The anchor exists to be readable; that is the whole reason it was substituted for the writer's own shape. Shearing degrades legibility, because a letterform drawn upright and then slanted is not the same as a letterform designed at that slant: the curves distort, loops narrow, and at a steep angle an o becomes a thin diagonal ellipse. Applying a 42-degree slant to the anchor would undo the substitution's purpose.
+
+So the anchor keeps the writer's lean up to a point and then stops. Twenty-two degrees is a visible lean, enough that the substituted letter does not stand upright among slanted neighbours, while being well short of the angle at which the shear starts closing loops. A cursive anchor is allowed 30 degrees, since those forms were drawn to be joined and already lean.
+
+
+\begin{quote}\small\itshape This is one of several places where the anchor is deliberately held back from the writer's full style: it also receives less jitter and only a fraction of the baseline drift. The pattern is consistent, and the reasoning is always the same: style is applied to the anchor only as far as it does not cost the legibility that justified using it.\end{quote}
+
+\section{CORE\_JITTER\_FRAC}
+\begin{lstlisting}[style=sig]
+CORE_JITTER_FRAC = 0.15
+\end{lstlisting}
+
+\noindent\textbf{Output.} 0.15, the fraction of the usual random variation applied to an anchor letterform.
+
+
+\paragraph{What it is for}
+Each glyph is nudged, rotated and scaled slightly at random so that repeated letters are not identical; see \_Jitter. An anchor receives only 15 percent of that, so it barely wobbles.
+
+
+\paragraph{Why}
+The same reasoning as the slant cap. Jitter exists to make the output look handwritten rather than printed, which is a cosmetic goal, and it costs a little legibility, which is why the amount is small to begin with. An anchor was substituted precisely because legibility was at risk for that character, so it is the glyph that can least afford the cost. Keeping a small fraction rather than none at all means an anchor among its neighbours is not conspicuously rigid.
+
+
+\section{COLLISION\_MIN\_GAP\_XH}
+\begin{lstlisting}[style=sig]
+COLLISION_MIN_GAP_XH = 0.05
+\end{lstlisting}
+
+\noindent\textbf{Output.} 0.05, the clear space forced between one glyph's ink and the next, in x-heights.
+
+
+\paragraph{The problem it solves}
+Placing glyphs by their advances assumes each glyph's ink fits inside the space its advance allots. That assumption fails regularly. A variant may be wider than the advance recorded for its character; the random scaling may enlarge it; the shear may push the top of a tall letter well to the right of its base. When it fails, the next glyph is drawn on top of the previous one, and two overlapping letters are usually unreadable as either.
+
+
+\paragraph{How it is detected and fixed}
+After a glyph is placed, its leftmost inked point is compared with the rightmost inked point of the previous glyph's body. If the gap is less than this constant, the pen is pushed right by the shortfall and the glyph is placed again at the new position.
+
+
+\begin{equation}
+\mathrm{need} \;=\; x^{\mathrm{prev}}_{\max} \;+\; 0.05\,\mathrm{xh} \;-\; x^{\mathrm{cur}}_{\min}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{need}$}] \normalfont how far the current glyph must be pushed right; nothing is done when it is not positive
+  \item[{$x^{\mathrm{prev}}_{\max}$}] \normalfont the rightmost inked point of the previous glyph's body stroke
+  \item[{$x^{\mathrm{cur}}_{\min}$}] \normalfont the leftmost inked point of the glyph just placed
+  \item[{$\mathrm{xh}$}] \normalfont the x-height in millimetres, converting the constant into the working units
+\end{description}
+Measuring actual ink positions rather than advances is what makes this work: it tests the thing that matters, where the ink really landed, after every transformation has been applied. A check based on advances could not see a collision caused by the shear, since the shear does not change the advance.
+
+
+\paragraph{Why the correction only ever pushes right}
+Writing proceeds left to right and the previous glyph has already been committed, so the only available remedy is to move the current glyph on. Pulling it left would reintroduce the collision, and moving the previous one would require reconsidering everything before it. The cost of pushing right is a slightly wider than intended gap, which is a far smaller defect than an overlap.
+
+
+\section{\_ELIGIBLE\_VARIANTS}
+\begin{lstlisting}[style=sig]
+_ELIGIBLE_VARIANTS = 5
+\end{lstlisting}
+
+\noindent\textbf{Output.} 5, how many of a character's stored variants may be chosen from.
+
+
+\paragraph{The problem it solves}
+Up to twelve variants of a letter are stored, and it might seem that drawing from all of them would give the most natural variety. It does the opposite, and the reason is worth stating carefully. A person forms a given letter fairly consistently: their a's differ in detail but share a shape. The stored variants are ranked by how close each sits to what the letter should look like, so the first few are that consistent shape and the tail is the unusual ones, including the mis-cuts that survived filtering.
+
+Sampling evenly over all twelve therefore draws from the tail as often as from the characteristic shape. The output varies more, but what it varies over is no longer the writer's hand: it is a mixture of their hand and the extraction's errors. The result reads as scrambled rather than natural, and the writer identification drops, because the signature being averaged away is exactly what the namer recognises.
+
+
+\paragraph{Why five}
+Enough variants that repeated letters in a line are visibly different, which one or two would not achieve, and few enough that all of them are drawn from the well-formed part of the ranking. The selection among those five is itself weighted toward the first, so even within the eligible set the most typical shape is drawn most often.
+
+
+\begin{quote}\small\itshape This cap and the storage cap of twelve interact in a way worth knowing: variants ranked sixth and below are stored but can never be drawn. For this project's profiles that is a substantial fraction of everything stored. The storage is not wasted, since the whole set is what the medoid and the prototype are computed from, but raising the storage cap alone would not produce more variety in the output.\end{quote}
+
+\section{CORE\_CURSIVE\_CONN}
+\begin{lstlisting}[style=sig]
+CORE_CURSIVE_CONN = 0.5
+\end{lstlisting}
+
+\noindent\textbf{Output.} 0.5, the connectedness at or above which a hand is treated as cursive.
+
+
+\paragraph{What it decides}
+Which of the two built-in alphabets a writer's anchor letters come from, and whether an anchor may be joined to its neighbours at all. A hand at or above 0.5 gets the cursive forms and may join them; below, the printed forms, which never join.
+
+
+\paragraph{Why the midpoint}
+Connectedness is the fraction of adjacent in-word letter pairs that were genuinely joined, so 0.5 means half. That is the natural place to divide, and it is not a tuned value: a hand that joins more pairs than it separates is cursive in the ordinary sense of the word, and one that separates more is not.
+
+
+\paragraph{Why a threshold is acceptable here, unlike for joining}
+A hard threshold was rejected for deciding whether to join a given pair, because real writing of intermediate connectedness joins some pairs and not others, which a threshold cannot express. Here a threshold is right, because the thing being chosen is which alphabet to draw from, and there are only two alphabets. There is no meaningful way to be half-way between the printed form of an a and the cursive one; a choice must be made, and the measured majority behaviour is the sound basis for making it.
+
+
+\section{JOIN\_LEGIBILITY\_COUPLING}
+\begin{lstlisting}[style=sig]
+JOIN_LEGIBILITY_COUPLING = 0.0
+\end{lstlisting}
+
+\noindent\textbf{Output.} 0.0, how much the legibility setting reduces joining.
+
+
+\paragraph{What it would do}
+Joins are a major cause of illegibility in synthetic cursive: a ligature drawn to the wrong point, or several in succession, turns a word into a tangle. This constant would let the legibility setting thin the joins out, so that a writer whose library is poor would also be drawn with fewer joins.
+
+
+\begin{equation}
+\mathrm{conn}_{\mathrm{eff}} \;=\; \mathrm{conn} \cdot \big(1 - \kappa \cdot \mathrm{lam}\big)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{conn}_{\mathrm{eff}}$}] \normalfont the connectedness actually used when deciding whether to join
+  \item[{$\mathrm{conn}$}] \normalfont the writer's measured connectedness
+  \item[{$\kappa$}] \normalfont this constant, the coupling strength
+  \item[{$\mathrm{lam}$}] \normalfont the legibility setting, from 0 to 1
+\end{description}
+
+\paragraph{Why it is zero}
+At zero the expression reduces to the measured connectedness and the coupling has no effect, which is the current behaviour. The code comment marks this as deliberate. The reasoning is that connectedness is the single most recognisable property of a hand, and the namer relies on it heavily: thinning the joins of a cursive writer makes the output more readable and markedly less like them. Since that writer's identification is already the weaker of the two measures, trading it away for text accuracy is the wrong direction.
+
+
+\begin{quote}\small\itshape Like JOIN\_PROB\_CAP, this is a mechanism left in place at its neutral setting. Both are the result of trying the adjustment and finding it harmful, and leaving the constant named at zero records that the possibility was considered, which removing it would not.\end{quote}
+
+\section{IDEAL\_ANCHOR\_MAX\_PRIORD}
+\begin{lstlisting}[style=sig]
+IDEAL_ANCHOR_MAX_PRIORD = 0.3
+\end{lstlisting}
+
+\noindent\textbf{Output.} 0.30, how far from typical the writer's own best letterform may sit and still serve as the anchor.
+
+
+\paragraph{The decision it governs}
+When a glyph needs replacing, the first choice of replacement is the writer's \emph{own} most typical version of that letter, not a built-in form. That keeps the substitution inside their hand. But their most typical version is only useful if it is itself a decent letter, and for a heavily cursive writer it may not be: if most of their a's were cut badly, the most typical of them is a typical bad cut. This constant is where that judgement is made, against the prior distance described in style.py.
+
+
+\paragraph{Why 0.30}
+The prior distance runs from 0 for a shape matching the cross-writer reference exactly upward. The same scale appears in the legibility thresholds, where 0.12 counts as clean and 0.55 as unusable. At 0.30 the limit sits between those: a shape noticeably unlike the general idea of the letter is still accepted, because it is the writer's own and the alternative is a generic form, but one approaching the unusable range is not. It is deliberately permissive, since preferring the writer's own shape is the whole point of trying them first.
+
+
+\section{IDEAL\_SOURCE}
+\begin{lstlisting}[style=sig]
+IDEAL_SOURCE = 'medoid'
+\end{lstlisting}
+
+\noindent\textbf{Output.} 'medoid', selecting which of the two stored fallback letterforms is used as the anchor.
+
+
+\paragraph{The two candidates}
+style.py stores two single letterforms per character. The \textbf{medoid} is the one real variant most typical of the writer's own set. The \textbf{prototype}, stored as idealGlyphs, is the per-point median of several aligned variants, which is cleaner than any real variant but is an average and so is not something the writer ever wrote.
+
+
+\paragraph{Why the medoid is chosen}
+It is real writing. An averaged shape has had the irregularity removed along with the noise, and that irregularity is part of what identifies the writer, so a page of prototypes is smoother and less recognisable. The medoid keeps the writer's own character while still being the best-formed example they produced.
+
+There is a second reason, visible in this project's measurements. Prototype-based anchors improved text accuracy slightly and cost more in writer identification than they gained, which is the wrong trade for a system whose purpose is to reproduce an individual hand. The constant is a string rather than a boolean so that switching between them is a one-word change, which is how that comparison was made.
+
+
+\section{\_PRIOR\_REJECT}
+\begin{lstlisting}[style=sig]
+_PRIOR_REJECT = 0.25
+\end{lstlisting}
+
+\noindent\textbf{Output.} 0.25, a prior distance beyond which a stored variant would not be offered.
+
+
+\paragraph{What it was for}
+A hard cut-off: a stored shape further than this from the cross-writer reference would simply not be considered for drawing, however the legibility setting stood.
+
+
+\paragraph{Why the approach it represents was superseded}
+A hard rejection is the wrong instrument for this decision, and comparing it with what replaced it is instructive. It admits no middle ground: a variant at 0.249 is used freely and one at 0.251 is never used, although nothing distinguishes them. For a writer whose every variant of some letter sits above the line it rejects all of them, leaving no shape at all. And it cannot take account of how trustworthy the library is as a whole, so it treats a stray bad variant in a good library the same as a uniformly poor one.
+
+The mechanism that replaced it, the probabilistic swap in \_SwapProb, addresses all three. It is graded rather than binary, so borderline shapes are used sometimes; it always leaves a shape available, because swapping requires a replacement to exist; and it is driven by a per-writer legibility value, so the same variant is treated differently depending on the company it keeps.
+
+
+\begin{quote}\small\itshape This constant is declared and never read. It is recorded here as the earlier design rather than as live behaviour, because a reader finding it in the settings block would reasonably assume variants beyond 0.25 are excluded, and they are not.\end{quote}
+
+\section{Trajectory}
+\begin{lstlisting}[style=sig]
+class Trajectory
+\end{lstlisting}
+
+\noindent\textbf{Output.} an object holding the pen path: a list of pen-down strokes in millimetres, plus metadata describing how it was produced.
+
+
+\paragraph{What it represents}
+The output of synthesis, and the thing the rest of the project consumes. It is a list of \textbf{pen-down paths}: each entry is a sequence of points the pen visits with its tip on the paper, and the gaps between consecutive entries are where the pen lifts. That representation carries exactly the information a plotter needs and nothing more.
+
+
+\paragraph{Why the pen-up moves are implicit}
+Nothing records the lifts explicitly. They are implied by the boundaries between strokes, because by definition the pen must rise at the end of one and fall at the start of the next. Storing them would duplicate information already present and create the possibility of the two disagreeing, which is a class of bug that cannot arise if the state is stored once.
+
+
+\paragraph{The coordinate convention, and the one place it changes}
+Coordinates are millimetres with y increasing upward, which is the natural orientation for describing writing and the convention the stored glyphs use. Images have y increasing downward, and some machines expect one or the other. Rather than taking a position on that, the trajectory states its own convention and each consumer converts: the rasteriser flips y as it draws, and the G-code writer flips it if the machine needs it. The flip therefore happens at the boundary, once per consumer, rather than being half-applied inside the trajectory.
+
+
+\paragraph{What the two methods report}
+
+\begin{itemize}\setlength\itemsep{0pt}
+  \item \textbf{Bounds} returns the smallest rectangle containing every point, which the rasteriser needs to size its canvas and the G-code writer needs to check the drawing fits the machine's travel.
+  \item \textbf{PenTravelMm} returns the distance drawn with the pen down and the distance moved with it up. The first is how much ink the page needs; the second is wasted motion, and it is the quantity a stroke-ordering optimisation would try to reduce.
+\end{itemize}
+
+\begin{quote}\small\itshape This is one of only two classes in the project, and it earns the form: it bundles data with two derived measurements of that same data, which is what a class is for. The rest of the pipeline is plain functions, because elsewhere there is no state that several operations need to share.\end{quote}
+
+\section{\_GLYPH\_CLEAN}
+\begin{lstlisting}[style=sig]
+_GLYPH_CLEAN = 0.12
+\end{lstlisting}
+
+\noindent\textbf{Output.} 0.12, the prior distance at or below which a stored shape counts as clean.
+
+
+\paragraph{What it marks}
+The lower of the two reference points on the prior-distance scale used by the swap rule. A shape this close to the cross-writer reference for its letter is a well-formed example of that letter and is kept almost always, whatever the legibility setting says.
+
+
+\begin{quote}\small\itshape Almost always, not always: even a clean shape carries a small swap probability proportional to lam. That is deliberate, because a library can be poor overall while containing some clean shapes, and a writer whose lam is high is one whose extraction is not trusted in general.\end{quote}
+
+\section{\_GLYPH\_GARBAGE}
+\begin{lstlisting}[style=sig]
+_GLYPH_GARBAGE = 0.55
+\end{lstlisting}
+
+\noindent\textbf{Output.} 0.55, the prior distance at or above which a stored shape is always replaced.
+
+
+\paragraph{What it marks}
+The upper reference point. A shape this far from the reference is not a recognisable instance of its letter at all: a fragment, or a cut carrying most of a neighbour. It is replaced unconditionally, with no regard to the legibility setting.
+
+
+\paragraph{Why this one case is unconditional}
+Every other decision in the swap rule is probabilistic, so this exception needs justifying. The argument is that lam expresses a trade-off between fidelity and legibility, and the trade-off only exists where there is something to trade. Drawing a fragment is not more faithful to the writer; it reproduces the extraction's mistake rather than their hand. With no fidelity to be gained, there is nothing to weigh against legibility, and the shape goes.
+
+
+\section{\_COMMIT\_LAM}
+\begin{lstlisting}[style=sig]
+_COMMIT_LAM = 0.85
+\end{lstlisting}
+
+\noindent\textbf{Output.} 0.85, the legibility setting at or above which the library is abandoned entirely.
+
+
+\paragraph{What it does}
+Above this setting every stored shape is replaced by the anchor, so the writer's extracted library contributes nothing and the output is built from anchor letterforms throughout.
+
+
+\paragraph{Why there is a hard commitment point at all}
+Without it, a writer at lam 0.95 would still draw a few percent of glyphs from their library, and those few would be drawn from a library that the lam value itself declares untrustworthy. The result is the worst of both: a page that is mostly anchor letterforms, so it does not look much like the writer, with a scattering of fragments in it, so it is not clean either. Committing fully above 0.85 at least produces a consistent page.
+
+This case genuinely arises. A heavily cursive hand has no honest place to cut between letters, so most of its variants are fragments, its median prior distance is high, and AutoLegibility returns a value near 1. For such a writer the output is drawn almost entirely from anchor forms, which is the correct response to a library that could not be extracted, and it is also the mechanism behind this project's measured result that heavily cursive hands reproduce less faithfully than clean ones.
+
+
+\section{\_SwapProb}
+\begin{lstlisting}[style=sig]
+def _SwapProb(lam, priorD)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{lam}] \normalfont the legibility setting, from 0 to 1
+  \item[{priorD}] \normalfont this shape's distance from the cross-writer reference
+\end{description}
+
+\noindent\textbf{Output.} the probability, from 0 to 1, that this shape is replaced by the anchor.
+
+
+\paragraph{What it is for}
+This small function is where the project's central trade-off is actually resolved. For one glyph, given how far it sits from what the letter should look like and how much the library as a whole is trusted, it returns the chance that the writer's own shape is set aside in favour of a clean one.
+
+
+\paragraph{The four cases, and the order they are tested in}
+
+\begin{equation}
+P_{\mathrm{swap}} \;=\; \begin{cases} 1 & d \ge 0.55 \\[3pt] 1 & \mathrm{lam} \ge 0.85 \\[3pt] 0 & \mathrm{lam} \le 0.001 \\[3pt] 0.06\,\mathrm{lam} & d \le 0.12 \\[3pt] \mathrm{clip}\big(\mathrm{lam}\,(0.55 + 0.9\,b),\,0,\,1\big) & \text{otherwise} \end{cases}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$P_{\mathrm{swap}}$}] \normalfont the returned swap probability
+  \item[{$d$}] \normalfont the shape's prior distance
+  \item[{$\mathrm{lam}$}] \normalfont the legibility setting
+  \item[{$b$}] \normalfont how bad the shape is on a 0 to 1 scale, defined below
+  \item[{$0.55$}] \normalfont the base swap rate for a shape of middling quality
+  \item[{$0.9$}] \normalfont how much worse quality raises that rate
+  \item[{$\mathrm{clip}(\cdot,0,1)$}] \normalfont the result held to a valid probability
+\end{description}
+The order matters because the cases overlap. Garbage is tested first, so a hopeless shape is replaced even at lam 0. Full commitment is next, so above 0.85 everything goes regardless of quality. Only then is lam 0 tested, which keeps every shape that survived the first test: this is what makes lam 0 mean "faithful reproduction, defects and all" rather than "no filtering whatever".
+
+
+\paragraph{The interpolation in the middle range}
+
+\begin{equation}
+b \;=\; \mathrm{clip}\!\left( \frac{d - 0.12}{0.55 - 0.12},\; 0,\; 1 \right)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$b$}] \normalfont the badness of the shape: 0 at the clean threshold, 1 at the garbage threshold
+  \item[{$d$}] \normalfont the shape's prior distance
+  \item[{$0.12,\;0.55$}] \normalfont the clean and garbage reference points
+  \item[{$\mathrm{clip}(\cdot,0,1)$}] \normalfont held in range, although the earlier cases already guarantee d lies between the two
+\end{description}
+This maps the prior distance onto a 0 to 1 scale between the two reference points, which is what lets a single expression cover the whole middle range. The swap probability is then lam times a factor running from 0.55 at the clean end to 1.45 at the garbage end, clipped to 1. So at a given lam, a worse shape is swapped more often, and at a given quality, a less trusted library is swapped more often. The two inputs act multiplicatively, which is the behaviour wanted: neither alone should force a swap.
+
+
+\paragraph{Why a probability and not a decision}
+Returning a probability rather than a yes or no is what produces a mixed page, and a mixed page is the point. A threshold rule would draw every instance of a given character from the same source, so a letter whose shape sits near the line would be either always the writer's or always the anchor. With a probability, some instances are theirs and some are not, which both preserves more of the hand and spreads the risk: one bad instance of a letter in a line is recoverable from context, where every instance being bad is not.
+
+
+\begin{quote}\small\itshape Because the draw is made per glyph from a seeded generator, the same text and seed give the same page. That is what makes the best-of-N search meaningful, since each attempt differs only by its seed, and what makes a result reproducible rather than something that happened once.\end{quote}
+
+\section{\_AUTO\_LAM\_GOOD}
+\begin{lstlisting}[style=sig]
+_AUTO_LAM_GOOD = 0.24
+\end{lstlisting}
+
+\noindent\textbf{Output.} 0.24, the median prior distance at or below which a library is trusted completely.
+
+
+\paragraph{What it marks}
+The lower end of the scale AutoLegibility maps onto. A writer whose variants have a median prior distance at or below this gets lam 0, meaning their own shapes are used throughout.
+
+
+\paragraph{Why the median across the whole library}
+The quantity being judged is the trustworthiness of the extraction as a whole, not of any one glyph, which the swap rule already handles per glyph. The median over every stored variant of every character answers the right question: is this writer's library, in general, made of letters? Using the median rather than the mean keeps the answer from being set by the worst few.
+
+
+\section{\_AUTO\_LAM\_BAD}
+\begin{lstlisting}[style=sig]
+_AUTO_LAM_BAD = 0.32
+\end{lstlisting}
+
+\noindent\textbf{Output.} 0.32, the median prior distance at or above which a library is not trusted at all.
+
+
+\paragraph{What it marks}
+The upper end of the same scale. At or above this, lam is 1, the library is abandoned, and the output is drawn from anchor letterforms.
+
+
+\paragraph{Why the window is so narrow}
+The two thresholds are only 0.08 apart, which makes the mapping steep: a small change in median prior distance moves lam a long way. That is deliberate, and it reflects what the measurements show. Across this project's writers the median prior distance clusters tightly, around 0.18 to 0.24 for the hands that extracted cleanly and around 0.31 for the two most cursive. The thresholds are placed on either side of that gap, so the mapping separates the populations that actually exist rather than spreading a gentle gradient over a range where no writer falls.
+
+
+\begin{quote}\small\itshape The consequence is that most writers receive a lam of exactly 0 or exactly 1, with few in between. That is appropriate for a measurement with two clear groups, but it does mean the intermediate behaviour of the swap rule is exercised mainly by the repair mechanism, which raises lam for individual characters rather than for the writer.\end{quote}
+
+\section{AutoLegibility}
+\begin{lstlisting}[style=sig]
+def AutoLegibility(profile)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{profile}] \normalfont the writer's style profile
+\end{description}
+
+\noindent\textbf{Output.} the legibility setting for that writer, from 0 to 1.
+
+
+\paragraph{What it is for}
+Derives the legibility setting from the profile instead of requiring it to be chosen. The question it answers is: how far can this writer's extracted library be trusted?
+
+
+\begin{equation}
+\mathrm{lam} \;=\; \mathrm{clip}\!\left( \frac{\mathrm{median}\{d_g\} - 0.24}{0.32 - 0.24},\; 0,\; 1\right)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{lam}$}] \normalfont the returned legibility setting
+  \item[{$d_g$}] \normalfont the prior distance of stored variant g, over every variant of every character in the library
+  \item[{$\mathrm{median}$}] \normalfont the middle value of those distances
+  \item[{$0.24,\;0.32$}] \normalfont the good and bad reference points above
+  \item[{$\mathrm{clip}(\cdot,0,1)$}] \normalfont held within the valid range, which is what makes the mapping flat outside the two reference points
+\end{description}
+
+\paragraph{Why this works, and what it is really measuring}
+The chain of reasoning behind it is the substantive part. The prior distance measures how far a stored shape sits from what its letter should look like. A library whose shapes sit far from that is a library of bad cuts. Bad cuts come from boundaries placed where no honest boundary exists. And that happens exactly when the writing is joined up, because in cursive the pen does not lift between letters, so there is no place to cut that does not damage something.
+
+So the median prior distance is, indirectly, a measure of how cursive the hand is, arrived at by measuring the consequence rather than the cause. That is why it works as a trust signal: it responds to the thing that actually makes an extraction unreliable. And it is why heavily cursive writers end up drawn from anchor forms, which is the mechanism behind this project's finding that such hands reproduce less faithfully.
+
+
+\paragraph{Why an empty library returns 1}
+With no variants there is nothing to measure and nothing to draw from, so the anchor is the only available source and lam 1 states that. Returning 0 instead would claim a library worth trusting, and the caller would then try to draw from one that does not exist.
+
+
+\begin{quote}\small\itshape A profile may carry an explicit legibilityLambda, which callers prefer over this function. That is how a value found by experiment for a particular writer can override the derived one, and it is why the stored lam column appears in this project's profile tables even though it is usually empty.\end{quote}
+
+\section{\_CoreGlyph}
+\begin{lstlisting}[style=sig]
+def _CoreGlyph(ch, profile)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{ch}] \normalfont the character wanted
+  \item[{profile}] \normalfont the writer's style profile
+\end{description}
+
+\noindent\textbf{Output.} the anchor letterform as strokes, advance, lead and whether it is a cursive form; or nothing if no anchor exists.
+
+
+\paragraph{What the anchor is}
+The clean letterform that a stored variant is swapped for. The function implements a preference order with two steps, and the order is the whole content of it.
+
+
+\paragraph{First choice: the writer's own most typical letterform}
+The medoid stored in the profile is tried first, accepted if its prior distance is within IDEAL\_ANCHOR\_MAX\_PRIORD. This matters more than it may appear. An anchor is by definition drawn when the writer's chosen variant was not trusted, so anchors account for a large share of a cursive writer's page. If the anchor were always a built-in form, such a page would be generic handwriting with the writer's spacing, and the namer would not identify it. Preferring their own medoid keeps the substitution inside their hand: it is still a letter they actually wrote, merely the best-formed one rather than a random one.
+
+This project's experiments bear that out directly. Extending the anchor-selection improvements to more writers raised writer identification substantially for the most cursive hand, and the gain came from better anchor letterforms rather than from any change to how variants were chosen.
+
+
+\paragraph{Second choice: the built-in alphabet}
+If the medoid is absent or too rough, \_BaselineGlyph supplies a built-in form, cursive or printed according to the writer's connectedness, scaled to their reach. This is a real loss of fidelity and is accepted only because the alternative is drawing a shape that is not a letter.
+
+
+\paragraph{Why the advance is taken as a maximum}
+
+\begin{equation}
+\mathrm{adv} \;=\; \max\big(\,\mathrm{adv}_{\mathrm{stored}},\;\; \mathrm{lead} + \mathrm{width} + 0.04 \,\big)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{adv}$}] \normalfont the advance actually used
+  \item[{$\mathrm{adv}_{\mathrm{stored}}$}] \normalfont the advance recorded with the letterform
+  \item[{$\mathrm{lead}$}] \normalfont the gap from the cell's left edge to where the ink starts
+  \item[{$\mathrm{width}$}] \normalfont the horizontal extent of the ink
+  \item[{$0.04$}] \normalfont a small margin so two letters do not touch
+\end{description}
+The stored advance came from the cell the character was originally cut from, and that cell can be narrower than the ink it contains, since a cut can leave ink spilling past its own boundary. Advancing by the stored figure alone would then place the next letter on top of this one. Taking whichever of the two is larger guarantees the advance clears the ink while preserving the writer's own spacing wherever it is sufficient.
+
+
+\section{\_GlyphSource}
+\begin{lstlisting}[style=sig]
+def _GlyphSource(profile,ch,rng,prevExitY=None,lam=0.0,forceCore=False,
+        forcePrint=False)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{profile}] \normalfont the writer's style profile
+  \item[{ch}] \normalfont the character to draw
+  \item[{rng}] \normalfont the seeded random generator
+  \item[{prevExitY}] \normalfont the height the pen left the previous letter at, or nothing if not joining
+  \item[{lam}] \normalfont the legibility setting for this glyph
+  \item[{forceCore}] \normalfont force the anchor regardless of the swap draw
+  \item[{forcePrint}] \normalfont force the printed alphabet, the last resort
+\end{description}
+
+\noindent\textbf{Output.} four things: the strokes, the advance, the lead, and a label saying which source the shape came from.
+
+
+\paragraph{What it is for}
+Given one character, decide what to draw. This is where the legibility trade-off, the variant ranking and the fallback chain all meet, and the label it returns is what makes the outcome auditable.
+
+
+\paragraph{The order of preference}
+
+\begin{itemize}\setlength\itemsep{0pt}
+  \item \textbf{forcePrint}, when set, returns the printed alphabet immediately. It is the last resort invoked by the repair loop for a character the reader still cannot read.
+  \item \textbf{The writer's own variants} of this exact character, ranked and sampled as described below, then possibly swapped for the anchor. Labelled \texttt{own}, or \texttt{core} if swapped.
+  \item \textbf{The opposite case} of the character. A capital drawn from the writer's lowercase is scaled up to their ascender height. Labelled \texttt{case}.
+  \item \textbf{A similar character} from the \_SIMILAR table, such as an l for an I. Labelled \texttt{similar}.
+  \item \textbf{The anchor}, when the writer has nothing for this character at all. Labelled \texttt{core}.
+  \item \textbf{The built-in alphabet} directly, labelled \texttt{fallback}.
+  \item \textbf{Nothing}, labelled \texttt{blank}: no strokes, but the advance is still applied, so an unavailable character leaves a gap rather than closing up the line.
+\end{itemize}
+The order descends by how much of the writer's own hand each option retains, which is the right criterion for a system whose purpose is to reproduce an individual. Note that the swap check is applied in the first three branches, not only the first: a borrowed or case-converted shape is still a stored cut and can still be a bad one.
+
+
+\paragraph{How a variant is chosen: weighted sampling}
+The candidates are ranked by prior distance, cut to the eligible few, and one is drawn with probability proportional to a weight.
+
+
+\begin{equation}
+w_i \;=\; \frac{1}{1 + 1.4\,i} \;\cdot\; \exp\!\left(-\left(\frac{\Delta y_i}{0.45}\right)^{\!2}\right)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$w_i$}] \normalfont the weight given to the i-th ranked candidate
+  \item[{$i$}] \normalfont its position in the ranking, 0 for the most typical
+  \item[{$1.4$}] \normalfont how steeply the weight falls with rank
+  \item[{$\Delta y_i$}] \normalfont the difference between this variant's entry height and the height the pen left the previous letter at
+  \item[{$0.45$}] \normalfont the tolerance on that difference, in x-heights
+  \item[{$\exp(-(\cdot)^2)$}] \normalfont a Gaussian falloff, applied only when joining; otherwise this factor is absent
+\end{description}
+The first factor implements the preference for typical shapes: the top-ranked variant is weighted 1, the second about 0.42, the fifth about 0.15. So the characteristic shape is drawn most often while the others still appear, which is what gives repeated letters their variation. A reciprocal falloff is gentler than an exponential one, which would make the top variant dominate so heavily that the others might as well not be eligible.
+
+
+\paragraph{Why the entry height matters when joining}
+The second factor is the more interesting one. When this letter will be joined to the previous one, a ligature must be drawn from where the pen left that letter to where this one begins. If the two heights differ a great deal, the ligature has to climb or dive, which is what produces the tangled joins that make synthetic cursive unreadable. Since several variants are available and they differ in where they begin, the one whose entry height is closest to the pen's current height can be preferred, and the join is then short and natural.
+
+This is a small instance of a general principle worth naming: where a choice exists anyway, it costs nothing to make it with regard to context. The variant selection had to pick one of five; biasing that pick toward the one that joins well improves the output without any extra drawing or searching.
+
+
+\paragraph{Why the variant's own advance is used}
+Each variant carries its own advance, and that is used rather than the character's median. The code comment gives the reason: a wide variant advanced by a narrow median would collide with the next letter. The median describes the character across all its instances, but what is being drawn is one particular instance, and the spacing must suit the ink actually placed.
+
+
+\begin{quote}\small\itshape The label returned is counted in the trajectory's metadata, giving a breakdown of how many glyphs came from each source. That breakdown is how the fidelity-legibility trade-off is measured in this project: a page reported as mostly \texttt{core} is readable but is largely not the writer's own letterforms, and the counts say so plainly where looking at the output would not.\end{quote}
+
+\section{\_Jitter}
+\begin{lstlisting}[style=sig]
+def _Jitter(strokes, rng, amp, rotAmp, scaleAmp)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{strokes}] \normalfont one glyph's strokes
+  \item[{rng}] \normalfont the seeded random generator
+  \item[{amp}] \normalfont the position shift amplitude, in x-heights
+  \item[{rotAmp}] \normalfont the rotation amplitude, in degrees
+  \item[{scaleAmp}] \normalfont the scale variation amplitude, as a fraction
+\end{description}
+
+\noindent\textbf{Output.} the strokes shifted, rotated and scaled by small random amounts.
+
+
+\paragraph{Why randomness is added deliberately}
+Without it, every instance of a letter on the page is identical to the pixel, because the same stored variant is drawn the same way. Identical repetition is the visual signature of print, and a page of it reads as a font however handwritten the individual letterforms are. Real writing never repeats a letter exactly, so a small random variation per glyph is not a flaw introduced into the output; it is a property of handwriting that must be put back.
+
+
+\paragraph{The three transformations}
+
+\begin{equation}
+\begin{pmatrix} x' \\ y' \end{pmatrix} \;=\; \begin{pmatrix} \cos\theta & -\sin\theta \\ \sin\theta & \cos\theta \end{pmatrix} \begin{pmatrix} s_x x \\ s_y y \end{pmatrix} \;+\; \begin{pmatrix} \delta_x \\ \delta_y \end{pmatrix}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$x,\,y$}] \normalfont the glyph's original coordinates, in x-heights
+  \item[{$x',\,y'$}] \normalfont the jittered coordinates
+  \item[{$\theta$}] \normalfont a small random rotation, drawn from a normal distribution
+  \item[{$s_x,\,s_y$}] \normalfont independent random scale factors, each near 1
+  \item[{$\delta_x,\,\delta_y$}] \normalfont a random translation
+  \item[{$\begin{pmatrix}\cos\theta & -\sin\theta \\ \sin\theta & \cos\theta\end{pmatrix}$}] \normalfont the standard 2-D rotation matrix, which turns a point anticlockwise about the origin by theta
+\end{description}
+The order is scale, then rotate, then translate, and it is not interchangeable: rotating before scaling would make the independent x and y scalings act along the rotated axes, shearing the glyph rather than stretching it. Scaling x and y independently is itself deliberate, since a writer's letters vary slightly in proportion as well as in size.
+
+
+\paragraph{Background: why a normal distribution}
+Each amount is drawn from a \textbf{normal distribution}, the bell-shaped curve, rather than uniformly from a range. The difference is that a normal distribution makes small deviations much commoner than large ones, with no hard limit, whereas a uniform draw makes a large deviation exactly as likely as a tiny one. Real variation behaves the first way: most letters are close to the writer's usual form and a few are noticeably off. A uniform draw produces output that wobbles unconvincingly, because every letter is about equally displaced.
+
+
+\paragraph{Why the vertical shift is smaller}
+The vertical amplitude is 0.6 of the horizontal. Vertical position is read more sharply than horizontal: the eye uses the baseline as a reference, so a letter sitting high stands out in a way that one sitting slightly right does not. The recogniser is similarly sensitive, since its features were learned relative to the baseline. Reducing the vertical component keeps the variation from reading as a fault.
+
+
+\begin{quote}\small\itshape The amplitudes reaching this function are already scaled by the caller's jitter setting and, for an anchor glyph, by CORE\_JITTER\_FRAC. So the same function serves for a fully varied extracted glyph and a nearly rigid anchor, with the policy decision kept in the caller rather than here.\end{quote}
+
+\section{\_Resample}
+\begin{lstlisting}[style=sig]
+def _Resample(poly, step)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{poly}] \normalfont a path
+  \item[{step}] \normalfont the desired spacing between points
+\end{description}
+
+\noindent\textbf{Output.} the path with points evenly spaced at about that interval.
+
+
+\paragraph{What it is for}
+Respaces a path so its points sit at roughly equal distances along it, by the arc-length method described under \_ResampleN in style.py: cumulative distance along the path is computed and new points are read off at even distances by interpolation.
+
+
+\paragraph{Why layout needs it}
+Paths reaching this point come from several sources with very different point densities. A stored glyph was simplified, so a straight run is two points. A ligature is generated from three control points. A built-in letterform was laid out by hand at whatever spacing was convenient. Concatenating them gives a path whose density varies several-fold along its length, and two later stages are sensitive to that.
+
+
+\begin{itemize}\setlength\itemsep{0pt}
+  \item \textbf{The rasteriser} draws by stepping along the path, so a sparse region is drawn from fewer samples; with a long enough gap the round pen's footprints no longer overlap and the stroke appears as a row of dots.
+  \item \textbf{The G-code writer} emits a move per point, so the machine's motion is smoother where points are dense. Even spacing gives even pen speed, which is visible in the drawn line.
+\end{itemize}
+
+\paragraph{Why 0.35 millimetres}
+The spacing used throughout layout. It is fine enough that successive pen positions overlap at any plotted size, and coarse enough that a line of text does not become tens of thousands of points, which would slow both the rasteriser and the machine's motion planning for no visible gain.
+
+
+\begin{quote}\small\itshape This duplicates \_ResampleN in style.py, differing in that it takes a spacing rather than a count and returns tuples rather than an array. Both forms are needed: averaging requires a fixed count so that points correspond between strokes, while drawing requires a fixed spacing so that density is uniform. Neither can be expressed as the other.\end{quote}
+
+\section{USE\_STYLE\_CALIBRATION}
+\begin{lstlisting}[style=sig]
+USE_STYLE_CALIBRATION = True
+\end{lstlisting}
+
+\noindent\textbf{Output.} true, enabling the measured correction of the output's style back toward the writer's real pages.
+
+
+\paragraph{What it enables}
+A feedback step: render a sample of synthetic text, measure its slant and reach the same way they were measured on the writer's real lines, compare, and correct. Turning it off uses the profile's measurements directly.
+
+
+\paragraph{Why any correction is needed}
+The profile records the writer's slant and reach as measured from their pages, and synthesis applies exactly those numbers. One might expect the output to measure the same, and it does not. The discrepancy accumulates through the pipeline: glyphs were de-slanted during extraction and are re-sheared during layout, but not every stroke shears the same way; the jitter rotates glyphs slightly; the anchor glyphs are capped at a shallower slant than the writer's own; and the baseline drift shifts letters vertically. Each is small and the measured result is systematically off.
+
+Rather than trying to account for each effect analytically, the calibration measures the total discrepancy and corrects for it. That is the sound approach when the individual contributions are numerous, small, and interact, which is the case here.
+
+
+\section{\_STYLE\_CAL}
+\begin{lstlisting}[style=sig]
+_STYLE_CAL = {}
+\end{lstlisting}
+
+\noindent\textbf{Output.} a cache of the computed correction, keyed by writer and render scale.
+
+
+\paragraph{Why it is cached}
+Computing the correction requires rendering a long sample sentence three times and measuring each, which is far more work than drawing the text actually requested. Since the correction depends only on the profile and the render scale, it is the same every time for a given writer, so computing it once per program run is sufficient.
+
+
+\paragraph{Why the key includes the scale}
+The key is the writer together with the x-height in millimetres and the pixels per millimetre. Both affect the measurement: at a small rendered size the stroke width is a larger fraction of the x-height, which changes what the binarisation and the band detection find, so a correction computed at one scale does not apply at another. Keying on the scale as well as the writer prevents a cached value being reused where it does not hold.
+
+
+\begin{quote}\small\itshape This is a module-level cache that is never cleared, so a profile edited within a single run would keep its old correction. That is acceptable because profiles are loaded from disk and not modified in place, but it is the kind of assumption worth knowing when a cache is keyed by identity rather than content.\end{quote}
+
+\section{StyleCalibration}
+\begin{lstlisting}[style=sig]
+def StyleCalibration(profile, mmPerXh=4.0, pxPerMm=18.0)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{profile}] \normalfont the writer's style profile
+  \item[{mmPerXh}] \normalfont the x-height in millimetres, default 4.0
+  \item[{pxPerMm}] \normalfont the render resolution, default 18.0
+\end{description}
+
+\noindent\textbf{Output.} a dictionary of three corrections: a shear adjustment and two zone scale factors.
+
+
+\paragraph{The method: measure the output, compare, correct, repeat}
+A fixed sample sentence is rendered with the current correction applied, the rendered image is measured exactly as RenderRefStats measured the writer's real lines, and the correction is updated from the difference. That is repeated three times.
+
+
+\paragraph{Why the comparison is valid}
+The crucial property is that both sides are measured by the same procedure. The reference values stored in the profile as slantMeasRef, ascMeasRef and descMeasRef were produced by running the same binarisation, band detection and slant estimation on the writer's real crops, for exactly this purpose. Comparing a quantity measured one way with the same quantity measured another way would confound the measurement methods with the thing being measured; comparing like with like isolates the real discrepancy.
+
+
+\paragraph{The three corrections}
+
+\begin{equation}
+\begin{aligned} \Delta_{\mathrm{shear}} &\mathrel{+}= \tan(\mathrm{slant}_{\mathrm{ref}}) - \tan(\mathrm{slant}_{\mathrm{got}}) \\[3pt] k_{\mathrm{asc}} &\mathrel{\ast}= \frac{\mathrm{asc}_{\mathrm{ref}} - 1}{\mathrm{asc}_{\mathrm{got}} - 1} \\[3pt] k_{\mathrm{desc}} &\mathrel{\ast}= \frac{\mathrm{desc}_{\mathrm{ref}}}{\mathrm{desc}_{\mathrm{got}}} \end{aligned}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\Delta_{\mathrm{shear}}$}] \normalfont the additive shear correction, applied on top of the profile's slant
+  \item[{$k_{\mathrm{asc}}$}] \normalfont the multiplicative correction to the ascender zone
+  \item[{$k_{\mathrm{desc}}$}] \normalfont the same for the descender zone
+  \item[{$\mathrm{ref}$}] \normalfont the value measured on the writer's real lines
+  \item[{$\mathrm{got}$}] \normalfont the value measured on this render
+  \item[{$\mathrel{+}=,\; \mathrel{\ast}=$}] \normalfont the correction is accumulated across rounds rather than replaced
+  \item[{$-1$}] \normalfont subtracted from the ascender figures because the ascender zone is measured from the top of the x-height band, not from the baseline
+\end{description}
+The shear correction is additive and is computed on the tangent rather than on the angle. That is because shear is applied as a tangent: a point is displaced horizontally in proportion to its height, with the tangent as the constant. Differences of tangents therefore compose by addition, while differences of angles do not, so correcting in degrees would be wrong by an amount growing with the angle.
+
+The zone corrections are multiplicative because they scale a zone's extent, and the subtraction of 1 in the ascender case matters: the ascender is measured as a height above the baseline, of which the first 1.0 is the x-height band itself. The part that can be corrected is the reach beyond the band, so the ratio must be taken of the excess rather than of the total. Taking the ratio of the totals would under-correct, since the fixed band would dilute the difference.
+
+
+\paragraph{Why it iterates, and only three times}
+One round is not exact, because the corrections interact: stretching the ascender zone changes which pixels the band detection finds, which changes the measured slant. So each round measures the state the previous round produced and corrects the remaining error. Three rounds are used because the residual after the first is already small and the process is convergent, so further rounds would change little at considerable cost, each requiring a full render and measurement.
+
+
+\paragraph{Why the corrections are clipped}
+Each zone factor is held between 0.5 and 1.6. The ratios are quotients, and a quotient whose denominator is near zero is unbounded: a render in which the measured ascender came out barely above the band gives a denominator near zero and a correction of hundreds, which would stretch the next render's ascenders off the page. Clipping bounds the damage from a bad measurement, and the bounds are wide enough not to interfere with a genuine correction, which is a few tens of percent.
+
+
+\paragraph{The cases where no correction is made}
+If any reference value is missing or not a number, or if the render cannot be measured, the neutral correction is returned and cached. Those are the cases where there is nothing to compare against, and applying a correction derived from a failed measurement would be worse than applying none.
+
+
+\begin{quote}\small\itshape The sample sentence is a pangram-like text chosen to contain ascenders, descenders and a wide spread of letters, rendered with jitter switched off and on a line wide enough that no wrapping occurs. All three are necessary: without jitter the measurement is repeatable, and without wrapping the measured band belongs to one line rather than several stacked.\end{quote}
+
+\section{\_ApplyCal}
+\begin{lstlisting}[style=sig]
+def _ApplyCal(strokes, cal)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{strokes}] \normalfont one glyph's strokes
+  \item[{cal}] \normalfont the correction dictionary
+\end{description}
+
+\noindent\textbf{Output.} the strokes with the ascender and descender zones rescaled.
+
+
+\paragraph{What it does}
+Applies the two zone corrections, stretching or compressing only the parts of a glyph outside the x-height band. The shear correction is not applied here; it was folded into the slant before layout began, since shear depends on the final height and must be applied as the glyph is placed.
+
+
+\begin{equation}
+y' \;=\; \begin{cases} 1 + (y-1)\,k_{\mathrm{asc}} & y > 1 \\[3pt] y \cdot k_{\mathrm{desc}} & y < 0 \\[3pt] y & 0 \le y \le 1 \end{cases}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$y$}] \normalfont the glyph's height at this point, in x-heights
+  \item[{$y'$}] \normalfont the corrected height
+  \item[{$k_{\mathrm{asc}}$}] \normalfont the ascender correction factor
+  \item[{$k_{\mathrm{desc}}$}] \normalfont the descender correction factor
+\end{description}
+This is the same piecewise form as \_BaselineGlyph uses for adapting a built-in letterform, and for the same reason: the band from 0 to 1 is the reference and must not move, so only the reach beyond it is scaled. Writing the ascender case as 1 plus a scaled excess, rather than scaling y directly, is what keeps the band's top edge fixed at exactly 1.
+
+
+\paragraph{The early exit}
+When both factors are within a thousandth of 1, the strokes are returned untouched. That is the common case, since many writers need no zone correction, and the check avoids rebuilding every point of every glyph to multiply by one.
+
+
+\begin{quote}\small\itshape This is applied only to extracted glyphs, never to an anchor. The anchor's proportions were either designed to be legible or are the writer's own best letterform, and re-stretching them would reintroduce the distortion the anchor exists to avoid. The caller enforces that by testing the source label before calling.\end{quote}
+
+\section{\_Ligature}
+\begin{lstlisting}[style=sig]
+def _Ligature(p0, p1, xh, rng)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{p0}] \normalfont where the pen left the previous letter, in millimetres
+  \item[{p1}] \normalfont where it enters the next
+  \item[{xh}] \normalfont the x-height in millimetres
+  \item[{rng}] \normalfont the seeded random generator
+\end{description}
+
+\noindent\textbf{Output.} a path joining the two points, as a resampled curve.
+
+
+\paragraph{What a ligature is here}
+The connecting stroke drawn between two joined letters. Because the stored glyphs had their ligature tails trimmed off during extraction, as described under \_TrimLigatureTails, synthesis must supply its own, drawn between whatever pair of letters it actually placed. That is the advantage of trimming: the join suits the pair at hand rather than the pair the glyph was cut beside.
+
+
+\paragraph{The shape: a dip whose depth depends on the distance}
+
+\begin{equation}
+\mathrm{sag} \;=\; \min\big(0.11\,\mathrm{xh},\; 0.16\,|\Delta x|\big) \;+\; \varepsilon, \qquad \varepsilon \sim \mathcal{N}(0,\, 0.015\,\mathrm{xh})
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{sag}$}] \normalfont how far below the lower endpoint the curve's midpoint is placed
+  \item[{$\Delta x$}] \normalfont the horizontal distance between the two endpoints
+  \item[{$\mathrm{xh}$}] \normalfont the x-height in millimetres
+  \item[{$0.11$}] \normalfont the ceiling on the dip, as a fraction of the x-height
+  \item[{$0.16$}] \normalfont the dip as a fraction of the distance travelled
+  \item[{$\varepsilon$}] \normalfont a small random variation
+  \item[{$\mathcal{N}(0,\sigma)$}] \normalfont a normal distribution with mean 0 and standard deviation sigma
+\end{description}
+The code comment names the defect this avoids: a fixed dip turns a short join into a loop, and tangled loops are what makes synthetic joined writing unreadable. Where two letters are close together, a dip of a fixed depth has to descend and return within a very short horizontal distance, which draws a narrow vertical loop below the baseline rather than a connecting stroke. Making the dip proportional to the distance travelled means a short join is nearly straight and only a long one sags.
+
+The ceiling then caps the other end: over a long gap, proportionality alone would produce a dip deeper than a descender, which would collide with the line below. Taking the smaller of the two expressions gives a dip that grows with distance up to a limit, which is how a real pen behaves.
+
+
+\paragraph{Why a single midpoint and interpolation, not a formal curve}
+The curve is constructed by placing one point below the midpoint of the two endpoints and resampling the three-point path, which the even resampling turns into a smooth arc. A formal spline would give a more precisely controlled curve, and it is not needed: a ligature spans a fraction of an x-height and is drawn with a pen whose width is a tenth of that, so the difference between a resampled three-point path and an exact curve is well below what the pen can express.
+
+
+\paragraph{The degenerate case}
+When the horizontal distance is under 0.06 x-heights, a straight segment between the two points is returned. At that distance the two letters are effectively touching and any dip would be the vertical loop the whole design avoids. Returning the two points still produces a connection, which is what joining means, without drawing anything misleading.
+
+
+\section{\_SplitWords}
+\begin{lstlisting}[style=sig]
+def _SplitWords(text)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{text}] \normalfont the text to be written
+\end{description}
+
+\noindent\textbf{Output.} a list of words with newline markers between the lines.
+
+
+\paragraph{What it is for}
+Breaks the text into the units layout works with. Words are the unit because wrapping happens at word boundaries: a word that will not fit on the current line moves to the next one whole, since handwriting is not hyphenated.
+
+
+\paragraph{Why newlines survive as markers}
+The text is split on newlines first and a marker is inserted between the resulting chunks, so an explicit line break in the input is preserved rather than being treated as a space. The distinction matters because an explicit break is the writer's instruction and must be obeyed wherever the line happens to be, while a space is merely a place where a break is permitted. Keeping the two distinct lets layout handle them as what they are.
+
+
+\begin{quote}\small\itshape Empty strings between consecutive spaces are discarded, so repeated spaces collapse to one gap, and a trailing marker is removed so text ending in a newline does not produce an empty final line. Both are small conveniences that keep the layout loop from needing to test for them.\end{quote}
+
+\section{\_WordWidth}
+\begin{lstlisting}[style=sig]
+def _WordWidth(word, profile)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{word}] \normalfont one word
+  \item[{profile}] \normalfont the writer's style profile
+\end{description}
+
+\noindent\textbf{Output.} approximately how wide the word will be, in x-heights.
+
+
+\paragraph{What it is for}
+An estimate used only to decide whether a word fits on the current line. It sums the writer's median advance for each character, falling back to 0.9 x-heights for a character with no recorded advance.
+
+
+\paragraph{Why an estimate is acceptable here}
+The true width is not available in advance, because it depends on which variant of each letter is chosen, how the jitter scales them, and whether the collision guard pushes anything right. All of that happens while the word is being drawn, which is after the decision to put it on this line has been made. Determining the exact width would mean laying the word out, measuring it, and discarding the result if it did not fit, which is several times the work for a decision whose only consequence is where a line breaks.
+
+The estimate is slightly low on average, since it ignores the collision guard, which only ever widens. So a word occasionally overruns the requested line width by a small margin. That is the right direction for the error to fall: a line a few percent too long is unremarkable, where a conservative estimate that broke lines early would leave visible ragged gaps.
+
+
+\section{SynthesizeText}
+\begin{lstlisting}[style=sig]
+def SynthesizeText(text,profile,mmPerXh=4.0,seed=None,lineWidthMm=180.0,jitter=0.15,
+        legibility=None,perCharLam=None,_cal=None)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{text}] \normalfont the text to write
+  \item[{profile}] \normalfont the writer's style profile
+  \item[{mmPerXh}] \normalfont the x-height in millimetres, default 4.0
+  \item[{seed}] \normalfont the random seed, so a run is reproducible
+  \item[{lineWidthMm}] \normalfont where to wrap, default 180
+  \item[{jitter}] \normalfont how much random variation, default 0.15
+  \item[{legibility}] \normalfont the lam setting, derived if not given
+  \item[{perCharLam}] \normalfont per-position overrides used by the repair loop
+  \item[{\_cal}] \normalfont a precomputed calibration, to avoid recomputing it
+\end{description}
+
+\noindent\textbf{Output.} a Trajectory: the pen path for that text in that hand.
+
+
+\paragraph{What it is for}
+The main layout function. It walks the text character by character and builds the pen path, handling glyph selection, calibration, variation, placement, collision, joining and line breaking. Everything above exists to be called from here.
+
+
+\paragraph{The per-character sequence}
+
+\begin{itemize}\setlength\itemsep{0pt}
+  \item \textbf{Choose a shape} with \_GlyphSource, passing the height the pen left the previous letter at so that a joinable variant can be preferred.
+  \item \textbf{Calibrate} it, if it is an extracted glyph, so its zones match the writer's measured reach.
+  \item \textbf{Jitter} it, at full strength for an extracted glyph and a fraction of that for an anchor.
+  \item \textbf{Place} it at the pen position, applying the shear for slant and the current baseline drift.
+  \item \textbf{Check for collision} against the previous glyph's body and push right if needed.
+  \item \textbf{Identify the body stroke} and decide whether to join to the previous letter.
+  \item \textbf{Advance} the pen position.
+\end{itemize}
+
+\paragraph{Why the slant cap depends on legibility}
+
+\begin{equation}
+\mathrm{cap}_{\mathrm{author}} \;=\; 45 \;-\; 19 \cdot \mathrm{clip}(\mathrm{lam},\,0,\,1)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{cap}_{\mathrm{author}}$}] \normalfont the greatest lean in degrees applied to the writer's own glyphs
+  \item[{$\mathrm{lam}$}] \normalfont the legibility setting
+  \item[{$45$}] \normalfont the cap at lam 0, which is permissive
+  \item[{$19$}] \normalfont how much the cap tightens as lam rises, giving 26 degrees at lam 1
+\end{description}
+Steep slant and poor legibility tend to occur together, because a steeply slanted hand is usually a joined one and a joined one extracts badly. So a high lam is evidence that the writing is hard to read, and shearing a glyph steeply makes it harder still, for the reasons given under CORE\_SLANT\_CAP\_DEG. Linking the cap to lam reduces the lean exactly for the writers whose output most needs the help, while leaving a clean upright-ish hand free to keep its full measured slant. The anchor glyphs are capped harder again, at 22 or 30 degrees.
+
+
+\paragraph{The baseline drift}
+
+\begin{equation}
+v_{t} \;=\; 0.85\,v_{t-1} \;+\; \eta_t, \qquad \mathrm{drift}_t \;=\; \mathrm{clip}\big(\mathrm{drift}_{t-1} + v_t,\; -0.25,\; 0.25\big)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$v_t$}] \normalfont the drift velocity after this character
+  \item[{$0.85$}] \normalfont how much of the previous velocity is retained, which is what makes the wander slow
+  \item[{$\eta_t$}] \normalfont a small random impulse drawn from a normal distribution
+  \item[{$\mathrm{drift}_t$}] \normalfont the vertical offset applied to this character, in x-heights
+  \item[{$\mathrm{clip}(\cdot,-0.25,0.25)$}] \normalfont the offset held within a quarter of an x-height either way
+\end{description}
+A real hand does not write along a perfectly straight line; the baseline wanders slowly, especially on unruled paper. Adding an independent random offset per character would not reproduce that, because it would produce letters jumping up and down independently, which looks like a fault rather than a wander. What distinguishes a wander is that it is \textbf{correlated}: if this letter is high, the next is probably also high.
+
+The construction achieves that by making the random impulse act on a velocity rather than on the position, and by retaining 85 percent of the velocity each step. The offset is then the accumulated velocity, which changes direction only gradually. This is a discrete \textbf{autoregressive} process, and it is the standard way to generate a slowly varying random signal. The clip prevents the accumulation drifting arbitrarily far over a long line, which an unbounded random walk would.
+
+
+\paragraph{Why the body stroke is identified}
+A glyph may consist of several pen-down strokes: the body, plus a dot, a crossbar or an accent. Only one of them carries the connection to the next letter. The body is identified as the stroke with the greatest horizontal extent, and the join is made from and to it.
+
+Getting this wrong has a specific and visible consequence. If the exit point were taken from the last stroke drawn rather than the body, then for an i the exit would be the dot, and the ligature to the next letter would be drawn from the dot, sloping down from above the x-height. The width test identifies the body reliably because a dot or an accent is by nature narrow while the body spans the letter.
+
+
+\paragraph{The conditions for joining}
+
+\begin{itemize}\setlength\itemsep{0pt}
+  \item \textbf{Not the first letter of the word,} and a previous exit point exists.
+  \item \textbf{Both characters are alphabetic.} Writing does not join across a digit or a comma.
+  \item \textbf{Both glyphs come from compatible sources:} either both are the writer's own shapes, or both are cursive anchor forms. A printed anchor never joins, because it has no entry or exit designed for one.
+  \item \textbf{A random draw} against the effective connectedness succeeds.
+\end{itemize}
+The source-compatibility condition is the one that needs explaining. A join between an extracted glyph and a printed anchor would be drawn to a point on the anchor that was never meant to receive one, typically partway up its side, producing a stroke across the middle of the letter. Requiring both ends of a join to be of a joinable kind means an anchor substituted into cursive writing creates a clean break in the word rather than a malformed connection, which is the less damaging of the two outcomes.
+
+
+\paragraph{How strokes accumulate}
+A running chain holds the current pen-down path. When a glyph joins, its ligature and body are appended to the chain, so the pen stays down across the join and several letters become one continuous stroke, which is what cursive writing is. When it does not join, the chain is flushed as a completed stroke and a new one begins. Non-body strokes such as dots are always flushed separately, since the pen must lift to draw them.
+
+
+\begin{quote}\small\itshape The metadata returned records the glyph source counts, the writer, the slant, the connectedness and the line count. The source counts in particular are what make the fidelity-legibility trade-off measurable after the fact, and they are the reason \_GlyphSource returns a label at all.\end{quote}
+
+\section{\_Draw}
+\begin{lstlisting}[style=sig]
+def _Draw(traj, pxPerMm, padMm, strokePx, paper=255, ink=0, softPx=0.0)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{traj}] \normalfont the trajectory to draw
+  \item[{pxPerMm}] \normalfont the resolution in pixels per millimetre
+  \item[{padMm}] \normalfont the margin in millimetres
+  \item[{strokePx}] \normalfont the pen width in pixels
+  \item[{paper}] \normalfont the background value, default 255
+  \item[{ink}] \normalfont the stroke value, default 0
+  \item[{softPx}] \normalfont the blur radius in pixels, 0 for none
+\end{description}
+
+\noindent\textbf{Output.} a grey image of the trajectory, ink on paper.
+
+
+\paragraph{Why the pen path is turned into an image at all}
+The plotter draws from the trajectory and never needs an image. The image exists because the two judging networks score pictures, not paths. Every evaluation in this project, and the best-of-N search itself, works by rendering a candidate and asking the networks what they see. So the rasteriser is not a display convenience; it is part of the optimisation loop, and how faithfully it imitates a photograph determines whether the scores mean anything.
+
+
+\paragraph{The coordinate flip}
+
+\begin{equation}
+x_{\mathrm{px}} \;=\; (x - x_0 + \mathrm{pad}) \cdot \mathrm{ppm}, \qquad y_{\mathrm{px}} \;=\; (y_1 - y + \mathrm{pad}) \cdot \mathrm{ppm}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$x_{\mathrm{px}},\, y_{\mathrm{px}}$}] \normalfont the pixel position
+  \item[{$x,\,y$}] \normalfont the trajectory position in millimetres, y upward
+  \item[{$x_0$}] \normalfont the leftmost extent of the trajectory
+  \item[{$y_1$}] \normalfont the topmost extent
+  \item[{$\mathrm{pad}$}] \normalfont the margin in millimetres
+  \item[{$\mathrm{ppm}$}] \normalfont pixels per millimetre
+\end{description}
+The x expression merely shifts the origin and scales. The y expression also reverses direction, by subtracting from the top extent rather than adding to the bottom one, because the trajectory has y increasing upward and an image has row 0 at the top. This is the single place that conversion happens on the rendering path, which is the discipline described under Trajectory: each consumer converts at its own boundary.
+
+
+\paragraph{Why the round pen needs no end caps}
+Each stroke is drawn by DrawPolyline, which sets a pixel according to its distance from the path rather than by stepping along and stamping a shape. A consequence worth drawing out is that round ends and round joins come out automatically: the set of points within a fixed distance of a line segment is a rectangle with a semicircle at each end, and the union of two such regions is already correctly rounded where they meet. A stamping rasteriser would need explicit end caps and join handling, and would leave notches at sharp corners.
+
+
+\paragraph{Why the blur comes last}
+All the strokes are drawn and then the whole image is blurred once. Blurring each stroke as it was drawn would be both slower and wrong: where two strokes overlap, each having been individually softened, the overlap would be darker than a single stroke's core, producing a visible dark patch at every crossing. Blurring the finished image treats a crossing as the single region of ink that it is.
+
+
+\begin{quote}\small\itshape The canvas is sized from the trajectory's own bounds plus the margin, so it is exactly as large as the writing requires. A fixed canvas size would either clip long text or surround short text with blank paper, and the second matters as much as the first, because the proportion of the crop that is ink is one of the statistics the networks respond to.\end{quote}
+
+\section{RenderTrajectory}
+\begin{lstlisting}[style=sig]
+def RenderTrajectory(traj,pxPerMm=8.0,padMm=None,strokePx=None,profile=None,
+        size=None,matchInk=True,uniformInk=None)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{traj}] \normalfont the trajectory to render
+  \item[{pxPerMm}] \normalfont the resolution, default 8.0
+  \item[{padMm}] \normalfont the margin, derived from the writing size if not given
+  \item[{strokePx}] \normalfont the pen width in pixels, derived if not given
+  \item[{profile}] \normalfont the writer's profile, for the non-uniform path
+  \item[{size}] \normalfont a final size to resample to, or nothing
+  \item[{matchInk}] \normalfont whether to search for the pen width matching the writer's ink density
+  \item[{uniformInk}] \normalfont whether to use one pen width for every writer
+\end{description}
+
+\noindent\textbf{Output.} a grey image of the trajectory, prepared to resemble the crops the networks were trained on.
+
+
+\paragraph{What it is for}
+The policy layer above \_Draw. It decides the pen width, the margin, the ink and paper levels and the softness, so that the rendered image resembles a photographed crop closely enough for the networks' scores to be meaningful.
+
+
+\paragraph{The two modes}
+
+\begin{itemize}\setlength\itemsep{0pt}
+  \item \textbf{Uniform,} the default: one pen width for every writer, black on white, matching what the plotter physically draws. This is the mode the best-of-N search uses, because the search must optimise the thing that will actually be produced.
+  \item \textbf{Per-writer:} the pen width, ink level, paper level and softness taken from the writer's profile, optionally with a search for the width that matches their measured ink density. This is for comparison against their real photographed pages, where the real page does carry their own pen.
+\end{itemize}
+
+\paragraph{Why the margin is proportional to the writing}
+The margin defaults to 0.18 of the x-height rather than a fixed number of millimetres. The code comment gives the reason: a fixed pad would inflate the crop height and skew the line's aspect ratio. A line of writing is long and thin, so a fixed margin adds a large fraction to its height and a small one to its width, changing the proportions. Aspect ratio is one of the statistics recorded in the profile as a reference, and the networks were trained on crops of a characteristic shape, so distorting it is a domain shift of exactly the kind the rendering is designed to avoid.
+
+
+\paragraph{Why the ink core is painted darker than the profile's ink level}
+The profile's inkLevel is the median of the already-dark pixels of a real crop, which includes the soft edges of every stroke as well as their cores. It is therefore an average over the whole stroke, not the colour of its centre. Painting the core at that value and then blurring would darken nothing and lighten the edges further, giving a stroke lighter overall than the real one. So the core is painted dark and the blur produces the intermediate values, which is the order the physical process works in.
+
+
+\begin{quote}\small\itshape Where a final size is requested, the image is resampled with the project's own resizer rather than being drawn at that size directly. Drawing at the final size would be better in principle, since resampling softens the image slightly, but the pen width is quantised to whole pixels, so at small sizes drawing directly would force a one-pixel pen and lose control of the stroke weight entirely.\end{quote}
+
+\section{\_MatchInkDensity}
+\begin{lstlisting}[style=sig]
+def _MatchInkDensity(traj,pxPerMm,padMm,startPx,target,mm,paper=255,ink=0,soft=0.0)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{traj}] \normalfont the trajectory
+  \item[{pxPerMm}] \normalfont the resolution
+  \item[{padMm}] \normalfont the margin
+  \item[{startPx}] \normalfont the pen width to start from
+  \item[{target}] \normalfont the ink fraction to match
+  \item[{mm}] \normalfont the x-height in millimetres
+  \item[{paper}] \normalfont the paper level
+  \item[{ink}] \normalfont the ink level
+  \item[{soft}] \normalfont the blur radius
+\end{description}
+
+\noindent\textbf{Output.} a pair of the rendered image and the pen width that produced it.
+
+
+\paragraph{What it is for}
+Finds the pen width whose rendered image has the same fraction of dark pixels as the writer's real pages. Ink fraction is one of the statistics a network responds to most directly, since it is visible at every scale, so matching it removes one axis of domain shift between synthetic and photographed crops.
+
+
+\paragraph{Why a search rather than a formula}
+The relationship between pen width and ink fraction cannot be written down. Doubling the width does not double the ink, because strokes overlap: where two strokes cross, the ink is counted once, and the amount of overlap depends on the particular text and letterforms. The blur and the threshold used to count dark pixels add further non-linearity. So the quantity is evaluated rather than predicted.
+
+
+\paragraph{The search: hill climbing in one dimension}
+The current width is probed, the direction that should help is determined from whether there is too much ink or too little, and steps of one pixel are taken in that direction for as long as the error decreases. It stops at the first step that does not improve.
+
+
+\begin{equation}
+\mathrm{err}(w) \;=\; \big|\, f(w) - f^{*} \,\big|, \qquad f(w) \;=\; \text{fraction of pixels below 128 at pen width } w
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{err}(w)$}] \normalfont the error at pen width w, which the search reduces
+  \item[{$f(w)$}] \normalfont the ink fraction produced by that width
+  \item[{$f^{*}$}] \normalfont the target ink fraction from the writer's real pages
+  \item[{$|\cdot|$}] \normalfont the absolute value, since overshooting and undershooting are equally wrong
+\end{description}
+This is \textbf{hill climbing}: move in whichever direction improves the objective and stop when no step does. It is only guaranteed to find a local best, but here that is enough, because ink fraction increases with pen width throughout, so the error has a single minimum and any local best is the global one.
+
+
+\paragraph{Why the pen width is a whole number of pixels}
+The width is quantised to whole pixels because that is what the rasteriser can express, which is what makes a one-pixel step the natural increment and makes the search finite. The consequence is that the target can rarely be hit exactly; the search returns the closest achievable, and at small rendered sizes the available widths are coarse enough that the residual error is noticeable.
+
+
+\paragraph{Why results are cached}
+Each probe requires a full render and a resize, which is the expensive part. The search revisits a width when it steps past the minimum and compares back, so caching by width removes those repeats. The upper bound on the width, a little over half an x-height, exists so that a target the geometry cannot reach makes the search terminate rather than thickening the pen until the text is a solid block.
+
+
+\section{\_LineLogProbs}
+\begin{lstlisting}[style=sig]
+def _LineLogProbs(reader, img)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{reader}] \normalfont a loaded reader
+  \item[{img}] \normalfont a rendered line image
+\end{description}
+
+\noindent\textbf{Output.} the reader's log probabilities, one row per column and one entry per character.
+
+
+\paragraph{What it is for}
+Runs a rendered image through the reader and returns the raw per-column scores rather than decoded text. Those scores are what the alignment needs, and the alignment is what identifies which characters are weak.
+
+
+\paragraph{Why the raw scores and not the text}
+Decoded text says what the reader concluded; the scores say how confidently, and where. The repair loop needs the second, because its question is not whether the line reads correctly overall but which particular characters are responsible for it not doing so. That information exists only in the per-column scores, and decoding discards it.
+
+
+\begin{quote}\small\itshape The batch axis is indexed away immediately, since rendering and scoring are done one line at a time. The reader retains the axis because the training code uses it.\end{quote}
+
+\section{\_WeakChars}
+\begin{lstlisting}[style=sig]
+def _WeakChars(reader, img, visible)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{reader}] \normalfont a loaded reader
+  \item[{img}] \normalfont a rendered line image
+  \item[{visible}] \normalfont the text that was supposed to be written
+\end{description}
+
+\noindent\textbf{Output.} the positions of the characters the reader scored worst, worst first.
+
+
+\paragraph{What it is for}
+Identifies which characters of the rendered line the reader is least sure about. The repair loop uses the answer to redraw only those characters, instead of redrawing the whole line and hoping for a better outcome.
+
+
+\paragraph{Why forced alignment rather than decoding}
+The text is known, so there is no recognition to be done. What is wanted is per-character evidence, and forced alignment provides it: it finds where each known character sits in the rendered line, after which the reader's own score for that character over exactly those columns is a direct measure of how legible that character came out.
+
+
+\begin{equation}
+s_i \;=\; \frac{1}{t_1 - t_0} \sum_{t=t_0}^{t_1-1} \log p_t\big(c_i\big)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$s_i$}] \normalfont the score for the i-th character: higher is more legible
+  \item[{$c_i$}] \normalfont that character
+  \item[{$t_0,\, t_1$}] \normalfont the first and last columns the alignment assigned to it
+  \item[{$\log p_t(c_i)$}] \normalfont the reader's log probability for that character at column t
+  \item[{$\frac{1}{t_1-t_0}$}] \normalfont the mean over its columns, so a wide letter is not favoured over a narrow one merely for occupying more columns
+\end{description}
+Averaging rather than summing is the point of that factor. A summed score would rank an m below an i automatically, since it spans more columns and so accumulates more negative terms, and the repair loop would spend its attention on wide letters regardless of how legible they were.
+
+
+\paragraph{The unaligned case}
+A character the alignment could not place at all is given a very large negative score, so it sorts to the front. That is the correct ranking: a character with no columns of its own was so poorly drawn that the aligner had to pass through it in a single step shared with its neighbours, which is a more complete failure than a character that was placed but scored badly.
+
+
+\begin{quote}\small\itshape Whitespace is skipped, since a space is not a drawn shape and cannot be repaired by substituting a letterform. Positions are returned as indices into the original text, not into the filtered character list, because that is what the per-character override table is keyed by.\end{quote}
+
+\section{REPAIR\_ROUNDS}
+\begin{lstlisting}[style=sig]
+REPAIR_ROUNDS = 3
+\end{lstlisting}
+
+\noindent\textbf{Output.} 3, how many targeted redraw passes follow the search.
+
+
+\paragraph{What a repair round is}
+After the best-of-N search has chosen its best attempt, the weakest characters in it are identified and pinned to the anchor letterform, and the line is drawn again. If the result scores better it is kept. That is one round, and three are performed.
+
+
+\paragraph{Why repair is more effective than more attempts}
+This is the substantive point. Drawing the whole line again with a different seed changes every character at once, so a line failing because of one bad letter is as likely to acquire a new bad letter elsewhere as to fix the original. Repair changes only the characters identified as weak and leaves the rest exactly as they were, so it is a directed improvement rather than another sample. It is the difference between searching randomly and using the gradient.
+
+
+\paragraph{Why three}
+Each round costs a full render and two network evaluations, and the returns fall away quickly: the first round addresses the worst characters, which are where most of the loss is, and by the third the remaining weak characters are usually ones the anchor cannot help, because the difficulty lies in the neighbouring letters or the join rather than in the letterform. Three rounds reach that point without spending on further ones.
+
+
+\section{REPAIR\_WORST\_K}
+\begin{lstlisting}[style=sig]
+REPAIR_WORST_K = 3
+\end{lstlisting}
+
+\noindent\textbf{Output.} 3, how many characters are pinned to the anchor per round.
+
+
+\paragraph{Why not just the worst one}
+Pinning one character per round would need many more rounds to fix a line with several bad letters, and each round costs a render and two network evaluations. Pinning three advances faster at the same cost per round.
+
+
+\paragraph{Why not all of them}
+Because the effects interact and the acceptance test is all-or-nothing. A round's result is kept only if the overall score improves, so a round that fixes four characters and breaks a fifth may be rejected entirely, losing the four improvements with it. Changing a few at a time keeps each round's effect small enough to be judged usefully. Pinning everything at once would simply be the lam-1 case, which abandons the writer's hand altogether.
+
+
+\begin{quote}\small\itshape Characters already pinned are not reconsidered in later rounds, whether or not the round that pinned them was accepted. That prevents the loop cycling on the same characters and guarantees it terminates, at the cost of occasionally passing over a character that a different combination would have fixed.\end{quote}
+
+\section{DEFAULT\_LEGIBILITY}
+\begin{lstlisting}[style=sig]
+DEFAULT_LEGIBILITY = 0.65
+\end{lstlisting}
+
+\noindent\textbf{Output.} 0.65, the legibility setting used when none is supplied.
+
+
+\paragraph{Where it applies}
+Only in SynthesizeLegible, the earlier search that optimises text accuracy alone. The joint search derives its setting from AutoLegibility instead, which is the better approach because it responds to the writer's own library rather than applying one figure to everyone.
+
+
+\paragraph{Why a middling value}
+0.65 leans toward legibility without abandoning the writer's shapes, which is the reasonable default for a search whose only objective is text accuracy: with nothing measuring fidelity, a setting that preserved more of the hand would not be rewarded for it. The value is a compromise standing in for a measurement that the function does not make, which is precisely what AutoLegibility supplies and why the joint search prefers it.
+
+
+\section{SynthesizeLegible}
+\begin{lstlisting}[style=sig]
+def SynthesizeLegible(text,profile,nTries=6,mmPerXh=4.0,lineWidthMm=180.0,
+        jitter=0.5,seed=0,reader=None,pxPerMm=18.0,legibility=None,repair=True)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{text}] \normalfont the text to write
+  \item[{profile}] \normalfont the writer's style profile
+  \item[{nTries}] \normalfont how many attempts, default 6
+  \item[{mmPerXh}] \normalfont the x-height in millimetres
+  \item[{lineWidthMm}] \normalfont where to wrap
+  \item[{jitter}] \normalfont the variation amount, default 0.5
+  \item[{seed}] \normalfont the base random seed
+  \item[{reader}] \normalfont a loaded reader, constructed if not given
+  \item[{pxPerMm}] \normalfont the render resolution
+  \item[{legibility}] \normalfont the lam setting
+  \item[{repair}] \normalfont whether to run the repair rounds, default true
+\end{description}
+
+\noindent\textbf{Output.} the best trajectory found, with its scores recorded in the metadata.
+
+
+\paragraph{What it does}
+Draws the text several times with different seeds, renders and reads each, keeps the attempt the reader reads most accurately, and then runs repair rounds on it. It optimises text accuracy alone.
+
+
+\paragraph{Why a search is needed at all}
+Synthesis is random: which variant is chosen for each character, whether each is swapped for the anchor, the jitter and the drift all depend on the seed. So the same text in the same hand has many possible renderings of differing quality, and nothing in the layout process knows which it has produced. Drawing several and measuring them is a direct way to find a good one, and it requires no model of what makes a rendering good: the reader supplies that.
+
+
+\paragraph{The escalation ladder in the repair loop}
+
+\begin{itemize}\setlength\itemsep{0pt}
+  \item \textbf{A fresh weak character} is pinned to the anchor, which is preferably the writer's own most typical letterform.
+  \item \textbf{A character still weak after being pinned} escalates to the printed alphabet, which is the last resort and abandons the writer's hand for that character entirely. Only the single worst such character escalates per round.
+\end{itemize}
+The ladder exists because the anchor sometimes does not help. If the writer's own best form of a letter is itself the problem, pinning to it changes nothing, and the only remaining option is a designed letterform. Escalating one character per round, and only one that has already failed at the lower rung, keeps the loss of fidelity to the minimum that produces a readable line.
+
+
+\begin{quote}\small\itshape The function falls back to plain layout if a reader cannot be constructed, returning text drawn without any search. That keeps synthesis usable without the network weights present, which matters for testing the layout alone.\end{quote}
+
+\section{SynthesizeJointBestOf}
+\begin{lstlisting}[style=sig]
+def SynthesizeJointBestOf(author,text,profile,nTries=6,mmPerXh=4.0,
+        lineWidthMm=180.0,jitter=0.5,seed=0,reader=None,authorModel=None,
+        authorMapping=None,pxPerMm=18.0,legibility=None,repair=True,repairRounds=3,
+        repairWorstK=2)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{author}] \normalfont the writer's name, for looking up their output slot
+  \item[{text}] \normalfont the text to write
+  \item[{profile}] \normalfont their style profile
+  \item[{nTries}] \normalfont how many attempts, default 6
+  \item[{mmPerXh}] \normalfont the x-height in millimetres
+  \item[{lineWidthMm}] \normalfont where to wrap
+  \item[{jitter}] \normalfont the variation amount, default 0.5
+  \item[{seed}] \normalfont the base random seed
+  \item[{reader}] \normalfont a loaded reader
+  \item[{authorModel}] \normalfont a loaded namer
+  \item[{authorMapping}] \normalfont the mapping from writer name to output slot
+  \item[{pxPerMm}] \normalfont the render resolution
+  \item[{legibility}] \normalfont the lam setting, derived if not given
+  \item[{repair}] \normalfont whether to run repair rounds
+  \item[{repairRounds}] \normalfont how many, default 3
+  \item[{repairWorstK}] \normalfont how many characters per round, default 2
+\end{description}
+
+\noindent\textbf{Output.} the best trajectory found, judged by text accuracy and writer identification together.
+
+
+\paragraph{What it is for}
+The search this project's reported results were produced with. It differs from the one above in judging each attempt by both networks at once: the reader, for whether the output says the right words, and the namer, for whether it still looks like this writer.
+
+
+\paragraph{Why both judges are needed}
+Optimising text accuracy alone has a predictable failure. The most readable rendering of any text is the one drawn entirely from clean anchor letterforms, so a search rewarded only for readability will drive the output toward generic handwriting. It would score well and would have abandoned the purpose of the project. Adding the namer puts a cost on that, so the search cannot buy readability with fidelity.
+
+
+\paragraph{The harmonic mean, and why not an average}
+
+\begin{equation}
+S \;=\; \frac{2\,a\,w}{a + w}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$S$}] \normalfont the combined score the search maximises
+  \item[{$a$}] \normalfont the text accuracy: the fraction of characters the reader got right
+  \item[{$w$}] \normalfont the namer's confidence that this is the right writer
+  \item[{$2aw/(a+w)$}] \normalfont the harmonic mean of the two, which is zero if either is zero
+\end{description}
+The \textbf{harmonic mean} is used rather than the arithmetic mean, and the difference is the whole point of the combinator. An arithmetic mean lets one measure compensate for the other: an attempt scoring 0.95 on text and 0.15 on writer averages 0.55, the same as a balanced 0.55 and 0.55, so the search would be indifferent between a perfectly readable page in nobody's hand and a moderate page in the right one. The harmonic mean of the first pair is 0.26 and of the second 0.55, so the balanced candidate wins clearly.
+
+The mechanism is that the harmonic mean is dominated by the smaller value: as either term approaches zero the product in the numerator does too, while the denominator does not. So it rewards being adequate on both axes rather than excellent on one, which is exactly the requirement here. It is the same quantity as the F-measure used to combine precision and recall, and for the same reason.
+
+
+\paragraph{Why the repair loop is more cautious here}
+Two characters are pinned per round rather than three, and an accepted round's pins are retained while a rejected round's are discarded. The caution follows from what is being optimised. Pinning a character to the anchor reliably helps text accuracy and reliably costs writer identification, so under the joint score a repair is no longer close to free, and taking smaller steps keeps each one's net effect measurable.
+
+
+\paragraph{Why the search stops early at 0.99}
+Both loops break once the combined score reaches 0.99, since further attempts cannot improve meaningfully and each costs a render and two network evaluations. With a search of six to fourteen attempts per line and a page of many lines, that saving is substantial on the writers whose first attempt is already good.
+
+
+\begin{quote}\small\itshape The writer mapping defaults to an attribute read from the namer under the name \texttt{author\_mapping}, while the namer stores it as \texttt{authorMapping}. The default therefore raises an attribute error if reached, and every working caller passes the mapping explicitly. It is recorded here because a reader would otherwise assume the argument is optional.\end{quote}

@@ -23,11 +23,12 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import MyImage
 from PIL import Image
 from scipy.ndimage import gaussian_filter,map_coordinates
 
 from ExtractIAMLines import ExtractLinePatches,ReadLabelLines
-from Charset import CHARSET,CHAR_TO_IDX,IDX_TO_CHAR   #single source of truth, was duplicated here before
+from Charset import CHAR_TO_IDX   #single source of truth, was duplicated here before
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 #this file lives in Software/CleanPipeline, a sibling of Software/CNN where
@@ -60,10 +61,21 @@ def ResizeLineImageFixed(pilImg,height=INPUT_HEIGHT,width=INPUT_WIDTH,padValue=2
     s = min(height/h,width/w)
     newW = max(1,round(w*s))
     newH = max(1,round(h*s))
-    resized = img.resize((newW,newH),Image.Resampling.BILINEAR)
-    canvas = Image.new("L",(width,height),padValue)
-    canvas.paste(resized,(0,max(0,(height-newH)//2)))
-    return canvas
+    #my own fit, one scale for both axes then paste left and centred.  see
+    #MyImage.FitFixedCanvas for why a shrink must average and not point sample
+    gray = np.asarray(img,dtype=np.uint8)
+    return Image.fromarray(MyImage.FitFixedCanvas(gray,height,width,padValue))
+
+
+#exact inverse of ResizeLineImageFixed's x mapping: an x on the fixed
+#INPUT_WIDTH canvas back to an x in the original crop. the fit is a single
+#uniform scale s with the image pasted at x=0, so x_canvas = s*x_orig and the
+#inverse is a division. used by BuildStyleProfile to turn a ctc frame index
+#(a canvas-space position) into a column of the real line crop before cutting
+#glyphs out of it -- getting this wrong shifts every glyph boundary
+def FrameXToPixel(canvasX,rawW,origH):
+    s = min(INPUT_HEIGHT/origH,INPUT_WIDTH/rawW)
+    return float(np.clip(canvasX/s,0.0,float(rawW)))
 
 
 #pil image -> normalized float array, ink high / background low, ~[-1,1]
@@ -93,7 +105,9 @@ def PilAffine(img,angleDeg=0.0,shearDeg=0.0,fillValue=255):
     M = T2@R@Sh@T1
     Minv = np.linalg.inv(M)
     coeffs = (Minv[0,0],Minv[0,1],Minv[0,2],Minv[1,0],Minv[1,1],Minv[1,2])
-    return img.transform(img.size,Image.AFFINE,coeffs,resample=Image.BILINEAR,fillcolor=fillValue)
+    #my own warp.  coeffs map an output pixel back to its source, which is
+    #why the matrix above is inverted before being handed over
+    return Image.fromarray(MyImage.Warp(np.asarray(img,dtype=np.uint8),coeffs,fill=fillValue))
 
 
 #Table 3 "combined" augmentation recipe: shear by an angle sampled as atan(k)
@@ -129,7 +143,8 @@ def AugmentPerspective(img):
     DistortionScale = random.uniform(0.03,0.08)
     startpoints,endpoints = PerspectiveJitterPoints(w,h,DistortionScale)
     coeffs = FindPerspectiveCoeffs(startpoints,endpoints)
-    return img.transform(img.size,Image.PERSPECTIVE,coeffs,resample=Image.BILINEAR,fillcolor=255)
+    #same Warp, 8 coeffs instead of 6 so it divides by a varying third row
+    return Image.fromarray(MyImage.Warp(np.asarray(img,dtype=np.uint8),coeffs,fill=255))
 
 
 #corner points for AugmentPerspective: 4 image corners, each jittered by up

@@ -30,7 +30,7 @@ def Conv2dForward(x,weight,bias,padding=1):
     colsFlat = cols.reshape(B,C*kh*kw,outH*outW)
 
     w = weight.reshape(OutC,C*kh*kw)
-    out = np.stack([w@colsFlat[b] for b in range(B)],axis=0).reshape(B,OutC,outH,outW)
+    out = (w@colsFlat).reshape(B,OutC,outH,outW)   #w(OutC,K) broadcasts over colsFlat's batch dim -> one batched BLAS gemm, not a per-sample python loop
     if bias is not None:
         out = out+bias.reshape(1,OutC,1,1)
     cache = (x.shape,weight,colsFlat,padding,kh,kw,outH,outW)
@@ -45,11 +45,11 @@ def Conv2dBackward(dout,cache):
     OutC = weight.shape[0]
     doutFlat = dout.reshape(B,OutC,outH*outW)
 
-    dw = sum(doutFlat[b]@colsFlat[b].T for b in range(B)).reshape(weight.shape)
+    dw = (doutFlat@colsFlat.transpose(0,2,1)).sum(axis=0).reshape(weight.shape)   #batched matmul, summed over the batch
     db = dout.sum(axis=(0,2,3))
 
     w = weight.reshape(OutC,C*kh*kw)
-    dcolsFlat = np.stack([w.T@doutFlat[b] for b in range(B)],axis=0)
+    dcolsFlat = w.T@doutFlat   #w.T(K,OutC) broadcasts over doutFlat's batch dim, same trick as forward
     dcols = dcolsFlat.reshape(B,C,kh,kw,outH,outW)
 
     Hp,Wp = H+2*padding,W+2*padding

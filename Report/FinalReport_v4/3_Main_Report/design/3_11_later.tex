@@ -1,0 +1,31 @@
+\subsection{Modifications made after the chain could be measured}
+\label{sec:later}
+
+The subsections above describe each subsystem as delivered. Four of those designs are not what was built first: they replaced an earlier version once the complete chain existed and the output could be measured end to end, which is the point at which faults invisible inside a single subsystem became apparent. They are collected here because each was a change of approach rather than a correction of code, and because the reason for each lies outside the subsystem it altered.
+
+\subsubsection{A second writer classifier, judging shape instead of ink}
+\label{sec:later-strokenorm}
+
+The first writer classifier was trained on grey-scale crops and read real held-out lines at 99.78\,\% over 1358 lines, which satisfied requirement R2 on photographed pages. Measured on \emph{synthesised} output, however, the same classifier identified the intended writer in only about 28\,\% of trials. The cause is a property of the machine rather than of the network: the gantry draws every stroke with one pen at one width and one pressure, whereas real handwriting carries a thickness and an ink density that a convolutional network exploits readily when the training lines are few. A classifier that leans on those cues therefore predicts neither what the machine can draw nor how a reader recognises a hand, which is by geometry.
+
+The response was to train a second classifier of the same architecture on stroke-normalised crops, in which the ink is thinned to a centre line and redrawn at a constant width proportional to the letter height, so thickness is removed by construction (Section~\ref{sec:wid-strokenorm}). The two are used for different purposes, and the division is kept throughout the system: the ink classifier serves real photographed pages, and the shape classifier serves the candidate search of Section~\ref{sec:syn-search}. Neither replaced the other, so the writer-identification block carries two sets of weights rather than one.
+
+\subsubsection{End-to-end training in place of a frozen backbone}
+\label{sec:later-endtoend}
+
+The shape classifier was first trained by fitting only the 13\,645 parameters of its head on feature vectors extracted once from a frozen backbone. That recipe is a training fault for the reason given in Section~\ref{sec:writerid}: because the features were extracted once, no augmentation was re-sampled between epochs and every line contributed the same four fixed vectors for all 500 epochs. Training all 966\,445 parameters end to end instead raised the same measurement from 83.36\,\% to 93.67\,\% on the same 1358 real lines, and removed a failure in which 118 of one writer's 148 lines had been assigned to a single neighbour. Every figure quoted for the shape classifier elsewhere in this report is from the end-to-end model; the frozen-head figures describe the superseded one.
+
+\subsubsection{Selecting a candidate on both criteria instead of legibility alone}
+\label{sec:later-joint}
+
+The candidate search first kept whichever of the $N$ draws the text recogniser read most accurately. That raised legibility and, for some writers, lowered writer identification, because the most legible of several random draws has no reason also to be the most characteristic. The score was therefore changed to the harmonic mean of the recogniser's character accuracy and the shape classifier's confidence in the intended writer, Equation~\ref{eq:syn-score}, which is dominated by whichever of the two is smaller and so cannot be won on one criterion while failing the other. The repair loop was changed in the same way and for the same reason, accepting a repaired line only when the joint score improves, so that a repair which fixes a letter but makes the line resemble another writer is rejected rather than taken. The evidence for both changes is in Table~\ref{tab:syn-evid}.
+
+\subsubsection{Line-level style calibration}
+\label{sec:later-cal}
+
+Glyphs are stored and placed one instance at a time, so a line assembled from them does not reproduce the writer's line-level slant and ascender reach automatically. The calibration of Section~\ref{sec:syn-cal} was added to correct that drift, measuring a rendered probe with the same functions that measured the writer's real pages and returning a shear and reach correction. The drift it corrects was itself measured before the change: writer 150's ascenders came out about 7\,\% too tall and writer 551's slant about $9^\circ$ too steep against their own real lines (Section~\ref{sec:syn-cal}).
+Its effect after the change differs between the two judges, and the shape classifier was taken as the one that predicts the physical machine, since the machine writes every writer with the same pen.
+Unlike the other three changes, this one has no before-and-after pair in Table~\ref{tab:syn-evid}, so its benefit rests on the probe agreeing with the stored reference rather than on a judge's score, and item~4 of Section~\ref{sec:syn-faults} records why that agreement is partly self-fulfilling.
+\mustdo{measure writer identification and character accuracy with the calibration of Equation~\ref{eq:syn-cal} disabled and enabled, over the same sentences and seeds as the other rows of Table~\ref{tab:syn-evid}, so that this change carries the same kind of evidence as the other three.}
+
+\mustdo{confirm that these four are the complete set of changes of approach, and add any others that belong here --- for example a change to the segmentation thresholds, to the number of writers, or to the requirement allocation --- each with what was measured before and after.}

@@ -1,0 +1,121 @@
+%%
+%%  Department of Electrical, Electronic and Computer Engineering.
+%%  EPR400/2 Final Report - supporting detail of the G-code generator and the
+%%  software architecture.
+%%
+%%  Sections 3.9 and 3.11 give the program structure, the time model and the
+%%  two timing budgets.  This file holds the generator's configuration table,
+%%  the apportionment of each requirement's budget across the stages that
+%%  spend it, and pseudocode of the two routines concerned.  No code is
+%%  reproduced.
+%%
+
+\subsection{Supporting detail of the G-code generator and the software architecture}
+\label{sec:app-sys}
+
+Sections~\ref{sec:gcode} and~\ref{sec:system} describe how a trajectory becomes a machine program and how the blocks form one application.
+This appendix carries the generator's configuration with the role of every field, the apportionment of the two timing requirements across the stages that spend them, and pseudocode of the emitting loop and of the start-up warm-up.
+The apportionment is given here because it is a design-stage calculation rather than a result: it states what each stage was \emph{allowed} to cost, against which the measurements of Section~\ref{sec:results} can be read.
+
+\subsubsection{Configuration of the G-code generator}
+
+Every constant of the generator is listed in Table~\ref{tab:gc-config} with its role.
+The motor, driver and transmission values are assumptions recorded in the program comments, not measurements; the calibrated steps per millimetre of Section~\ref{sec:gan-calib} replace the derived ones in the interpreter, so a scale error in the generator's assumption does not reach the machine.
+
+\begin{table}[!htbp]
+\centering
+\fontsize{8}{9.6}\selectfont
+\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\linewidth}{|p{3.4cm}|p{2.4cm}|X|}
+\hline
+\textbf{Field} & \textbf{Value} & \textbf{Meaning} \\
+\hline
+Steps, microstepping, travel per revolution; steps per millimetre & 200, 16, 40.0\,mm; 80.000 & Assumed $1.8^\circ$ stepper, driver setting and 2\,mm-pitch belt on a 20-tooth pulley, giving $200\cdot16/40$. \\
+Work area; origin and park & 0 to 200\,mm in $X$ and $Y$; (10, 180)\,mm & Limits of the clamp; top-left corner of the text block. \\
+Draw and travel feed & 900, 2400\,mm/min & Pen down (15\,mm/s), pen up (40\,mm/s, emitted once). \\
+Acceleration; minimum segment & 400\,mm/s$^2$; 0.12\,mm & Used only by the time model; shorter moves are collapsed. \\
+Pen pulse and settling; pen codes and power-on state & 260 and 90\,ms; \texttt{M5}, \texttt{M3}, up & Assumed time for a $90^\circ$ rotation and the dwell after a toggle; pen up and pen down, the up state at power-on being assumed. \\
+\hline
+\end{tabularx}
+\caption{Configuration of the G-code generator. Only the work area and the two feeds are design choices of this project; the rest are assumptions about parts, which is why the interpreter re-measures the resolution rather than trusting the figure in the file header.}
+\label{tab:gc-config}
+\end{table}
+
+\subsubsection{Apportionment of the two timing budgets}
+
+Requirements R3 and R4 bound the \emph{total} time of a job, and Equations~\ref{eq:sys-cls} and~\ref{eq:sys-rep} decompose each total into the stages that spend it.
+A budget is only useful once it is apportioned, and Table~\ref{tab:app-budget} states the allowance this design assigned to each stage, together with the laptop figure measured for it.
+The apportionment was made at design time from the structure of the chain, not fitted to the measurements: the recognition and classification terms were given the whole per-character allowance of R4 because they are the only terms that grow with $x$, leaving the fixed 2\,s for capture, conditioning and segmentation; and in R3 the physical writing was given three quarters of the per-character allowance, since it is the one term that cannot be made faster by a faster computer.
+
+\begin{table}[!htbp]
+\centering
+\fontsize{8}{9.6}\selectfont
+\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\linewidth}{|p{3.0cm}|p{2.9cm}|X|}
+\hline
+\textbf{Stage} & \textbf{Design-stage allowance} & \textbf{Measured on the laptop, and the verdict} \\
+\hline
+R4: capture, conditioning and segmentation & the whole fixed 2\,s, being independent of $x$ & 24.8 to 69.1\,s per page, 12 to 35 times the allowance: the term that fails R4, and it fails by an order of magnitude rather than marginally \\
+\hline
+R4: recognition and writer classification & the whole 25\,ms per character, being the only terms growing with $x$ & 8.86\,ms per character for recognition and 4.6 to 10.3\,ms for classification, so about half the allowance together: met with margin \\
+\hline
+R3: synthesis & 1\,s per character, a quarter of the allowance & 0.4 to 0.7\,s per character at $N=1$, rising to 1.8 to 3.4\,s at $N=30$: met only at small $N$, which is why $N$ is the parameter that decides whether R3 can be met at all \\
+\hline
+R3: G-code generation & negligible by design, the generator doing no search & 0.006 to 0.014\,s per sentence: met by three orders of magnitude \\
+\hline
+R3: physical writing & 3\,s per character, three quarters of the allowance, being the irreducible term & 2.7 to 4.0\,s per character from the generator's model, no stopwatch reading: cannot be declared met, and the upper end of the model already exceeds the allowance \\
+\hline
+\end{tabularx}
+\caption{Apportionment of the budgets of Equations~\ref{eq:sys-cls} and~\ref{eq:sys-rep} across the stages, with the laptop figures of Section~\ref{sec:results} against each. No stage was timed on the single-board computer, so every verdict here is provisional on hardware that is faster than the target. The two stages that fail are the two that were never redesigned after first being written: page segmentation and the physical writing.}
+\label{tab:app-budget}
+\end{table}
+
+Read against Table~\ref{tab:app-budget}, the failure of R4 is localised rather than general: four of the five stages are inside their allowance, two of them by a wide margin, and the whole shortfall sits in page segmentation.
+That is also the one stage for which a remedy was demonstrated but not deployed, the two routines reimplemented in C99 having reduced the retired segmenter by 25 to 32\,\% end to end (Section~\ref{sec:segmentation}); a saving of that size would not by itself close a factor of twelve, so the conclusion the apportionment supports is that segmentation needs a different algorithm or a different language, not a faster implementation of the same one.
+
+\subsubsection{Pseudocode of the emitting loop and the start-up warm-up}
+
+The emitting loop is short, and its one subtlety is the pen state: because the lift is a one-way toggle motor, a pulse emitted where none is needed inverts the pen for the remainder of the job, so the pen command is emitted only on a change of state.
+
+\begin{figure}[!htbp]
+\centering
+\fontsize{8.5}{10.2}\selectfont
+\begin{verbatim}
+  emit the comment header, G21 (millimetres) and G90 (absolute)
+  emit the travel feed once
+
+  for each stroke of at least two points:
+      SetPen( up )                  # emits M5 and a dwell ONLY on a change
+      rapid move to the first point of the stroke
+      SetPen( down )                # emits M3 and a dwell ONLY on a change
+      emit the draw feed
+      for every remaining point of the stroke:
+          emit a linear move to that point, three decimals
+
+  SetPen( up ) ;  move to the park position ;  emit M2
+\end{verbatim}
+\caption{The emitting loop of the G-code generator as pseudocode. \texttt{SetPen} returns nothing at all when the pen is already in the wanted state, which is what keeps the one-way toggle motor of Section~\ref{sec:gan-pen} in step with the program's model of it; the dwell it emits on a change is the $260+90$\,ms of Table~\ref{tab:gc-config}. Fault~2 of Section~\ref{sec:gc-faults} is visible here: the draw feed is emitted before every stroke but the travel feed only once, so every travel after the first runs at the draw feed.}
+\label{fig:gc-emitpseudo}
+\end{figure}
+
+The start-up warm-up is the one path in the application that can reach a machine-learning library, as Section~\ref{sec:system} records.
+
+\begin{figure}[!htbp]
+\centering
+\fontsize{8.5}{10.2}\selectfont
+\begin{verbatim}
+  Prewarm( ):                  # a background thread, not the inference path
+      for each writer, in order:
+          try:
+              build or fetch the cached glyph grid for that writer
+              build or fetch two cached sample crops for that writer
+          except any error:
+              warn and continue              # a failure must not stop start-up
+          mark that writer's cache as warm
+
+  start Prewarm in a background thread at start-up
+  any route needing a cached file answers "still preparing" until it is marked
+\end{verbatim}
+\caption{The start-up warm-up as pseudocode. The two cache-building calls are the ones that, on a miss, reach into the retired source tree and import a machine-learning library; because three writers have no cached files as delivered, that miss happens on every start, which is the defect Section~\ref{sec:system} records. Running it on a background thread is what keeps the delay off the first request, and marking each writer separately is what lets the routes that do not need a cache answer immediately.}
+\label{fig:sys-code-warm}
+\end{figure}

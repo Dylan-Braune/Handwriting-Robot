@@ -1,0 +1,2487 @@
+
+\chapter{segment.py}
+This chapter covers two things that live in one file: the image toolkit used by the whole pipeline, and the page segmenter that is its heaviest user. They are together because the toolkit has no purpose on its own, and because other modules then import the few functions they need from here rather than from a separate module that would exist only to hold them.
+
+
+\paragraph{The problem this file solves}
+A photograph of a handwritten page arrives as a single large grid of brightness values. Everything downstream, both networks and the glyph extractor, expects one tidy image per line of writing: straightened, with the printed ruling removed, cropped to the writing, and containing that line and no part of its neighbours. Getting from one to the other is this file's job.
+
+That is harder than it sounds for four reasons, and the structure of the file follows from them.
+
+
+\begin{itemize}\setlength\itemsep{0pt}
+  \item The photograph is not evenly lit. One side is brighter than the other, there may be a shadow, and the paper is not pure white. So there is no single brightness that separates ink from paper everywhere on the page.
+  \item The page is never perfectly square to the camera. Even a degree of tilt means a horizontal cut through the image crosses several lines of writing.
+  \item The paper is usually ruled, and the printed rules are darker and more regular than the handwriting. If they are not removed they dominate every measurement.
+  \item Lines of handwriting overlap vertically. A descender from one line hangs into the next, and a straight cut between two lines slices it in half, leaving a fragment attached to the wrong line.
+\end{itemize}
+
+\paragraph{How the toolkit is arranged}
+The first half of the chapter is built strictly from the bottom upwards, because each layer is used by the one above it: sums over rectangles, then shape operations built from those sums, then thresholding, then grouping touching pixels into objects, then thinning a stroke to its centreline, then resizing, then geometric transforms, then measurement.
+
+
+\paragraph{Why so much is built on rectangle sums}
+Almost every operation in the first half needs a local average or a local count: the average brightness near a pixel, whether any ink lies within a few pixels, how much ink is in a window. Computed directly, a window of radius r costs (2r+1) squared additions per pixel, so a radius of 40 on a page of several million pixels is thousands of additions each and the program becomes unusable. A summed-area table reduces every such query to four lookups, whatever the radius \cite{crow1984}. That single idea is what makes the rest of the file practical, which is why it comes first.
+
+
+\section{Integral}
+\begin{lstlisting}[style=sig]
+def Integral(img)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{img}] \normalfont a two-dimensional array of numbers, normally a greyscale image
+\end{description}
+
+\noindent\textbf{Output.} An array one row and one column larger than the input, in which each entry holds the total of everything above and to the left of it.
+
+
+\paragraph{What it is for}
+This is the foundation of the toolkit. On its own it computes nothing useful; what it provides is the ability to ask for the total of any rectangle in the image at a cost that does not depend on the rectangle's size. Every local average, every shape-growing operation and every local ink count in this file uses it.
+
+
+\paragraph{Background: what a cumulative sum is}
+If a list of numbers is replaced by a list in which each entry is the total so far, then the sum of any stretch of the original list can be found by subtracting two entries of the new list. For the list 2, 3, 1, 4 the running totals are 2, 5, 6, 10, and the sum of the middle two numbers is 6 minus 2, which is 4. No addition is needed at query time, however long the stretch.
+
+A summed-area table, also called an integral image, is the same idea in two dimensions \cite{crow1984}. Each cell holds the total of the whole rectangle from the top-left corner of the image down to that cell:
+
+
+\begin{equation}
+\mathrm{ii}[y,x] \;=\; \sum_{i<y}\;\sum_{j<x} \mathrm{img}[i,j]
+\end{equation}
+\noindent\emph{Source: }\cite{crow1984}
+
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{ii}[y,x]$}] \normalfont the value stored at row y, column x of the table
+  \item[{$\mathrm{img}[i,j]$}] \normalfont the original pixel at row i, column j
+  \item[{$y, x$}] \normalfont the row and column being computed, counted from zero
+\end{description}
+
+\paragraph{How a rectangle total is then obtained}
+To get the total inside a rectangle, take the table value at its bottom-right corner, which includes the rectangle but also everything above and to the left of it. Subtract the value at the top-right corner, which removes the band above. Subtract the value at the bottom-left corner, which removes the band to the left. Those two subtractions each removed the top-left block, so it has been taken away twice and must be added back once:
+
+
+\begin{equation}
+S \;=\; \mathrm{ii}[y_2,x_2] \;-\; \mathrm{ii}[y_1,x_2]\;-\; \mathrm{ii}[y_2,x_1] \;+\; \mathrm{ii}[y_1,x_1]
+\end{equation}
+\noindent\emph{Source: }\cite{crow1984}
+
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$S$}] \normalfont the total of all pixels inside the rectangle
+  \item[{$y_1, x_1$}] \normalfont the top-left corner of the rectangle
+  \item[{$y_2, x_2$}] \normalfont one row and one column past the bottom-right corner, so the rectangle stops just before them
+\end{description}
+
+\paragraph{Why the extra row and column of zeros}
+The formula above needs to read the table at the row above the rectangle and the column to its left. For a rectangle touching the top or left edge of the image those positions would be outside the array. Storing the table one larger in each direction, with the first row and column filled with zeros, means those reads land on genuine zeros instead and no special case is needed anywhere in the file.
+
+
+\paragraph{Why the result is stored as floating point}
+The entry in the bottom-right corner is the sum of every pixel in the image. For a 3000 by 2200 photograph with values up to 255 that is about 1.7 billion, which exceeds the range of a 32-bit signed integer. An overflow would not raise an error; it would wrap around to a negative number and quietly corrupt every rectangle total computed from that part of the table. Using 64-bit floating point avoids this with room to spare.
+
+
+\paragraph{Cost}
+Two passes over the image to build, then four lookups per query regardless of window size. For the background estimate used by ink detection, with a radius of 40 pixels, the direct method would need 6561 additions per pixel; this needs four.
+
+
+\section{BoxSum}
+\begin{lstlisting}[style=sig]
+def BoxSum(img, ry, rx)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{img}] \normalfont a two-dimensional array
+  \item[{ry}] \normalfont the window radius in rows, so the window spans 2*ry+1 rows
+  \item[{rx}] \normalfont the window radius in columns
+\end{description}
+
+\noindent\textbf{Output.} An array the same shape as the input, where each entry is the total of the input inside the window centred on that position.
+
+
+\paragraph{What it is for}
+Applies the rectangle query of the summed-area table at every position at once. This is the function that actually gets used; \texttt{Integral} exists to make it possible.
+
+
+\paragraph{How it works}
+The four corner positions of every pixel's window are built as whole arrays of indices rather than being computed one pixel at a time, and the table is then read at all of them simultaneously. The result is the same four-term expression as before, evaluated for the entire image in a handful of array operations.
+
+Doing it this way rather than with a loop matters because the loop would run in the Python interpreter, which is roughly two orders of magnitude slower than the same arithmetic performed inside numpy's compiled code. For a multi-megapixel photograph that is the difference between a fraction of a second and several minutes.
+
+
+\paragraph{What happens at the edges}
+A window centred near the border of the image hangs off the edge. The corner indices are clipped to stay inside the array, so the window is effectively cut short and the total covers fewer pixels than it would in the middle of the image. That is not corrected here, because the correction depends on what the caller wants: \texttt{BoxMean} divides by the number of pixels actually covered, while \texttt{Erode} compares against that same count. Both get what they need from \texttt{BoxCount}.
+
+
+\section{BoxCount}
+\begin{lstlisting}[style=sig]
+def BoxCount(ry, rx, h, w)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{shape or array}] \normalfont used for its dimensions
+  \item[{ry}] \normalfont the window radius in rows
+  \item[{rx}] \normalfont the window radius in columns
+\end{description}
+
+\noindent\textbf{Output.} An integer array giving, for each position, how many pixels its window actually covered once clipped to the image.
+
+
+\paragraph{What it is for}
+Window sums near the border of an image cover fewer pixels than those in the middle. This counts how many were covered, which is what makes the border behaviour of the operations above it correct rather than approximately correct.
+
+
+\paragraph{How it works}
+The count is the clipped height of the window multiplied by its clipped width. Because those two depend only on the row and only on the column respectively, each is computed as a short one-dimensional array and the two are then multiplied together, which is far less work than computing a two-dimensional count directly. A quantity that factorises this way is called separable, and the same idea appears again in \texttt{Resize} and \texttt{Blur}.
+
+
+\paragraph{Why it matters: two different uses}
+
+\begin{itemize}\setlength\itemsep{0pt}
+  \item \texttt{BoxMean} divides the window sum by this count instead of by the nominal window area. Without that, the average near the border would be computed as though the missing pixels were zero, so the estimated background would fall towards black near every edge and ink detection would misbehave in a band around the whole page.
+  \item \texttt{Erode} asks whether every pixel in the window is set, which it tests by comparing the window sum against this count. Comparing against the nominal area instead would make the test impossible to satisfy anywhere near the border, and a band around the page would be eroded away.
+\end{itemize}
+
+\section{BoxMean}
+\begin{lstlisting}[style=sig]
+def BoxMean(a, r)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{img}] \normalfont a two-dimensional array
+  \item[{r}] \normalfont a single radius used for both rows and columns
+\end{description}
+
+\noindent\textbf{Output.} A floating point array the same shape as the input, giving the average value in the window centred on each position.
+
+
+\paragraph{What it is for}
+This is how the pipeline estimates the local background brightness of a photograph. Comparing a pixel against the average of its own surroundings, rather than against one number for the whole page, is what allows ink to be found correctly on a page that is brighter on one side, or has a shadow across it, or was photographed with the flash off to one side.
+
+
+\paragraph{How it works}
+
+\begin{equation}
+\mathrm{mean}[y,x] \;=\; \frac{\mathrm{BoxSum}[y,x]}{\mathrm{BoxCount}[y,x]}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{mean}[y,x]$}] \normalfont the local average at this position
+  \item[{$\mathrm{BoxSum}[y,x]$}] \normalfont the total inside the window, from the summed-area table
+  \item[{$\mathrm{BoxCount}[y,x]$}] \normalfont how many pixels that window covered
+\end{description}
+
+\paragraph{Why a flat window rather than a smooth one}
+A gaussian-weighted average, which weights nearby pixels more than distant ones, would be slightly smoother. A flat window is used because it can be computed from the summed-area table in constant time per pixel whatever the radius, where a gaussian cannot. For a background estimate the difference is not visible: what is wanted is the general level over a region, and the fine detail of how that region is weighted does not affect which pixels end up classified as ink.
+
+
+\section{Dilate}
+\begin{lstlisting}[style=sig]
+def Dilate(mask, ky, kx)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{m}] \normalfont a mask: an array of true and false values
+  \item[{r}] \normalfont the radius to grow by, in pixels
+\end{description}
+
+\noindent\textbf{Output.} A mask in which a position is true if any true pixel of the input lay within its window.
+
+
+\paragraph{Background: what morphology is}
+Morphology is the family of operations that change the shapes in a mask rather than the values in an image. The two basic operations are growing a shape outwards and shrinking it inwards, and almost everything else is built by combining them. The window they look through is called the structuring element; here it is always a square.
+
+
+\paragraph{What it is for}
+Growing shapes is used in this pipeline to make separate pieces of ink touch, so that they can be treated as one object. The clearest example is a letter such as i or j, which is written as two separate marks: growing both slightly makes them touch, after which the grouping stage treats the letter and its dot as a single piece and cannot assign them to different lines of writing.
+
+
+\paragraph{How it works}
+A position should be turned on if any true pixel lies within its window. Asking whether any pixel in a region is true is the same as asking whether the number of true pixels is greater than zero, and that number is exactly what a window sum provides:
+
+
+\begin{equation}
+\mathrm{dilate}(m)[p] \;=\; \big(\,\mathrm{BoxSum}(m,r,r)[p] \;>\; 0 \,\big)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$m$}] \normalfont the input mask, with true counted as 1 and false as 0
+  \item[{$p$}] \normalfont the position being computed
+  \item[{$r$}] \normalfont the radius of the square structuring element
+\end{description}
+Expressing it as a window sum means dilation inherits the constant cost per pixel of the summed-area table, so growing by twenty pixels costs the same as growing by two.
+
+
+\section{Erode}
+\begin{lstlisting}[style=sig]
+def Erode(mask, ky, kx)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{m}] \normalfont a mask
+  \item[{r}] \normalfont the radius to shrink by
+\end{description}
+
+\noindent\textbf{Output.} A mask in which a position is true only if every pixel its window covered was true in the input.
+
+
+\paragraph{What it is for}
+Shrinking shapes. On its own it is used to remove small specks and to thin a shape; its main use here is as the second half of a closing, described next.
+
+
+\paragraph{How it works, and the one subtlety}
+Where dilation asks whether \emph{any} pixel in the window is set, erosion asks whether \emph{every} one is. That is true exactly when the number of set pixels equals the number of pixels the window covered:
+
+
+\begin{equation}
+\mathrm{erode}(m)[p] \;=\; \big(\,\mathrm{BoxSum}(m,r,r)[p]\;=\;\mathrm{BoxCount}(r,r)[p]\,\big)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$m$}] \normalfont the input mask
+  \item[{$p$}] \normalfont the position being computed
+  \item[{$\mathrm{BoxCount}(r,r)[p]$}] \normalfont how many pixels the window at p actually covered after clipping
+\end{description}
+The comparison must be against the covered count and not against the full window area of (2r+1) squared. Near the border the window is clipped, so its sum can never reach the full area, and a test against the area would report false for every position within r pixels of the edge. The visible result would be a band eroded away around the whole page, and since erosion is half of a closing, that band would then be removed from every mask the pipeline closes.
+
+
+\section{Close}
+\begin{lstlisting}[style=sig]
+def Close(mask, ky, kx)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{m}] \normalfont a mask
+  \item[{r}] \normalfont the radius
+\end{description}
+
+\noindent\textbf{Output.} A mask with gaps narrower than the structuring element filled in, and the original thickness of the shapes preserved.
+
+
+\paragraph{What it is for}
+Repairing ink that should be continuous but is not. Thresholding a photograph leaves small holes inside strokes where the paper texture shows through, and a stroke drawn with a drying pen can have genuine breaks in it. Both are repaired by a closing.
+
+
+\paragraph{How it works, and why the two steps are needed}
+A closing is a dilation followed by an erosion by the same radius. The dilation joins anything separated by less than the window, which fills the gaps, but it also makes every stroke fatter. The erosion then removes a layer of the same thickness, which restores the original width. What does not come back is the gap: once two sides have been joined, eroding the joined shape thins it but does not split it again.
+
+
+\begin{equation}
+\mathrm{close}(m,r) \;=\; \mathrm{erode}\big(\mathrm{dilate}(m,r),\, r\big)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$m$}] \normalfont the input mask
+  \item[{$r$}] \normalfont the radius, which sets the largest gap that will be bridged
+\end{description}
+So a closing bridges a gap narrower than the kernel while leaving a thin stroke thin, which a plain dilation would not. That property is why it, and not dilation, is used before thinning: thinning is sensitive to both holes and thickness, so the operation applied beforehand must fix the first without changing the second.
+
+
+\section{AnyWithinRadius}
+\begin{lstlisting}[style=sig]
+def AnyWithinRadius(m, r, axis)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{mask}] \normalfont a mask
+  \item[{r}] \normalfont the radius
+  \item[{axis}] \normalfont which axis to work along: 0 for down the rows, 1 for across the columns
+\end{description}
+
+\noindent\textbf{Output.} A mask that is true wherever any element within r positions along that single axis was true.
+
+
+\paragraph{What it is for}
+A dilation along one direction only. It is used where the tolerance being applied has a direction to it, and growing in both directions would be wrong.
+
+There are two such places. When a printed rule has been detected, it is widened slightly along its own length, so that a rule which is a fraction of a degree off horizontal is still removed over its whole length rather than in broken pieces; widening it vertically as well would eat into the writing above and below it. And when the paper region has been found, it is shrunk inwards by a margin in each axis separately, to keep the slightly soft edge of the sheet from being read as ink.
+
+
+\section{LongRunMask}
+\begin{lstlisting}[style=sig]
+def LongRunMask(m, n, axis)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{m}] \normalfont a mask
+  \item[{n}] \normalfont the minimum length, in pixels, that a run must reach
+  \item[{axis}] \normalfont the direction along which the run is measured
+\end{description}
+
+\noindent\textbf{Output.} A mask that is true at every pixel belonging to an unbroken run of at least n set pixels along that axis.
+
+
+\paragraph{What it is for}
+Telling printed lines apart from handwriting. This is the test that removes the ruling from a lined page and the dark edge of a binder, both of which would otherwise dominate every measurement the segmenter makes.
+
+
+\paragraph{Why run length is the right test}
+A printed rule is drawn by a machine: it is straight, continuous, and spans the page. A pen stroke changes direction constantly, so the number of pixels it continues in any one direction without a break is small. At the sizes this pipeline works with, the threshold is set to between 1.25 and 1.4 times the spacing between lines of writing, which is roughly 60 to 80 pixels; almost no handwritten stroke runs that far in a straight line, and a rule runs much further.
+
+
+\paragraph{How it works}
+Two passes of cumulative sums. The first finds where a long run begins. A stretch of n pixels starting at position i is entirely set exactly when the number of set pixels inside it equals n, and that count comes from one subtraction of the cumulative sum:
+
+
+\begin{equation}
+\mathrm{starts}[i] \;=\; \big(\, c[i+n] - c[i] \;=\; n \,\big)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{starts}[i]$}] \normalfont true when a run of length n begins at position i
+  \item[{$c$}] \normalfont the cumulative sum of the mask along the chosen axis, with a leading zero
+  \item[{$n$}] \normalfont the minimum run length
+  \item[{$i$}] \normalfont the candidate starting position
+\end{description}
+The second pass turns starting positions into coverage. A run of length n that covers position j must begin somewhere between n-1 places before j and j itself, and it cannot begin so late that it would run off the end. A second cumulative sum over the starts then answers "is there any start in that range" with another single subtraction:
+
+
+\begin{equation}
+\mathrm{covered}[j] \;=\; \big(\, cs[h_j+1] - cs[l_j] > 0 \,\big), \qquad l_j = \max(0,\,j-n+1),\; h_j = \min(j,\,L-n)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{covered}[j]$}] \normalfont true when position j lies inside some long run
+  \item[{$cs$}] \normalfont the cumulative sum of the starts array
+  \item[{$l_j, h_j$}] \normalfont the first and last positions at which a run covering j could begin, clamped to the valid range
+  \item[{$L$}] \normalfont the length of the axis being measured
+\end{description}
+
+\paragraph{Why it is done with cumulative sums}
+The cost is proportional to the number of pixels and does not depend on n. Scanning each window directly would cost n times as much, and n here is around 80.
+
+
+\paragraph{How one function handles both directions}
+The axis of interest is moved to the front of the array, the fixed code runs down it, and the axis is moved back afterwards. Moving an axis in numpy only changes how the array is interpreted, not the data in memory, so this costs nothing and avoids writing the same logic twice.
+
+
+\begin{quote}\small\itshape A simpler equivalent exists. \texttt{RowRunLength}, described next, already gives every pixel the length of its own run, which makes this function the same as asking whether that length is at least n, with a transpose for the other axis. That form was checked against this one on 4800 randomly generated masks of every shape, with n from 1 to 40 and both axes, and never disagreed; on a page-sized array it also ran about twice as fast, because it makes one labelling pass and one count instead of building two cumulative-sum arrays and several arrays of clamped indices.\end{quote}
+
+\section{RowRunLength}
+\begin{lstlisting}[style=sig]
+def RowRunLength(mask)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{mask}] \normalfont a two-dimensional mask; runs are measured across the rows
+\end{description}
+
+\noindent\textbf{Output.} An integer array in which every set pixel holds the length of the unbroken horizontal run it belongs to, and every clear pixel holds zero.
+
+
+\paragraph{What it is for}
+Measuring how far ink continues horizontally through each pixel. It is used to find printed rules, and in \texttt{BinarizeLine} to delete them from a line crop.
+
+
+\paragraph{How it works, in three vectorised steps}
+First, the places where a run begins are found as the positions where the row steps from clear to set, which is a comparison between the row and a copy of itself shifted by one.
+
+Second, a cumulative sum over those starting positions numbers the runs consecutively: the first run becomes 1, the second 2, and so on. The numbering is then cleared wherever there is no ink, so that only ink carries a run number.
+
+Third, counting how many pixels carry each number gives the length of each run, and indexing those counts by the run number image hands every pixel the length of its own run.
+
+
+\paragraph{Why the numbering does not leak between rows}
+The cumulative sum is taken over the whole array flattened into one long sequence, which would be wrong if a run could continue from the end of one row into the start of the next. It cannot: the comparison that finds starts is padded at both ends of every row, so each row begins and ends with a boundary and the last run of a row is always closed before the next row's first run begins.
+
+
+\paragraph{Background: what counting occurrences means here}
+The counting step uses a standard operation that, given a list of non-negative whole numbers, returns how many times each value occurs. Applied to an image of run numbers it gives the size of every run in one pass, which is why no loop over runs is needed.
+
+
+\section{Otsu}
+\begin{lstlisting}[style=sig]
+def Otsu(v, hi=None)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{v}] \normalfont an array of pixel values, either whole numbers or fractions
+  \item[{hi}] \normalfont when the input is fractional, the largest value worth considering; defaults to 1.2, which suits the ratio image produced by \texttt{InkMask} because nothing above that carries ink
+\end{description}
+
+\noindent\textbf{Output.} A threshold. For whole-number input it is a brightness level from 0 to 255; for fractional input it is a value in the input's own units. Pixels below the threshold are ink.
+
+
+\paragraph{What it is for}
+Deciding, for a given image, which brightness separates ink from paper. The point of computing it rather than fixing it is that no single number works for two photographs: one taken in daylight and one under a lamp have completely different brightness ranges, and a fixed threshold would classify the whole of one of them as paper.
+
+
+\paragraph{Background: what a histogram is}
+A histogram counts how many pixels fall at each brightness level, ignoring where they are. For a page of handwriting it usually has two humps: a large one at the bright end for the paper and a small one at the dark end for the ink, with a valley between them. The threshold should sit in that valley.
+
+
+\paragraph{The idea: measure the quality of every candidate threshold}
+Otsu's method \cite{otsu1979} turns the choice into something measurable. Any candidate threshold divides the pixels into two groups. A good threshold is one where the two groups are as different from each other as possible, which is measured by the variance \emph{between} the groups:
+
+
+\begin{equation}
+\sigma_B^2(t) \;=\; \omega_B(t)\,\omega_F(t)\,\big[\mu_B(t) - \mu_F(t)\big]^2
+\end{equation}
+\noindent\emph{Source: }\cite{otsu1979}
+
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\sigma_B^2(t)$}] \normalfont the between-class variance, the quantity being maximised
+  \item[{$t$}] \normalfont the candidate threshold
+  \item[{$\omega_B(t)$}] \normalfont the fraction of all pixels at or below t, that is the share in the darker group
+  \item[{$\omega_F(t)$}] \normalfont the fraction above t, so the two fractions add to 1
+  \item[{$\mu_B(t)$}] \normalfont the mean brightness of the darker group
+  \item[{$\mu_F(t)$}] \normalfont the mean brightness of the brighter group
+\end{description}
+Reading the formula: the squared bracket is how far apart the two group means are, so it rewards a threshold that genuinely separates dark from bright. The product of the two fractions in front is largest when the groups are of comparable size and falls to zero when either is empty, which prevents the degenerate answer of putting the threshold at one extreme and calling almost everything one group.
+
+
+\paragraph{Why maximising this is the right objective}
+The total variance of the image is a fixed property of the image and does not depend on the threshold. It can be split exactly into the variance within the two groups plus the variance between them. Since the total is fixed, making the between-group part as large as possible is the same as making the within-group part as small as possible, that is, choosing the threshold that makes each group internally as uniform as it can be. The between-group form is used because it needs only running totals, where the within-group form would need a second pass over the data for every candidate.
+
+
+\paragraph{How all 256 candidates are evaluated at once}
+Writing p for the histogram scaled so that its entries sum to one, the two quantities needed are themselves cumulative sums, and the criterion rearranges into a form built entirely from them:
+
+
+\begin{equation}
+\sigma_B^2(t)\;=\;\frac{\big[\mu_T\,\omega(t)-\mu(t)\big]^2}{\omega(t)\,\big(1-\omega(t)\big)}
+\end{equation}
+\noindent\emph{Source: }\cite{otsu1979}
+
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\omega(t)$}] \normalfont the cumulative sum of p up to t, the share of pixels at or below t
+  \item[{$\mu(t)$}] \normalfont the cumulative sum of p weighted by brightness, the contribution of those pixels to the mean
+  \item[{$\mu_T$}] \normalfont the mean brightness of the whole image, which is the final value of the weighted cumulative sum
+\end{description}
+Both cumulative sums are computed once, the expression is evaluated for every t simultaneously as array arithmetic, and the largest entry is the answer. No loop over thresholds is needed.
+
+
+\paragraph{The guard in the denominator}
+At the two extreme thresholds one group is empty, so the product in the denominator is exactly zero. Dividing by it would give infinity, and since the method picks the largest value those positions would always win. The denominator is therefore floored at a very small positive number, which leaves every genuine candidate unchanged and makes the degenerate ones lose.
+
+
+\paragraph{Why whole numbers and fractions are handled separately}
+A whole-number image has exactly 256 possible values, so its histogram can be counted exactly and the answer returned as a brightness level. A fractional image, such as the ratio of each pixel to its local background, has no natural set of levels, so its values are clipped at \texttt{hi} and sorted into 256 bins, and the answer is returned as the value at the centre of the chosen bin rather than as a bin number.
+
+
+\section{BinarizeLine}
+\begin{lstlisting}[style=sig]
+def BinarizeLine(gray, stripRules=True, closeGaps=True)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{gray}] \normalfont a greyscale image of one line of writing
+\end{description}
+
+\noindent\textbf{Output.} A mask of the ink in that crop, with small holes closed, specks removed and printed rules deleted.
+
+
+\paragraph{What it is for}
+The standard way of turning a grey line crop into ink. The glyph extractor uses it before tracing strokes, and the synthesiser uses it to measure its own rendered output with the same code that measured the writer's real pages, which is what makes the two comparable.
+
+
+\paragraph{The four steps and why each is needed}
+\textbf{Threshold.} \texttt{Otsu} chooses the level, so nothing about the brightness of this particular photograph is assumed.
+
+\textbf{Close small holes.} Thresholding a photograph leaves single-pixel holes inside strokes where the paper texture shows through. These matter more than their size suggests, because the next stage after binarising is usually thinning, and thinning preserves the topology of the shape it is given: a hole in a stroke forces the resulting centreline to split and run round both sides of it, producing a small loop that was never written.
+
+\textbf{Remove specks.} Pixels are grouped into connected components and any group too small to be a pen mark is deleted as dust or camera noise. The decision is made for a whole group at once, so a letter is never partly removed.
+
+\textbf{Delete printed rules.} Horizontal runs longer than a limit are removed, on the reasoning given under \texttt{LongRunMask}: a pen stroke does not run level for that distance, and a printed rule does nothing else.
+
+
+\section{CoreBand}
+\begin{lstlisting}[style=sig]
+def CoreBand(ink)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{ink}] \normalfont a mask of one line of writing
+\end{description}
+
+\noindent\textbf{Output.} A pair of row indices marking the top and the baseline of the x-height band, or nothing at all if there is no ink or the band is under three rows tall.
+
+
+\paragraph{Background: what the x-height is}
+In any piece of writing, most lower case letters have a body of roughly the same height, such as a, c, e, m and o. The height of that body, measured up from the line the writing sits on, is called the x-height, after the letter x. Some letters reach above it, such as b, d and l, and these are called ascenders; some reach below the line, such as g, p and y, and these are called descenders.
+
+
+\paragraph{What it is for, and why it is so important}
+The x-height is the unit of measurement for the entire pipeline. Every stored letter shape is divided by it, so that a letter extracted from a photograph at one resolution can be drawn at any physical size. Every proportion in a style profile is expressed as a multiple of it: how far ascenders reach, how far descenders drop, how wide the gaps between words are, how thick the pen is. Without a reliable x-height none of those numbers would be comparable between two writers or between two photographs of the same writer.
+
+
+\paragraph{How it works}
+Counting the ink in each row of the crop gives a one-dimensional summary called a projection profile. Rows that cross the bodies of the letters contain ink from nearly every letter on the line; rows that contain only ascenders or only descenders contain ink from the few letters that have them. The band is therefore the set of rows whose ink count is a large fraction of the maximum:
+
+
+\begin{equation}
+\mathcal{B} \;=\; \Big\{\, y \;:\; \mathrm{prof}[y] \;\ge\; 0.45\,\max_{y'} \mathrm{prof}[y'] \,\Big\}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathcal{B}$}] \normalfont the set of rows making up the band; its first and last members are returned
+  \item[{$\mathrm{prof}[y]$}] \normalfont the number of ink pixels in row y
+  \item[{$0.45$}] \normalfont the fraction of the peak that a row must reach to count as part of the band
+\end{description}
+
+\paragraph{Where the 0.45 comes from}
+It is the one tuned constant, and the reasoning behind it is that the quantity being thresholded has a wide gap in it. A row through the letter bodies collects ink from most letters on the line, while a row above the band collects ink only from the few ascenders, which in ordinary English text is a small minority of letters. Any threshold within that gap gives the same answer, so the exact figure is not critical; what would fail is a value low enough to admit the ascender rows, which would inflate the measured x-height, or high enough to admit only the single densest row, which would collapse the band to nothing.
+
+
+\paragraph{The rejection case}
+A band under three rows tall is reported as a failure rather than returned. That is what happens when a crop contains a stray mark rather than a line of writing, and returning a nonsensical x-height would propagate into every measurement taken from that crop.
+
+
+\section{LabelComponents}
+\begin{lstlisting}[style=sig]
+def LabelComponents(mask)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{mask}] \normalfont a two-dimensional mask of ink
+\end{description}
+
+\noindent\textbf{Output.} A pair: an array in which every ink pixel carries the number of the object it belongs to, counting from 1, with 0 for background; and the number of objects found.
+
+
+\paragraph{Background: what a connected component is}
+Two ink pixels that touch belong to the same physical mark. Following that relation outwards from any pixel gives a group of pixels all connected to one another, called a connected component. On a page of handwriting the components are the individual pen marks: a letter, the dot of an i, a speck of dust, or several joined letters where the writer did not lift the pen.
+
+What counts as touching has to be decided. Counting only the four pixels above, below, left and right is called four-connectivity; also counting the four diagonals is eight-connectivity. This implementation uses eight, because a thin pen stroke drawn at an angle advances diagonally, and under four-connectivity such a stroke would break into a chain of separate dots.
+
+
+\paragraph{What it is for}
+This is what lets the pipeline reason about objects rather than pixels, and that distinction runs through the whole segmenter. Whether a mark is dust is a question about a whole object; which line of writing a letter belongs to is a question about a whole object. Tests made pixel by pixel would remove half a letter, or split one letter across two lines.
+
+
+\paragraph{How it works: runs instead of pixels}
+Each row is first reduced to horizontal runs of ink, found from the places where the row steps from clear to set and back again. Every pixel in a run necessarily belongs to the same component, so the algorithm reasons about runs, of which there are far fewer. This is the run-based two-scan approach \cite{he2008}.
+
+Each run is compared against the runs of the row above. Because the runs in both rows are already in left-to-right order, a single index walks forward through the previous row and never goes back, so the total work is proportional to the number of runs rather than to their number squared. A run above counts as touching when its span overlaps, and the comparison is written so that a touch at a single corner counts, which is what produces eight-connectivity.
+
+
+\paragraph{The problem that makes this non-trivial}
+Labels must be handed out while scanning downwards, before it is known how a shape continues. A letter U is the clearest example: its two arms are separate for many rows and receive different labels, and only at the bottom does a run join them, revealing that the two labels were always one object.
+
+
+\paragraph{Union-find, and why it is fast}
+Rather than going back and relabelling, which would mean rescanning everything above, the fact that two labels are the same is recorded. Each label stores a pointer to another label, and following the pointers reaches a representative for the group; joining two groups is then one assignment, pointing the larger representative at the smaller. This structure is called union-find \cite{tarjan1975}.
+
+Chains of pointers could grow long, so each lookup shortens the chain it walks by pointing every label it passes at its grandparent:
+
+
+\begin{lstlisting}[style=plain]
+while parent[a] != a:
+    parent[a] = parent[parent[a]]   # halve the chain
+    a = parent[a]
+\end{lstlisting}
+With that shortening the cost of a lookup is so close to constant that for any practical image it can be treated as constant \cite{tarjan1975}.
+
+
+\paragraph{The final renumbering, and why callers depend on it}
+Because labels were handed out before the merges were known, the surviving labels have gaps: label 7 may have been absorbed into label 3, so no pixel carries 7 any more. A closing pass resolves every label to its representative and renumbers the survivors consecutively from 1. Callers rely on this, because it means the components are numbered 1 to n with nothing missing, so their sizes can be counted in a single operation and used directly as array indices.
+
+
+\section{PieceBounds}
+\begin{lstlisting}[style=sig]
+def PieceBounds(labelAt, ys, xs, n, H, W)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{pl}] \normalfont the component number of every ink pixel
+  \item[{ys}] \normalfont the row coordinate of every ink pixel
+  \item[{xs}] \normalfont the column coordinate of every ink pixel
+  \item[{nc}] \normalfont how many components there are
+  \item[{H}] \normalfont the image height
+  \item[{W}] \normalfont the image width
+\end{description}
+
+\noindent\textbf{Output.} Five arrays indexed by component number: each object's topmost row, bottommost row, leftmost column, rightmost column and pixel count.
+
+
+\paragraph{What it is for}
+Every ownership rule in the segmenter asks geometric questions about objects: how tall is this piece, how wide is it, where does it sit, how much ink does it contain. This answers all of them for every object at once.
+
+
+\paragraph{Why it is written as a scatter rather than a loop}
+The obvious implementation loops over components and, for each one, selects the pixels belonging to it and takes their minimum and maximum. That reads the whole image once per component, so on a page with eight hundred pen marks it reads the image eight hundred times.
+
+Instead the coordinates are scattered into per-component accumulators in a single pass, using operations that take a list of destinations and a list of values and apply a minimum or a maximum at each destination. The pixel count comes from the same occurrence-counting operation used by \texttt{RowRunLength}. The result is one pass over the ink rather than one pass per object.
+
+
+\section{Skeletonize}
+\begin{lstlisting}[style=sig]
+def Skeletonize(mask)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{mask}] \normalfont a mask of ink
+\end{description}
+
+\noindent\textbf{Output.} A mask of the one-pixel-wide centreline of that ink.
+
+
+\paragraph{What it is for}
+A photograph records a pen stroke as a thick band of dark pixels. What the project needs is the path the pen travelled down the middle of that band, because a path can be stored as a short list of points, compared against another writing of the same letter, and above all redrawn by a machine holding a pen. Thinning recovers it.
+
+
+\paragraph{Background: what thinning must preserve}
+Deleting pixels from the edge of a shape repeatedly will eventually make it thin, but done naively it destroys the shape: an o can be broken open into a c, and a crossing can fall apart into four disconnected arms. A thinning algorithm must therefore delete only pixels whose removal cannot change how the shape is connected. The algorithm here is the standard parallel method of Zhang and Suen \cite{zhangsuen1984}.
+
+
+\paragraph{The two quantities the test is built from}
+Consider a pixel and its eight neighbours, numbered clockwise from the one directly above. Two numbers describe the local situation:
+
+
+\begin{equation}
+B(P_1) \;=\; \sum_{k=2}^{9} P_k, \qquad A(P_1) \;=\; \#\big\{\, k \;:\; P_k = 0 \;\wedge\; P_{k+1} = 1 \,\big\}
+\end{equation}
+\noindent\emph{Source: }\cite{zhangsuen1984}
+
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$P_1$}] \normalfont the pixel being considered
+  \item[{$P_2 \ldots P_9$}] \normalfont its eight neighbours, clockwise from the north, each 1 where there is ink and 0 where there is not
+  \item[{$B(P_1)$}] \normalfont how many of the eight neighbours are ink
+  \item[{$A(P_1)$}] \normalfont how many times the neighbours change from empty to ink while walking once round the ring, the ring being treated as closed so that the ninth neighbour is the second again
+\end{description}
+The second quantity deserves an explanation, because it is the heart of the method. Walking once round the eight neighbours and counting the steps from empty into ink tells you how many separate groups of ink surround the pixel. If the answer is one, all the neighbouring ink forms a single unbroken arc, so the pixel lies on the edge of the stroke and deleting it leaves that arc joined. If the answer is two or more, the pixel sits between separate groups and is the only thing holding them together, so deleting it would break the stroke apart or open a hole.
+
+
+\paragraph{The deletion test}
+
+\begin{equation}
+\begin{aligned}&\text{(a)}\quad && 2 \le B(P_1) \le 6 \\&\text{(b)}\quad && A(P_1) = 1 \\&\text{(c)}\quad && P_2 \cdot P_4 \cdot P_6 = 0 \\&\text{(d)}\quad && P_4 \cdot P_6 \cdot P_8 = 0\end{aligned}
+\end{equation}
+\noindent\emph{Source: }\cite{zhangsuen1984}
+
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$(a)$}] \normalfont at least two neighbours, so the tip of a stroke is kept and the line is not eaten back from its end; at most six, so a pixel deep inside a thick region is not removed before the layers outside it
+  \item[{$(b)$}] \normalfont the neighbouring ink forms a single arc, so removal cannot disconnect anything
+  \item[{$(c), (d)$}] \normalfont the corner conditions, which restrict this sub-iteration to thinning from particular sides; in the second sub-iteration they become P2\emph{P4}P8 = 0 and P2\emph{P6}P8 = 0
+\end{description}
+
+\paragraph{Why there must be two alternating sub-iterations}
+If deletion were allowed from every side at once, a line two pixels wide would vanish completely: both halves satisfy the test simultaneously and both are deleted in the same pass, leaving nothing behind. Alternating the corner conditions means each pass thins from opposite sides, so one side is always held while the other is removed. The result stays connected and the centreline does not drift to one side of the original stroke.
+
+
+\paragraph{Termination and cost}
+The pair of sub-iterations repeats until a full pass deletes nothing, at which point no pixel can be removed without changing the connectivity, and the shape is one pixel wide everywhere. The number of passes is proportional to the thickest stroke, since one layer comes off each side per pass, and each pass is a fixed number of whole-array operations.
+
+
+\begin{quote}\small\itshape This is also why \texttt{BinarizeLine} closes small holes before thinning. Thinning preserves connectivity faithfully, including the connectivity of a hole that was never written: a pinhole inside a stroke forces the centreline to divide and pass round both sides of it, leaving a small loop in the recorded pen path that the writer never drew.\end{quote}
+
+\section{\_Weights}
+\begin{lstlisting}[style=sig]
+def _Weights(inSize, outSize, kernel)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{inSize}] \normalfont the length of the axis before resizing
+  \item[{outSize}] \normalfont the length wanted afterwards
+  \item[{kernel}] \normalfont which filter to use: "linear" for a triangle, "box" for a flat window
+\end{description}
+
+\noindent\textbf{Output.} A matrix with one row per output sample and one column per input sample; each row holds the weight of every input sample in that output sample, and each row sums to one.
+
+
+\paragraph{Background: what resampling actually is}
+Changing the size of an image means asking for brightness values at positions where there were none. In an output image half the width, output pixel 1 sits between input pixels 2 and 3, so its value has to be built from the inputs around it. Choosing how to build it is choosing a filter, and a filter is described by a weight for each nearby input sample.
+
+
+\paragraph{What it is for}
+Every size change in the pipeline goes through one resampler, so there is exactly one piece of code to get right: reducing a page for the skew search, fitting a crop to the networks' fixed input size, and rendering glyphs. This function builds the weights and \texttt{Resize} applies them.
+
+
+\paragraph{Where an output sample sits}
+
+\begin{equation}
+s \;=\; \frac{\mathrm{inSize}}{\mathrm{outSize}}, \qquad c_i \;=\; \big(i + \tfrac{1}{2}\big)\, s
+\end{equation}
+\noindent\emph{Source: }\cite{wolberg1990}
+
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$s$}] \normalfont the scale factor; greater than one means the image is being shrunk
+  \item[{$c_i$}] \normalfont the centre of output sample i, expressed in input coordinates
+  \item[{$i$}] \normalfont the index of the output sample, counting from zero
+\end{description}
+The halves matter. A pixel is not a point at an integer coordinate; it is a small square whose centre lies at an integer plus a half. Treating pixels as points displaces the whole image by half a pixel, which shows as a slight softening and as a systematic shift that accumulates if an image is resized more than once.
+
+
+\paragraph{Why the filter widens when shrinking}
+This is the part that is easy to get wrong and expensive to get wrong. The width of the filter is multiplied by the scale factor whenever that factor exceeds one:
+
+
+\begin{equation}
+f \;=\; \max(1,\, s), \qquad \mathrm{support} \;=\; k_0\, f
+\end{equation}
+\noindent\emph{Source: }\cite{wolberg1990}
+
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$f$}] \normalfont the widening factor: one when magnifying, equal to the scale factor when minifying
+  \item[{$s$}] \normalfont the scale factor defined above
+  \item[{$k_0$}] \normalfont the base support of the chosen kernel: one for the triangle, one half for the box
+  \item[{$\mathrm{support}$}] \normalfont how far the filter reaches from its centre, measured in input samples
+\end{description}
+If the filter did not widen, shrinking by a factor of four would consult one input sample in every four and ignore the rest. Thin strokes falling between the consulted samples would disappear entirely, and fine texture would turn into coarse false patterns, an effect called aliasing. Widening the filter in step with the reduction means every input sample contributes to some output sample \cite{wolberg1990}. The page reduction used by the skew search shrinks by exactly such a factor, so this is load bearing rather than theoretical.
+
+
+\paragraph{The two kernels}
+
+\begin{equation}
+w_{\mathrm{linear}}(t) = \begin{cases} 1 - |t| & |t| < 1 \\ 0 & \text{otherwise} \end{cases} \qquad\quad w_{\mathrm{box}}(t) = \begin{cases} 1 & |t| \le \tfrac{1}{2} \\ 0 & \text{otherwise} \end{cases}
+\end{equation}
+\noindent\emph{Source: }\cite{wolberg1990}
+
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$t$}] \normalfont the distance from the centre of the output sample's window to an input sample, measured in filter widths
+  \item[{$w(t)$}] \normalfont the weight that input sample receives
+\end{description}
+The triangle weights nearby samples more than distant ones and falls smoothly to zero, which gives a smooth result. The box weights everything inside the window equally, which is exactly a local average and is the right choice when reducing by a whole number, because then each output pixel covers a whole number of input pixels.
+
+
+\paragraph{Edges, and why weights are accumulated rather than assigned}
+A window near the border reaches past the end of the axis. Those out-of-range positions are folded back onto the first or last sample, so several positions in one window can refer to the same input sample. Their weights must therefore be added together rather than written one over another: assigning would keep only the last and discard the rest, leaving the edge of the image too dark.
+
+Each row is finally divided by its own total so that it sums to one. That is what guarantees a uniform area keeps its brightness after resizing, and in particular that the white padding around a fitted crop does not come back grey.
+
+
+\section{Resize}
+\begin{lstlisting}[style=sig]
+def Resize(arr, newW, newH, kernel='linear')
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{img}] \normalfont the image to resize
+  \item[{newW}] \normalfont the width wanted
+  \item[{newH}] \normalfont the height wanted
+  \item[{kernel}] \normalfont which filter to use
+\end{description}
+
+\noindent\textbf{Output.} The resampled image at the requested size, in the same number format as the input.
+
+
+\paragraph{What it is for}
+The single resampling routine used by the whole pipeline.
+
+
+\paragraph{Background: what separable means, and why it is worth it}
+Resizing in two dimensions could be done with a two-dimensional filter, where each output pixel is a weighted sum over a square of input pixels. For a filter k samples across that is k squared multiplications per output pixel.
+
+A filter is called separable when its two-dimensional weight is the product of two one-dimensional weights, one per axis. Both kernels used here are separable, so the same result is obtained by resizing along the rows and then along the columns, at a cost of 2k multiplications per pixel instead of k squared \cite{wolberg1990}. At the filter widths used when reducing a page that is roughly an order of magnitude less work.
+
+
+\paragraph{How it works}
+\texttt{\_Weights} is called once per axis and the two matrices are applied in turn as matrix products, so the arithmetic happens inside numpy's compiled routines rather than in interpreted loops.
+
+
+\section{Halve}
+\begin{lstlisting}[style=sig]
+def Halve(a)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{img}] \normalfont the image to reduce
+\end{description}
+
+\noindent\textbf{Output.} The image at half the width and half the height.
+
+
+\paragraph{What it is for}
+A fast reduction for stages that do not need full resolution: finding the sheet of paper inside the photograph, and the coarse stage of the skew search.
+
+
+\paragraph{Why it is a separate function}
+At the exact ratio of two to one a box filter reduces to averaging each two-by-two block, which can be done by reshaping the array and taking a mean, with no weights built at all. It is both the cheapest correct reduction at that ratio and exactly what the general resampler would compute, so nothing is lost by using it.
+
+Why reduce at all: every operation in the toolkit costs time proportional to the number of pixels, so halving each axis quarters the work. For a decision that only needs to locate something to within a few pixels, the reduction costs nothing in accuracy.
+
+
+\section{FitFixedCanvas}
+\begin{lstlisting}[style=sig]
+def FitFixedCanvas(gray, height, width, padValue=255)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{gray}] \normalfont a line crop
+  \item[{height}] \normalfont the canvas height the networks expect, 64
+  \item[{width}] \normalfont the canvas width the networks expect, 640
+  \item[{padValue}] \normalfont the value filling the unused area; 255 means white paper
+\end{description}
+
+\noindent\textbf{Output.} An image of exactly the requested size containing the crop, scaled to fit, centred vertically and flush to the left, on a paper-coloured background.
+
+
+\paragraph{What it is for}
+Both trained networks accept one exact input size and nothing else, because the number of weights in their final layers depends on it. Every crop therefore has to be brought to that size before it can be read, and how that is done affects the answer.
+
+
+\paragraph{The central rule: one scale factor, never two}
+
+\begin{equation}
+\sigma \;=\; \min\!\left(\frac{H_{\mathrm{canvas}}}{H_{\mathrm{crop}}},\; \frac{W_{\mathrm{canvas}}}{W_{\mathrm{crop}}}\right)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\sigma$}] \normalfont the single scale factor applied to both axes
+  \item[{$H_{\mathrm{canvas}},\, W_{\mathrm{canvas}}$}] \normalfont the fixed canvas size the networks were trained on
+  \item[{$H_{\mathrm{crop}},\, W_{\mathrm{crop}}$}] \normalfont the size of the crop being fitted
+\end{description}
+Taking the smaller of the two ratios means the crop is scaled until whichever axis runs out of room first exactly fills the canvas, leaving the other axis short; the leftover space is filled with the paper colour.
+
+The alternative, scaling each axis independently so the crop fills the canvas exactly, would change the ratio of width to height. That ratio is precisely what both networks read: the reader distinguishes letters partly by their proportions, and the writer namer treats proportion as a characteristic of a hand. A stretched crop is, to these networks, a different person's handwriting.
+
+
+\paragraph{Why centred vertically but flush to the left}
+It matches how the training crops were produced. Writing starts at the left margin, so the left edge carries meaning and is preserved. The vertical position of a line of writing inside its crop carries none, so centring removes a difference the network would otherwise have to learn to ignore.
+
+
+\paragraph{A small implementation guard}
+The scaled size is rounded to whole pixels, and rounding can produce a result one pixel larger than the canvas. The final copy therefore limits both the source and the destination, so an overshoot is trimmed instead of raising an error.
+
+
+\section{\_Sample}
+\begin{lstlisting}[style=sig]
+def _Sample(a, sx, sy, fill, edge='area')
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{img}] \normalfont the source image
+  \item[{sy}] \normalfont for each output pixel, the row to read from, which may fall between rows
+  \item[{sx}] \normalfont the corresponding column, which may fall between columns
+\end{description}
+
+\noindent\textbf{Output.} The sampled values, one per requested position.
+
+
+\paragraph{What it is for}
+Rotating or bending an image asks for brightness at positions falling between pixels. This supplies them, and is the shared sampler behind every geometric transform in the file.
+
+
+\paragraph{Background: bilinear interpolation}
+The value at a position between four pixels is their weighted average, each weight given by how close the position is to that pixel. It is computed one axis at a time: blend the upper pair horizontally, blend the lower pair horizontally, then blend those two results vertically.
+
+
+\begin{equation}
+\begin{aligned}v_{\mathrm{top}} &= p_{00}\,(1-f_x) + p_{01}\, f_x \\[2pt]v_{\mathrm{bot}} &= p_{10}\,(1-f_x) + p_{11}\, f_x \\[2pt]v &= v_{\mathrm{top}}\,(1-f_y) + v_{\mathrm{bot}}\, f_y\end{aligned}
+\end{equation}
+\noindent\emph{Source: }\cite{wolberg1990}
+
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$p_{00},\, p_{01}$}] \normalfont the two source pixels above the position, left and right
+  \item[{$p_{10},\, p_{11}$}] \normalfont the two below it
+  \item[{$f_x$}] \normalfont how far the position lies between the left and right columns: 0 at the left pixel, 1 at the right
+  \item[{$f_y$}] \normalfont the same fraction between the upper and lower rows
+  \item[{$v$}] \normalfont the interpolated value returned
+\end{description}
+
+\paragraph{Why interpolate at all}
+The cheaper alternative is to take whichever single pixel the position is nearest. On a rotated image the result is a visible staircase along every edge, because neighbouring output pixels jump between different source pixels. Blending removes it, and that matters here beyond appearance: the ink masks and skeletons computed downstream are sensitive to jagged edges, which produce spurious spurs when thinned.
+
+
+\section{\_Like}
+\begin{lstlisting}[style=sig]
+def _Like(out, like)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{out}] \normalfont a floating point result
+  \item[{ref}] \normalfont the array whose number format should be matched
+\end{description}
+
+\noindent\textbf{Output.} The result converted back to the reference's format, rounded and clipped to its range.
+
+
+\paragraph{What it is for}
+Interpolation must be done in floating point, but the pipeline passes images around as whole numbers from 0 to 255, because that is what a photograph is and what the networks were trained on. This performs the conversion back.
+
+
+\paragraph{The two things it gets right}
+It rounds rather than truncating. Truncation would bias every transformed image slightly darker, since 254.7 would become 254 rather than 255, and the bias would accumulate through successive transforms.
+
+It clips to the valid range. A blend can overshoot slightly past 255 or below 0, and converting such a value to an 8-bit whole number without clipping makes it wrap around to the opposite extreme, turning a bright pixel black. A handful of such pixels is enough to disturb a threshold or a component count.
+
+
+\section{Rotate}
+\begin{lstlisting}[style=sig]
+def Rotate(gray, deg, fill=255)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{img}] \normalfont the image to rotate
+  \item[{deg}] \normalfont the angle in degrees
+  \item[{fill}] \normalfont the value used where no source pixel exists
+\end{description}
+
+\noindent\textbf{Output.} The rotated image, on a canvas the same size as the input.
+
+
+\paragraph{What it is for}
+Straightening a photographed page. The page is never square to the camera, and a tilt of even one degree means a horizontal cut through the image crosses more than one line of writing, which makes every later stage harder.
+
+
+\paragraph{Background: forward and inverse mapping}
+There are two ways to transform an image. The obvious one, called forward mapping, takes each input pixel, works out where it should land, and writes it there. The problem is that the destinations are fractional and unevenly spread, so some output pixels receive two input pixels and others receive none, leaving a scatter of holes.
+
+The method used here is inverse mapping: for each \emph{output} pixel, work out where it came from in the input and read that position. Every output pixel is then visited exactly once, so holes are impossible \cite{wolberg1990}. The source position is fractional, which is what \texttt{\_Sample} is for.
+
+
+\paragraph{The mapping}
+
+\begin{equation}
+\begin{aligned}s_x &= \cos\theta\,(x - c_x) + \sin\theta\,(y - c_y) + c_x \\s_y &= -\sin\theta\,(x - c_x) + \cos\theta\,(y - c_y) + c_y\end{aligned}
+\end{equation}
+\noindent\emph{Source: }\cite{wolberg1990}
+
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$x,\, y$}] \normalfont the output pixel being filled
+  \item[{$s_x,\, s_y$}] \normalfont the position in the input it is read from
+  \item[{$c_x,\, c_y$}] \normalfont the centre of the image, which the rotation is about
+  \item[{$\theta$}] \normalfont the rotation angle in radians
+\end{description}
+Note that the signs are those of a rotation by minus theta: because the mapping runs backwards from output to input, it must be the inverse of the rotation being applied.
+
+
+\paragraph{Filling rather than clamping}
+A source position outside the image is filled with the paper value rather than clamped to the nearest edge pixel. Clamping would smear whatever lies on the boundary across the whole corner, producing streaks that the ink detector would then have to cope with.
+
+
+\paragraph{The edge convention, and why it was determined experimentally}
+Deciding whether a source position lies inside the image is less obvious than it looks. If a pixel is a point at an integer coordinate, the image spans 0 to size minus 1. If a pixel is a unit square centred on its index, the image spans minus a half to size minus a half. This implementation uses the second, area, convention.
+
+
+\begin{quote}\small\itshape The convention was not guessed. Replacing a library rotation with this one was verified by comparing the two on a test page: with the area convention the two agreed to a maximum difference of one grey level out of 255, while the other plausible convention differed by up to 245 along the edges. A difference of that size is not a rounding detail, it is a row of pixels in the wrong place.\end{quote}
+
+\section{Warp}
+\begin{lstlisting}[style=sig]
+def Warp(gray, coeffs, fill=255)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{img}] \normalfont the source image
+  \item[{coeffs}] \normalfont six numbers for an affine transform, or eight for a perspective one
+  \item[{fill}] \normalfont the background value
+\end{description}
+
+\noindent\textbf{Output.} The transformed image.
+
+
+\paragraph{What it is for}
+One function covering every straight-line-preserving transform the pipeline needs: scaling, shearing, rotation, and the keystone effect of a page photographed from an angle. It is used mainly to generate training variations of a crop.
+
+
+\paragraph{Background: affine and perspective}
+An affine transform is any combination of scaling, rotation, shear and translation. It keeps parallel lines parallel, so a rectangle becomes a parallelogram. A perspective transform, also called a homography, additionally allows parallel lines to converge, so a rectangle becomes any four-sided shape. That is what happens when a flat page is photographed obliquely: the far edge appears shorter than the near one.
+
+
+\paragraph{The mapping}
+
+\begin{equation}
+s_x = \frac{a\,x + b\,y + c}{g\,x + h\,y + 1}, \qquad s_y = \frac{d\,x + e\,y + f}{g\,x + h\,y + 1}
+\end{equation}
+\noindent\emph{Source: }\cite{wolberg1990}
+
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$x,\, y$}] \normalfont the output pixel being filled
+  \item[{$s_x,\, s_y$}] \normalfont the source position it is read from
+  \item[{$a,\, b,\, d,\, e$}] \normalfont the linear part: scaling, rotation and shear
+  \item[{$c,\, f$}] \normalfont the translation
+  \item[{$g,\, h$}] \normalfont the perspective part; both zero gives a purely affine transform, since the divisor is then 1 everywhere
+\end{description}
+The divisor is what distinguishes the two cases. When g and h are zero it equals one at every pixel and the mapping is linear; otherwise it varies across the image, so equal steps in the output correspond to unequal steps in the input, which is exactly the foreshortening that perspective produces.
+
+
+\paragraph{The half-pixel convention}
+The coefficients act on the \emph{centre} of the output pixel, so a half is added to the output coordinate before the mapping is applied and subtracted from the result afterwards. This follows from the same pixels-are-squares reasoning as in \texttt{\_Weights}.
+
+
+\begin{quote}\small\itshape Like the rotation convention, this was settled by measurement rather than argument: with the half-pixel offsets in place the output matched the library implementation it replaced on zero pixels of difference across a test page, and without them the entire image was displaced by half a pixel.\end{quote}
+
+\section{Blur}
+\begin{lstlisting}[style=sig]
+def Blur(gray, sigma, mode='edge')
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{img}] \normalfont the image to blur
+  \item[{sigma}] \normalfont the standard deviation of the gaussian, in pixels, which sets how far the blurring reaches
+\end{description}
+
+\noindent\textbf{Output.} The blurred image, in the input's number format.
+
+
+\paragraph{What it is for}
+Two uses. It smooths the random displacement fields used for training augmentation, which is what turns random noise into a coherent bending of the strokes. And it softens the edge of synthesised ink, so that a drawn stroke has the gradual edge of a real pen rather than a hard step, which matters because the networks judging that output were trained on photographs of real ink.
+
+
+\paragraph{Background: what a gaussian blur is}
+Each output pixel is a weighted average of its neighbourhood, with weights following the bell-shaped gaussian curve: strongest at the centre and falling away smoothly with distance. Compared with a flat average it produces no visible edge at the limit of the window, because the weights reach zero gradually.
+
+
+\paragraph{Why it is done as two one-dimensional passes}
+A two-dimensional gaussian factorises exactly into the product of two one-dimensional gaussians:
+
+
+\begin{equation}
+G(x,y) \;=\; \exp\!\left(-\frac{x^2 + y^2}{2\sigma^2}\right) \;=\; \exp\!\left(-\frac{x^2}{2\sigma^2}\right)\cdot\exp\!\left(-\frac{y^2}{2\sigma^2}\right) \;=\; G(x)\,G(y)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$G(x,y)$}] \normalfont the two-dimensional weight at an offset of x columns and y rows from the centre
+  \item[{$\sigma$}] \normalfont the standard deviation, which sets the width of the bell
+  \item[{$G(x),\, G(y)$}] \normalfont the one-dimensional weights along each axis
+\end{description}
+So blurring down the rows and then across the columns gives exactly the same answer as a single two-dimensional pass, at a cost of 2k multiplications per pixel instead of k squared. This is the same separability argument as for \texttt{Resize}.
+
+
+\paragraph{Truncation and normalisation}
+The gaussian never reaches zero, so the kernel is cut off at about three standard deviations, where under one per cent of the total weight remains. The remaining weights are then divided by their sum so they total one, which keeps the overall brightness of the image unchanged; without that, blurring would darken the image by the fraction of weight that was discarded.
+
+
+\section{Elastic}
+\begin{lstlisting}[style=sig]
+def Elastic(gray, sigma, alpha, rng)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{img}] \normalfont the image to distort
+  \item[{rng}] \normalfont a seeded random number generator, so a distortion can be reproduced
+  \item[{alpha}] \normalfont how far pixels are moved, in pixels
+  \item[{sigma}] \normalfont how smoothly the displacement varies, in pixels
+\end{description}
+
+\noindent\textbf{Output.} A locally bent version of the image.
+
+
+\paragraph{What it is for}
+Training augmentation. A network trained on a fixed set of examples can memorise them; showing it plausible variations of each example forces it to learn the general pattern instead. For handwriting the most useful variation is the one that looks like the same person writing the same words again, which is not a rotation or a scaling but a local bending of the strokes \cite{simard2003}.
+
+
+\paragraph{How it works}
+
+\begin{equation}
+\begin{aligned}d_x &= \alpha \cdot \mathrm{Blur}\big(U(-1,1),\, \sigma\big) \\d_y &= \alpha \cdot \mathrm{Blur}\big(U(-1,1),\, \sigma\big) \\\mathrm{out}[y,x] &= \mathrm{sample}\big(\mathrm{img},\; y + d_y[y,x],\; x + d_x[y,x]\big)\end{aligned}
+\end{equation}
+\noindent\emph{Source: }\cite{simard2003}
+
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$d_x,\, d_y$}] \normalfont the displacement fields: how far the pixel at each position moves horizontally and vertically
+  \item[{$U(-1,1)$}] \normalfont an array of independent random numbers drawn uniformly between minus one and one, one per pixel
+  \item[{$\alpha$}] \normalfont the displacement magnitude in pixels
+  \item[{$\sigma$}] \normalfont the blur width, which controls how smoothly the displacement varies from pixel to pixel
+  \item[{$\mathrm{sample}$}] \normalfont bilinear interpolation, since the displaced positions are fractional
+\end{description}
+
+\paragraph{Why the smoothing is the essential step}
+Without the blur, each pixel would move independently of its neighbours and the image would be scrambled into noise: strokes would break into disconnected dots. Blurring the displacement field means nearby pixels move by nearly the same amount, so a stroke moves as a stroke, bending and stretching while staying continuous. The width of the blur sets the scale of the bending: small gives wobbly strokes, large gives a gentle warp of the whole crop.
+
+The two parameters interact. A large displacement with a small blur tears the writing apart; a large displacement with a large blur is nearly a rigid shift. Useful augmentation lives between those extremes.
+
+
+\section{DrawPolyline}
+\begin{lstlisting}[style=sig]
+def DrawPolyline(img, pts, value, width)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{img}] \normalfont the array to draw into, which is modified in place
+  \item[{pts}] \normalfont the path as a list of (x, y) points
+  \item[{value}] \normalfont the ink level to write, 0 being black
+  \item[{width}] \normalfont the pen width in pixels
+\end{description}
+
+\noindent\textbf{Output.} The same array, returned for convenience when chaining calls.
+
+
+\paragraph{What it is for}
+Drawing a pen stroke into an image. It is used to render synthesised handwriting so that the networks can judge it, to redraw ink at a uniform width inside stroke normalisation, and in the measurement harness to compare two sets of geometry. Because all three use the same function, they all see ink laid down the same way.
+
+
+\paragraph{The idea: fill by distance rather than by stepping along the line}
+The familiar way to draw a line is to step along it filling pixels. That is fast but makes a round pen awkward, because the ends and the corners between segments have to be handled separately or they come out square and notched.
+
+Instead, every pixel near the segment is tested by how far it lies from the nearest point \emph{on} the segment, and filled if that distance is within half the pen width. The nearest point is found by projecting onto the segment and clamping to its ends:
+
+
+\begin{equation}
+t \;=\; \mathrm{clamp}\!\left(\frac{(P-A)\cdot(B-A)}{\lVert B-A \rVert^2},\, 0,\, 1\right), \qquad Q \;=\; A + t\,(B-A)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$A,\, B$}] \normalfont the two ends of the segment being drawn
+  \item[{$P$}] \normalfont the pixel being tested
+  \item[{$t$}] \normalfont how far along the segment the nearest point lies, 0 at A and 1 at B
+  \item[{$Q$}] \normalfont the nearest point on the segment to P
+  \item[{$(P-A)\cdot(B-A)$}] \normalfont the dot product, which measures how far along the segment's direction P lies
+\end{description}
+A pixel is then filled when the distance from P to Q is at most half the pen width.
+
+
+\paragraph{Why the clamp gives round ends and joins for free}
+Without the clamp, t could fall outside the range 0 to 1 and the distance would be measured to the infinite line through A and B, so ink would extend beyond the ends of the segment. Clamping means that for a pixel beyond an end, the nearest point is the end itself, so the filled region there is a disc of radius half the pen width. That is a round cap. At a corner between two segments both discs overlap, which is a round join. No separate handling is needed for either.
+
+
+\paragraph{Why it is affordable}
+Testing every pixel in the image against every segment would be hopeless. Work is restricted to the bounding box of each segment, expanded by the pen radius, since no pixel outside that box can possibly be within half a pen width of it. The cost is therefore proportional to the amount of ink drawn rather than to the size of the canvas.
+
+A segment of zero length, which happens when a path contains a repeated point or consists of a single point, falls back to plain distance from that point, which draws a dot.
+
+
+\section{EstimateSlantDeg}
+\begin{lstlisting}[style=sig]
+def EstimateSlantDeg(ink)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{ink}] \normalfont a mask of one line of writing
+\end{description}
+
+\noindent\textbf{Output.} The slant in degrees, positive for the usual forward lean. Returns zero when there are fewer than fifty ink pixels.
+
+
+\paragraph{What it is for}
+Two things. The glyph extractor removes the slant before storing a letter, so that stored letters are upright and can be compared with one another; and the synthesiser re-applies the writer's own slant when drawing, because how far somebody leans their writing is one of the most visible features of their hand.
+
+
+\paragraph{Background: what shearing is}
+Shearing slides each row of an image sideways by an amount proportional to its height, which tilts upright strokes without changing the height of anything. It is the operation that turns upright writing into slanted writing, so undoing it is how slanted writing is made upright.
+
+
+\paragraph{The method: try angles and score the result}
+For each candidate angle the ink is sheared by that amount and the ink in each column is counted, giving a column profile. The angle whose profile is the \emph{sharpest} is the answer \cite{vinciarelli2001}:
+
+
+\begin{equation}
+x' \;=\; x - \tan(\theta)\,(y - \bar{y}), \qquad \mathrm{score}(\theta) \;=\; \sum_j \mathrm{prof}_\theta[j]^2
+\end{equation}
+\noindent\emph{Source: }\cite{vinciarelli2001}
+
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$x,\, y$}] \normalfont the coordinates of an ink pixel
+  \item[{$x'$}] \normalfont its column after shearing by the trial angle
+  \item[{$\bar{y}$}] \normalfont the mean row of all the ink, which is the height the shear pivots about
+  \item[{$\theta$}] \normalfont the trial angle
+  \item[{$\mathrm{prof}_\theta[j]$}] \normalfont how many ink pixels land in column j after that shear
+  \item[{$\mathrm{score}(\theta)$}] \normalfont the sharpness being maximised
+\end{description}
+
+\paragraph{Why squaring the profile measures sharpness}
+This is the key step and it is worth being precise about. The total amount of ink does not change when the image is sheared, so the sum of the profile is the same for every angle; only its \emph{distribution} changes. For a fixed total, the sum of squares is largest when the quantity is concentrated in a few entries and smallest when it is spread evenly. Ten pixels in one column score a hundred; one pixel in each of ten columns scores ten.
+
+So maximising the sum of squares finds the angle at which the ink stacks into the fewest, tallest columns, which is the angle at which the vertical strokes of the writing are truly vertical. The same reasoning underlies \texttt{SkewScore}, applied to rows instead of columns.
+
+
+\paragraph{Why coordinates are sheared rather than the image}
+The score needs only the column each ink pixel lands in, not an image. Shearing the coordinates and counting them is therefore enough, and it avoids interpolating a whole image once per candidate angle. With sixty candidate angles that is the difference between a measurement that is free and one that dominates the runtime.
+
+
+\paragraph{Resolution and the sign}
+The search runs from minus 45 to plus 45 degrees in steps of 1.5 degrees, which bounds how precisely the answer can be reported. The result is negated before being returned so that a positive number means the ordinary forward lean, which makes the deslanting step read naturally as subtracting the tangent of the slant times the height.
+
+Fewer than fifty ink pixels is treated as too little to measure and zero is returned, since on that much ink the profile is dominated by where the individual pixels happen to fall.
+
+
+\section{PolylineLength}
+\begin{lstlisting}[style=sig]
+def PolylineLength(p)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{p}] \normalfont a path as a list or array of (x, y) points
+\end{description}
+
+\noindent\textbf{Output.} The total distance walked along the path.
+
+
+\paragraph{What it is for}
+A size measure for pen strokes. Its main use is rejecting fragments: a piece cut out of a line of writing that contains far less pen path than a real example of that letter is a fragment rather than a letter, whatever its bounding box suggests.
+
+
+\paragraph{How it works}
+
+\begin{equation}
+L \;=\; \sum_{i} \sqrt{(x_{i+1}-x_i)^2 + (y_{i+1}-y_i)^2}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$L$}] \normalfont the total path length, also called the arc length
+  \item[{$x_i,\, y_i$}] \normalfont the coordinates of the i-th point on the path
+\end{description}
+Each term is the straight-line distance between two consecutive points, by Pythagoras, and the total is their sum. It is computed as whole-array arithmetic: the differences between consecutive points, then their lengths, then one sum.
+
+
+\paragraph{Why path length and not bounding box}
+A fragment can have a deceptively large bounding box. Half of a letter o spans nearly the full width and height of the whole letter while containing only half the ink, so a box-based test would accept it. Path length measures how much pen movement the shape actually represents, which is what distinguishes half a letter from a whole one.
+
+
+\section{InkMask}
+\begin{lstlisting}[style=sig]
+def InkMask(gray)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{gray}] \normalfont the page as a 2-D array of grey values, 0 for black and 255 for white, held as floating point numbers so the division below does not round
+\end{description}
+
+\noindent\textbf{Output.} a pair. The first item is a boolean array the same shape as the page, true wherever the pixel is judged to be ink. The second is the \textbf{ratio image}, the page divided by its own local background, which later stages reuse to measure how dark each piece of ink is.
+
+
+\paragraph{What it is for}
+This is the first real decision in the whole pipeline: for every pixel of the photograph, is this pen or is this paper? Everything downstream, from finding the lines to cutting out letters, works on the answer. Getting it wrong in one direction loses strokes; getting it wrong in the other fills the page with shadows and paper texture that then get mistaken for writing.
+
+
+\paragraph{Background: why a single threshold is not enough}
+The obvious method is a global threshold: pick one grey value, call everything darker than it ink. That works for a scanner, where the lamp lights the page evenly. It fails badly for a photograph taken with a phone, because the illumination is not even. One corner of the page sits under a lamp and the opposite corner sits in shadow, and the page is often slightly curved so the middle is brighter than the edges. The result is that paper in the bright corner can be lighter than 220 while paper in the shadowed corner is darker than 150, and real pen ink in the bright corner is around 90. There is no single number that separates ink from paper everywhere at once: any threshold low enough to reject the shadowed paper also rejects the pale pen strokes, and any threshold high enough to catch the pale strokes also catches the shadow.
+
+
+\paragraph{The idea: divide out the illumination}
+The fix is to stop asking "is this pixel dark?" and ask instead "is this pixel darker than the paper immediately around it?". The illumination varies smoothly across the page, so over a small neighbourhood it is almost constant. If the brightness of a pixel is modelled as the true reflectance of the page at that point multiplied by the local illumination, then dividing by an estimate of that local illumination cancels it and leaves the reflectance, which is the thing that actually distinguishes pen from paper.
+
+
+\begin{equation}
+\mathrm{ratio}[y,x] \;=\; \frac{\mathrm{gray}[y,x]}{\max\big(\mathrm{BoxMean}(\mathrm{gray},r)[y,x],\,1\big)}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{ratio}[y,x]$}] \normalfont the illumination-corrected value at this pixel; near 1 for paper, well below 1 for ink
+  \item[{$\mathrm{gray}[y,x]$}] \normalfont the measured grey value at this pixel
+  \item[{$\mathrm{BoxMean}(\mathrm{gray},r)$}] \normalfont the average grey value over a square window of radius r centred on each pixel, which serves as the estimate of the local illumination; see the entry for BoxMean
+  \item[{$r$}] \normalfont the radius of that window, in pixels
+  \item[{$\max(\cdot,\,1)$}] \normalfont a guard so that a window which happens to average to zero cannot cause a division by zero
+\end{description}
+A ratio of 1 means the pixel is exactly as bright as its surroundings, which is what paper looks like. A ratio of 0.4 means the pixel is well under half as bright as the paper around it, which is what a pen stroke looks like. The key property is that this is now true in the bright corner and the shadowed corner alike, because the shadow divides out of both the numerator and the denominator.
+
+
+\paragraph{Choosing the window size, and the trap in it}
+The radius has to satisfy two opposing requirements. It must be large enough that the window is mostly paper even when it is centred on a stroke, because the denominator is supposed to estimate the paper brightness, not the ink. If the radius were the width of a pen stroke, then a window centred inside a thick stroke would be entirely ink, the estimated background would be as dark as the ink itself, the ratio would come out near 1, and the stroke would be declared paper. That failure has a name in this file: it is the "solid ink" case handled below. The radius must also be small enough that the illumination really is roughly constant across the window, which rules out making it enormous.
+
+
+\begin{equation}
+r \;=\; \mathrm{clip}\!\left(\mathrm{round}\!\left(\frac{H}{41}\right),\; 8,\; 40\right)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$r$}] \normalfont the background window radius used above
+  \item[{$H$}] \normalfont the height of the page image in pixels
+  \item[{$\mathrm{clip}(v,a,b)$}] \normalfont v forced into the range from a to b: the smaller of b and the larger of a and v
+  \item[{$41$}] \normalfont a divisor chosen so that the window comes out a few times the thickness of a pen stroke at the resolutions this pipeline works at
+  \item[{$8,\;40$}] \normalfont hard floor and ceiling, so a very small or very large input image still gets a sensible window
+\end{description}
+Scaling the radius with the image height rather than fixing it is what lets the same code handle a 1000-pixel-tall photograph and a 4000-pixel-tall one. A stroke in the larger photograph is four times as many pixels wide, so the window that must exceed it has to grow in step.
+
+
+\paragraph{Turning the ratio into a yes or no}
+The ratio image still has continuous values and a decision is needed. Otsu's method supplies the threshold, and it is unusually well suited here. Otsu's method assumes the values fall into two groups and picks the cut that separates them best in a precise statistical sense; see the entry for Otsu for the derivation. After the division the ratio image genuinely does have two groups, because the illumination that was smearing them together has been removed: a tall narrow spike just below 1 for the paper, and a much smaller spread of low values for the ink. A pixel is ink when its ratio is below the threshold Otsu returns.
+
+
+\begin{equation}
+\mathrm{mask}[y,x] \;=\; \big[\;\mathrm{ratio}[y,x] \;<\; t_{\mathrm{Otsu}}(\mathrm{ratio})\;\big]
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{mask}[y,x]$}] \normalfont true when this pixel is taken to be ink
+  \item[{$t_{\mathrm{Otsu}}(\mathrm{ratio})$}] \normalfont the threshold Otsu's method returns for the ratio image, that is, the value that best splits its two groups
+  \item[{$[\;\cdot\;]$}] \normalfont square brackets around a condition mean 1 or true when the condition holds and 0 or false when it does not
+\end{description}
+
+\begin{quote}\small\itshape Note that the threshold is computed from the ratio image, not from the original grey image. This is the whole point of the two-step design: a global method like Otsu's, which cannot adapt to position, is made to work on a photograph by first removing the position-dependent part of the signal.\end{quote}
+
+\paragraph{The solid-ink correction}
+One class of object defeats the division: a region of darkness much larger than the background window. The spine of a ring binder, a deep shadow along a fold, or the black edge of the desk behind the page are all far wider than 40 pixels. Inside such a region the window used for the denominator is entirely dark, so the estimated background is dark too, the ratio comes back near 1, and the interior is correctly rejected. The problem is the boundary, where the window straddles light and dark and the ratio dips, marking a band of false ink around every large dark object.
+
+These regions are found by their defining property: they are completely filled. Writing is not. A pen stroke is thin, so any small window placed on the page contains some paper even when it contains a stroke; a window inside a binder shadow contains nothing but shadow. Averaging the mask itself measures exactly this fill fraction.
+
+
+\begin{equation}
+\mathrm{solid}[y,x] \;=\; \big[\;\mathrm{BoxMean}(\mathrm{mask},\,4)[y,x] \;>\; 0.999\;\big]
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{solid}[y,x]$}] \normalfont true when this pixel lies in a completely filled dark region
+  \item[{$\mathrm{BoxMean}(\mathrm{mask},4)$}] \normalfont the fraction of pixels marked as ink within a 9 by 9 window, obtained by averaging the mask treated as ones and zeros
+  \item[{$4$}] \normalfont the window radius, giving a 9 by 9 window: small enough that no ordinary pen stroke can fill it, large enough that noise does not
+  \item[{$0.999$}] \normalfont effectively a demand that every pixel in the window be ink; it is not written as 1.0 only to be safe against floating-point rounding in the average
+\end{description}
+The flagged cores are then grown slightly, with a second averaging test, and subtracted from the mask. Growing them is necessary because the false-ink band lies just outside the solid core, not inside it, so removing only the core would leave the band behind, which is the artefact being targeted.
+
+
+\paragraph{Why the ratio image is returned as well}
+Later stages need to ask how dark a piece of ink is, in order to tell a real pen stroke from a faint printed rule or a crease. The original grey values cannot answer that, because they still contain the illumination. The ratio image can, and it is already computed, so it is passed out rather than recomputed. DropArtifactPieces uses it for precisely this test.
+
+
+\section{PaperRegionMask}
+\begin{lstlisting}[style=sig]
+def PaperRegionMask(g, P)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{g}] \normalfont the page as a 2-D grey array in floating point
+  \item[{P}] \normalfont the line pitch in pixels, that is, the typical distance between consecutive lines of writing; see LinePitch
+\end{description}
+
+\noindent\textbf{Output.} a boolean array the size of the page, true inside the sheet of paper and false outside it, shrunk slightly inward from the true paper edge.
+
+
+\paragraph{What it is for}
+A photograph of a page is rarely just the page. Around it there is desk, keyboard, hand, shadow and the dark gap at the edge of the sheet. None of that is writing, but much of it is darker than the paper and therefore survives into the ink mask. This function finds the outline of the sheet so that everything outside it can be discarded in one move, before any effort is spent trying to interpret it.
+
+
+\paragraph{The assumption being made}
+The method rests on one observation: of everything in the frame, the sheet of paper is both bright and large. The desk may be bright too, but it surrounds the page rather than forming one solid region with it, because a visible dark rim separates them, which is the shadow the sheet casts and the contrast at its cut edge. So the paper is the largest \textbf{connected} bright region, where connected means one can walk from any pixel of it to any other without leaving it.
+
+
+\paragraph{Step one: work small}
+The search is done on a copy of the page reduced by a factor of four in each direction, by averaging each 4 by 4 block of pixels into one. Two reasons. Speed: a sixteenth of the pixels means a sixteenth of the work, and the paper outline does not need pixel accuracy to be useful. Robustness: averaging suppresses noise and small features, so the result is dominated by the large-scale structure, which is what is being looked for. The reduction uses a block average rather than taking every fourth pixel, because taking every fourth pixel can land entirely in a gap and miss a thin dark rim completely, whereas an average over the block always registers it.
+
+
+\paragraph{Step two: find the dark surround}
+
+\begin{equation}
+\mathrm{dark}[y,x] \;=\; \big[\; c[y,x] \;<\; 0.45 \cdot \mathrm{median}(c) \;\big]
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{dark}[y,x]$}] \normalfont true when this block of the shrunken page is part of the dark surround
+  \item[{$c$}] \normalfont the shrunken, locally averaged copy of the page
+  \item[{$\mathrm{median}(c)$}] \normalfont the middle value of all the block brightnesses when sorted; it stands in for the brightness of the paper
+  \item[{$0.45$}] \normalfont how much darker than the paper a block must be before it counts as surround rather than page
+\end{description}
+The median is used rather than the mean because it is \textbf{robust}, meaning that a minority of extreme values barely moves it. In a photograph where a third of the frame is black desk, the mean brightness is dragged a long way down by the desk and no longer describes the paper at all, while the median still sits in the paper, because the paper is the single largest group of similar values. The threshold is a fraction of that median rather than an absolute grey level, which is again what makes it work under different lighting: in a dim photograph everything scales down together and the fraction is unchanged.
+
+
+\paragraph{The no-surround case}
+If less than 0.2 percent of the frame comes out dark, the conclusion is that there is no surround in the picture, because the page fills the whole frame or the image is a scan rather than a photograph. In that case the entire image is returned as paper. This matters because the "largest bright region" logic has nothing to find when there is no dark rim to separate regions in the first place, and forcing it to choose would pick an arbitrary piece of the page.
+
+
+\paragraph{Step three: the largest bright component}
+Connected-component labelling, described in the entry for LabelComponents, is run on the inverse of the dark mask, that is, on the bright blocks. It returns an array in which every bright block carries an integer label, with all the blocks of one connected region sharing a label. Counting how many blocks carry each label and taking the largest count identifies the sheet.
+
+
+\begin{equation}
+\ell^{*} \;=\; \arg\max_{\ell \ge 1} \;\big|\{\,(y,x) : \mathrm{lab}[y,x] = \ell \,\}\big|
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\ell^{*}$}] \normalfont the label belonging to the sheet of paper
+  \item[{$\mathrm{lab}[y,x]$}] \normalfont the component label of this block, with 0 meaning it was not bright
+  \item[{$\arg\max$}] \normalfont the value of the index at which the quantity is largest, as opposed to the largest value itself
+  \item[{$|\{\cdot\}|$}] \normalfont the number of elements in the set, here the number of blocks carrying that label
+  \item[{$\ell \ge 1$}] \normalfont labels start at 1, so starting the search at 1 excludes the background
+\end{description}
+
+\paragraph{Step four: back to full size}
+The chosen region is a mask over blocks, and what is needed is a mask over pixels. Each block stands for a 4 by 4 square of the original, so the block mask is expanded by replacing every entry with a 4 by 4 square of copies of itself. This is a \textbf{Kronecker product} with a 4 by 4 block of ones, which is the standard name for exactly that operation, and in practice it is nearest-neighbour upsampling: a hard-edged enlargement with no smoothing, which is the correct choice because the value being enlarged is a yes-or-no flag and a smoothed version of it would be meaningless.
+
+
+\paragraph{Step five: shrink inward}
+Finally the mask is eroded, that is, every pixel within a radius of the paper boundary is removed from it, using a radius of 0.4 line pitches. The reason is that the boundary itself is the single least trustworthy part of the estimate. It was found on a coarse grid, the sheet's edge is darkened by shadow over a band several pixels wide, and the page may curl. Pulling the accepted region inward by a fraction of a line's height costs nothing, because people do not write right up to the cut edge of a sheet, and it reliably excludes the edge shadow that would otherwise be interpreted as a long horizontal stroke.
+
+
+\begin{quote}\small\itshape Expressing the shrink in line pitches rather than pixels is a habit worth noticing, and it recurs throughout the segmenter. The pitch is the natural unit of the problem: it is set by the size of the writing, so a quantity measured in pitches means the same thing on a photograph taken close up as on one taken from further away.\end{quote}
+
+\section{LinePitch}
+\begin{lstlisting}[style=sig]
+def LinePitch(mask)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{mask}] \normalfont the ink mask of the page, a boolean 2-D array
+\end{description}
+
+\noindent\textbf{Output.} a pair. The first item is the line pitch, an integer number of pixels giving the typical vertical distance from one line of writing to the next. The second is the smoothed row profile, an array with one value per image row, which LineCentres reuses to locate the lines.
+
+
+\paragraph{What it is for, and why it comes first}
+Almost every decision later in the segmenter is a judgement of size: is this blob too tall to be a letter, is this gap wide enough to be a word break, is this dot close enough to that stem to belong to it. Expressing such rules in pixels would tie them to one camera at one distance. Expressing them as fractions of the line pitch makes them scale-free, because the pitch grows and shrinks with the writing. So the pitch is measured once, early, and becomes the ruler for everything else. The symbol P is used for it throughout the file.
+
+
+\paragraph{Background: what a projection profile is}
+A \textbf{projection profile} is what results from collapsing a 2-D image onto one axis by summing along the other. The horizontal projection profile used here has one number per image row: how many ink pixels that row contains.
+
+
+\begin{equation}
+\mathrm{prof}[y] \;=\; \sum_{x} \mathrm{mask}[y,x]
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{prof}[y]$}] \normalfont the profile value for row y, that is, the count of ink pixels in that row
+  \item[{$\mathrm{mask}[y,x]$}] \normalfont 1 where the pixel is ink, 0 where it is not
+  \item[{$\sum_{x}$}] \normalfont a sum over every column x of that row
+\end{description}
+The profile of a page of handwriting has a characteristic shape. Rows passing through the bodies of letters cross nearly every letter on the line and so collect a great deal of ink. Rows in the white space between two lines cross almost nothing and collect very little. The profile is therefore a run of peaks separated by troughs, one peak per line of writing, and the distance between consecutive peaks is the pitch. Using row projections to find text lines is a long-standing technique in document analysis \cite{postl1986}.
+
+Columns are trimmed before summing: the leftmost 5 percent and everything past 97 percent of the width are ignored. The margins are where page edges, binder holes and the shadow at the spine live, and a vertical artefact there contributes to every row equally, which raises the whole profile and flattens the contrast between peak and trough that the method depends on.
+
+
+\paragraph{Smoothing, and why it is necessary}
+The raw profile is jagged. Within one line of writing the count jumps about from row to row according to which letters happen to have a horizontal stroke at that exact height, so a single line of text produces not one clean peak but a cluster of small ones. Counting those as separate lines would be wrong. Smoothing replaces each value with a weighted average of its neighbours, which merges the cluster into one broad peak while leaving the large gaps between lines intact.
+
+
+\begin{equation}
+k[j] \;=\; \exp\!\left(-\tfrac{1}{2}\left(\frac{j}{\sigma}\right)^{\!2}\right),\qquad j = -12,\,\dots,\,12, \qquad \sigma = 4
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$k[j]$}] \normalfont the unnormalised weight given to a neighbour j rows away
+  \item[{$j$}] \normalfont the offset from the row being smoothed, running from -12 to +12
+  \item[{$\sigma$}] \normalfont the standard deviation of the Gaussian in rows; it sets how far the smoothing reaches, here 4 rows
+  \item[{$\exp(\cdot)$}] \normalfont the exponential function, which here makes the weight fall away smoothly and symmetrically with distance
+\end{description}
+
+\begin{equation}
+\mathrm{sm}[y] \;=\; \frac{\sum_{j} k[j]\,\mathrm{prof}[y+j]}{\sum_{j} k[j]}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{sm}[y]$}] \normalfont the smoothed profile at row y
+  \item[{$\mathrm{prof}[y+j]$}] \normalfont the raw profile j rows away from y
+  \item[{$\sum_{j} k[j]$}] \normalfont the sum of the weights, dividing by which keeps the smoothed profile on the same scale as the raw one, so that a flat input comes back unchanged instead of multiplied by the weight total
+\end{description}
+This operation is a \textbf{convolution}: slide a small set of weights along a signal, and at each position output the weighted sum of the values under it. The particular weights here form a Gaussian, or bell curve, which is the usual choice for smoothing because it is smooth itself and so does not introduce ripples of its own. A width of 4 rows is chosen to be comparable to the thickness of a pen stroke, which is the scale of the jaggedness being removed, and much smaller than the distance between lines, which is the structure being kept.
+
+
+\paragraph{Method one: the gaps between peaks}
+A row is a \textbf{local maximum}, or peak, when it is at least as large as the row above and strictly larger than the row below, and in addition exceeds 6 percent of the largest value anywhere in the profile. The last condition rejects the small bumps that noise produces in the white space between lines. The asymmetry, at least as large on one side and strictly larger on the other, is a detail that matters: if both tests were "at least as large", a flat-topped peak several rows wide would report every one of those rows as a separate peak.
+
+With two or more peaks found, the pitch is the \textbf{median} of the differences between consecutive peak positions.
+
+
+\begin{equation}
+P \;=\; \mathrm{median}\big(\,y_{i+1} - y_{i} \;:\; i = 1,\dots,m-1 \,\big)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$P$}] \normalfont the line pitch in pixels
+  \item[{$y_i$}] \normalfont the row position of the i-th peak, in increasing order
+  \item[{$m$}] \normalfont how many peaks were found
+  \item[{$\mathrm{median}$}] \normalfont the middle value of the differences once sorted
+\end{description}
+The median rather than the mean, again for robustness. If the page contains a paragraph break, one of the gaps is two or three times the others. The mean would be pulled upward by that one value and would overstate the pitch for the whole page; the median ignores it entirely, since it only cares which value sits in the middle.
+
+
+\paragraph{Method two: autocorrelation}
+When fewer than two peaks are found there are no gaps to measure, and a different line of attack is needed. \textbf{Autocorrelation} asks how much a signal resembles a shifted copy of itself. For a repeating signal the resemblance is high when the shift equals the period of the repetition, because peaks then land on peaks.
+
+
+\begin{equation}
+\mathrm{ac}[\tau] \;=\; \sum_{y} a[y]\,a[y+\tau],\qquad a[y] \;=\; \mathrm{sm}[y] - \overline{\mathrm{sm}}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{ac}[\tau]$}] \normalfont the autocorrelation at shift tau: large when the profile lines up with itself after being moved tau rows
+  \item[{$\tau$}] \normalfont the shift, called the lag, measured in rows
+  \item[{$a[y]$}] \normalfont the profile with its average removed, so that the measurement responds to the pattern of variation rather than to the overall level
+  \item[{$\overline{\mathrm{sm}}$}] \normalfont the mean of the smoothed profile
+\end{description}
+Subtracting the mean is essential. Without it every product in the sum is positive, the autocorrelation is dominated by the constant part of the signal, and it decreases steadily with lag simply because fewer terms overlap, so no peak corresponding to the period is visible. After subtraction the values straddle zero, and the sum is large only when peaks genuinely align with peaks and troughs with troughs.
+
+The first clear peak at a lag of at least 15 rows, reaching at least 70 percent of the maximum in the searched range, is taken as the pitch. The lower bound of 15 skips the trivial peak at zero lag, where any signal matches itself perfectly, along with the shoulder beside it caused by the smoothing. The search is also limited to a third of the signal length, because at large lags very few rows overlap and the estimate becomes noise.
+
+
+\paragraph{Method three: letter height}
+If even that fails, as it does for a crop containing a single line, the pitch is inferred from the size of the letters themselves. Connected components are labelled, each one's height is measured, pieces smaller than 8 pixels in area or under 3 pixels tall are discarded as noise, and the median height of what remains is multiplied by 2.2.
+
+
+\begin{equation}
+P \;=\; \max\big(15,\; \mathrm{round}\,(2.2 \cdot \mathrm{median}(h))\big)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$P$}] \normalfont the line pitch in pixels
+  \item[{$h$}] \normalfont the heights of the accepted connected components
+  \item[{$2.2$}] \normalfont the ratio of line pitch to typical component height observed for ordinary handwriting
+  \item[{$15$}] \normalfont a floor, below which the estimate is treated as unusable
+\end{description}
+The factor 2.2 comes from the structure of writing. A typical connected piece of ink is roughly one x-height tall, the x-height being the height of a letter like x or o with no ascender or descender. A line of writing occupies the x-height plus the ascender zone above it plus the descender zone below, and lines are separated by a further gap, which together come to a little over twice the x-height. The estimate is coarse, but it is only reached when the two better methods have already failed.
+
+
+\paragraph{The final fallback}
+With no usable ink at all, 48 pixels is returned. This is an arbitrary number and is not expected to be right. Its purpose is to keep the caller running on a blank page instead of failing on a division by zero, and a blank page produces no crops regardless of what pitch is assumed, so the value cannot do any harm.
+
+
+\begin{quote}\small\itshape The cascade of three methods, each a fallback for the last, is worth reading as a design pattern rather than as clutter. The first method is the most accurate but needs at least two lines; the second needs only a repeating pattern; the third needs only some ink. Each is tried in order of preference, so the accurate method is used whenever it applies and the crude ones only when nothing better is possible.\end{quote}
+
+\section{LeastCostSeam}
+\begin{lstlisting}[style=sig]
+def LeastCostSeam(cost, step=3)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{cost}] \normalfont a 2-D array in which every entry is the price of passing through that pixel; here, large where there is ink and small where there is not
+  \item[{step}] \normalfont the largest number of rows the path may move up or down when advancing one column, default 3
+\end{description}
+
+\noindent\textbf{Output.} an array with one entry per column, giving the row the path occupies in that column: the cheapest left-to-right route across the array.
+
+
+\paragraph{What it is for}
+Two lines of handwriting have to be separated from one another. A straight horizontal cut will not do it, because the descender of a g on the upper line hangs below the ascender of an l on the lower one, and any single row that clears the g also slices the l. What is needed is a wavy cut that dodges around the ink: it should dip below a descender and rise above an ascender, as long as it keeps moving left to right. That wavy cut is called a \textbf{seam}, and finding the cheapest one is what this function does. The technique is seam carving, introduced for resizing images \cite{avidan2007} and adapted to the separation of handwritten text lines \cite{arvanitopoulos2014}.
+
+
+\paragraph{The problem stated precisely}
+A seam is a choice of one row for each column, with the restriction that consecutive choices differ by no more than \texttt{step} rows, which is what makes the result a connected curve rather than a scatter of disconnected points. Its cost is the sum of the cost array along it. The task is to find the seam of least total cost.
+
+
+\begin{equation}
+\mathrm{Cost}(y_1,\dots,y_W) \;=\; \sum_{x=1}^{W} \mathrm{cost}[y_x,\,x], \qquad |y_{x+1} - y_{x}| \le \mathrm{step}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$y_x$}] \normalfont the row the seam occupies in column x
+  \item[{$W$}] \normalfont the number of columns
+  \item[{$\mathrm{cost}[y,x]$}] \normalfont the price of the pixel at row y, column x
+  \item[{$\mathrm{step}$}] \normalfont the maximum vertical move allowed between neighbouring columns
+\end{description}
+
+\paragraph{Why brute force is impossible}
+Counting the candidates shows why a direct search is out of the question. With h rows to choose from in the first column and up to 2$\cdot$step+1 choices at each of the remaining W$-$1 columns, the number of seams is about h(2$\cdot$step+1)\textasciicircum{}(W$-$1). For a modest page half a size down, with 1200 columns and step 7, that is 15 raised to the power 1199, a number with over a thousand digits. No computer will enumerate them.
+
+
+\paragraph{The idea that makes it easy: dynamic programming}
+\textbf{Dynamic programming} is a method for problems that can be solved by building up the answer one step at a time, where the best way to finish does not depend on how the start was reached \cite{bellman1954}. That condition holds here. Suppose the cheapest way to reach row y of column x has been computed, for every row y. The cheapest way to reach a particular row of column x+1 must arrive from one of the rows of column x that is within \texttt{step} of it, and once it is known how cheaply each of those rows can be reached, the best arrival is just the smallest of those costs plus the price of the new pixel. Nothing about the earlier part of the route matters beyond its total cost. So the whole column can be solved from the previous column alone.
+
+
+\begin{equation}
+A[y,x] \;=\; \mathrm{cost}[y,x] \;+\; \min_{|d| \le \mathrm{step}} \Big( A[y-d,\,x-1] \;+\; \lambda\,|d| \Big)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$A[y,x]$}] \normalfont the accumulated cost: the price of the cheapest route that starts at the left edge and ends at row y of column x
+  \item[{$\mathrm{cost}[y,x]$}] \normalfont the price of the current pixel
+  \item[{$d$}] \normalfont the vertical move made to arrive here, so the route came from row y$-$d of the previous column
+  \item[{$\mathrm{step}$}] \normalfont the limit on that move
+  \item[{$\lambda$}] \normalfont a small penalty per row of vertical movement, 0.02 in this implementation
+  \item[{$\min$}] \normalfont the smallest value over all the choices of d
+\end{description}
+The first column needs no recursion, since a route that ends there has visited only that one pixel, so A in column 1 is just the cost in column 1. Every later column follows from its predecessor by the formula above. The work is one pass over the array, with 2$\cdot$step+1 comparisons per pixel, instead of the astronomical enumeration. That is the entire gain of dynamic programming: it replaces an exponential count of paths with a linear count of pixels.
+
+
+\paragraph{The movement penalty}
+The term $\lambda$$|$d$|$ charges a small amount for each row of vertical movement. Without it, any two routes through equally empty space would cost the same, and the seam would wander about aimlessly in white space, picking an arbitrary one of the many equally cheap options. The penalty breaks those ties in favour of going straight, so that the seam moves only when moving buys it something, namely avoiding ink. At 0.02 per row it is far smaller than the cost of crossing a stroke, so it never persuades the seam to cut through a letter in order to stay level; it only decides between routes that are otherwise equivalent. This is a \textbf{regularisation} term, which is the general name for a small extra cost added to express a preference among solutions that the main objective cannot distinguish.
+
+
+\paragraph{Recovering the path}
+The accumulated cost gives the price of the best seam but not its route, so as each cell is filled the winning move is recorded in a second array. When the pass is complete, the lowest value in the final column is the end of the best seam, and following the stored moves backwards from there reconstructs the whole path, column by column, right to left. This is \textbf{backtracking}, and it is the standard companion to dynamic programming: the forward pass computes the value of the best solution, the backward pass reads off what that solution actually was.
+
+
+\paragraph{How it is made fast in practice}
+Written as a loop over rows inside a loop over columns this would be slow in Python. Instead, for each column, the candidate costs from all 2$\cdot$step+1 possible moves are formed as whole shifted copies of the previous column, stacked into a small array, and the minimum is taken down the stack in one operation. Shifting a column by d rows and adding the penalty handles every row's d-th candidate at once. Only the loop over columns remains in Python, because columns are genuinely sequential: column x cannot be computed before column x$-$1.
+
+
+\begin{quote}\small\itshape The shifted copies are filled with infinity where the shift runs off the end of the array. Infinity is the natural value for an impossible move, because taking a minimum automatically never selects it, with no need for a special case in the code.\end{quote}
+
+\section{SkewScore}
+\begin{lstlisting}[style=sig]
+def SkewScore(mask, angleDeg)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{mask}] \normalfont the ink mask of the page
+  \item[{angleDeg}] \normalfont the trial rotation angle in degrees
+\end{description}
+
+\noindent\textbf{Output.} a single number: how sharply the ink piles into rows when the page is considered at this angle. Larger is better aligned.
+
+
+\paragraph{What it is for}
+A photographed page is never perfectly square to the camera, so the lines of writing run slightly uphill or downhill. Every later stage assumes they are horizontal: the row profile is used to find lines, horizontal seams are used to separate them, and a crop is a horizontal strip. A tilt of even two degrees smears the profile enough to merge neighbouring lines. This function provides the measurement that lets the tilt be found: given a candidate angle, it scores how level the page would look at that angle.
+
+
+\paragraph{The principle: concentration}
+Consider the row profile again, the count of ink pixels per row. When the page is level, every letter on a line contributes to the same few rows, so those rows have very large counts and the rows between lines have almost none. When the page is tilted, the left end of a line sits higher than the right end, so the same ink is spread over many more rows, each with a smaller count. The total amount of ink is identical either way, since rotating the page does not create or destroy pixels. What changes is how \textbf{concentrated} the profile is. So the correct angle is the one that concentrates the profile most, and all that is needed is a number that measures concentration.
+
+
+\paragraph{Why the sum of squares measures concentration}
+Squaring, then summing, does it. Squaring rewards large values disproportionately: doubling a count quadruples its contribution. So for a fixed total, the sum of squares is largest when the total is piled into as few entries as possible and smallest when it is spread evenly.
+
+
+\begin{equation}
+S(\theta) \;=\; \sum_{k} \mathrm{prof}_{\theta}[k]^{2}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$S(\theta)$}] \normalfont the skew score at trial angle theta
+  \item[{$\mathrm{prof}_{\theta}[k]$}] \normalfont the number of ink pixels that fall into row index k once the page is considered rotated by theta
+  \item[{$k$}] \normalfont the row index in the rotated frame
+\end{description}
+A numerical illustration makes the behaviour concrete. Suppose 600 ink pixels belong to one line. Level, they might fall into 4 rows of 150, giving a score of 4$\cdot$150\textsuperscript{2} = 90\{,\}000. Tilted, the same 600 might spread over 20 rows of 30, giving 20$\cdot$30\textsuperscript{2} = 18\{,\}000. The totals match at 600 but the scores differ fivefold, and the larger score correctly identifies the level case. The sum of squares is used in the same spirit elsewhere in the project, where EstimateSlantDeg uses it to find the slant of letters rather than the skew of lines.
+
+
+\paragraph{Scoring an angle without rotating the image}
+Rotating the whole image for each candidate angle would mean interpolating every pixel, seventeen times over for the seventeen angles tried. That is unnecessary. Only the row index each ink pixel would land in is needed, not an image, and that index follows from one line of trigonometry. The standard rotation of a point about a centre gives the rotated row as
+
+
+\begin{equation}
+k \;=\; \mathrm{round}\Big( (y - c_y)\cos\theta \;-\; (x - c_x)\sin\theta \;+\; c_y \Big)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$k$}] \normalfont the row the pixel lands in after rotation
+  \item[{$y,\,x$}] \normalfont the pixel's original row and column
+  \item[{$c_y,\,c_x$}] \normalfont the centre of rotation, taken as the centre of the image
+  \item[{$\theta$}] \normalfont the rotation angle in radians, converted from the degrees supplied
+  \item[{$\cos,\,\sin$}] \normalfont the cosine and sine functions, which express how much of each original axis contributes to the new vertical position
+  \item[{$\mathrm{round}$}] \normalfont rounding to the nearest whole number, since rows are counted in whole pixels
+\end{description}
+Only the row is computed; the column is never needed, because the profile sums over columns anyway. Counting how many pixels land in each row is then a single tally of the k values, so the cost of scoring one angle is proportional to the number of ink pixels rather than to the number of pixels in the image. Since ink is a small fraction of a page, that is a large saving on top of avoiding the interpolation.
+
+
+\paragraph{A subtle trap: never clip the row index}
+Rotation moves some pixels outside the original image rectangle, so k can come out negative or beyond the image height. The obvious response, forcing k into the valid range, is badly wrong, and the code carries a comment saying so. Clipping piles every out-of-range pixel into the first or last row. That creates an enormous artificial count in one row, and because the score squares the counts, this fake spike scores higher than any genuine line of text. The effect grows with the angle, since larger angles push more pixels out of range, so the search would reliably select the most extreme angle offered. The code instead shifts the indices so the smallest becomes zero, which keeps every pixel in its own distinct row and lets the profile grow as tall as it needs to be.
+
+
+\begin{quote}\small\itshape This is a good example of why a plausible-looking defensive measure can be worse than none. Clipping an index is usually the safe thing to do; here it silently converts a correct measurement into one that is guaranteed to give the wrong answer.\end{quote}
+
+\section{Deskew}
+\begin{lstlisting}[style=sig]
+def Deskew(page)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{page}] \normalfont the photograph, as a 2-D grey array or a 3-D colour array of 8-bit values
+\end{description}
+
+\noindent\textbf{Output.} five items: the straightened full-resolution page, the straightened half-resolution copy, the ink mask of that copy, the ratio image, and the angle in degrees that was applied.
+
+
+\paragraph{What it is for}
+This is the first stage of the segmenter, and its job is to hand the rest of the pipeline a page whose lines of writing run horizontally, together with the derived images every later stage needs. It combines three things: reducing the page to grey, searching for the tilt angle, and applying the rotation.
+
+
+\paragraph{Step one: colour to grey}
+A colour photograph arrives as three values per pixel, for red, green and blue. The whole segmenter works on a single brightness value, so the three channels are averaged. A simple mean is used rather than one of the perceptual weightings that weight green more heavily, because the distinction being drawn is dark pen against light paper, which shows up in all three channels, and a plain mean has the advantage of treating blue and black ink alike.
+
+
+\paragraph{Step two: work at half size}
+Every decision in the segmenter is taken on a copy of the page reduced by a factor of two in each direction, which is a quarter of the pixels, so everything runs about four times faster. The decisions involved concern whole lines and whole letters, which are many pixels across, so halving the resolution does not blur the evidence they rest on. The full resolution page is kept because the final crops are cut from it, so the recogniser still sees every pixel the camera captured.
+
+The reduction averages each 2 by 2 block rather than taking every second pixel. Point sampling would risk a thin pale stroke falling between the samples and disappearing entirely, whereas any ink inside a block darkens that block's average and survives. This is the same argument that applies to the widening of a resampling filter when minifying, discussed in the entry for \_Weights.
+
+
+\paragraph{Step three: search for the angle}
+The angle is found by a \textbf{grid search}, which means simply trying every candidate in a fixed list and keeping the best. The candidates run from $-$4 to +4 degrees in steps of 0.5, which is seventeen angles, each scored by SkewScore, with the highest score winning.
+
+
+\begin{equation}
+\theta^{*} \;=\; \arg\max_{\theta \,\in\, \{-4,\,-3.5,\,\dots,\,4\}} \; S(\theta)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\theta^{*}$}] \normalfont the chosen rotation angle in degrees
+  \item[{$S(\theta)$}] \normalfont the concentration score at that angle, from SkewScore
+  \item[{$\arg\max$}] \normalfont the angle at which the score is largest
+\end{description}
+Two choices in that range deserve justification. The limit of 4 degrees reflects how a page is actually photographed: someone aiming a phone at a sheet on a desk is square to it within a few degrees, and a search that allowed 45 degrees would mostly offer opportunities to pick a wrong answer. The step of 0.5 degrees is chosen against the consequence of residual error. Over a page 1500 pixels wide, half a degree of tilt lifts one end relative to the other by 1500$\cdot$tan(0.5$^\circ$) $\approx$ 13 pixels, which is well under the height of a line of writing, so the remaining tilt cannot merge neighbouring lines. A finer step would cost more scoring for no benefit the later stages could use.
+
+The search runs on a quarter-size mask, halved again from the working copy, giving sixteen times fewer pixels to tally per angle. The angle of a whole page is a very coarse property, determined by the global arrangement of its lines, so it survives aggressive reduction intact.
+
+
+\paragraph{Step four: apply the rotation, and the fill values}
+The chosen angle is applied to both the full-size and half-size pages with Rotate. Rotating a rectangle leaves wedges at the corners that correspond to no original pixel, and these have to be filled with something. The fill is 255, white, because what lies just outside the frame of a photograph of a page is more page, and declaring it white means the later stages see paper rather than a black triangle that would read as a huge ink blob. Where a mask rather than a grey image is rotated the fill is 0 instead, for the same underlying reason: in a mask, 0 means no ink, so filling with 0 adds nothing that could be mistaken for writing.
+
+
+\paragraph{Step five: derive the mask}
+Finally InkMask is run on the straightened half-size page to produce the ink mask and the ratio image. Note the ordering: the mask is computed after rotation, not before. Rotating a mask would require interpolating yes-or-no values, which produces fractional ink along every stroke edge and forces an arbitrary second threshold to clean up. Rotating the grey image and then thresholding avoids that entirely, since interpolating grey values is exactly what interpolation is for.
+
+
+\begin{quote}\small\itshape The ink mask is computed twice in this function, once before the rotation to drive the angle search and once after it for the output. The first is thrown away. That is deliberate: the search needs a mask to score, and the output must describe the rotated page, and no single mask can do both.\end{quote}
+
+\section{RemovePrintedStructure}
+\begin{lstlisting}[style=sig]
+def RemovePrintedStructure(mask, g)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{mask}] \normalfont the ink mask of the page
+  \item[{g}] \normalfont the grey page at the same scale, used to locate the sheet
+\end{description}
+
+\noindent\textbf{Output.} five items: the cleaned mask, the paper-region mask, the line pitch, how many ink pixels lay outside the paper, and how many were removed as printed structure.
+
+
+\paragraph{What it is for}
+A sheet of lined or gridded paper carries printing that was never written by hand: the ruled lines, the red margin line, the holes and the darkened spine where the page meets the binding. All of it is ink as far as the mask is concerned, and all of it is poison for the stages that follow. A ruled line runs the full width of the page, so it joins every letter on a line into one connected blob, which destroys the per-letter analysis that the cutter depends on, and it adds a huge horizontal stroke to every row profile. This function removes that printing while leaving the writing intact.
+
+
+\paragraph{The distinguishing property: length}
+The property that separates printing from writing is not darkness, since a ruled line can be as dark as a pencil stroke, and not thickness, since both are a pen's width. It is \textbf{length}. A ruled line crosses the whole page in one unbroken straight run. Handwriting contains straight pieces too, but short ones: the longest horizontal stroke in ordinary writing is the crossbar of a t or the join between two letters, neither more than a fraction of a line's height. So a threshold on run length, expressed in line pitches, separates the two reliably.
+
+
+\begin{equation}
+\mathrm{flat} \;=\; \mathrm{LongRunMask}\big(\mathrm{mask},\; \lfloor 1.25\,P \rfloor,\;\text{horizontal}\big)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{flat}$}] \normalfont the mask of pixels belonging to a long horizontal run
+  \item[{$\mathrm{LongRunMask}$}] \normalfont marks every pixel that lies in an unbroken run of set pixels at least the given length; see its own entry
+  \item[{$P$}] \normalfont the line pitch in pixels
+  \item[{$1.25$}] \normalfont the length threshold as a multiple of the pitch
+  \item[{$\lfloor \cdot \rfloor$}] \normalfont rounding down to a whole number of pixels
+\end{description}
+The threshold of 1.25 pitches sits in a wide gap. A ruled line is tens of pitches long, and the longest horizontal stroke in handwriting is well under one pitch, since a letter is about half a pitch wide. Anything between about 1 and several pitches would give the same result, so the exact figure is not delicate. The vertical direction gets 1.4 pitches, slightly more, because a tall letter like a capital L or an f with a long descender genuinely can run more than a pitch vertically, and the extra margin keeps such letters out of the deletion.
+
+
+\paragraph{Tolerating a tilt}
+A ruled line on a page that is still a fraction of a degree off level is not a single row of pixels. It drifts downward as it crosses the page, so any one row contains only the piece of it that happens to lie in that row, and a run-length test applied row by row sees a series of short runs rather than one long one, and deletes nothing. The fix is to dilate the mask by one pixel vertically before the test, so that each row contains the line's pixels from the rows immediately above and below as well and the run becomes unbroken again.
+
+But dilating also thickens the writing, and a test applied to a thickened mask would mark pixels that were never ink. So the result is dilated back and then intersected with the original mask, which restricts the deletion to pixels that really were ink to begin with. In morphological terms the sequence dilate, test, dilate, intersect is a closing used as a detector rather than as a filter: the dilation makes the feature visible to the test, and the intersection confines the consequences to the original shape.
+
+The vertical pass uses a radius of 3 rather than 1 because the structures it targets, the shadow at the spine of a notebook and the edge of the sheet, are not straight. They wobble by several pixels across the height of the page, so a tolerance of one pixel is not enough to make them read as one continuous run.
+
+
+\paragraph{Masking off the surround first}
+Before any of this, PaperRegionMask locates the sheet and everything outside it is deleted from the mask in one intersection. This is done first because it is the cheapest and most decisive filter available: the desk, the hand and the shadow beyond the page account for a large share of the false ink on a photograph, and removing them wholesale means the subtler tests that follow are not distracted by them.
+
+
+\paragraph{What is returned, and why the counts}
+Besides the cleaned mask, the function returns the pitch and the paper mask, both already computed here and needed later, and two counts: how many ink pixels lay outside the paper and how many were deleted as printed structure. The counts feed the diagnostics dictionary that SegmentLines returns. They exist because a failure of this stage is otherwise invisible: if the paper mask is wrong, the ink-outside-paper count is enormous, and if the run-length thresholds are wrong for a given page, the removed-pixel count is far larger or smaller than expected. Reporting them makes a silent failure a visible one.
+
+
+\section{DropArtifactPieces}
+\begin{lstlisting}[style=sig]
+def DropArtifactPieces(mask, ratio, P, H, W)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{mask}] \normalfont the ink mask after the printed structure has been removed
+  \item[{ratio}] \normalfont the ratio image from InkMask, used to judge how dark each piece is
+  \item[{P}] \normalfont the line pitch in pixels
+  \item[{H}] \normalfont the mask height
+  \item[{W}] \normalfont the mask width
+\end{description}
+
+\noindent\textbf{Output.} five items: the mask with the artefacts deleted, the component label array, the number of components, the area of each, and how many pieces were dropped.
+
+
+\paragraph{What it is for}
+After the printing has been removed, what remains is mostly handwriting but not entirely. Creases cast faint shadows. The fold at the centre of a spread leaves a dark line. The cut edge of the sheet leaves a sliver. Fragments of the ruling survive where a letter crossed it and broke the run. This function examines the leftovers one piece at a time and deletes those that are not writing.
+
+
+\paragraph{Why judge whole pieces, not pixels}
+This is the central design decision and it is worth stating plainly. Every test in this function is applied to a connected component as a unit, and a component is either kept whole or deleted whole. The alternative, testing each pixel on its own merits, produces half-erased letters, and a half-erased letter is worse than either outcome: it is still there, so it still has to be interpreted, but it no longer looks like the letter it is. Deciding per piece means the worst case is a missing letter, which the recogniser handles as a gap, rather than a corrupted one, which it confidently misreads.
+
+
+\paragraph{Closing before labelling}
+The components are found not on the mask itself but on a closed copy, dilated by about a tenth of a pitch and then eroded by the same amount. The purpose is to make a letter that the threshold broke into two pieces, where the pen lifted or the ink ran thin, count as one piece for the purposes of these tests. Otherwise the two halves are judged separately and each half, being smaller and thinner than a letter, is more likely to be mistaken for an artefact. The tests then read their statistics from the original mask but group pixels by the labels from the closed one, so the closing influences the grouping without inflating the measurements.
+
+
+\paragraph{The geometric tests}
+Several tests follow from the simple fact that a letter has a characteristic size, and the pitch gives the scale for it.
+
+
+\begin{itemize}\setlength\itemsep{0pt}
+  \item \textbf{Too tall:} a piece more than 2.2 pitches high cannot be a letter, because that is taller than a whole line of writing including its ascender and descender zones.
+  \item \textbf{Too thin:} a piece half a pitch wide or less, combined with another suspicious property, is a sliver rather than a letter.
+  \item \textbf{A vertical bar:} a piece under 0.12 pitches wide and over 1.2 pitches tall is deleted outright. No letter has that aspect ratio; a printed margin rule does, and so does the fold at the centre of a page.
+  \item \textbf{Touching an edge:} a piece reaching within half a pitch of the paper boundary is suspect, because writing does not start at the cut edge of a sheet. Touching the left edge is enough on its own, since the binding is there; touching the right or the top or bottom is only grounds for deletion in combination with being thin.
+  \item \textbf{Far left of the text:} the fifth percentile of the left edges of all the letter-sized pieces estimates where the writing begins, and a piece lying more than 1.2 pitches to the left of that is in the margin, not in the text.
+\end{itemize}
+The fifth percentile, rather than the minimum, estimates the left margin of the text. A \textbf{percentile} is the value below which a given fraction of the data falls, so the fifth percentile is the value exceeded by 95 percent of the left edges. Using the minimum would let a single surviving artefact define the margin and so protect every other artefact to its right; using a percentile means one stray piece cannot shift the estimate.
+
+
+\paragraph{The darkness test}
+Geometry alone cannot separate a faint printed rule from a pen stroke of the same shape, so the ratio image is brought in. The mean ratio over a piece measures how dark it is relative to the paper around it, and the comparison is made against the same Otsu threshold that decided what counted as ink in the first place.
+
+
+\begin{equation}
+\overline{\mathrm{ratio}}_{\ell} \;=\; \frac{1}{A_{\ell}}\sum_{(y,x)\,\in\,\ell} \mathrm{ratio}[y,x], \qquad \mathrm{faint}_{\ell} \;=\; \big[\;\overline{\mathrm{ratio}}_{\ell} > 0.85\,t_{\mathrm{Otsu}}\;\big]
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\overline{\mathrm{ratio}}_{\ell}$}] \normalfont the mean ratio value over the pixels of piece l, that is, its average darkness relative to the local paper
+  \item[{$A_{\ell}$}] \normalfont the number of pixels in piece l
+  \item[{$\mathrm{ratio}[y,x]$}] \normalfont the illumination-corrected value at that pixel, from InkMask
+  \item[{$t_{\mathrm{Otsu}}$}] \normalfont the ink threshold on the ratio image
+  \item[{$0.85$}] \normalfont how close to the threshold a piece's average may come before it is called faint
+  \item[{$\mathrm{faint}_{\ell}$}] \normalfont true when piece l only barely qualified as ink at all
+\end{description}
+The reasoning is that a real pen stroke is not marginal. It is far darker than the threshold, not just past it, so its mean ratio sits well below the threshold value. A piece whose average only just scrapes under is made of pixels that barely qualified, which is the signature of a crease, a shadow or a printed rule. Being faint is not grounds for deletion by itself, since a pencil stroke is faint too; it is combined with a shape test, so that a faint thin vertical thing goes but a faint letter-shaped thing stays.
+
+The per-piece mean is computed in a single pass by a weighted tally. Tallying the labels with the ratio values as weights sums the ratio over each piece, and dividing by the pixel count gives the mean, with no loop over pieces. The same trick appears throughout the segmenter, and the general pattern is worth recognising: a per-group sum is a weighted count indexed by group.
+
+
+\paragraph{The edge-shadow test}
+One composite test targets a specific and common artefact: the shadow of a fold or the curl at the top or bottom of the sheet. It is identified by five properties at once: it touches the top or bottom edge, it is no taller than 1.2 pitches, it is wider than a pitch, it is faint, and its \textbf{density} is below 0.15.
+
+
+\begin{equation}
+\mathrm{density}_{\ell} \;=\; \frac{A_{\ell}}{(\,\mathrm{bot}_{\ell}-\mathrm{top}_{\ell}+1\,)\cdot(\,\mathrm{xmax}_{\ell}-\mathrm{xmin}_{\ell}+1\,)}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{density}_{\ell}$}] \normalfont the fraction of this piece's bounding box that the piece actually fills
+  \item[{$A_{\ell}$}] \normalfont the piece's pixel count
+  \item[{$\mathrm{top}_{\ell},\,\mathrm{bot}_{\ell}$}] \normalfont the first and last rows the piece occupies
+  \item[{$\mathrm{xmin}_{\ell},\,\mathrm{xmax}_{\ell}$}] \normalfont the first and last columns it occupies
+\end{description}
+Density distinguishes a sparse scatter from a compact shape. A word fills a reasonable share of its bounding box; a broken shadow stretching across the page fills almost none of it, because its box is wide and tall while its ink is a thin broken line. Requiring all five properties together is what makes the test safe: each one individually also describes some piece of real writing, but nothing in handwriting is simultaneously edge-touching, wide, short, faint and sparse.
+
+
+\begin{quote}\small\itshape The background label is explicitly protected from deletion. Label 0 means "not part of any piece", and deleting it would erase everything that was not assigned to a component, which is a one-line guard against a catastrophic error.\end{quote}
+
+\section{LineCentres}
+\begin{lstlisting}[style=sig]
+def LineCentres(mask, H)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{mask}] \normalfont the cleaned ink mask
+  \item[{H}] \normalfont the mask height in pixels
+\end{description}
+
+\noindent\textbf{Output.} a pair: the line pitch, and a sorted list of the row positions of the lines of writing.
+
+
+\paragraph{What it is for}
+The pitch says how far apart the lines are; this function says where they actually are. Each entry of the returned list is the row at the heart of one line of writing, and the rest of the segmenter uses them as anchors: cuts are placed between consecutive centres, and a piece of ink is judged by how far above or below a centre it sits.
+
+
+\paragraph{Finding candidates}
+The smoothed row profile is reused from LinePitch, and the candidates are its local maxima, found by the same test: at least as large as the row above, strictly larger than the row below, and above 6 percent of the profile's peak. The rows where the ink piles up are the rows through the bodies of the letters, which is the right place to call the centre of a line.
+
+
+\paragraph{The real problem: suppressing duplicates}
+Smoothing does not remove every spurious peak. A line containing several tall ascenders can produce a secondary maximum a few rows above its main one, and a line of writing that drifts slightly can produce two. Accepting both would create two lines where there is one, and the consequence is severe: a cut would be placed between them, straight through the middle of the writing, and the line would be delivered to the recogniser as two half-height crops. So the candidates must be thinned.
+
+
+\paragraph{Greedy non-maximum suppression}
+The thinning is done by a method known as \textbf{non-maximum suppression}: sort the candidates by strength, take the strongest, discard anything too close to it, and repeat with what is left. It is called \textbf{greedy} because it commits to the best available option at each step and never revisits that choice.
+
+
+\begin{equation}
+\mathcal{C} \;\leftarrow\; \mathcal{C} \cup \{c\} \quad\text{if}\quad |c - o| \;\ge\; 0.6\,P \;\;\text{ for every } o \in \mathcal{C}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathcal{C}$}] \normalfont the set of centres accepted so far, considered in order of decreasing profile value
+  \item[{$c$}] \normalfont the candidate peak currently being considered
+  \item[{$o$}] \normalfont a centre already accepted
+  \item[{$P$}] \normalfont the line pitch in pixels
+  \item[{$0.6$}] \normalfont the exclusion radius as a fraction of the pitch
+\end{description}
+Processing the candidates strongest first is what makes the greedy rule correct rather than arbitrary. The strongest peak in a cluster is the one through the letter bodies, so it is accepted and the weaker peaks of the same line are then excluded by it. Had the candidates been processed top to bottom instead, a weak secondary peak slightly above a line would be accepted first and would then exclude the true centre below it, placing the line in the wrong row.
+
+
+\paragraph{Why 0.6 pitches}
+The exclusion radius has to exceed the width of a spurious cluster and fall short of the true spacing between lines. By definition the true spacing is one pitch, and the duplicate peaks of a single line lie within a fraction of a pitch of each other, since they are all within one line's x-height. A radius of 0.6 pitches is comfortably inside that gap: it cannot suppress a genuine neighbour, which is a full pitch away, and it does suppress a duplicate, which is much closer. Choosing slightly more than half a pitch, rather than exactly half, leaves margin for the pitch estimate itself being a little low.
+
+
+\begin{quote}\small\itshape Accepted centres are collected in order of strength and only sorted into row order at the end. The sort matters because every later stage assumes the centres run down the page in sequence, pairing each with the next to place a cut between them.\end{quote}
+
+\section{SeamCuts}
+\begin{lstlisting}[style=sig]
+def SeamCuts(mask, centres, P, H, W)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{mask}] \normalfont the cleaned ink mask
+  \item[{centres}] \normalfont the row positions of the lines, from LineCentres
+  \item[{P}] \normalfont the line pitch in pixels
+  \item[{H}] \normalfont the mask height
+  \item[{W}] \normalfont the mask width
+\end{description}
+
+\noindent\textbf{Output.} three items: the cuts as a list of one row-per-column array each, the same cuts stacked into a single 2-D array, and L, the number of bands the cuts divide the page into.
+
+
+\paragraph{What it is for}
+With the lines located, boundaries have to be drawn between them. This function produces one boundary curve per gap, each given as the row it occupies in every column, so that the page is divided into L horizontal bands with one line of writing in each. The curves are seams rather than straight rows, for the reason given in the entry for LeastCostSeam: a straight cut between two lines of handwriting cannot avoid slicing through the descenders of the upper line or the ascenders of the lower one, because at some column they overlap vertically.
+
+
+\paragraph{The cost landscape}
+A seam needs a cost array, and the art of this function is in building one whose cheapest path is the cut that a person would draw. It has two terms.
+
+
+\begin{equation}
+\mathrm{cost}[y,x] \;=\; 4.0 \cdot m[y,x] \;+\; 0.012 \left(\frac{y - y_{\mathrm{mid}}}{g}\right)^{\!2}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{cost}[y,x]$}] \normalfont the price of routing the cut through this pixel
+  \item[{$m[y,x]$}] \normalfont 1 where there is ink in the closed mask, 0 where there is not
+  \item[{$4.0$}] \normalfont the price of crossing a single ink pixel
+  \item[{$y_{\mathrm{mid}}$}] \normalfont the row midway between the two line centres this cut separates
+  \item[{$g$}] \normalfont half the distance between those two centres, used to express the displacement in units of the gap rather than in pixels
+  \item[{$0.012$}] \normalfont the strength of the pull back toward the midline
+\end{description}
+The first term is the one that does the work: ink is expensive, so the cheapest route goes around letters. The second is a weak \textbf{quadratic penalty} on straying from the middle of the gap, quadratic meaning it grows with the square of the displacement, so small excursions are nearly free while large ones become progressively more costly. Its purpose is to settle what happens in genuinely empty space. Between two words there is no ink at all and every route is equally cheap on the first term alone, so without the second term the cut would wander to an arbitrary height and arrive at the next word from a silly position. The pull keeps it near the middle of the gap, ready to deflect in either direction when the next letter arrives.
+
+The ratio between the two coefficients is what matters, not either value alone. At 4.0 against 0.012, crossing one ink pixel costs as much as sitting about eighteen normalised units off the midline, which is far outside the gap. So the cut will always prefer a long detour through white space to cutting a stroke, and the midline term only ever acts as a tie-breaker. Expressing the displacement in units of the half-gap rather than in pixels keeps that balance the same for widely and narrowly spaced writing.
+
+
+\paragraph{Closing the mask first}
+The mask is closed, dilated then eroded by about 0.07 pitches, before being used as cost. The reason is a specific failure mode: handwriting has narrow gaps inside it, between the two strokes of an n or where a pen lifted, and a seam is happy to thread through such a gap, because threading it is free while going round costs ink. The cut then passes through the middle of a letter. Closing fills gaps narrower than the structuring element while leaving the outer shape of the stroke nearly unchanged, so the threading routes disappear but the cut still traces the true outline of the letter.
+
+Closing rather than plain dilation is the point. Dilation alone would also close the gaps, but it would leave every stroke thickened by the full radius, and the cut would then trace a bloated blob standing well clear of the real ink, wasting vertical space in both crops. The erosion that follows the dilation undoes the thickening in the places where it was not needed, which is exactly the property that distinguishes a closing from a dilation.
+
+
+\paragraph{The step limit}
+The seam here is allowed 7 rows of vertical movement per column, against the default of 3. A tall narrow descender, such as the tail of a y, demands a sharp deflection: the cut must drop below the tail and climb back within the few columns the tail occupies. With a small step limit the cut simply cannot turn fast enough and is forced through the tail. The cost of the larger limit is a little more work per pixel and a little more freedom to wander, the latter being what the midline penalty is there to restrain.
+
+
+\paragraph{The outer boundaries}
+Cuts exist only between consecutive centres, so the first line has no cut above it and the last none below. Two straight boundaries are added at 0.75 pitches beyond the outermost centres, clipped to the page. They are straight because there is no second line on the far side to avoid, so there is nothing for a seam to dodge, and 0.75 pitches is enough to clear the ascenders of the first line and the descenders of the last. The number of bands is then one less than the number of boundaries, which is why L is computed that way.
+
+
+\section{\_BandOwnership}
+\begin{lstlisting}[style=sig]
+def _BandOwnership(mask, lab, nc, cuts, cutsArr, L, P, H, W, centres)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{mask}] \normalfont the cleaned ink mask
+  \item[{lab}] \normalfont the component labels from DropArtifactPieces
+  \item[{nc}] \normalfont the number of components
+  \item[{cuts}] \normalfont the cuts as a list of per-column row arrays
+  \item[{cutsArr}] \normalfont the same cuts as one 2-D array
+  \item[{L}] \normalfont the number of bands
+  \item[{P}] \normalfont the line pitch
+  \item[{H}] \normalfont the mask height
+  \item[{W}] \normalfont the mask width
+  \item[{centres}] \normalfont the row positions of the lines
+\end{description}
+
+\noindent\textbf{Output.} six items: the ownership array assigning each ink pixel to a line, a copy of it taken before the later corrections, the band index of every pixel, the area of each component, and the row and column coordinates of the ink pixels.
+
+
+\paragraph{What it is for}
+The cuts divide the page into bands, but a band is not yet an answer. The question that must be settled for every ink pixel is which line of writing it belongs to, and the band it falls in is only the first guess at that. This function makes that guess and then applies several corrections to it, producing the ownership map that the crops are cut from.
+
+
+\paragraph{Computing the band index without a loop}
+Each cut is a curve, so asking which band a pixel is in means asking how many of the curves lie above it. That count is the band index directly, and it can be formed by adding up one comparison per cut over the whole image at once.
+
+
+\begin{equation}
+\mathrm{region}[y,x] \;=\; \sum_{n=1}^{L-1} \big[\; y \;\ge\; \mathrm{cuts}_{n}[x] \;\big]
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{region}[y,x]$}] \normalfont the band index of this pixel, counting from 0 at the top
+  \item[{$\mathrm{cuts}_{n}[x]$}] \normalfont the row occupied by cut n in column x
+  \item[{$L$}] \normalfont the number of bands, so there are L$-$1 interior cuts
+  \item[{$[\;\cdot\;]$}] \normalfont 1 when the condition holds, 0 otherwise
+\end{description}
+The expression is read as: a pixel is below cut n, so it lies past that boundary, and summing those indicators over all the interior cuts counts the boundaries it has passed. The outer two boundaries are excluded from the sum, since nothing lies beyond them that needs numbering; instead they are used separately to discard ink above the first line and below the last.
+
+
+\paragraph{Why the band is only a guess}
+If every piece of ink lay wholly inside one band, the band index would be the final answer. Two things prevent that. First, a connected piece of ink can genuinely cross a cut: the descender of a g belongs to the upper line but hangs into the lower band, and the cut goes around the ink, so the piece ends up with pixels in both. Taking the band pixel by pixel would split that g in half, delivering its bowl to one crop and its tail to another, and neither fragment looks like a g. Second, small marks like the dot of an i are separate pieces that float well above their own line's body and can easily fall on the wrong side of a cut.
+
+
+\paragraph{The piece-by-band table}
+Both problems need the same information: how much of each piece lies in each band. That is a two-dimensional table, pieces against bands, and it is built with one tally by packing the two indices into a single number.
+
+
+\begin{equation}
+\mathrm{key} \;=\; \ell \cdot L \;+\; b, \qquad \mathrm{cnt}[\ell,\,b] \;=\; \big|\{\,(y,x) : \mathrm{lab}[y,x]=\ell,\; \mathrm{region}[y,x]=b \,\}\big|
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{key}$}] \normalfont a single integer encoding the pair of a piece and a band
+  \item[{$\ell$}] \normalfont the piece's component label
+  \item[{$b$}] \normalfont the band index
+  \item[{$L$}] \normalfont the number of bands, used as the multiplier so that no two distinct pairs can collide
+  \item[{$\mathrm{cnt}[\ell,b]$}] \normalfont how many pixels of piece l fall in band b
+\end{description}
+This is \textbf{index packing}, and the reason it works is place value, the same principle as writing a two-digit number: multiplying the first index by the number of possible second values guarantees that each pair maps to its own integer. A single tally over the packed keys then produces the whole table, and reshaping the result into an array of pieces by bands unpacks it. The alternative, looping over pieces and counting each one's pixels, would be far slower in Python for no gain.
+
+
+\paragraph{Assigning each piece: the topmost substantial band}
+A band holds a \textbf{substantial} share of a piece when it contains at least 15 percent of that piece's ink. Among the substantial bands, the piece is assigned to the topmost.
+
+
+\begin{equation}
+\mathrm{major}(\ell) \;=\; \min\;\big\{\, b \;:\; \mathrm{cnt}[\ell,b] \;\ge\; 0.15 \textstyle\sum_{b'} \mathrm{cnt}[\ell,b'] \,\big\}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{major}(\ell)$}] \normalfont the band piece l is assigned to
+  \item[{$\mathrm{cnt}[\ell,b]$}] \normalfont the pixels of piece l in band b
+  \item[{$\sum_{b'} \mathrm{cnt}[\ell,b']$}] \normalfont the piece's total ink
+  \item[{$0.15$}] \normalfont the share of its own ink a band must hold to count as substantial
+  \item[{$\min$}] \normalfont the smallest such band index, that is, the highest on the page
+\end{description}
+The 15 percent test exists to tell a genuine crossing from a trivial one. A piece whose ink is 95 percent in one band and 5 percent in the next merely touches the boundary, and treating it as spanning two lines would be wrong. A piece split 60 to 40 really does belong to both, and something must be decided.
+
+Choosing the topmost, rather than the band with the most ink, is a deliberate asymmetry. When a piece spans two lines it is usually because a descender from the upper line reaches down, or because two lines of writing touch. In either case the upper line is the one that is incomplete without the piece, since the shape originates there, while the lower line is merely intruded upon. Giving it to the upper line keeps the crop that would otherwise be damaged intact. If no band reaches 15 percent, which happens when a piece is spread thinly over three or more bands, the fallback is the band with the most ink.
+
+
+\paragraph{Small pieces: three graded rules}
+Small pieces are handled separately, because for them the band is unreliable and their size tells us what kind of thing they are. The thresholds are areas measured in P\textsuperscript{2}, the square of the pitch, which is the natural unit of area here: a letter occupies a region roughly a third of a pitch by a half, so letter-sized is a few hundredths of P\textsuperscript{2}.
+
+
+\begin{itemize}\setlength\itemsep{0pt}
+  \item \textbf{Under 0.06 P\textsuperscript{2}, a stray mark.} It is compared with the letter-sized pieces assigned to its own band. If none sits within six pitches horizontally, there is no writing anywhere near it and it is discarded. Otherwise the median vertical centre of the nearby writing says where its line really is, and if the mark sits more than half a pitch below that it is moved down a band, or more than 0.7 pitches above it, up a band. A speck under 0.01 P\textsuperscript{2} is discarded in that situation rather than moved, on the grounds that something that small and that far out of place is noise.
+  \item \textbf{Between 0.06 and 0.15 P\textsuperscript{2}, a small but real piece.} Its own band and the two neighbours are considered, and it goes to whichever has writing whose median vertical centre is closest to its own. This is a nearest-centre rule, and it is used here rather than the band because a piece this size can easily fall on the wrong side of a cut while clearly belonging, by position, to one line.
+  \item \textbf{A minor part of a larger piece.} A band holding a small, narrow part of a piece, under 0.12 P\textsuperscript{2} and under 35 percent of the piece, no wider than 0.55 pitches, in a band adjacent to the piece's assigned one, is treated as a cut-off tail and follows the rest of the piece. The width condition is what distinguishes a tail from a whole word: a tail is narrow, and a wide part of a piece in another band is that band's own writing.
+\end{itemize}
+The median is used for the position of nearby writing rather than the mean, for the usual reason: one misplaced piece among the neighbours would drag a mean, while the median reports where the bulk of the line actually is.
+
+
+\paragraph{The dot rule}
+The last and most specific correction handles the dots of i and j. A dot floats clear of its own letter, often nearer to the line above than to its own line's body, so neither the band nor a nearest-centre test places it reliably. What does place it is the letter underneath it.
+
+A piece is a dot candidate when it is small, under 0.1 P\textsuperscript{2}, compact, no more than 0.45 pitches in either direction, and roughly round, its longer side no more than 2.2 times its shorter. The roundness test is what excludes a comma or an accent from being treated as a dot. The rows below the candidate are then scanned, up to 0.4 pitches down, for the first substantial piece appearing beneath it, and the dot is given to that piece's line, provided the geometry agrees: the line's writing must sit between 0.25 and 0.7 pitches below the dot, which is where a dot floats above its own line's body. That final check is what stops the rule firing when the piece found below happens to belong to a line further away.
+
+
+\paragraph{Writing the result}
+All of this produces, for each piece, either a band index or a marker meaning discard. The ownership array is then filled in one operation: a pixel takes its piece's assigned band if the piece was one of those the rules relocated, and its own band index otherwise. A copy is kept before the later corrections run, because those corrections need to know which pixels were already moved here, in order not to undo that work.
+
+
+\section{\_DotsJoinedAbove}
+\begin{lstlisting}[style=sig]
+def _DotsJoinedAbove(own, mask, lab, area, region, centres, L, P, H, W, ys, xs)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{own}] \normalfont the ownership array, modified in place
+  \item[{mask}] \normalfont the cleaned ink mask
+  \item[{lab}] \normalfont the closed-mask component labels
+  \item[{area}] \normalfont the area of each closed-mask component
+  \item[{region}] \normalfont the band index of every pixel
+  \item[{centres}] \normalfont the line centres
+  \item[{L}] \normalfont the number of bands
+  \item[{P}] \normalfont the line pitch
+  \item[{H}] \normalfont the height
+  \item[{W}] \normalfont the width
+  \item[{ys}] \normalfont the row coordinates of the ink pixels
+  \item[{xs}] \normalfont their column coordinates
+\end{description}
+
+\noindent\textbf{Output.} four items describing the components of the unclosed mask: the label array, the count, the per-pixel labels and the areas. The ownership array is corrected in place.
+
+
+\paragraph{The problem it solves}
+The closing applied before labelling in DropArtifactPieces is useful but it has a side effect. If the dot of an i on one line happens to sit just below a descender from the line above, the closing can bridge the small gap between them and fuse the two into a single component. The dot then inherits whatever the fused piece was assigned, which is the upper line, and the lower line's crop loses its dot while the upper line's crop gains a stray mark.
+
+
+\paragraph{Why a second labelling is needed}
+The fix requires seeing the dot as its own object, which the closed labelling can no longer do. So the mask is labelled again, this time without closing. In the unclosed labelling the dot is separate from the descender, because the gap between them is real ink-free space; it was only the closing that joined them. The function therefore works with two labellings at once, the unclosed one to identify the dot and the closed one to recognise when a piece is in fact part of a larger structure.
+
+
+\paragraph{Identifying the dot}
+The same three-part test as before: small area, between 0.015 and 0.1 P\textsuperscript{2}, compact, no more than half a pitch across, and roughly round. The lower area bound is new and matters here, since it excludes single-pixel noise that would otherwise pass every other condition.
+
+
+\paragraph{Finding the stem and its line}
+The rows immediately below the candidate are scanned for the first other substantial piece, and the band of the pixel where the two meet is read from the region array. That gives the line the stem belongs to, which is the line the dot should belong to. The dot's own current assignment is read as the most common ownership value over its pixels.
+
+
+\paragraph{The three conditions for acting}
+
+\begin{itemize}\setlength\itemsep{0pt}
+  \item \textbf{The stem must be exactly one band below.} A fusion of this kind can only displace a mark by one line, since the closing bridges a gap of a few pixels. A discrepancy of two bands means something else is wrong, and acting on it would make things worse.
+  \item \textbf{The fused piece must not be a whole word.} If the closed component containing the dot has an area of 0.2 P\textsuperscript{2} or more, it is a word, not a dot welded to a descender. A genuine floating dot stays a small component even after closing, so a large closed area is evidence that the candidate is really part of a letter, such as the bowl of an a that the threshold happened to detach.
+  \item \textbf{The dot must sit well below the upper line's centre.} At least 0.45 pitches below it. A mark that close to the upper line's body really is part of the upper line, and the rule declines to move it.
+\end{itemize}
+Only the pixels currently assigned to the upper line are moved, not every pixel of the unclosed piece. This matters when a letter has broken apart in the unclosed mask, so that the candidate shares its unclosed component with ink that was already correctly assigned: moving the whole component would drag that correct ink along with it.
+
+
+\begin{quote}\small\itshape The pattern of conditions here is characteristic of the whole ownership stage. Each correction rule is narrow on purpose, requiring several independent pieces of evidence to agree before it fires. A broad rule would fix more cases and break more, and a crop that is wrong is more costly than a crop that is merely imperfect, because the recogniser will read it confidently either way.\end{quote}
+
+\section{\_RingsToStem}
+\begin{lstlisting}[style=sig]
+def _RingsToStem(own, raw, nr, pr, Ar, lab, area, region, centres, P, H, W, ys, xs)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{own}] \normalfont the ownership array, modified in place
+  \item[{raw}] \normalfont the unclosed component labels
+  \item[{nr}] \normalfont the number of unclosed components
+  \item[{pr}] \normalfont the unclosed label of each ink pixel
+  \item[{Ar}] \normalfont the area of each unclosed component
+  \item[{lab}] \normalfont the closed labels
+  \item[{area}] \normalfont the closed areas
+  \item[{region}] \normalfont the band index of every pixel
+  \item[{centres}] \normalfont the line centres
+  \item[{P}] \normalfont the line pitch
+  \item[{H}] \normalfont the height
+  \item[{W}] \normalfont the width
+  \item[{ys}] \normalfont the row coordinates of the ink pixels
+  \item[{xs}] \normalfont their column coordinates
+\end{description}
+
+\noindent\textbf{Output.} nothing is returned; the ownership array is corrected in place.
+
+
+\paragraph{The problem it solves}
+This is the mirror image of the previous correction. There, a dot on the lower line was welded to a descender from above and wrongly given to the upper line. Here the welding runs the other way: a small ring-shaped mark belonging to the lower line, such as the dot of an i written as a small circle, or the loop at the top of a letter, is fused to the stem it sits on, and the stem's line is the one it should follow. The two corrections exist separately because the evidence needed differs: finding a ring requires detecting a hole, which the dot rule does not do.
+
+
+\paragraph{Finding a candidate: walking up from the bottom}
+The candidate is not a whole component here but a part of one, so it cannot be found by labelling. It is found geometrically. For each component, the lowest ink pixel in each column is located, and those bottom points are examined in order from the lowest upward, since the ring sits at the top of a stem and the stem's foot is the lowest point of the structure.
+
+From each bottom point the algorithm walks upward, measuring at every row how wide the component is within a window around the column, and tracking the widest it has been. The walk stops when the width drops below 45 percent of that maximum. That point is the junction between the blob and the stem: a ring is wide, the stem below it is narrow, so the width collapses exactly where one ends and the other begins. This is a one-dimensional version of a shape-decomposition idea that recurs in image analysis: a narrow neck is where an object naturally divides.
+
+
+\paragraph{Validating the shape}
+Three conditions must hold before the candidate is accepted as a ring.
+
+
+\begin{itemize}\setlength\itemsep{0pt}
+  \item \textbf{Its width is between 0.2 and 0.45 pitches.} Narrower is a stroke, wider is a letter body.
+  \item \textbf{It is roughly as tall as it is wide,} with a height-to-width ratio between 0.6 and 1.6. A ring is round; a stroke is not.
+  \item \textbf{It encloses a hole.} This is the decisive test, and it is carried out by labelling the components of the inverse of the blob after padding it with a border. If the blob encloses a hole then the background splits into two components, the outside and the hole, so a count of fewer than two components means there is no hole and the candidate is a hook or a curl rather than a ring.
+\end{itemize}
+The padding before that test is not optional. Without a border of background all round, a blob touching the edge of the extracted window would let the outside connect to the hole along that edge, merging them into one component and hiding the hole. Padding guarantees the outside is a single region that surrounds the blob completely. Counting holes by labelling the background is a standard technique, and the number it yields is related to the \textbf{Euler number} of the shape, the classical topological measure of components minus holes.
+
+
+\paragraph{The decision}
+As before, the first other piece appearing below the ring identifies the line to move to, the two bands must be adjacent, the closed component must not be large enough to be a whole word, and the junction must lie no more than 0.45 pitches above the target line's centre. Only the ring's own pixels are reassigned, confined to the rows between the junction and the bottom point and to the columns the blob occupies, and only where they currently belong to the band being moved from.
+
+
+\paragraph{Why the examination is limited}
+At most 60 bottom points are examined per component, and accepting one point suppresses the columns within 0.35 pitches of it. Both are cost controls. A long word has hundreds of columns and the upward walk at each is not free, while the suppression prevents the same ring being found again from every column it spans. The cap is a deliberate compromise: a word with more than 60 distinct bottom points may have a ring missed, which costs one misplaced dot, whereas examining every column would slow the segmenter measurably on every page.
+
+
+\section{\_FragmentsToNeighbour}
+\begin{lstlisting}[style=sig]
+def _FragmentsToNeighbour(own, ownBeforeEF, mask, centres, L, P, H, W)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{own}] \normalfont the ownership array, modified in place
+  \item[{ownBeforeEF}] \normalfont ownership as it stood before the two dot corrections, used to tell which pixels they already moved
+  \item[{mask}] \normalfont the cleaned ink mask
+  \item[{centres}] \normalfont the line centres
+  \item[{L}] \normalfont the number of bands
+  \item[{P}] \normalfont the line pitch
+  \item[{H}] \normalfont the height
+  \item[{W}] \normalfont the width
+\end{description}
+
+\noindent\textbf{Output.} nothing is returned; the ownership array is corrected in place.
+
+
+\paragraph{The principle: a line's writing lies in its x-height band}
+This is the most general of the corrections, and it rests on a single observation. A line of handwriting is defined by the band of rows its letter bodies occupy, around its centre. Anything genuinely belonging to that line must have some ink there, because a letter has a body. A piece assigned to a line that has no ink at all within a quarter pitch of its centre is therefore not part of that line, whatever the cut said. It is a visitor: a descender hanging down from above, or an ascender reaching up from below.
+
+
+\paragraph{How the test is made}
+For each band in turn, the ink currently owned by that band is labelled into connected pieces, and for each piece the number of its pixels lying within 0.28 pitches of the band's centre is counted.
+
+
+\begin{equation}
+\mathrm{inband}(c) \;=\; \big|\{\,(y,x) \in c \;:\; |y - \mathrm{centre}_{n}| \;\le\; 0.28\,P \,\}\big|
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{inband}(c)$}] \normalfont how many pixels of piece c lie in the band's x-height zone
+  \item[{$c$}] \normalfont a connected piece of the ink currently owned by band n
+  \item[{$\mathrm{centre}_{n}$}] \normalfont the row position of line n
+  \item[{$P$}] \normalfont the line pitch
+  \item[{$0.28$}] \normalfont the half-height of the x-height zone as a fraction of the pitch
+\end{description}
+A piece with a count of exactly zero, and an area of at least 0.006 P\textsuperscript{2} so that single-pixel noise is ignored, is a candidate for rehoming. The 0.28 figure is about half the x-height expressed in pitches, which follows from the factor of roughly 2.2 between pitch and x-height noted in LinePitch: half an x-height is about 0.23 pitches, and 0.28 allows a little margin for the centre estimate being slightly off.
+
+
+\paragraph{Deciding where it belongs: two routes}
+Having established that a fragment does not belong where it is, two independent kinds of evidence are tried for where it does.
+
+
+\begin{itemize}\setlength\itemsep{0pt}
+  \item \textbf{Adjacency.} The fragment is dilated by two pixels and the ownership of the surrounding ink is examined. If at least three of those neighbouring pixels belong to one other band, the fragment is physically touching that line's writing, which is strong evidence that it is part of it. The move is only made if that band is adjacent and lies on the correct side: a fragment below this line's centre may only move down, one above it only up. That consistency check is what prevents a chain of bad moves.
+  \item \textbf{Position.} If no neighbouring band reaches three pixels, the fragment is isolated and adjacency says nothing. The fallback is to ask whether the fragment's own vertical centre falls inside a neighbouring line's x-height band, within 0.2 pitches of its centre, and if so to move it there. This is weaker evidence, which is why it is used only as a fallback and with a tighter tolerance.
+\end{itemize}
+
+\paragraph{Not undoing the previous corrections}
+The ownership array as it stood before the two dot corrections is passed in so that the pixels they moved can be identified, by comparing the two arrays. A small compact fragment that sits on pixels those rules already placed is skipped. The reason is direct: a dot deliberately placed above its line by the dot rule has no ink in its line's x-height band, by the very nature of being a dot, so it looks exactly like a fragment to this test and would be moved straight back. The exception is deliberately narrow, applying only to pieces under 0.04 P\textsuperscript{2} and no more than 0.4 pitches across, so that a genuine tail loop that happens to overlap a placed dot is still free to move.
+
+
+\begin{quote}\small\itshape Every move is recorded and applied only after the scan over all the bands is complete. Applying them as they are found would mean later tests read ownership that earlier moves had already changed, so the outcome would depend on the order the bands happened to be visited. Collecting first and applying afterwards makes the result independent of that order.\end{quote}
+
+\section{AssignOwnership}
+\begin{lstlisting}[style=sig]
+def AssignOwnership(mask, lab, nc, cuts, cutsArr, L, centres, P, H, W)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{mask}] \normalfont the cleaned ink mask
+  \item[{lab}] \normalfont the component labels
+  \item[{nc}] \normalfont the component count
+  \item[{cuts}] \normalfont the cuts as a list
+  \item[{cutsArr}] \normalfont the cuts as an array
+  \item[{L}] \normalfont the number of bands
+  \item[{centres}] \normalfont the line centres
+  \item[{P}] \normalfont the line pitch
+  \item[{H}] \normalfont the height
+  \item[{W}] \normalfont the width
+\end{description}
+
+\noindent\textbf{Output.} the ownership array: for every pixel, the index of the line that owns it, or $-$1 for background and for ink that was discarded.
+
+
+\paragraph{What it is for}
+This function contains no logic of its own. It runs the band guess and then the three corrections, in order, and returns the result. Its value is organisational, and the organisation is the point worth explaining.
+
+
+\paragraph{Why the rules are separate functions}
+The ownership problem is where the segmenter is least principled and most empirical. The band guess follows from the cuts, but each correction after it exists because a specific failure was observed on real pages and diagnosed. Keeping each as its own function with its own name has three practical consequences. A rule can be read on its own, with its conditions in one place rather than interleaved with others. A rule can be disabled by commenting out one line here, which is how its contribution was measured. And a rule can be tested against the cases it was written for without running the whole page.
+
+
+\paragraph{Why the order is fixed}
+The sequence is not arbitrary. The band guess must come first because everything else corrects it. The two welding rules come next, and they are the most specific: each requires several independent conditions and fires rarely. The fragment rule comes last and is the most general, which is the right place for it, because a general rule run first would act on cases the specific rules would have handled better. The ordering principle, specific before general, is the same one that governs a cascade of fallbacks in LinePitch: apply the best-informed rule wherever it applies, and the broad rule only to what is left.
+
+The dependency between them is explicit in the arguments. The fragment rule receives the ownership array as it stood before the welding rules ran, precisely so it can recognise and respect their decisions. That is why the band guess returns that copy, rather than each rule working from whatever it finds.
+
+
+\section{\_BuildLineCrop}
+\begin{lstlisting}[style=sig]
+def _BuildLineCrop(n, own, norm, P, f, H, W, minInk)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{n}] \normalfont which line to build, as a band index
+  \item[{own}] \normalfont the ownership array
+  \item[{norm}] \normalfont the illumination-corrected full-resolution page
+  \item[{P}] \normalfont the line pitch, in half-size pixels
+  \item[{f}] \normalfont the scale factor from half-size to full-size coordinates
+  \item[{H}] \normalfont the half-size height
+  \item[{W}] \normalfont the half-size width
+  \item[{minInk}] \normalfont the least ink a band must own to be a real line
+\end{description}
+
+\noindent\textbf{Output.} None if this band is not a usable line; otherwise a dictionary with the finished grey crop, a fixed-size copy for the recogniser, and the bounding box the crop came from.
+
+
+\paragraph{What it is for}
+All the analysis so far has been at half resolution and in terms of masks. This function turns one band's worth of ownership into the actual image the recogniser will read: a grey picture of one line of writing, cut from the full-resolution page, contrast-corrected, with the neighbouring lines removed.
+
+
+\paragraph{Rejecting a band that is not a line}
+Two tests reject a band outright. It must own at least minInk pixels, a threshold the caller derives from the median ink per line so that it adapts to the page, and its ink must span at least 0.2 pitches vertically. The height test is the more interesting one: a band containing a horizontal scatter of specks has plenty of ink but no vertical extent, and is a surviving artefact rather than writing. The floor of six pixels keeps the test meaningful on a very small image. The height demanded is deliberately well under a full x-height, because a short line containing only lowercase letters is still a real line.
+
+
+\paragraph{Trimming a distant stray}
+A band can own a legitimate line plus one mark far away, perhaps a page number the artefact rules did not catch. Cropping to all of it would produce an image mostly of blank paper with writing at one end, which is poor input for a recogniser. So the rows containing ink are examined, the gaps between them found, and the largest contiguous run of inked rows kept.
+
+The trim is only performed if it removes more than 0.8 pitches of height. That guard is what distinguishes a paragraph-sized gap from the ordinary small gaps inside a line of writing, which occur between the body of the line and a stray ascender. Without the guard, a line with an ordinary internal gap would have its ascenders trimmed away.
+
+
+\paragraph{From half-size decisions to full-size pixels}
+The bounding box of the kept ink is padded by 0.15 pitches, so that the writing does not touch the edge of the crop, and then multiplied by the scale factor to give the corresponding rectangle of the full-resolution page. This is where the two resolutions meet: every decision was made cheaply at half size, and the pixels are taken at full size.
+
+
+\paragraph{Building the alpha channel}
+The crop must show this line's ink and not the neighbouring lines' intrusions, so a per-pixel weight is needed saying how much of each pixel to show. That weight is called \textbf{alpha}, borrowing the standard graphics term for opacity, where 1 means fully shown and 0 fully replaced by white.
+
+It starts as the ownership mask for this line, enlarged to the crop size bilinearly. Bilinear rather than nearest-neighbour is a deliberate choice here, and for an unusual reason: the soft edge that interpolation produces is what makes the stroke boundary in the final crop look like a real pen edge rather than a staircase of hard pixels. The slight blur is the feature, not an artefact to be tolerated.
+
+
+\paragraph{Recovering ink the mask missed}
+The half-size mask inevitably misses some faint ink, and at full resolution that ink is visible. So a second, local threshold is computed, on the crop alone rather than the whole page, using the same divide-by-local-background method as InkMask but with a radius scaled to the crop's own height. Because the crop is one line of writing rather than a whole page, the contrast within it is far more uniform, so this local threshold can pick up strokes that the page-wide one could not.
+
+Those recovered pixels cannot simply be added, or the neighbouring lines' ink would come back with them. Two gates restrict them.
+
+
+\begin{itemize}\setlength\itemsep{0pt}
+  \item \textbf{The halo.} The line's own ink is dilated by about 0.2 pitches and the recovery is confined to that neighbourhood. The reasoning is that a stroke the mask missed lies next to strokes it caught, since it is part of the same writing, whereas ink from the line above or below is further away.
+  \item \textbf{The ownership veto.} Any pixel the page-level ownership already gave to a different line is excluded, unconditionally. This gate is enlarged with nearest-neighbour rather than bilinear interpolation, precisely the opposite choice from the alpha channel, and for the opposite reason: ownership is a yes-or-no fact about which line a pixel belongs to, and a blurred version would half-assign a pixel to two lines at once.
+\end{itemize}
+The final alpha is the larger of the ownership alpha and the gated recovery, taken pixel by pixel, so recovery can only ever add ink and never remove it.
+
+
+\paragraph{Contrast stretching}
+The crop's grey values still span whatever range the photograph happened to produce, and the recogniser was trained on images with ink near black and paper near white. A \textbf{contrast stretch} maps the observed range onto the full range linearly.
+
+
+\begin{equation}
+\mathrm{linear}[y,x] \;=\; \mathrm{clip}\!\left(\big(\mathrm{region}[y,x] - b\big)\cdot\frac{255}{\max(w - b,\,1)},\; 0,\; 255\right)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{linear}[y,x]$}] \normalfont the stretched grey value
+  \item[{$\mathrm{region}[y,x]$}] \normalfont the illumination-corrected value at this pixel
+  \item[{$b$}] \normalfont the black point: the value that should become 0, taken as the 40th percentile of the values under the ink
+  \item[{$w$}] \normalfont the white point: the value that should become 255, taken as the 75th percentile of the whole crop
+  \item[{$\max(w-b,\,1)$}] \normalfont a guard against a degenerate crop in which the two points coincide
+  \item[{$\mathrm{clip}(\cdot,0,255)$}] \normalfont values forced into the valid grey range
+\end{description}
+The two reference points are percentiles rather than the minimum and maximum, and the choice is what makes the stretch stable. One unusually dark pixel, from a blob of ink or a speck of dust, would set a minimum-based black point and leave all the real ink grey. The 40th percentile of the ink pixels describes the typical darkness of a stroke, which is the value that should become black. Likewise the 75th percentile of the crop describes the paper, since paper is the majority of the area.
+
+
+\paragraph{The gamma correction}
+A linear stretch alone leaves faint strokes faint, because a stroke at 70 percent of the way from ink to paper maps to 70 percent of the way from black to white. A \textbf{gamma correction} applies a power to the darkness, which bends the mapping.
+
+
+\begin{equation}
+d'[y,x] \;=\; \Big(\,d[y,x]\,\Big)^{\gamma}, \qquad d[y,x] \;=\; \frac{255 - \mathrm{linear}[y,x]}{255}, \qquad \gamma = 0.55
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$d[y,x]$}] \normalfont the darkness at this pixel, 0 for white and 1 for black: the stretched value inverted and scaled
+  \item[{$d'[y,x]$}] \normalfont the corrected darkness
+  \item[{$\gamma$}] \normalfont the gamma exponent, here 0.55
+\end{description}
+With an exponent below 1 the power function lies above the straight line on the interval from 0 to 1, so every darkness is increased, and increased most where it starts small. A faint stroke at darkness 0.3 becomes 0.3 raised to the power 0.55, which is about 0.51, nearly doubling, while ink already at 0.9 becomes 0.94, barely changing. That is precisely the desired behaviour: pull the faint strokes up to where the recogniser can see them, and leave the strong ink alone. The corrected darkness is then converted back to grey and composited with white through the alpha channel.
+
+
+\paragraph{Aligning the left margin}
+Finally the crop is shifted horizontally so that the first column containing ink sits the same distance from the left edge in every crop. The reason is that the recogniser's convolutional layers respond to position, so a line whose writing starts 20 pixels in and one whose writing starts 80 pixels in present measurably different inputs for the same text. Standardising the left offset removes a variation that carries no information.
+
+
+\begin{quote}\small\itshape The returned dictionary contains the crop twice: once at its natural size for display and for the letter cutter, and once squeezed onto the recogniser's fixed input canvas by FitFixedCanvas. Keeping both avoids any later stage having to guess which geometry it is looking at.\end{quote}
+
+\section{SegmentLines}
+\begin{lstlisting}[style=sig]
+def SegmentLines(page)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{page}] \normalfont the photograph of the page, grey or colour
+\end{description}
+
+\noindent\textbf{Output.} three items: the list of line crops in top-to-bottom order, a dictionary of raw intermediates for drawing diagnostic overlays, and a dictionary of summary statistics about the segmentation.
+
+
+\paragraph{What it is for}
+This is the entry point to the whole segmenter, and it is deliberately short. Every stage of the method is a named function above, so this function is a list of those calls in order, which means the sequence of operations can be read off directly instead of being reconstructed from a long body of code.
+
+
+\paragraph{The pipeline in order}
+
+\begin{itemize}\setlength\itemsep{0pt}
+  \item \textbf{Deskew.} Reduce to grey, make a half-size copy, find the tilt and rotate, and derive the ink mask and ratio image.
+  \item \textbf{RemovePrintedStructure.} Locate the sheet, discard everything outside it, and delete the long straight runs that are ruling and page edges.
+  \item \textbf{DropArtifactPieces.} Judge what remains piece by piece and delete the creases, slivers and shadows that are not writing.
+  \item \textbf{LineCentres.} Locate each line of writing as a peak of the row profile, with duplicates suppressed.
+  \item \textbf{SeamCuts.} Draw a least-ink seam between each pair of neighbouring lines, dividing the page into bands.
+  \item \textbf{AssignOwnership.} Decide which line owns every ink pixel, starting from the band and applying the three corrections.
+  \item \textbf{\_BuildLineCrop,} once per band: cut the crop from the full-resolution page, mask it to this line's ink, correct its contrast and align it.
+\end{itemize}
+
+\paragraph{Why the crops come from a separate normalised image}
+The crops are cut not from the raw rotated page but from a full-resolution illumination-corrected version of it, built here. The background is estimated at half size, where the box average is cheap, then enlarged bilinearly to full size and divided out, with the same scale-aware radius that InkMask uses. Estimating the background at full resolution would cost four times as much for no benefit, because the illumination varies smoothly by definition, so a half-resolution estimate of it enlarged by interpolation is accurate to well within the precision that matters.
+
+
+\paragraph{Why the ink threshold adapts to the page}
+The minimum ink a band must own before it is accepted as a line is computed from the page itself: 12 percent of the median ink per band, with a floor of 60 pixels.
+
+
+\begin{equation}
+\mathrm{minInk} \;=\; \max\big(60,\; 0.12 \cdot \mathrm{median}\{\, I_n \,:\, I_n > 0 \,\}\big)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{minInk}$}] \normalfont the ink threshold for accepting a band as a line
+  \item[{$I_n$}] \normalfont the number of ink pixels owned by band n
+  \item[{$\{\,I_n : I_n > 0\,\}$}] \normalfont the counts for the bands that own any ink at all, so that empty bands do not drag the median to zero
+  \item[{$0.12$}] \normalfont the fraction of a typical line's ink that a band must own
+  \item[{$60$}] \normalfont an absolute floor in pixels
+\end{description}
+An absolute threshold would be wrong in both directions: too high for small writing, where a real line has few pixels, and too low for a large photograph, where an artefact has many. Comparing against the median line on the same page sidesteps that, because it measures what a line looks like in this particular image. The fraction is set low, at 12 percent, because a short line containing one or two words is perfectly legitimate and must not be discarded; the threshold is aimed at bands containing a speck, not at short lines.
+
+
+\paragraph{Why three return values}
+The crops are the product. The other two exist because a segmenter that only returns its output is very hard to debug. The second dictionary carries the raw cuts, the ratio image and the paper mask, which the test code overlays on the page so that a bad cut can be seen rather than inferred. The third carries summary numbers: the angle applied, the pitch, what fraction of the frame was paper, how much ink lay outside it, how many straight pixels and artefact pieces were removed, and how many lines came out. Those numbers are how a failure gets localised: an angle at the edge of the search range, a pitch far from the usual, or a paper coverage near zero each point at a different stage, without any need to look at the image.
+
+
+\begin{quote}\small\itshape The diagnostics deliberately leave the project's own evaluation results out of the pipeline code. They report what this page did, not what the method scores in general. That separation keeps the core code free of anything that would have to be revised every time the method is measured again.\end{quote}

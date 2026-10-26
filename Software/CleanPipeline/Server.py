@@ -94,7 +94,7 @@ SHAPE_IDX2AUTHOR = {v: k for k,v in SHAPE_MAPPING.items()}
 print("[server] loading ink-based writer-ID classifier (classifies REAL photos)...")
 _INK_WEIGHTS_CANDIDATES = [
     NOGIT_DIR.parent/"weights"/AuthorClassifierWeightsFilename(),
-    NOGIT_DIR.parent/"weights"/"author_classifier_10_weights.pt",
+    NOGIT_DIR.parent/"weights"/"author_classifier_10_weights.npz",
 ]
 INK_WEIGHTS_PATH = next((p for p in _INK_WEIGHTS_CANDIDATES if p.exists()), None)
 if INK_WEIGHTS_PATH is None:

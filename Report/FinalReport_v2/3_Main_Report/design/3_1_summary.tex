@@ -52,15 +52,15 @@ Replaced by separation into text lines and diagram regions (connected components
 Completed as modified (lines instead of characters). Sections~\ref{sec:segmentation}, \ref{sec:textrec}. \\
 \hline
 Neural network that decodes the text (FU 2.3; R2) &
-Convolutional and bidirectional recurrent network with connectionist temporal classification (CTC) output, 3\,358\,763 trainable parameters. The layer pattern follows a published design \cite{kizilirmak2023}; the student chose the input geometry, data pipeline, label cleaning, augmentation and staged joint training, wrote the training code and a separate from-scratch inference implementation. &
+Convolutional and bidirectional recurrent network with connectionist temporal classification (CTC) output, 3\,358\,763 trainable parameters. The layer pattern follows a published design \cite{kizilirmak2023}; the student chose the input geometry, data pipeline, label cleaning, augmentation and staged joint training, and wrote one from-scratch Python module (forward pass, backward pass and optimiser updates, no machine-learning library) used by training, by validation and by the deployed single-board program alike. &
 Completed. Section~\ref{sec:textrec}; measured accuracy 98.61\% character and 94.21\% word on 669 real line crops (Section~\ref{sec:results}). \\
 \hline
 Neural network that identifies the writer (FU 2.3; R2) &
-Two thirteen-class convolutional classifiers: an ink-based one for photographs, which reached 99.78\% over 1358 real lines, and one whose input is re-drawn at a constant pen width (stroke normalisation by thinning and re-inking, designed by the student), with page-level aggregation. &
+Two thirteen-class convolutional classifiers sharing the recogniser's backbone and from-scratch layer module: an ink-based one for photographs, which reached 99.78\% over 1358 real lines, and one whose input is re-drawn at a constant pen width (stroke normalisation by thinning and re-inking, designed by the student), with page-level aggregation. &
 Completed. Section~\ref{sec:writerid}; measured accuracy 93.67\% for the normalised classifier after a training fault was corrected (Section~\ref{sec:results}). \\
 \hline
 Training on datasets and choice of layer numbers (FU 2.4; simulation on existing datasets) &
-Training programs for the recogniser (four stages) and both classifiers on a public database, a public line-level set and 13 photographed personal pages. A sweep over widths, depths and learning rates was programmed but no result was kept, so the layer numbers are those of the published design. Training is offline. &
+Training programs for the recogniser (four stages) and both classifiers on a public database, a public line-level set and 13 photographed personal pages, all built on the same from-scratch forward-and-backward module (Section~\ref{sec:textrec-numpynn}), with every layer's gradient individually checked against numerical differentiation. A sweep over widths, depths and learning rates was programmed but no result was kept, so the layer numbers are those of the published design. Because this from-scratch trainer has no graphics processor or vectorised automatic-differentiation engine behind it, it runs markedly slower per step than the original framework-based training; later runs are therefore warm-started from an existing checkpoint rather than from a random initial condition, and the current epoch and best score are checkpointed so a run can resume after an interruption. Training is offline. &
 Completed for training and data pipeline; \textbf{incomplete} for the architecture sweep. Sections~\ref{sec:textrec}, \ref{sec:writerid}. \\
 \hline
 Capture rig and deployment on the single-board computer (FU 1; R2, R4) &

@@ -21,7 +21,6 @@
 #unmodified (see the npz branch in Classify.LoadStateDictAny).
 #usage: python TrainScratch.py text [--epochs N] [--batch-size N] [--max-pages N]
 #       python TrainScratch.py author [--epochs N] [--batch-size N]
-#       python TrainScratch.py {text,author} --selftest
 import argparse
 import time
 from pathlib import Path
@@ -229,6 +228,36 @@ def SaveCheckpoint(path,params,extra=None):
     np.savez(str(path),**payload)
 
 
+#reads back the epoch/best-metric metadata SaveCheckpoint stashes alongside
+#the params (dunder keys, stripped out by Classify.LoadStateDictAny for
+#inference) -- lets --resume pick up the epoch counter and best score
+def LoadCheckpointMeta(path):
+    with np.load(path,allow_pickle=False) as npz:
+        epoch = int(npz["__epoch__"]) if "__epoch__" in npz.files else 0
+        best = float(npz["__best__"]) if "__best__" in npz.files else None
+    return epoch,best
+
+
+#loads params from an existing checkpoint into a freshly-initialized params
+#dict wherever shapes match -- shared by --warm-start (start from a different,
+#already-trained checkpoint) and --resume (continue this same run)
+def LoadParamsInto(params,checkpointPath):
+    sd,_ = CLS.LoadStateDictAny(checkpointPath)
+    loaded = 0
+    for k in params:
+        if k in sd and sd[k].shape==params[k].shape:
+            params[k] = sd[k].astype(np.float32)
+            loaded+=1
+    return loaded
+
+
+#one-line-per-epoch plain text progress log, append-only, next to the checkpoints
+def AppendLog(path,line):
+    path.parent.mkdir(parents=True,exist_ok=True)
+    with open(path,"a",encoding="utf-8") as f:
+        f.write(line+"\n")
+
+
 #######################################################################
 # text model (PaperCRNN): backbone -> bidirectional lstm -> ctc head
 #######################################################################
@@ -392,7 +421,7 @@ def BuildTekliaSplit(dataDir):
     return trainSet,valSet
 
 
-def TrainTextModel(numEpochs,batchSize,lr,seed,maxPages,dataDir,source="pages"):
+def TrainTextModel(numEpochs,batchSize,lr,seed,maxPages,dataDir,source="pages",resume=False,warmStart=None):
     if source=="teklia":
         trainSet,valSet = BuildTekliaSplit(dataDir)
     else:
@@ -409,8 +438,22 @@ def TrainTextModel(numEpochs,batchSize,lr,seed,maxPages,dataDir,source="pages"):
     bestValLoss = np.inf
     bestPath = WEIGHTS_DIR/"paper_cnn_bilstm_ctc_scratch_best.npz"
     ckptPath = WEIGHTS_DIR/"paper_cnn_bilstm_ctc_scratch_checkpoint.npz"
+    logPath = WEIGHTS_DIR/"paper_cnn_bilstm_ctc_scratch_log.txt"
 
-    for epoch in range(1,numEpochs+1):
+    startEpoch = 1
+    if warmStart:
+        loaded = LoadParamsInto(params,warmStart)
+        print(f"[WarmStart] loaded {loaded}/{len(params)} tensors from {warmStart}")
+    if resume and ckptPath.exists():
+        loaded = LoadParamsInto(params,ckptPath)
+        prevEpoch,prevBest = LoadCheckpointMeta(ckptPath)
+        startEpoch = prevEpoch+1
+        if prevBest is not None:
+            bestValLoss = prevBest
+        print(f"[Resume] loaded {loaded}/{len(params)} tensors from {ckptPath}, "
+              f"continuing at epoch {startEpoch} (best val loss so far {bestValLoss:.4f})")
+
+    for epoch in range(startEpoch,startEpoch+numEpochs):
         epochStart = time.time()
         epochLoss,nBatches = 0.0,0
         for batch in IterateBatches(trainSet,batchSize,rng,shuffle=True):
@@ -434,43 +477,19 @@ def TrainTextModel(numEpochs,batchSize,lr,seed,maxPages,dataDir,source="pages"):
         savedMsg = ""
         if improved:
             bestValLoss = valLoss
-            SaveCheckpoint(bestPath,params)
+            SaveCheckpoint(bestPath,params,extra={"__epoch__":np.array(epoch),"__best__":np.array(bestValLoss)})
             savedMsg = " [BEST SAVED]"
-        SaveCheckpoint(ckptPath,params)
+        SaveCheckpoint(ckptPath,params,extra={"__epoch__":np.array(epoch),"__best__":np.array(bestValLoss)})
 
-        print(f"[TrainText] Epoch {epoch:03d}/{numEpochs} | Train loss {trainLoss:.3f} | "
+        elapsedMin = (time.time()-epochStart)/60
+        print(f"[TrainText] Epoch {epoch:03d} | Train loss {trainLoss:.3f} | "
               f"Val loss {valLoss:.3f} (best {bestValLoss:.3f}) | Val char-acc {valCharAcc:.2%} | "
-              f"lr {optimizer.lr:.6f} | {(time.time()-epochStart)/60:.1f} min{savedMsg}")
+              f"lr {optimizer.lr:.6f} | {elapsedMin:.1f} min{savedMsg}")
+        AppendLog(logPath,f"epoch={epoch} train_loss={trainLoss:.4f} val_loss={valLoss:.4f} "
+                          f"best_val_loss={bestValLoss:.4f} val_char_acc={valCharAcc:.4f} "
+                          f"lr={optimizer.lr:.6f} minutes={elapsedMin:.1f}{savedMsg}")
 
     return bestValLoss
-
-
-#cheap sanity check: synthetic data, no dataset needed -- confirms the model
-#builds, forward produces the right shape, and a full training step
-#(forward+backward+optimizer.Step) runs without crashing. not a convergence test
-def TextSelfTest():
-    rng = np.random.default_rng(0)
-    numClasses = len(CHARSET)+1
-    params = InitTextModelParams(seed=0,numClasses=numClasses)
-    trainable = TrainableParams(params)
-    optimizer = NN.RMSprop(trainable,lr=1e-3,weightDecay=1e-5)
-
-    B,H,W = 2,64,640
-    x = rng.standard_normal((B,1,H,W)).astype(np.float32)
-    targets = [[1,2,3],[4,5]]
-
-    rawLogits,cache = TextModelForward(x,params)
-    expectedT = W//4
-    assert rawLogits.shape==(expectedT,B,numClasses),rawLogits.shape
-
-    loss,dRawLogits = NN.CtcLoss(rawLogits,targets)
-    assert np.isfinite(loss)
-    _,grads = TextModelBackward(dRawLogits,cache)
-    trainableGrads = {k:grads[k] for k in trainable}
-    optimizer.Step(trainableGrads)
-
-    print(f"[selftest] text model forward+backward+step ok | logits shape {rawLogits.shape} | loss {loss:.4f}")
-    return loss
 
 
 #######################################################################
@@ -565,7 +584,7 @@ def ValidateAuthorModel(valSet,params,batchSize,rng):
 #5.0 -- same recipe as TrainAuthor.py's Main10Authors(), minus the text-model
 #backbone warm start (no from-scratch text checkpoint to warm-start from yet)
 #and the original/shape subcommands (simplified single path, see module comment)
-def TrainAuthorModel(numEpochs,batchSize,lr,seed):
+def TrainAuthorModel(numEpochs,batchSize,lr,seed,resume=False,warmStart=None):
     base = IAMLineDatasetRaw(rootDir=str(DEFAULT_AUTHOR_DATA_DIR),cacheDir=str(DEFAULT_AUTHOR_CACHE_DIR))
     before = len(base.samples)
     base.samples = [s for s in base.samples if s["page_key"].split("/")[0] in DATASET_AUTHORS]
@@ -593,8 +612,23 @@ def TrainAuthorModel(numEpochs,batchSize,lr,seed):
     rngDropout = np.random.default_rng(seed+1)
     bestAcc = 0.0
     outPath = WEIGHTS_DIR/"author_classifier_10new_scratch_weights.npz"
+    ckptPath = WEIGHTS_DIR/"author_classifier_10new_scratch_checkpoint.npz"
+    logPath = WEIGHTS_DIR/"author_classifier_10new_scratch_log.txt"
 
-    for epoch in range(1,numEpochs+1):
+    startEpoch = 1
+    if warmStart:
+        loaded = LoadParamsInto(params,warmStart)
+        print(f"[WarmStart] loaded {loaded}/{len(params)} tensors from {warmStart}")
+    if resume and ckptPath.exists():
+        loaded = LoadParamsInto(params,ckptPath)
+        prevEpoch,prevBest = LoadCheckpointMeta(ckptPath)
+        startEpoch = prevEpoch+1
+        if prevBest is not None:
+            bestAcc = prevBest
+        print(f"[Resume] loaded {loaded}/{len(params)} tensors from {ckptPath}, "
+              f"continuing at epoch {startEpoch} (best val acc so far {bestAcc:.3f})")
+
+    for epoch in range(startEpoch,startEpoch+numEpochs):
         epochStart = time.time()
         epochLoss,nBatches = 0.0,0
         for batch in IterateBatches(trainSet,batchSize,rngBatch,shuffle=True):
@@ -614,44 +648,21 @@ def TrainAuthorModel(numEpochs,batchSize,lr,seed):
         savedMsg = ""
         if valAcc>bestAcc:
             bestAcc = valAcc
-            SaveCheckpoint(outPath,params,extra={"__author_names__":np.array(base.author_folders)})
+            SaveCheckpoint(outPath,params,extra={"__author_names__":np.array(base.author_folders),
+                                                  "__epoch__":np.array(epoch),"__best__":np.array(bestAcc)})
             savedMsg = " [SAVED]"
+        SaveCheckpoint(ckptPath,params,extra={"__author_names__":np.array(base.author_folders),
+                                               "__epoch__":np.array(epoch),"__best__":np.array(bestAcc)})
 
-        print(f"[TrainAuthor] Epoch {epoch:03d}/{numEpochs} | loss {trainLoss:.3f} | val author-acc {valAcc:.3f} "
-              f"(best {bestAcc:.3f}) | lr {optimizer.lr:.6f} | {(time.time()-epochStart)/60:.1f} min{savedMsg}")
+        elapsedMin = (time.time()-epochStart)/60
+        print(f"[TrainAuthor] Epoch {epoch:03d} | loss {trainLoss:.3f} | val author-acc {valAcc:.3f} "
+              f"(best {bestAcc:.3f}) | lr {optimizer.lr:.6f} | {elapsedMin:.1f} min{savedMsg}")
+        AppendLog(logPath,f"epoch={epoch} train_loss={trainLoss:.4f} val_acc={valAcc:.4f} "
+                          f"best_val_acc={bestAcc:.4f} lr={optimizer.lr:.6f} minutes={elapsedMin:.1f}{savedMsg}")
 
     print(f"\nBest val author-accuracy: {bestAcc:.3f}")
     print(f"Weights saved to: {outPath}")
     return bestAcc
-
-
-#cheap sanity check: synthetic data, no dataset needed -- confirms the model
-#builds, forward produces the right shape, and a full training step
-#(forward+backward+clip+optimizer.Step) runs without crashing
-def AuthorSelfTest():
-    rng = np.random.default_rng(0)
-    numAuthors = 5
-    params = InitAuthorModelParams(seed=0,numAuthors=numAuthors)
-    trainable = TrainableParams(params)
-    optimizer = NN.AdamW(trainable,lr=1e-3,weightDecay=1e-4)
-
-    B,H,W = 3,64,640
-    x = rng.standard_normal((B,1,H,W)).astype(np.float32)
-    authorIdxs = rng.integers(0,numAuthors,size=B)
-    dropoutRng = np.random.default_rng(1)
-
-    logits,cache = AuthorModelForward(x,params,training=True,rng=dropoutRng)
-    assert logits.shape==(B,numAuthors),logits.shape
-
-    loss,dLogits = NN.CrossEntropyLoss(logits,authorIdxs)
-    assert np.isfinite(loss)
-    _,grads = AuthorModelBackward(dLogits,cache)
-    trainableGrads = {k:grads[k] for k in trainable}
-    NN.ClipGradNorm(trainableGrads,maxNorm=5.0)
-    optimizer.Step(trainableGrads)
-
-    print(f"[selftest] author model forward+backward+step ok | logits shape {logits.shape} | loss {loss:.4f}")
-    return loss
 
 
 #######################################################################
@@ -673,35 +684,37 @@ def Main():
                        help="`pages`: segment IAMpages671 from scratch (default). "
                             "`teklia`: pre-segmented Teklia/IAM-line lines, exported "
                             "once via ExportTekliaLines.py -- no segmentation needed")
-    textP.add_argument("--selftest",action="store_true",help="run the synthetic smoke test and exit")
+    textP.add_argument("--resume",action="store_true",
+                       help="continue from paper_cnn_bilstm_ctc_scratch_checkpoint.npz (epoch counter and "
+                            "best-val-loss included) if it exists -- picks up after a crash")
+    textP.add_argument("--warm-start",type=str,default=None,
+                       help="load initial weights from this .npz checkpoint instead of random init "
+                            "(e.g. an old converted paper_cnn_bilstm_ctc_joint_best.npz)")
 
     authorP = sub.add_parser("author")
     authorP.add_argument("--epochs",type=int,default=20)
     authorP.add_argument("--batch-size",type=int,default=16)
     authorP.add_argument("--lr",type=float,default=1e-3)
     authorP.add_argument("--seed",type=int,default=0)
-    authorP.add_argument("--selftest",action="store_true",help="run the synthetic smoke test and exit")
+    authorP.add_argument("--resume",action="store_true",
+                         help="continue from author_classifier_10new_scratch_checkpoint.npz if it exists")
+    authorP.add_argument("--warm-start",type=str,default=None,
+                         help="load initial weights from this .npz checkpoint instead of random init")
 
     args = parser.parse_args()
 
     if args.model=="text":
-        if args.selftest:
-            TextSelfTest()
-            return
         defaultDir = DEFAULT_TEKLIA_DATA_DIR if args.source=="teklia" else DEFAULT_TEXT_DATA_DIR
         dataDir = Path(args.data_dir) if args.data_dir else defaultDir
         print(f"\n--- Training paper_cnn_bilstm_ctc_scratch (source={args.source}, lr={args.lr}, "
               f"batch_size={args.batch_size}, max_epochs={args.epochs}, data={dataDir}) ---")
         best = TrainTextModel(args.epochs,args.batch_size,args.lr,args.seed,args.max_pages,dataDir,
-                              source=args.source)
+                              source=args.source,resume=args.resume,warmStart=args.warm_start)
         print(f"\nDone. Best validation loss: {best:.4f}")
     else:
-        if args.selftest:
-            AuthorSelfTest()
-            return
         print(f"\n--- Training author_classifier_10new_scratch (lr={args.lr}, batch_size={args.batch_size}, "
               f"max_epochs={args.epochs}) ---")
-        TrainAuthorModel(args.epochs,args.batch_size,args.lr,args.seed)
+        TrainAuthorModel(args.epochs,args.batch_size,args.lr,args.seed,resume=args.resume,warmStart=args.warm_start)
 
 
 if __name__=="__main__":

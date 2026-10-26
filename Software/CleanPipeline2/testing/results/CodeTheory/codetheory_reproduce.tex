@@ -1,0 +1,1747 @@
+
+\chapter{reproduce.py}
+This file draws. It takes a list of strokes in millimetres and turns them into motion, and nothing in it knows anything about handwriting: the strokes may have come from synthesis or from tracing a real page, and the file behaves the same either way. That separation is deliberate, and it is what allows the drawing half to be tested without any of the recognition half being involved.
+
+
+\paragraph{The two halves, and why they are kept apart}
+
+\begin{itemize}\setlength\itemsep{0pt}
+  \item \textbf{The top half} converts a pen path into a G-code file. It is pure arithmetic, runs on any computer, and is the half this project's measured geometry results were taken on.
+  \item \textbf{The bottom half} drives the real gantry: stepper motors, limit switches, homing and the pen lift. It needs the single-board computer and the wiring, so its imports are guarded and the top half still works without them.
+\end{itemize}
+The guard matters more than it appears. Without it, importing this module on a laptop would fail at the hardware import, and since every test and every evaluation script imports it, none of them could run anywhere but on the machine itself.
+
+
+\paragraph{Background: what G-code is}
+\textbf{G-code} is the standard language for telling a machine tool where to move. A line is a command letter and number, such as G0 or G1, followed by parameters: \texttt{G1 X12.5 Y40.0} means move in a straight line to that position. It dates from numerically controlled milling and is what nearly every plotter, 3-D printer and mill accepts, which is why it is used here rather than a private format.
+
+
+\begin{itemize}\setlength\itemsep{0pt}
+  \item \textbf{G0} is a rapid move, used with the pen up, where only the destination matters.
+  \item \textbf{G1} is a controlled move at a feed rate, used with the pen down, where the path matters.
+  \item \textbf{G2 and G3} are circular arcs, clockwise and anticlockwise.
+  \item \textbf{G4} is a dwell: wait for a stated time.
+  \item \textbf{M3 and M5} are auxiliary commands, here mapped to the pen actuator.
+  \item \textbf{G21 and G90} declare millimetres and absolute coordinates.
+\end{itemize}
+
+\paragraph{Units}
+The top half works in millimetres throughout. The bottom half works in motor steps, converting at the boundary using a steps-per-millimetre figure that calibration measures rather than assumes.
+
+
+\section{GantryConfig}
+\begin{lstlisting}[style=sig]
+class GantryConfig
+\end{lstlisting}
+
+\noindent\textbf{Output.} a record of every physical number describing the machine, with derived step scaling available as properties.
+
+
+\paragraph{What it is for}
+Collects everything physical about the machine into one place: the gearing, the work area, the feed rates and the pen actuator's timing. A physical change to the machine, a different pulley or a larger bed, is then one edit here rather than a search for the number wherever it was used.
+
+
+\paragraph{Why steps per millimetre is derived and not typed in}
+This is the one piece of real reasoning in the record. Steps per millimetre is the number that converts a distance into motor steps, and it could simply be stated. It is instead computed from the parts the machine is actually built from.
+
+
+\begin{equation}
+\mathrm{stepsPerMm} \;=\; \frac{\mathrm{fullStepsPerRev} \times \mathrm{microstepping}}{\mathrm{mmPerRev}}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{stepsPerMm}$}] \normalfont how many motor steps move the axis one millimetre
+  \item[{$\mathrm{fullStepsPerRev}$}] \normalfont the motor's own step count per revolution, 200 for the NEMA 17 used
+  \item[{$\mathrm{microstepping}$}] \normalfont how many electrical sub-steps the driver divides each full step into, 16 here
+  \item[{$\mathrm{mmPerRev}$}] \normalfont how far the axis travels per motor revolution, set by the belt and pulley
+\end{description}
+With the values given this is 200 times 16 divided by 40, or 80 steps per millimetre. The reason for deriving it is that each of the three inputs is a fact someone can check against the hardware: the motor's label says 1.8 degrees per step, the driver's jumpers say 1/16, and the belt is 2 mm pitch with a 20-tooth pulley, giving 40 mm per revolution. A single stated 80 could not be checked that way, and if a pulley were changed it would be silently wrong, with the only symptom being a drawing of the wrong size.
+
+
+\paragraph{Background: what microstepping is}
+A stepper motor moves in fixed increments, 1.8 degrees for a 200-step motor. \textbf{Microstepping} is the driver's ability to hold the rotor between two full steps by driving the coils at intermediate currents, dividing each step into smaller ones. At 1/16 the resolution becomes 0.1125 degrees, which for this gearing is 12.5 micrometres of travel. Finer resolution is not the main benefit: full stepping produces an abrupt jump between positions that makes the motor vibrate audibly and visibly, and microstepping smooths that into nearly continuous motion, which matters when the thing being drawn is a curve a few millimetres across.
+
+
+\paragraph{Why the pen actuator has timing in the config}
+The pen is raised and lowered by a geared motor that turns 90 degrees per pulse, so the time one pulse takes is a physical property that the G-code must wait for. The pulse and settling times are recorded here and used to emit a dwell of the right length. Getting that wrong does not fail cleanly: too short a dwell means drawing begins while the pen is still descending, which produces a stroke that starts in the air.
+
+
+\begin{quote}\small\itshape The acceleration limit is declared in this record and is never read: no acceleration limiting is implemented. Motion steps at a constant rate computed from the feed, so a move begins at full speed. For the light gantry and modest feeds used that is tolerable, but a reader should not take the field's presence as evidence that a trapezoidal profile is applied.\end{quote}
+
+\section{ToMachine}
+\begin{lstlisting}[style=sig]
+def ToMachine(traj, cfg, fitToBounds=True, optimizeOrder=True)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{traj}] \normalfont the trajectory to place
+  \item[{cfg}] \normalfont the machine configuration
+  \item[{fitToBounds}] \normalfont whether to shrink the drawing to fit the work area, default true
+  \item[{optimizeOrder}] \normalfont whether to reorder the strokes, default true
+\end{description}
+
+\noindent\textbf{Output.} a pair: the strokes in bed coordinates, and the scale factor applied.
+
+
+\paragraph{What it is for}
+A trajectory is positioned wherever synthesis happened to put it, with its origin at the start of the first line. The bed has its own coordinates, its own extent, and a chosen place where text should begin. This function moves the drawing from one to the other.
+
+
+\paragraph{The transformation}
+
+\begin{equation}
+x_{\mathrm{bed}} \;=\; \mathrm{originX} + (x - x_0)\,k, \qquad y_{\mathrm{bed}} \;=\; \mathrm{originY} - (y_1 - y)\,k
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$x_{\mathrm{bed}},\, y_{\mathrm{bed}}$}] \normalfont the position on the bed, in millimetres
+  \item[{$x,\,y$}] \normalfont the position in the trajectory
+  \item[{$x_0$}] \normalfont the trajectory's leftmost extent
+  \item[{$y_1$}] \normalfont its topmost extent
+  \item[{$\mathrm{originX},\, \mathrm{originY}$}] \normalfont where text is to begin on the bed
+  \item[{$k$}] \normalfont the scale factor
+\end{description}
+Both frames have y increasing upward, so no flip is needed, unlike the rasteriser's conversion. What the y expression does instead is measure downward \emph{from the top} of the drawing: the topmost row of text lands exactly at the chosen origin and later rows descend from there. Anchoring at the top rather than the bottom is what makes a one-line and a ten-line page both start in the same place, which is how a person writes on a sheet.
+
+
+\paragraph{Why it never enlarges}
+
+\begin{equation}
+k \;=\; \min\!\left(1,\; \frac{\mathrm{availW}}{w},\; \frac{\mathrm{availH}}{h}\right)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$k$}] \normalfont the scale factor actually applied
+  \item[{$\mathrm{availW}$}] \normalfont the bed width available to the right of the origin
+  \item[{$\mathrm{availH}$}] \normalfont the height available below it
+  \item[{$w,\,h$}] \normalfont the drawing's own width and height
+  \item[{$1$}] \normalfont the cap, which is what prevents enlargement
+\end{description}
+The 1 in the minimum means the drawing is shrunk when it would not fit and is otherwise left at the size asked for. That is the right behaviour because the size was chosen deliberately: the caller specified an x-height in millimetres, so the writing is meant to be that size. Scaling up to fill the bed would override that choice, and a request for small writing would produce large writing. Scaling down is different in kind: it is not overriding the request but avoiding an impossibility, since a drawing larger than the bed cannot be drawn at all.
+
+
+\paragraph{Why both axes get the same factor}
+A single factor is taken as the smaller of the two ratios, rather than each axis being scaled to fit independently. Independent scaling would stretch the writing, changing the proportions of every letter, which is both visibly wrong and destroys the property the whole pipeline maintains, that the stored shapes are reproduced faithfully.
+
+
+\section{\_Decimate}
+\begin{lstlisting}[style=sig]
+def _Decimate(poly, minSeg)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{poly}] \normalfont a path in millimetres
+  \item[{minSeg}] \normalfont the shortest segment to keep, in millimetres
+\end{description}
+
+\noindent\textbf{Output.} the path with points closer together than that merged away.
+
+
+\paragraph{What it is for}
+A path may carry far more points than the machine can act on. A traced stroke has a point per pixel, and resampling during layout placed points every 0.35 mm. This removes the points that are closer together than the machine can resolve.
+
+
+\paragraph{The method, and why it is not Douglas-Peucker}
+Each point is kept only if it is at least the minimum distance from the last point kept. This is a different rule from the path simplification in style.py, which keeps points according to how far they stray from a straight line, and the difference is appropriate to the different purpose. Here the question is not whether a point carries shape information but whether the machine can act on it at all: a commanded move shorter than the minimum segment is below the resolution of the motion, so it costs a line in the file and produces nothing.
+
+
+\paragraph{Why the comparison is against the last kept point}
+Comparing against the last kept point rather than the previous input point is what makes the rule accumulate correctly. Against the previous input point, a long run of points each slightly under the threshold would all be dropped, however far the path travelled in total. Against the last kept point, the distance accumulates until the threshold is reached, so a point is emitted every minimum segment along the path regardless of how finely the input was sampled.
+
+
+\begin{quote}\small\itshape The first and last points are always kept, whatever the spacing. The endpoints define where a stroke begins and ends, so dropping one would shorten the stroke, and the final point in particular is where the pen lifts and where the next stroke's travel is measured from.\end{quote}
+
+\section{OptimizeStrokeOrder}
+\begin{lstlisting}[style=sig]
+def OptimizeStrokeOrder(strokes, rowTolMm=None)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{strokes}] \normalfont the strokes in bed coordinates
+  \item[{rowTolMm}] \normalfont how far apart two strokes may sit vertically and still count as the same row; derived if not given
+\end{description}
+
+\noindent\textbf{Output.} the same strokes in an order that reduces pen-up travel.
+
+
+\paragraph{What it is for}
+The strokes may be drawn in any order, since each is independent. The order determines how far the pen travels raised between them, and that travel is pure waste: it takes time and draws nothing. For a page of handwriting with hundreds of strokes the difference between a good order and a poor one is substantial.
+
+
+\paragraph{Background: this is a travelling salesman problem}
+Finding the order that minimises total travel is the \textbf{travelling salesman problem}: given a set of places, find the shortest route visiting all of them. It is one of the classic hard problems in computing, with no known method that finds the exact best route in reasonable time as the number of places grows. With several hundred strokes an exact answer is out of reach, so a \textbf{heuristic} is used: a rule that gives a good answer quickly with no guarantee of being best.
+
+
+\paragraph{The heuristic: bands, then nearest neighbour}
+Two ideas are combined. The strokes are first grouped into horizontal bands by their vertical centres, and the bands are processed from top to bottom. Within a band, the nearest unvisited stroke is taken next.
+
+
+\begin{itemize}\setlength\itemsep{0pt}
+  \item \textbf{Banding} exploits the structure of the problem. Text is arranged in lines, and almost all the strokes of one line of writing are near each other, so a route that finishes one line before starting the next is close to optimal. A pure nearest-neighbour search without banding can wander between lines, since a stroke on the line below may happen to be nearer than the next stroke along.
+  \item \textbf{Nearest neighbour} within a band is the standard simple heuristic: from where the pen is, go to the closest place not yet visited. It is greedy, so it can paint itself into a corner and leave a long move to the last stroke, but within one line of text the strokes are nearly collinear and the greedy route is close to the best.
+\end{itemize}
+
+\paragraph{Why the band tolerance is derived from the strokes}
+
+\begin{equation}
+\mathrm{rowTol} \;=\; \max\big(1,\; 1.2 \cdot \mathrm{median}\{\,h_s\,\}\big)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{rowTol}$}] \normalfont how far apart two strokes' vertical centres may be and still share a band, in millimetres
+  \item[{$h_s$}] \normalfont the height of stroke s, from its lowest point to its highest
+  \item[{$1.2$}] \normalfont a margin above the typical stroke height
+  \item[{$1$}] \normalfont a floor in millimetres, for a drawing of very small strokes
+\end{description}
+A fixed tolerance would be wrong at every size but one. Deriving it from the median stroke height ties it to the writing: a band should be about as tall as a line of text, and a typical stroke is about the height of a letter. The median again rather than the mean, so that one tall stroke spanning several lines, which a long descender or an underline can produce, does not widen every band.
+
+
+\paragraph{Reversing a stroke to enter from the nearer end}
+A stroke can be drawn from either end, and the result is identical ink. So when the far end is closer to the pen than the near end, the stroke is reversed. The code comment notes that this is free for a plotter, and it is worth saying why: unlike a milling cut or an extrusion, a pen stroke has no direction-dependent behaviour, so nothing is lost. It can nearly halve the travel to a long stroke.
+
+
+\begin{quote}\small\itshape Fewer than three strokes are returned unchanged. With two strokes there is only one meaningful order, and the banding statistics would be computed from a sample too small to describe anything.\end{quote}
+
+\section{\_Clamp}
+\begin{lstlisting}[style=sig]
+def _Clamp(strokes, cfg)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{strokes}] \normalfont the strokes in bed coordinates
+  \item[{cfg}] \normalfont the machine configuration
+\end{description}
+
+\noindent\textbf{Output.} a pair: the strokes with every point forced inside the work area, and how many points were moved.
+
+
+\paragraph{What it is for}
+A final safety net. Every point is forced inside the machine's declared bounds, and the number of points that had to be moved is counted and reported.
+
+
+\paragraph{Why it exists when ToMachine already fits the drawing}
+The fitting scales the drawing to the available area, so in principle nothing can lie outside it. This clamp exists for the cases where that reasoning does not hold: the fitting can be switched off by the caller, the origin can be set such that the available area is computed wrongly, and a stroke can be reversed or reordered by code that has no knowledge of the bounds. A point outside the work area is not a cosmetic problem; it commands the machine to drive into its own frame.
+
+
+\paragraph{Why the count is returned}
+Clamping silently would hide a real fault. A drawing that needed clamping was mispositioned, and the clamped version is not what was asked for: the affected strokes are flattened against the boundary, which is visible as a straight edge where writing should be. Returning the count lets the writer emit a warning into the file, so the condition is recorded where someone will see it rather than inferred from the drawing.
+
+
+\begin{quote}\small\itshape Clamping each coordinate independently is not geometrically principled: a stroke crossing the boundary diagonally is bent rather than cut, so its shape changes. Properly clipping the path to the rectangle would preserve the shape of the part inside. That is not done because the condition is a fault to be reported rather than a case to be handled well, and the simple form cannot itself fail.\end{quote}
+
+\section{NewPenState}
+\begin{lstlisting}[style=sig]
+def NewPenState(cfg)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{cfg}] \normalfont the machine configuration
+\end{description}
+
+\noindent\textbf{Output.} a small mutable record holding whether the pen is up and how many pulses have been emitted.
+
+
+\paragraph{Why the pen's state must be tracked at all}
+This is the central peculiarity of the machine and it shapes the whole of the G-code writing. The pen is raised and lowered by a geared motor that turns 90 degrees per pulse. It is a \textbf{one-way actuator}: it accepts "move" and nothing else. There is no command meaning "be up", and nothing in the G-code can ask where the pen currently is.
+
+The consequence is that the writer must know the pen's state by remembering it. The state begins at a known value, assumed at power-on, and every pulse emitted flips it. Emitting a toggle when the pen is already in the wanted state would move it to the wrong one, and from then on every pen command in the file would be inverted: the machine would travel with the pen down and draw with it up.
+
+
+\paragraph{Why it is a list rather than a plain value}
+The record is a two-element list so that the function updating it can modify it in place and the caller sees the change. A tuple or an integer would be copied, and the caller would keep the old state. This is the smallest possible piece of shared mutable state and it exists because the pen genuinely has a state that persists across many lines of output.
+
+
+\begin{quote}\small\itshape The starting state is an assumption, not a measurement. If the machine is powered on with the pen down, every pen command in the file is inverted. The hardware half resolves this properly, with a switch that reports the pen's actual position, but a written file cannot: it has no way to ask.\end{quote}
+
+\section{SetPenLines}
+\begin{lstlisting}[style=sig]
+def SetPenLines(state, cfg, wantUp)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{state}] \normalfont the pen state record, updated in place
+  \item[{cfg}] \normalfont the machine configuration
+  \item[{wantUp}] \normalfont the state wanted
+\end{description}
+
+\noindent\textbf{Output.} the G-code lines needed to reach that state, which is nothing at all when it is already current.
+
+
+\paragraph{What it does}
+Compares the wanted state with the tracked one. If they agree, no lines are emitted. If they differ, the state is flipped, the pulse count incremented, and two lines are produced: the toggle command and a dwell.
+
+
+\paragraph{Why emitting nothing is the important case}
+The empty return is what makes the mechanism correct. Because the actuator toggles, a redundant command is not merely wasteful, it is wrong. The writer calls this function before every travel move and before every stroke, which means it is called many times with a state that is already current, and every one of those calls must produce nothing. Placing that check inside the function rather than at each call site is what guarantees it, since a single forgotten check at one call site would invert the rest of the file.
+
+
+\paragraph{Why a dwell follows every toggle}
+
+\begin{equation}
+\mathrm{dwell} \;=\; \frac{\mathrm{penPulseMs} + \mathrm{penSettleMs}}{1000}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{dwell}$}] \normalfont the wait emitted after a toggle, in seconds
+  \item[{$\mathrm{penPulseMs}$}] \normalfont how long one 90-degree rotation takes
+  \item[{$\mathrm{penSettleMs}$}] \normalfont extra time for the mechanism to come to rest
+  \item[{$1000$}] \normalfont the conversion from milliseconds to the seconds a G-code dwell expects
+\end{description}
+G-code is executed line by line, and the machine would begin the next move as soon as the toggle command was issued, while the pen was still travelling. Drawing would then start before the pen reached the paper, losing the beginning of the stroke, or a travel move would begin before the pen was clear, dragging a line across the page. The dwell blocks until the motion is complete. The settling time is added on top of the rotation time because the mechanism has backlash and the pen oscillates slightly as it lands.
+
+
+\begin{quote}\small\itshape The pulse count is accumulated and reported by the writer. It is a useful figure because each pulse is a mechanical operation taking about a third of a second: a file with twice the necessary pulses takes noticeably longer to draw and wears the actuator twice as fast. It is also how a fault in the stroke ordering shows up, since a poor order lifts the pen more often than necessary.\end{quote}
+
+\section{WriteGcode}
+\begin{lstlisting}[style=sig]
+def WriteGcode(traj, cfg, path, title='')
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{traj}] \normalfont the trajectory to write
+  \item[{cfg}] \normalfont the machine configuration
+  \item[{path}] \normalfont where to write the file
+  \item[{title}] \normalfont an optional title for the header comment
+\end{description}
+
+\noindent\textbf{Output.} a dictionary summarising what was written: line and stroke counts, pen pulses, the scale applied, and how many points were clamped.
+
+
+\paragraph{What it is for}
+The entry point of the top half. It places and orders the strokes, clamps them, and writes the file.
+
+
+\paragraph{The pattern for one stroke}
+
+\begin{itemize}\setlength\itemsep{0pt}
+  \item \textbf{Pen up,} if it is not already, so the travel does not draw.
+  \item \textbf{G0 to the stroke's first point,} at travel feed. A rapid move, since the path taken does not matter with the pen raised.
+  \item \textbf{Pen down,} with its dwell.
+  \item \textbf{G1 at drawing feed,} then one G1 per remaining point.
+\end{itemize}
+The two feed rates are set once rather than repeated on every line, because G-code feed is modal: it persists until changed. Repeating it would lengthen the file by a third for no effect.
+
+
+\paragraph{Why the header carries the machine's own numbers}
+The header comments record the writer, the stroke count, the scale applied, the steps per millimetre for both axes, and how the pen codes are to be interpreted. None of it affects the machine, since comments are ignored. It is there because a G-code file outlives the program that wrote it, and a file whose scale and gearing are unknown cannot be checked against the machine it is about to be run on. Recording the steps per millimetre in particular makes it possible to tell afterwards whether a drawing came out the wrong size because the file was wrong or because the machine was configured differently.
+
+
+\paragraph{The warning comment}
+Where points had to be clamped, a warning comment is written into the file. That places the diagnosis where the evidence is: someone examining a drawing with a flattened edge looks at the file, and the explanation is in it. A warning printed to the console at the time of writing would have scrolled away long before the drawing was made.
+
+
+\paragraph{Parking at the end}
+The file ends by raising the pen, moving back to the origin, and issuing the program-end command. Parking matters practically: it leaves the machine in a known position, so the next file starts from the same place, and it takes the pen off the drawing, where a pen left resting bleeds ink into the paper.
+
+
+\section{ParseGcode}
+\begin{lstlisting}[style=sig]
+def ParseGcode(path)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{path}] \normalfont a G-code file to read
+\end{description}
+
+\noindent\textbf{Output.} the strokes recovered from it, as lists of points in millimetres.
+
+
+\paragraph{What it is for, and why it is written separately}
+Reads a G-code file back into strokes, by following the pen state and the coordinates through the file and collecting the points visited with the pen down. Its purpose is verification: comparing what comes back with what went in measures whether the file faithfully represents the intended geometry.
+
+The code comment makes the design decision explicit: it shares no code with the writer, deliberately. That is the whole value of the test. If both used a common routine to format and interpret coordinates, a fault in that routine would cancel between them and the comparison would pass while the file was wrong. Two independent implementations can only agree if the file itself is right, which is the property being tested.
+
+
+\paragraph{What the test can and cannot detect}
+
+\begin{itemize}\setlength\itemsep{0pt}
+  \item \textbf{It detects} rounding error from writing coordinates to three decimal places, a stroke reordering or reversal that lost a point, a clamp that moved geometry, and any error in the pen-state tracking, since a mistracked pen makes the reader collect the wrong points entirely.
+  \item \textbf{It cannot detect} anything about the machine. The feed rates, the dwells, the acceleration and every mechanical effect are invisible to it. The measured agreement of better than 0.999 by area overlap is a statement about the file, not about the drawing.
+\end{itemize}
+Being clear about that boundary is the point of describing the test at all. A round-trip agreement this close is easy to misread as a statement that the robot draws accurately, and it is not: it says the arithmetic between a pen path and a G-code file loses essentially nothing, which locates any remaining error in the mechanics rather than in the software.
+
+
+\paragraph{How the reader tracks state}
+It maintains a current position and a pen flag. Comments are stripped, the command letter is taken from the first word, and coordinates are extracted by pattern. A pen-down command starts a new stroke at the current position; a pen-up command ends it; a move updates the position and, if the pen is down, appends the point.
+
+Starting the stroke at the current position on pen-down, rather than at the first move after it, is what makes the recovered stroke begin where the writer's travel move left the pen. Without it every stroke would be missing its first point, and the comparison would show a systematic error that was the reader's and not the file's.
+
+
+\begin{quote}\small\itshape Strokes of fewer than two points are discarded, which matches the writer, since it skips such strokes too. A stroke still open at the end of the file is closed and kept, so a file that ends without a final pen-up does not lose its last stroke.\end{quote}
+
+\section{GantryNotConnectedError}
+\begin{lstlisting}[style=sig]
+class GantryNotConnectedError
+\end{lstlisting}
+
+\noindent\textbf{Output.} an error type raised when something needs the hardware and the hardware is not available.
+
+
+\paragraph{What it is for}
+Raised when the GPIO library is missing or the chip device cannot be opened, which is the ordinary situation on any computer that is not the machine's own controller.
+
+
+\paragraph{Why a named error rather than letting the import fail}
+An unguarded import of the hardware library would make this module unimportable off the machine, and since the test and evaluation scripts all import it, none of them could run anywhere else. A distinct error type lets the hardware functions fail cleanly when called, while the arithmetic half of the file remains usable.
+
+Being a distinct type rather than a generic error is what lets a caller distinguish "there is no machine here" from "the machine is there and something went wrong". The first is expected and should be reported as a plain message; the second is a fault.
+
+
+\section{NotCalibratedError}
+\begin{lstlisting}[style=sig]
+class NotCalibratedError
+\end{lstlisting}
+
+\noindent\textbf{Output.} an error type raised when an absolute move is attempted before homing.
+
+
+\paragraph{Why calibration is a precondition and not a convenience}
+A stepper motor has no idea where it is. It moves a commanded number of steps from wherever it happens to be, and nothing in the motor or the driver reports a position. So a command to move to a particular place on the bed is meaningless until the machine has established where that place is relative to its current position, which is what homing does.
+
+Executing such a command anyway is not a silent error. The machine drives toward a position computed from an unknown origin, which is as likely as not to be outside the bed, and it will drive into its own frame until the limit switches catch it. A distinct error type refusing the command is the appropriate response to a request that cannot be carried out safely.
+
+
+\begin{quote}\small\itshape This is one of the few places in the project where a function refuses rather than falling back. The usual pattern is to return a degraded result, but there is no degraded version of a physical move: it either goes to the right place or it drives the machine somewhere arbitrary.\end{quote}
+
+\section{CHIP\_PATH}
+\begin{lstlisting}[style=sig]
+CHIP_PATH = '/dev/gpiochip0'
+\end{lstlisting}
+
+\noindent\textbf{Output.} the device path of the GPIO controller.
+
+
+\paragraph{Background: what a GPIO chip is}
+\textbf{GPIO} stands for general-purpose input/output: pins on a single-board computer that software can drive high or low, or read as high or low. They are how a program controls hardware that has no other interface, which here means the stepper drivers, the limit switches and the pen motor.
+
+On Linux the pins are reached through a device file representing the controller. Opening it yields a handle through which individual lines are requested and then set or read. The path names which controller, and a board with several exposes several.
+
+
+\begin{quote}\small\itshape This is a Linux path, which is part of why the hardware half must be guarded: on any other system the file does not exist, and the library that opens it is not installed.\end{quote}
+
+\section{PEN\_SWITCH\_PIN}
+\begin{lstlisting}[style=sig]
+PEN_SWITCH_PIN = 70
+\end{lstlisting}
+
+\noindent\textbf{Output.} the GPIO line number of the switch that reports the pen's position.
+
+
+\paragraph{Why the pen has a sensor when the G-code path only tracks it}
+The written file has no choice but to remember the pen's state, because a file cannot ask a question. The machine can. This switch closes when the pen is raised, so the hardware half knows the pen's actual position rather than its assumed one.
+
+The difference is what allows the hardware to be correct where the file can only be consistent. SetPen compares the wanted state with the measured one and does nothing if they already agree, so a pen that starts in an unexpected position is handled rather than inverting everything that follows. It also allows a failure to be detected: if the motor runs and the switch never changes, something is mechanically wrong, and that can be reported instead of the machine continuing to draw with a pen that never came down.
+
+
+\begin{quote}\small\itshape The switch reports only one of the two states directly: it is closed when up and open otherwise. That is sufficient, since there are only two states, but it means a fault in which the pen sticks halfway reads as "down". The overrun time below is what guards against the related case of stopping the motor the instant the switch first trips.\end{quote}
+
+\section{PEN\_MOTOR\_PIN}
+\begin{lstlisting}[style=sig]
+PEN_MOTOR_PIN = 71
+\end{lstlisting}
+
+\noindent\textbf{Output.} the GPIO line number that drives the pen actuator.
+
+
+\paragraph{How the actuator is driven}
+Setting this line active runs the geared motor; setting it inactive stops it. There is no position control and no direction: the motor turns one way only, and a quarter turn of its cam moves the pen between up and down.
+
+
+\paragraph{Why the software must decide when to stop it}
+Because the motor has no limit of its own, running it too long carries the cam past the position wanted and begins the next quarter turn, which returns the pen to where it started. So the software runs the motor while watching the switch and stops it when the wanted state is reached. That is a closed loop, in contrast with the written file's open-loop timed dwell, and it is why the hardware path is more robust than the file path for the same operation.
+
+
+\section{ENDSTOP\_PINS}
+\begin{lstlisting}[style=sig]
+ENDSTOP_PINS = {'X_MIN': X_MIN_PIN,'X_MAX': X_MAX_PIN,'Y_MIN': Y_MIN_PIN,
+        'Y_MAX': Y_MAX_PIN}
+\end{lstlisting}
+
+\noindent\textbf{Output.} a mapping from each limit switch's name to its GPIO line number.
+
+
+\paragraph{What a limit switch is for}
+An \textbf{endstop} or limit switch is a mechanical switch at the end of an axis's travel, closed when the carriage reaches it. Four are fitted, at the minimum and maximum of each axis, and they serve two distinct purposes.
+
+
+\begin{itemize}\setlength\itemsep{0pt}
+  \item \textbf{Homing.} Since the motors cannot report their position, the only way to establish one is to drive until a switch is reached, which is a known place. Calibration drives to both ends of each axis, which also measures the travel between them.
+  \item \textbf{Protection.} During any motion, a switch closing means the carriage has reached a limit it was not supposed to reach, which stops the machine. Without that, a mistaken coordinate drives the carriage into the frame and the motor stalls, skipping steps and losing the position entirely.
+\end{itemize}
+
+\paragraph{Why they are named rather than numbered}
+The switches are held in a mapping keyed by name, so the code refers to X\_MIN rather than to a pin number. The names carry the information the logic needs: which axis a switch belongs to and which direction to retreat when it trips. The retreat direction table is keyed by the same names, so the two cannot drift out of correspondence, which a pair of parallel numeric lists could.
+
+
+\section{INVERT\_X}
+\begin{lstlisting}[style=sig]
+INVERT_X = True
+\end{lstlisting}
+
+\noindent\textbf{Output.} true, meaning the X axis's direction signal is reversed.
+
+
+\paragraph{What it corrects}
+A stepper driver has a direction pin: one level turns the motor one way and the other the opposite. Which physical direction each level produces depends on how the motor's coils happen to be wired to the driver and on how the motor is mounted relative to the axis. There is no convention that settles it, and the wiring is a four-conductor connector that can be fitted either way round.
+
+So the mapping between the signal and the physical direction is determined by trying it, and the result is recorded here. The alternative, rewiring the motor until the default convention happens to be right, achieves nothing a single flag cannot.
+
+
+\paragraph{How the flag is applied}
+AxisDirValue combines the wanted direction with this flag using an exclusive-or, so a wanted positive direction with inversion set gives the inactive level. Keeping the correction in one function means every motion path inherits it, and a new motion routine cannot forget it as long as it asks for a direction by meaning rather than by signal level.
+
+
+\section{INVERT\_Y}
+\begin{lstlisting}[style=sig]
+INVERT_Y = True
+\end{lstlisting}
+
+\noindent\textbf{Output.} true, meaning the Y axis's direction signal is reversed as well.
+
+
+\paragraph{Why each axis has its own flag}
+The two axes are wired and mounted independently, so the correction each needs is independent. Both happen to require inversion on this machine, which is coincidence rather than something that could be assumed: a single shared flag would work here and would be wrong on a machine where only one axis needed it.
+
+
+\section{MICROSTEPS}
+\begin{lstlisting}[style=sig]
+MICROSTEPS = 16
+\end{lstlisting}
+
+\noindent\textbf{Output.} 16, the microstepping division set on the drivers.
+
+
+\paragraph{What it records}
+The driver divides each of the motor's full steps into this many sub-steps, which is set by jumpers on the driver board. The value here must match those jumpers: the software cannot read them, so a mismatch produces motion scaled by a factor of two or more with no error of any kind, only a drawing of the wrong size.
+
+
+\paragraph{Why sixteen}
+It is the finest division the A4988 driver used offers, and the reason to take the finest is smoothness rather than resolution. At 1/16 the motor advances in increments small enough that the motion is effectively continuous, which matters for drawing curves a few millimetres across: coarser stepping is audible as a buzz and visible as faceting on a curve. The cost is that sixteen times as many step pulses must be issued per millimetre, which for a software-timed stepper sets the maximum speed.
+
+
+\begin{quote}\small\itshape This constant duplicates the microstepping field in GantryConfig, because the two halves of the file were written to be independent and each carries its own copy of the machine's numbers. The duplication is a real hazard: the two must be changed together, and nothing enforces it.\end{quote}
+
+\section{STEPS\_PER\_REV}
+\begin{lstlisting}[style=sig]
+STEPS_PER_REV = 200 * MICROSTEPS
+\end{lstlisting}
+
+\noindent\textbf{Output.} 3200, the microsteps per motor revolution.
+
+
+\paragraph{How it is obtained}
+The motor's 200 full steps per revolution multiplied by the microstepping. Computing it rather than stating 3200 keeps the two factors visible, each of which is a checkable fact about the hardware, and means a change to the microstepping jumpers is one edit.
+
+
+\begin{quote}\small\itshape 200 appears here as a literal rather than as a named constant, which is the one piece of the derivation not spelled out. It is the motor's step angle of 1.8 degrees divided into 360.\end{quote}
+
+\section{STEPS\_PER\_MM}
+\begin{lstlisting}[style=sig]
+STEPS_PER_MM = 80.0
+\end{lstlisting}
+
+\noindent\textbf{Output.} 80.0, a provisional steps-per-millimetre figure.
+
+
+\paragraph{What it is for, and why it is provisional}
+A placeholder used only before calibration has run. Once the machine has homed, it has \emph{measured} its own steps per millimetre, by counting the steps between the two limit switches and dividing by the known distance between them, and the measured figure replaces this one.
+
+
+\paragraph{Why a measurement beats the calculation}
+The calculated 80 assumes the gearing is exactly as specified, and it is not quite. A GT2 belt's pitch varies slightly with tension and temperature, a pulley's effective radius depends on where the belt sits in its teeth, and both are manufactured to a tolerance. Measuring the actual travel captures all of that at once, without needing to know which part contributed what. The measured value is typically within a percent or two of the calculated one, which over a 200 mm page is a few millimetres.
+
+
+\begin{quote}\small\itshape The calculated value remains in use in one place: RunGcodeFile reads the starting position using this constant rather than the calibrated figure, so the position it begins from is slightly off even after calibration. The subsequent moves use the calibrated value, so the error does not accumulate, but the first move of a job is affected.\end{quote}
+
+\section{CIRCLE\_STEP\_DELAY\_S}
+\begin{lstlisting}[style=sig]
+CIRCLE_STEP_DELAY_S = 2e-06
+\end{lstlisting}
+
+\noindent\textbf{Output.} 0.000002, the shortest delay between step pulses, in seconds.
+
+
+\paragraph{What it bounds}
+A step pulse is produced by setting a pin high, waiting, and setting it low. This is the wait, and it therefore sets the fastest the motor can be driven. Two microseconds between edges is near the practical floor for a driver's minimum pulse width and well beyond what the motor can follow.
+
+
+\paragraph{Why it is used as a floor rather than a speed}
+Motion is normally timed from the requested feed rate: the delay is computed so that the move takes the time the feed implies. This constant is the lower bound on that computation, so a feed rate too high to be achieved is silently reduced to the fastest the machine can step instead of producing a negative or zero delay.
+
+
+\begin{quote}\small\itshape The delay is produced by asking the operating system to sleep, which on a general-purpose Linux system is accurate to perhaps tens of microseconds rather than to two. So at short delays the actual rate is set by the operating system's scheduling rather than by this value, and the real maximum speed is lower and less regular than the constant suggests. Step timing of this kind properly belongs in dedicated firmware or a hardware timer.\end{quote}
+
+\section{DEFAULT\_CIRCLE\_RADIUS\_MM}
+\begin{lstlisting}[style=sig]
+DEFAULT_CIRCLE_RADIUS_MM = 8.0
+\end{lstlisting}
+
+\noindent\textbf{Output.} 8.0, the radius of the test circle in millimetres.
+
+
+\paragraph{What it is for}
+The machine has a test mode that drives a continuous circle, and this is its default radius. A circle is a useful test pattern because it exercises both axes continuously and in varying proportion, so it reveals faults that a straight line does not: a mismatch between the two axes' steps per millimetre shows as an ellipse, and backlash in a belt shows as a flat spot where an axis reverses.
+
+
+\section{X\_SWITCH\_TRAVEL\_MM}
+\begin{lstlisting}[style=sig]
+X_SWITCH_TRAVEL_MM = 204.0
+\end{lstlisting}
+
+\noindent\textbf{Output.} 204.0, the measured distance between the two X limit switches.
+
+
+\paragraph{Why this number is the key to calibration}
+Calibration counts the steps between the two switches, which gives a travel in steps. Converting that into steps per millimetre requires knowing the travel in millimetres, and that is this constant, measured once from the physical machine with a rule.
+
+
+\begin{equation}
+\mathrm{stepsPerMm}_X \;=\; \frac{\mathrm{travelSteps}_X}{\mathrm{X\_SWITCH\_TRAVEL\_MM}}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{stepsPerMm}_X$}] \normalfont the calibrated scaling for the X axis
+  \item[{$\mathrm{travelSteps}_X$}] \normalfont the steps counted between the two switches during homing
+  \item[{$\mathrm{X\_SWITCH\_TRAVEL\_MM}$}] \normalfont this constant, the same distance in millimetres
+\end{description}
+So the accuracy of every subsequent move rests on this one hand-measured figure. An error of one percent in it scales the whole drawing by one percent, and nothing in the system can detect that, because the machine has no other reference for absolute distance. It is the single value in the project that must be got right by measurement rather than by reasoning.
+
+
+\begin{quote}\small\itshape The distance is between the switches' \emph{trip points}, not between the switch bodies or the ends of the rail. A switch trips a little before the carriage reaches it, by however much its lever travels, so the figure has to be taken from where motion actually stops.\end{quote}
+
+\section{Y\_SWITCH\_TRAVEL\_MM}
+\begin{lstlisting}[style=sig]
+Y_SWITCH_TRAVEL_MM = 262.0
+\end{lstlisting}
+
+\noindent\textbf{Output.} 262.0, the same distance for the Y axis.
+
+
+\paragraph{Why the two axes differ}
+The axes are physically different lengths, 204 and 262 millimetres, which is simply how the machine is built. Each is calibrated against its own figure, giving each its own steps per millimetre. Keeping them separate also allows the two axes to come out with slightly different scaling, which they will even with identical gearing, because belt tension and pulley tolerance differ between them. Forcing a single shared value would make circles come out as ellipses.
+
+
+\section{EDGE\_TOLERANCE\_MM}
+\begin{lstlisting}[style=sig]
+EDGE_TOLERANCE_MM = 5.0
+\end{lstlisting}
+
+\noindent\textbf{Output.} 5.0, the margin kept clear of every limit switch, in millimetres.
+
+
+\paragraph{What it is for}
+After homing, the usable area is defined as the measured travel less this margin at each end of each axis, and the coordinate origin is placed this far in from the minimum switches. So the machine never deliberately drives within five millimetres of any switch.
+
+
+\paragraph{Why a margin is necessary}
+Driving to a position where a switch is about to trip is hazardous in a specific way. A limit switch tripping during normal motion is treated as an emergency: the drive stops, the pen lifts and the job aborts. If the usable area reached the switches exactly, then ordinary rounding, a step lost to a stiff belt, or the thermal expansion of the frame would occasionally trip a switch during a legitimate move, and a job would abort partway through a drawing for no real fault.
+
+Five millimetres is comfortably more than any of those effects and costs ten millimetres of travel on each axis, under five percent of the bed. That is a cheap price for the difference between a boundary that is occasionally crossed and one that is crossed only when something is genuinely wrong.
+
+
+\begin{equation}
+\mathrm{usableWidth} \;=\; \mathrm{switchTravel} \;-\; 2 \cdot \mathrm{EDGE\_TOLERANCE\_MM}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{usableWidth}$}] \normalfont the width the machine will address
+  \item[{$\mathrm{switchTravel}$}] \normalfont the measured distance between the switches
+  \item[{$2$}] \normalfont the margin applies at both ends
+\end{description}
+
+\begin{quote}\small\itshape Because the origin is offset by this margin, the conversion between a coordinate and a step count adds it back: a commanded 0 corresponds to the margin's worth of steps from the minimum switch, not to zero steps. Both \_GcodeLinearMove and the position readback have to apply that offset, and a mismatch between them would put every move out by five millimetres.\end{quote}
+
+\section{HOMING\_STEP\_DELAY\_S}
+\begin{lstlisting}[style=sig]
+HOMING_STEP_DELAY_S = 0.0008
+\end{lstlisting}
+
+\noindent\textbf{Output.} 0.0008, the per-step delay used while homing, in seconds.
+
+
+\paragraph{Why homing is slow}
+This delay is four hundred times the minimum, making homing much slower than ordinary motion. Three reasons require that.
+
+
+\begin{itemize}\setlength\itemsep{0pt}
+  \item \textbf{The switch must be detected before the carriage reaches the frame.} At high speed many steps elapse between consecutive switch readings, and the carriage can travel several millimetres past the trip point, which on an axis whose switch sits close to the frame means driving into it.
+  \item \textbf{The stop must not lose steps.} Stopping a fast-moving axis abruptly can make the motor skip, and a skipped step during homing corrupts the measurement that calibration exists to produce.
+  \item \textbf{The direction is unknown at the start.} Homing drives until something stops it, with no knowledge of how far away that is, so the motion is deliberately cautious.
+\end{itemize}
+Since homing happens once per session and takes a few seconds, the cost is negligible, which makes this an easy trade: all the speed in exchange for reliability on the one measurement everything else depends on.
+
+
+\section{HOMING\_MAX\_STEPS}
+\begin{lstlisting}[style=sig]
+HOMING_MAX_STEPS = 200000
+\end{lstlisting}
+
+\noindent\textbf{Output.} 200000, the most steps homing will take before giving up.
+
+
+\paragraph{What it protects against}
+Homing drives until a switch trips. If no switch ever trips, because one is disconnected, miswired or mechanically stuck, the loop would run forever while the motor drives the carriage into the frame and stalls there. This bound turns an endless fault into a reported one.
+
+
+\paragraph{Why this many}
+At 80 steps per millimetre, 200000 steps is 2500 millimetres, about ten times the longest axis. So a correctly functioning machine cannot approach the limit however far from the switch it starts, while a broken one reaches it in under a minute at the homing delay. The margin is deliberately generous because the consequence of setting it too low, a false failure on a machine that was simply far from its switch, is worse than taking longer to report a real one.
+
+
+\begin{quote}\small\itshape Exceeding it raises an error naming the wiring as the likely cause, which is the right message: by far the commonest reason for a switch never tripping is a connector that has worked loose, and the person reading the message is standing next to the machine.\end{quote}
+
+\section{ENDSTOP\_DEBOUNCE\_S}
+\begin{lstlisting}[style=sig]
+ENDSTOP_DEBOUNCE_S = 0.006
+\end{lstlisting}
+
+\noindent\textbf{Output.} 0.006, the gap between confirmation samples of a switch, in seconds.
+
+
+\paragraph{Background: contact bounce and electrical noise}
+A mechanical switch does not close cleanly. Its contacts strike and separate several times over a few milliseconds before settling, so a single reading taken during that window may catch it either way. This is \textbf{contact bounce}. Separately, the wires running to the switches are long and run alongside the motor cables, which carry switched currents of an amp or more, and that induces voltage spikes on the switch lines.
+
+Either effect can make a switch read as closed when it is not. Since a switch reading closed triggers an emergency stop, a spurious reading aborts a drawing that was proceeding correctly, which on a long page is a real cost.
+
+
+\paragraph{The remedy: sample repeatedly, spaced out in time}
+A switch is believed only if it reads closed on several consecutive samples with this delay between them. The spacing is what makes it work: bounce and induced noise are brief, lasting microseconds to a millisecond or two, so samples six milliseconds apart are effectively independent of one another and a transient cannot be present in all of them. Sampling rapidly instead would read the same disturbance several times and confirm it.
+
+
+\section{ENDSTOP\_CONFIRM\_SAMPLES}
+\begin{lstlisting}[style=sig]
+ENDSTOP_CONFIRM_SAMPLES = 3
+\end{lstlisting}
+
+\noindent\textbf{Output.} 3, how many consecutive readings are required before a switch is believed.
+
+
+\paragraph{The trade-off}
+More samples reject noise more reliably and delay a genuine detection. The delay matters because the axis keeps moving while the switch is being confirmed: with three samples six milliseconds apart the confirmation takes twelve milliseconds, during which a carriage travelling at the drawing feed covers about 0.2 millimetres. Three is enough that a transient surviving all three is very unlikely, while the overshoot stays well inside the five-millimetre margin kept clear of the switches.
+
+
+\paragraph{Why it exits early on a disagreement}
+The check stops as soon as any sample reads open, concluding that the switch is not pressed. This is the asymmetry that makes the cost acceptable: the expensive path, taking all three samples, is only followed when the first reading is closed, which is rare. In the normal case of a switch reading open the function returns after one reading, so the debounce costs nothing during ordinary motion, and it is called before every single step.
+
+
+\section{RETRACT\_MM}
+\begin{lstlisting}[style=sig]
+RETRACT_MM = 5.0
+\end{lstlisting}
+
+\noindent\textbf{Output.} 5.0, how far to back off a tripped switch, in millimetres.
+
+
+\paragraph{Why a retract is needed after a stop}
+When a switch trips, the carriage is resting against it. Leaving it there is unworkable for two reasons. The switch continues to read closed, so every subsequent check sees a tripped endstop and refuses to move, including the move needed to get clear: the machine is stuck. And a switch held closed under pressure can be damaged over time.
+
+So after an emergency stop the axis is stepped away from the switch until it releases, by this distance. Five millimetres matches the edge margin, which is sensible: it is the distance that puts the carriage back inside the usable area, so the machine ends up where it is allowed to be rather than just clear of the switch.
+
+
+\paragraph{Why the retract watches the other switches}
+The retract loop checks for any switch other than the one being retracted from, and stops if one trips. That case means something is genuinely wrong, a switch stuck closed or an axis shorter than believed, and continuing to drive would push against a second limit. Stopping and reporting is the correct response, since the situation cannot be resolved by moving.
+
+
+\section{PEN\_UP\_OVERRUN\_S}
+\begin{lstlisting}[style=sig]
+PEN_UP_OVERRUN_S = 0.04
+\end{lstlisting}
+
+\noindent\textbf{Output.} 0.04, extra running time after the pen switch first trips, in seconds.
+
+
+\paragraph{The problem it solves}
+The switch trips the moment the pen reaches the up position, and stopping the motor there leaves the cam exactly at the point where the switch just closed. That is the worst place to stop. A small amount of backlash, a vibration from the next move, or the pen's own weight can rotate the cam back past the trip point, and the pen drops onto the page during a travel move, drawing a line across the drawing.
+
+Running on for a further 40 milliseconds carries the cam past the trip point into the middle of its up region, where neither backlash nor vibration can bring it back. The principle is general: when a detector marks the boundary of a safe region, stop inside the region rather than on its edge.
+
+
+\paragraph{Why only on the way up}
+The overrun is applied when raising the pen and not when lowering it. Down is the position gravity and the pen's spring favour, so it is stable without help, whereas up is held against them. Overrunning on the way down would also press the pen harder into the paper than intended, which broadens the stroke and can damage the nib.
+
+
+\section{GCODE\_MIN\_FEED\_MM\_S}
+\begin{lstlisting}[style=sig]
+GCODE_MIN_FEED_MM_S = 0.1
+\end{lstlisting}
+
+\noindent\textbf{Output.} 0.1, the slowest feed rate accepted, in millimetres per second.
+
+
+\paragraph{What it protects against}
+The step delay is computed by dividing the move's duration by its step count, and the duration is the distance divided by the feed. A feed of zero therefore divides by zero. A file containing \texttt{F0}, whether through a typing error or a generator's fault, would crash the job partway through a drawing.
+
+
+\paragraph{Why a floor rather than a rejection}
+Clamping to a very slow but finite rate means such a line produces a slow move instead of a failure. That is the better behaviour here because the alternative, aborting, loses the whole drawing, whereas one unusually slow move is a visible pause and nothing more. At a tenth of a millimetre per second the move is clearly wrong and clearly deliberate, so it is noticeable without being destructive.
+
+
+\section{\_GCODE\_WORD\_RE}
+\begin{lstlisting}[style=sig]
+_GCODE_WORD_RE = re.compile('([A-Za-z])\\s*(-?[0-9]*\\.?[0-9]+)')
+\end{lstlisting}
+
+\noindent\textbf{Output.} the compiled pattern that splits a G-code line into letters and numbers.
+
+
+\paragraph{What a G-code word is}
+A G-code line is a sequence of \textbf{words}, each a letter followed by a number: \texttt{G1}, \texttt{X12.5}, \texttt{F900}. This pattern matches one such word, capturing the letter and the number separately, and finding every match in a line splits it into its parts.
+
+
+\paragraph{Why the pattern allows space between them}
+It permits whitespace between the letter and the number, so \texttt{X 12.5} parses as well as \texttt{X12.5}. Both forms occur, because different generators format differently and some files are hand-edited. A reader of a standard interchange format should accept the variations the standard permits rather than only the form it writes itself.
+
+
+\paragraph{Why the number pattern is as it is}
+It accepts an optional minus sign, any number of digits, an optional decimal point and more digits, so it matches \texttt{5}, \texttt{-5}, \texttt{5.25} and \texttt{.5} alike. The last of those is why the integer part is optional: a coordinate written as \texttt{.5} is valid and would otherwise be read as a word with no number at all.
+
+
+\begin{quote}\small\itshape The pattern is compiled once at module level rather than on each use. A compiled pattern is parsed into its matching machinery once instead of on every call, which matters here because this is applied to every line of a file that may run to tens of thousands.\end{quote}
+
+\section{\_RETREAT\_SIGN}
+\begin{lstlisting}[style=sig]
+_RETREAT_SIGN = {'X_MIN': +1, 'X_MAX': -1, 'Y_MIN': +1, 'Y_MAX': -1}
+\end{lstlisting}
+
+\noindent\textbf{Output.} a mapping from each switch's name to the direction to move to get off it.
+
+
+\paragraph{What it encodes}
+Which way is away from each switch: positive for the minimum switches and negative for the maximum ones. A minimum switch sits at the low end of the axis, so escaping it means moving toward higher coordinates, and the reverse for a maximum.
+
+
+\paragraph{Why it is a table and not computed from the name}
+The sign could be derived by testing whether the name ends in MIN. A table states it instead, which is better for a value with physical consequences: driving the wrong way off a switch pushes the carriage harder into its limit. A table is read directly against the machine, whereas a derivation depends on a naming convention holding, and a switch named differently would silently produce the wrong direction rather than a missing-key error.
+
+
+\section{Calibration}
+\begin{lstlisting}[style=sig]
+Calibration = {'done': False,'steps_per_mm_x': STEPS_PER_MM,
+        'steps_per_mm_y': STEPS_PER_MM,
+        'usable_width_mm': X_SWITCH_TRAVEL_MM - 2 * EDGE_TOLERANCE_MM,
+        'usable_height_mm': Y_SWITCH_TRAVEL_MM - 2 * EDGE_TOLERANCE_MM}
+\end{lstlisting}
+
+\noindent\textbf{Output.} a dictionary holding the measured machine geometry and whether homing has been done.
+
+
+\paragraph{What it holds}
+The measured steps per millimetre for each axis, the usable area in millimetres, and a flag saying whether calibration has run. Everything in it is a measurement rather than a configuration: the values are produced by driving the machine and counting, not by being stated.
+
+
+\paragraph{Why the flag is checked rather than the values}
+Code requiring calibration tests the flag, not whether the steps-per-millimetre values look plausible. That is the right test because the values have defaults that are perfectly plausible, being the calculated 80: there is no value of them that means "not yet measured". An explicit flag can express that where the data cannot.
+
+
+\begin{quote}\small\itshape This is module-level mutable state, shared by every function in the hardware half, which is the pattern the whole bottom half uses. It is defensible here in a way it would not be elsewhere: there is exactly one physical machine, so a single shared record of its state is an accurate model of the situation, and two independent copies would be able to disagree about a machine that can only be in one state.\end{quote}
+
+\section{req}
+\begin{lstlisting}[style=sig]
+req = None
+\end{lstlisting}
+
+\noindent\textbf{Output.} the live GPIO line request once a connection has been made, or nothing before that.
+
+
+\paragraph{What it holds}
+The handle through which every pin is set and read. It is obtained by requesting a set of lines from the GPIO chip, and until that has happened it is nothing, which is also how the module knows whether it is connected.
+
+
+\paragraph{Why requesting lines is exclusive}
+The Linux GPIO interface grants a requested line exclusively to the process that asked for it: no other program can drive the same pin while the request is held. That is essential here, since two programs both driving a stepper's step pin would produce motion neither intended. It also means the request must be released on shutdown, or the pins remain claimed by a process that has exited and the next run cannot acquire them.
+
+
+\begin{quote}\small\itshape Using the handle's presence as the connection flag means there is one piece of state rather than two, so the flag cannot disagree with reality. A separate boolean would be able to say connected while the handle was absent, which is the kind of inconsistency that produces an error far from its cause.\end{quote}
+
+\section{CurrentMode}
+\begin{lstlisting}[style=sig]
+CurrentMode = 'RPM'
+\end{lstlisting}
+
+\noindent\textbf{Output.} which of the manual control modes the machine is in.
+
+
+\paragraph{What the modes are}
+The hardware half includes a small interactive console for testing, and this says what it is currently doing: turning the motors at a set speed, drawing a test circle, running a G-code file, or homing. The main loop reads it each pass and acts accordingly.
+
+
+\paragraph{Why a mode variable rather than separate loops}
+A single loop that consults a mode can be interrupted and redirected from the keyboard thread at any moment, because the thread only has to change one variable. Separate loops per mode would each need their own mechanism for being told to stop, and switching between them would mean leaving one loop and entering another, during which the motors would be in an undefined state.
+
+
+\begin{quote}\small\itshape The whole manual console exists for bringing the machine up and diagnosing it, not for drawing. A drawing job is run by RunGcodeFile, which does not consult the mode at all.\end{quote}
+
+\section{targetRpm}
+\begin{lstlisting}[style=sig]
+targetRpm = 0.0
+\end{lstlisting}
+
+\noindent\textbf{Output.} 0.0, the wanted motor speed in revolutions per minute.
+
+
+\paragraph{Why the initial value matters}
+The code comment is explicit that this must start at zero, and the reason is a real hazard rather than tidiness. The main loop begins stepping as soon as it starts, at whatever speed this says. A non-zero initial value would move the gantry the instant the program ran, before the operator had asked for anything and quite possibly before homing, so the machine would drive from an unknown position toward an unknown one.
+
+A device that moves on startup is a genuine safety problem, and the general principle is that a machine's initial state should be the one in which it does nothing. The same reasoning sets the step pins inactive and the pen motor off when the pins are first claimed.
+
+
+\section{stepDelayS}
+\begin{lstlisting}[style=sig]
+stepDelayS = 0.0
+\end{lstlisting}
+
+\noindent\textbf{Output.} 0.0, the pause between step pulses derived from the wanted speed.
+
+
+\paragraph{What it is}
+The delay the main loop waits between step edges, computed from the requested speed by CalculateDelay. A value of zero means stopped, which is consistent with the initial speed of zero.
+
+
+\begin{quote}\small\itshape A delay and a speed are inversely related, so this variable and targetRpm hold the same information in two forms. The derived form is cached because it is needed in the innermost loop, where recomputing a division per step would be wasteful. The hazard of a cached derivative is that the two can disagree, which is why the only function that sets the speed also sets this.\end{quote}
+
+\section{running}
+\begin{lstlisting}[style=sig]
+running = True
+\end{lstlisting}
+
+\noindent\textbf{Output.} true while the main loop should continue.
+
+
+\paragraph{How a thread is asked to stop}
+The main loop tests this each pass and exits when it becomes false, which the keyboard thread sets on a quit command. This is a \textbf{cooperative shutdown}: the loop is asked to stop and does so at a point of its own choosing, rather than being terminated from outside.
+
+
+\paragraph{Why that matters for a machine}
+Terminating a thread part way through a step pulse would leave a step pin high, so the driver would hold the coil energised indefinitely, heating the motor. Letting the loop finish its current iteration guarantees every pulse completes and the shutdown path can then set the pins to a safe state and release them. For software a forced stop is usually recoverable; for a machine holding a physical state it is not.
+
+
+\section{CurrentXSteps}
+\begin{lstlisting}[style=sig]
+CurrentXSteps = 0
+\end{lstlisting}
+
+\noindent\textbf{Output.} 0, the X axis position in steps from the homing reference.
+
+
+\paragraph{Why the position is tracked in software}
+This is the machine's only knowledge of where it is. A stepper motor has no position feedback: it moves when pulsed and reports nothing. So the position is maintained by counting, incremented or decremented on every single step issued by every motion routine.
+
+
+\paragraph{What that implies, and why it is accepted}
+The count is the position only as long as every pulse produced a real step. A motor that stalls, from an obstruction or an over-fast acceleration, skips steps that were counted, and the recorded position silently becomes wrong by that amount with no way to detect it. This is \textbf{open-loop} control, and it is universal in low-cost motion systems because closing the loop requires an encoder on every axis.
+
+What makes it workable is that the error does not accumulate unnoticed indefinitely: homing re-establishes the position from a physical reference, and the limit switches catch the case where the error is large enough to drive into a limit. Within one drawing, the loads are light and the feeds modest, so stalling is unlikely.
+
+
+\begin{quote}\small\itshape A step count is an integer, so counting cannot accumulate rounding error the way tracking a position in millimetres would. That is the reason the count is kept in steps and converted to millimetres only when a coordinate is needed.\end{quote}
+
+\section{CurrentYSteps}
+\begin{lstlisting}[style=sig]
+CurrentYSteps = 0
+\end{lstlisting}
+
+\noindent\textbf{Output.} 0, the Y axis position in steps.
+
+
+\paragraph{Why the axes are counted separately}
+Each axis has its own motor, its own switches and its own calibrated scaling, so each needs its own count. Keeping them separate also means the two can be converted with different steps-per-millimetre figures, which they must be: the calibration measures each axis independently and the two differ slightly even with identical gearing.
+
+
+\section{theta}
+\begin{lstlisting}[style=sig]
+theta = 0.0
+\end{lstlisting}
+
+\noindent\textbf{Output.} 0.0, the current angle of the test circle in radians.
+
+
+\paragraph{What it is for}
+The circle test mode advances this angle a little each pass and moves to the corresponding point on the circle, so the carriage traces a continuous circle. It persists between loop passes because the position must continue from where it reached, not restart.
+
+
+\begin{quote}\small\itshape This is a convenience for mechanical testing rather than part of drawing. A circle run continuously is the most useful single test pattern for a gantry, since it exercises both axes in constantly varying proportion and makes axis mismatch and belt backlash visible as a distorted shape.\end{quote}
+
+\section{LastCircleTime}
+\begin{lstlisting}[style=sig]
+LastCircleTime = time.perf_counter()
+\end{lstlisting}
+
+\noindent\textbf{Output.} the time the circle test last advanced.
+
+
+\paragraph{Why the time is recorded rather than the loop simply sleeping}
+The circle must advance at a steady rate, and the main loop does other work whose duration varies. Recording when the last advance happened and comparing against the current time lets the loop advance when enough time has elapsed, independently of how long the rest of the pass took. Sleeping for a fixed interval instead would make the real period the interval plus the work, so the circle's speed would depend on what else the loop was doing.
+
+A high-resolution performance counter is used rather than wall-clock time, because it is monotonic: it cannot jump backwards if the system clock is adjusted, which would make an elapsed-time comparison give a negative result.
+
+
+\section{CircleIntervalS}
+\begin{lstlisting}[style=sig]
+CircleIntervalS = 0.0015
+\end{lstlisting}
+
+\noindent\textbf{Output.} 0.0015, how often the test circle advances, in seconds.
+
+
+\paragraph{What it sets}
+The interval between successive points of the circle, which together with the angular step sets how fast the circle is traced. At 1.5 milliseconds the motion appears continuous.
+
+
+\section{CircleRadiusMm}
+\begin{lstlisting}[style=sig]
+CircleRadiusMm = DEFAULT_CIRCLE_RADIUS_MM
+\end{lstlisting}
+
+\noindent\textbf{Output.} the current test circle radius in millimetres.
+
+
+\paragraph{Why it is separate from the default}
+It starts from the default constant and can be changed from the keyboard during testing, so the current value and the default are distinct: the default is what the machine starts with and this is what it is doing now. Varying the radius during a test is useful because the faults a circle reveals show up differently at different sizes, backlash being most visible on a small circle and axis mismatch on a large one.
+
+
+\section{CircleRadiusSteps}
+\begin{lstlisting}[style=sig]
+CircleRadiusSteps = CircleRadiusMm * STEPS_PER_MM
+\end{lstlisting}
+
+\noindent\textbf{Output.} the same radius converted into steps.
+
+
+\paragraph{Why it is precomputed}
+The circle loop needs the radius in steps on every pass, and converting once avoids repeating the multiplication inside the motion loop.
+
+
+\begin{quote}\small\itshape The conversion uses the uncalibrated constant rather than the measured scaling, so a circle drawn after calibration is slightly the wrong size. For a mechanical test pattern that does not matter, since what is being looked at is the shape rather than the dimensions, but it is the same duplication hazard noted under STEPS\_PER\_MM.\end{quote}
+
+\section{estopped}
+\begin{lstlisting}[style=sig]
+estopped = False
+\end{lstlisting}
+
+\noindent\textbf{Output.} false, becoming true once an emergency stop has fired.
+
+
+\paragraph{What it enforces}
+Once an emergency stop has happened, this stays set until someone clears it from the console. Every motion path checks it, so nothing moves in the meantime.
+
+
+\paragraph{Why the stop latches instead of clearing itself}
+This is the important property. After the retract, the switch is no longer pressed, so a test that only looked at the switches would conclude all was well and allow motion to resume. But the reason the switch tripped has not been addressed: the coordinate was wrong, or the belt slipped, or the work is not where it was thought to be. Resuming would drive into the same limit again.
+
+A \textbf{latching} fault requires a human to acknowledge it, which is the standard arrangement for a machine's emergency stop and for the same reason: the stop indicates that the machine's idea of the world is wrong, and only a person can establish whether it is right again.
+
+
+\section{TrippedSwitch}
+\begin{lstlisting}[style=sig]
+TrippedSwitch = None
+\end{lstlisting}
+
+\noindent\textbf{Output.} which switch caused the emergency stop, or nothing.
+
+
+\paragraph{Why the identity is kept}
+Knowing that a stop occurred is not enough to act on it. Which switch tripped says which axis and which end, which tells the retract which way to move and tells the operator where to look. The message printed on a stop names the switch for exactly that reason.
+
+
+\section{Connect}
+\begin{lstlisting}[style=sig]
+def Connect()
+\end{lstlisting}
+
+\noindent\textbf{Output.} nothing; it claims the GPIO lines or raises if it cannot.
+
+
+\paragraph{What it does}
+Requests every pin the machine uses from the GPIO chip in a single call, declaring each as an input or an output and giving each output its initial level.
+
+
+\paragraph{Why all the pins are requested at once}
+One request for the whole set is better than ten separate ones. It is atomic: either every pin is obtained or none is, so the module cannot end up holding half the pins it needs, with some motion possible and some not. And it establishes every initial level in the same operation, so there is no window during which some outputs are configured and others are floating.
+
+
+\paragraph{The initial levels, and why they are what they are}
+
+\begin{itemize}\setlength\itemsep{0pt}
+  \item \textbf{Step pins inactive.} A step is a transition, so holding them low means no step is in progress and none is commanded.
+  \item \textbf{Pen motor inactive.} The actuator is off, so the pen stays wherever it is rather than beginning to turn.
+  \item \textbf{Direction pins active.} The level is arbitrary, since every motion sets the direction before stepping, and a direction pin by itself causes no movement.
+  \item \textbf{Every switch an input.} Driving a switch line as an output would fight the switch and could damage the pin.
+\end{itemize}
+The common thread is that the initial state must be one in which nothing moves, which is the same principle that puts the initial speed at zero.
+
+
+\paragraph{Why failure is translated}
+Any failure to open the chip is caught and re-raised as the module's own not-connected error, with the original attached. The handle is set back to nothing first, so a failed connection does not leave the module believing it is connected. Translating the error lets a caller distinguish an absent machine, which is expected on a laptop, from a fault on a machine that is present, without having to know what the GPIO library raises.
+
+
+\begin{quote}\small\itshape Calling it twice returns immediately rather than requesting the lines again, which would fail since the lines are held exclusively by this same process. Making repeat calls harmless lets every entry point call it without tracking whether someone else already has.\end{quote}
+
+\section{Disconnect}
+\begin{lstlisting}[style=sig]
+def Disconnect()
+\end{lstlisting}
+
+\noindent\textbf{Output.} nothing; it sets the outputs safe and releases the lines.
+
+
+\paragraph{The order of operations}
+The step pins and the pen motor are set inactive first, and only then are the lines released. The order is necessary: once a line is released, its level is no longer controlled, and a line released while active may stay active. Releasing a step pin while high would leave the driver holding a coil energised, which heats the motor with nothing running to notice.
+
+
+\paragraph{Why the release is in a finally clause}
+The setting of safe levels is wrapped so that the release happens whether or not it succeeded. If a pin cannot be set, because the chip has gone away or the device was unplugged, the lines must still be released, or they stay claimed by a process that has exited and the next run cannot acquire them. Releasing a resource must not depend on the success of the tidying done before it.
+
+
+\section{IsConnected}
+\begin{lstlisting}[style=sig]
+def IsConnected()
+\end{lstlisting}
+
+\noindent\textbf{Output.} whether the GPIO lines are currently claimed.
+
+
+\paragraph{What it is for}
+Tests whether the handle exists. Callers use it to report the machine's availability without attempting an operation that would raise, which is what a user interface needs: it must say whether the machine is there, not find out by trying to move it.
+
+
+\section{CalculateDelay}
+\begin{lstlisting}[style=sig]
+def CalculateDelay(rpm)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{rpm}] \normalfont the wanted motor speed in revolutions per minute
+\end{description}
+
+\noindent\textbf{Output.} nothing; it sets the module's step delay.
+
+
+\paragraph{The conversion}
+
+\begin{equation}
+t_{\mathrm{delay}} \;=\; \frac{1}{2} \cdot \frac{60}{|\mathrm{rpm}| \cdot \mathrm{stepsPerRev}}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$t_{\mathrm{delay}}$}] \normalfont the pause between step pin edges, in seconds
+  \item[{$\mathrm{rpm}$}] \normalfont the wanted speed in revolutions per minute
+  \item[{$\mathrm{stepsPerRev}$}] \normalfont microsteps per revolution, 3200 here
+  \item[{$60$}] \normalfont seconds per minute, converting the speed into revolutions per second
+  \item[{$\tfrac{1}{2}$}] \normalfont the halving, explained below
+\end{description}
+Read it from the inside out. The speed in revolutions per minute divided by 60 is revolutions per second; multiplied by the steps per revolution it is steps per second; its reciprocal is seconds per step. That is the time one whole step must occupy.
+
+
+\paragraph{Why the result is halved}
+A step is produced by two transitions: the pin goes high, waits, goes low, waits. So the delay is used twice per step, and each wait must be half the step period for the step to take the time intended. Omitting the halving would run the motor at half the requested speed, which is the kind of error that looks like a mechanical problem.
+
+
+\paragraph{The dead band at low speeds}
+A requested speed below 0.1 revolutions per minute sets the delay to zero, meaning stopped. Without it, a speed approaching zero gives a delay approaching infinity, and the loop would wait essentially forever between steps with no way to interrupt it. Treating a very small speed as stopped is both what the operator means and the only behaviour that remains controllable.
+
+
+\section{TriggeredEndstop}
+\begin{lstlisting}[style=sig]
+def TriggeredEndstop(ignore=frozenset())
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{ignore}] \normalfont switch names to disregard
+\end{description}
+
+\noindent\textbf{Output.} the name of a switch confirmed to be pressed, or nothing.
+
+
+\paragraph{What it is for}
+The safety check, called before essentially every step of every motion. It reads each switch and returns the name of the first confirmed to be pressed.
+
+
+\paragraph{How the debounce is arranged}
+A switch reading open is dismissed immediately. One reading closed is then sampled twice more, spaced by the debounce delay, and is believed only if all three agree. The reasoning behind the spacing and the count is given under ENDSTOP\_DEBOUNCE\_S and ENDSTOP\_CONFIRM\_SAMPLES.
+
+
+\paragraph{Why the asymmetry is what makes this affordable}
+This function runs before every step pulse, so its cost is multiplied by the tens of thousands of steps in a drawing. The early dismissal is what keeps that cost down: in the normal case every switch reads open and the function performs four pin reads and returns, with no delays at all. The twelve milliseconds of confirmation are spent only when a switch actually reads closed, which happens once per job at most.
+
+
+\paragraph{Why some switches can be ignored}
+The ignore set exists because there are legitimate situations in which a switch is pressed and should not stop the machine. Retracting off a switch necessarily begins with that switch pressed, and homing one axis may hold a switch while the other axis is moved. Without the ability to disregard a named switch, the only remedy would be to omit the safety check entirely during those operations, which would remove it exactly where the machine is deliberately being driven against its limits.
+
+
+\begin{quote}\small\itshape The check returns at the first switch it confirms rather than examining all four. For stopping that is sufficient, since one tripped switch is reason enough. The separate \_AllTriggeredEndstops exists for the emergency stop, which does need the full list so that it can retract off every one of them.\end{quote}
+
+\section{\_AllTriggeredEndstops}
+\begin{lstlisting}[style=sig]
+def _AllTriggeredEndstops()
+\end{lstlisting}
+
+\noindent\textbf{Output.} a list of every switch currently confirmed as pressed.
+
+
+\paragraph{Why a complete list is needed}
+An emergency stop must retract off every pressed switch, not just the one that was noticed first. Two can be pressed at once: a carriage driven into a corner reaches an X and a Y limit together, and retracting off only one leaves the machine still held against the other, so the next motion check still finds a tripped switch and nothing can move.
+
+
+\paragraph{How it is built from the single check}
+Each switch is tested by calling the single check with every \emph{other} switch in the ignore set, so the answer concerns that switch alone. It is a roundabout construction, but it reuses the debounce logic rather than duplicating it, which matters for a safety check: two implementations of a debounce could diverge, and the one in the rarely exercised path is the one that would not be noticed.
+
+
+\section{AxisDirValue}
+\begin{lstlisting}[style=sig]
+def AxisDirValue(invert, positive)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{invert}] \normalfont whether this axis's direction signal is reversed
+  \item[{positive}] \normalfont whether the wanted motion is in the positive direction
+\end{description}
+
+\noindent\textbf{Output.} the level to set on the direction pin.
+
+
+\paragraph{What it resolves}
+Turns a wanted direction into a pin level, accounting for the axis's wiring inversion. It is the single place the inversion is applied, so every motion routine inherits it by asking for a direction by meaning rather than by level.
+
+
+\begin{equation}
+\mathrm{forward} \;=\; \mathrm{positive} \;\oplus\; \mathrm{invert}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{forward}$}] \normalfont whether the direction pin should be driven active
+  \item[{$\mathrm{positive}$}] \normalfont whether the wanted motion is toward increasing coordinates
+  \item[{$\mathrm{invert}$}] \normalfont this axis's wiring inversion flag
+  \item[{$\oplus$}] \normalfont \textbf{exclusive or}: true when exactly one of the two is true
+\end{description}
+Exclusive or is exactly the right operation, and it is worth checking the four cases. Wanting positive motion on an uninverted axis drives the pin active; wanting negative on the same axis drives it inactive. On an inverted axis both answers swap. So the output is active when the two inputs disagree, which is what exclusive or computes. Written as nested conditions it would be four branches that must each be right; as an exclusive or it is one expression that cannot be half correct.
+
+
+\section{\_RetractOffSwitch}
+\begin{lstlisting}[style=sig]
+def _RetractOffSwitch(hit, ignore=frozenset())
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{hit}] \normalfont the name of the pressed switch
+  \item[{ignore}] \normalfont other switches to disregard while retracting
+\end{description}
+
+\noindent\textbf{Output.} nothing; it steps the axis clear and updates the position count.
+
+
+\paragraph{What it does}
+Steps the affected axis away from the switch by the retract distance, at homing speed, updating the step count as it goes. The direction comes from the retreat table and the axis and pins from the switch's name.
+
+
+\paragraph{Why it watches the other switches}
+Each step checks for any switch other than the one being escaped and the ones explicitly ignored, and stops if one trips. The code comment calls that a real fault, and it is: moving away from one limit should not approach another, so if it does, the machine's geometry is not what is believed, perhaps because a switch is stuck closed or an axis is shorter than its recorded travel. Continuing to drive would push against a second limit.
+
+
+\paragraph{Why the position count is updated}
+The retract moves the carriage, so the recorded position must follow, or every subsequent absolute move is out by the retract distance. The count is accumulated during the loop and applied to the right axis afterwards, which also means a retract cut short by another switch updates by the distance actually travelled rather than the distance intended.
+
+
+\begin{quote}\small\itshape Retracting at homing speed rather than drawing speed is deliberate. The machine is at a limit, in a state it was not supposed to reach, and the geometry is not trusted. Moving slowly means the other-switch check has time to act before much further travel occurs.\end{quote}
+
+\section{\_TriggerEmergencyStop}
+\begin{lstlisting}[style=sig]
+def _TriggerEmergencyStop(hit)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{hit}] \normalfont the switch that caused the stop
+\end{description}
+
+\noindent\textbf{Output.} nothing; it stops the drive, retracts and latches the fault.
+
+
+\paragraph{The sequence, and why it is in this order}
+
+\begin{itemize}\setlength\itemsep{0pt}
+  \item \textbf{Latch the fault first,} before anything else. Setting the flag and recording the switch immediately means that any other code checking it from this point on sees the stop, including the retract that follows.
+  \item \textbf{Set the step pins inactive.} This ends any pulse in progress so no coil is left energised mid-step.
+  \item \textbf{Find every pressed switch,} since more than one may be.
+  \item \textbf{Retract off each of them,} so the machine is clear of its limits and able to move again once the fault is cleared.
+  \item \textbf{Report,} naming the switches and the retract distance.
+\end{itemize}
+
+\paragraph{Why re-entry is refused}
+The function returns immediately if the fault is already latched. Without that, a second switch tripping during the retract would trigger another stop, which would retract again, which could trip again, and the recursion would continue until the program ran out of stack. The guard makes the stop happen once and the retract complete, which is the behaviour wanted: the first stop has already established that the machine is to halt, and a second detection adds nothing.
+
+
+\paragraph{Why the pen is raised}
+Raising the pen is part of stopping, not a courtesy. A pen left down during an abort rests on the paper at the point of failure, where the ink bleeds into a visible blot, and if the machine is subsequently moved by hand it drags a line across the drawing. The drawing is already spoiled by the abort; the object is to avoid spoiling it further.
+
+
+\section{BresenhamMove}
+\begin{lstlisting}[style=sig]
+def BresenhamMove(dx, dy, stepDelayS=CIRCLE_STEP_DELAY_S)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{dx}] \normalfont the X displacement in steps
+  \item[{dy}] \normalfont the Y displacement in steps
+  \item[{stepDelayS}] \normalfont the pause between step edges
+\end{description}
+
+\noindent\textbf{Output.} nothing; it steps both motors so the carriage travels in a straight line.
+
+
+\paragraph{The problem}
+Two motors must move together so that the carriage travels along a straight line from one point to another. Each can only take whole steps, so the path is necessarily a staircase; the task is to arrange the staircase so that it stays as close to the true line as whole steps permit. A move of 300 steps in X and 100 in Y must take one Y step for every three X steps, spread evenly, not all 100 at the start.
+
+
+\paragraph{The naive approach, and why it is avoided}
+The obvious method computes, for each X step, the exact Y position on the line and rounds it. That requires a floating-point multiplication and a rounding per step, and this loop runs for every one of tens of thousands of steps in a drawing. It also accumulates rounding error, since the exact position is recomputed from a division that is not exact.
+
+
+\paragraph{Bresenham's method}
+The algorithm \cite{bresenham1965} keeps a running error term instead, representing how far the minor axis has fallen behind the ideal line, and uses only integer addition and comparison.
+
+
+\begin{equation}
+\begin{aligned} e &\leftarrow \lfloor a_x / 2 \rfloor \\[3pt] \text{for each major step:} \quad e &\leftarrow e - a_y \\[3pt] \text{if } e < 0: \quad &\text{step the minor axis, } \; e \leftarrow e + a_x \end{aligned}
+\end{equation}
+\noindent\emph{Source: }\cite{bresenham1965}
+
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$e$}] \normalfont the error term: how far the minor axis is behind
+  \item[{$a_x$}] \normalfont the major axis displacement in steps, taken as positive
+  \item[{$a_y$}] \normalfont the minor axis displacement, positive
+  \item[{$\lfloor a_x/2 \rfloor$}] \normalfont the starting value, which centres the error so the first minor step falls half-way through the first run rather than at its start
+\end{description}
+The reasoning is a scaled comparison. The true slope is the minor displacement over the major, and testing whether the accumulated fraction has passed a half-step would need division. Multiplying the whole test through by the major displacement removes the division: subtracting the minor displacement each major step accumulates the same quantity scaled up, and comparing against zero is the same test as comparing the unscaled fraction against its threshold. Adding the major displacement back when the minor axis steps is the scaled equivalent of subtracting one whole step.
+
+So the loop contains one subtraction, one comparison and occasionally one addition, all on integers. There is no division, no floating point and no accumulated rounding error: the error term is exact at every step, so the path is the closest staircase to the true line by construction rather than by approximation.
+
+
+\paragraph{Why the major axis is chosen first}
+The loop runs over whichever axis has the greater displacement, with the other as the minor. That is necessary rather than cosmetic: the minor axis steps at most once per major step, so if the shorter axis were driven as the major the longer one could not keep up and the line would come out at the wrong angle. The two branches of the code are mirror images, differing only in which pin is pulsed and which count is updated.
+
+
+\paragraph{The safety check inside the loop}
+Every iteration checks the endstops and returns immediately if one has tripped. Returning part way leaves the move incomplete and the carriage somewhere along the line, which is why the step counts are updated as the loop proceeds rather than at the end: the recorded position is correct for where the carriage actually stopped, not for where it was told to go.
+
+
+\begin{quote}\small\itshape Bresenham's algorithm was published for drawing lines on raster displays, where the problem is identical: choose which pixels best approximate a straight line between two points. A stepper gantry is the same problem with the pixels replaced by step positions, which is why an algorithm from computer graphics is the standard solution for motion control.\end{quote}
+
+\section{PenIsUp}
+\begin{lstlisting}[style=sig]
+def PenIsUp()
+\end{lstlisting}
+
+\noindent\textbf{Output.} whether the pen switch currently reads as up.
+
+
+\paragraph{What it is for}
+Reads the pen position switch. This is the capability the written G-code file lacks: the machine can ask where the pen is, so it never has to assume.
+
+
+\begin{quote}\small\itshape The read is not debounced, unlike the endstop check. That is acceptable because of how it is used: SetPen polls it repeatedly in a loop while the motor runs, so a single spurious reading advances the loop by one iteration and the next reading corrects it. A spurious endstop reading, by contrast, aborts the whole job, which is why that one is confirmed and this one is not.\end{quote}
+
+\section{SetPen}
+\begin{lstlisting}[style=sig]
+def SetPen(targetUp, timeoutS=3.0)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{targetUp}] \normalfont the pen position wanted
+  \item[{timeoutS}] \normalfont how long to wait for confirmation, default 3 seconds
+\end{description}
+
+\noindent\textbf{Output.} true if the pen reached the wanted position, false otherwise.
+
+
+\paragraph{The closed loop}
+The motor is started, the switch is polled until it reports the wanted position or the timeout expires, and the motor is stopped. This is \textbf{closed-loop} control: the action continues until the measurement confirms the result, in contrast with the written file's timed dwell, which commands a pulse and assumes it worked.
+
+
+\paragraph{Why it checks the position first}
+If the pen already reads as being where it is wanted, the function returns immediately without running the motor. The code comment is emphatic, and the reason is the one-way actuator: running it when the pen is already correct turns the cam a further quarter turn and moves the pen to the wrong position. For a toggle, a redundant command is not merely wasteful but actively wrong.
+
+
+\paragraph{Why it refuses while an endstop is tripped}
+A pen move is declined outright if any limit switch is pressed. The machine is in a fault state, the pen motor draws current from the same supply as the steppers, and moving the pen does nothing to resolve the fault. Refusing keeps the machine still until the fault has been dealt with, which is what a latched stop is for.
+
+
+\paragraph{Why a timeout, and what its expiry means}
+If the switch never reports the wanted position within three seconds, the motor is stopped and the function reports failure. A toggle takes about a third of a second, so three seconds is ample and its expiry means something is mechanically wrong: the motor is not turning, the switch is disconnected, or the linkage has broken. Without a timeout the motor would run indefinitely, turning the cam round and round and overheating. Reporting the failure lets the caller abort rather than continuing to draw with a pen in an unknown position.
+
+
+\paragraph{The overrun}
+On a successful raise the motor runs a further 40 milliseconds past the switch trip, for the reason given under PEN\_UP\_OVERRUN\_S: stopping exactly on the trip point leaves the cam where backlash or vibration can drop the pen onto the page during a travel move.
+
+
+\section{\_StepAxis}
+\begin{lstlisting}[style=sig]
+def _StepAxis(stepPin, dirPin, dirValue, stopWhen, ignore=frozenset())
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{stepPin}] \normalfont the step pin for this axis
+  \item[{dirPin}] \normalfont its direction pin
+  \item[{dirValue}] \normalfont the level to drive the direction pin at
+  \item[{stopWhen}] \normalfont a test saying which switch is the expected one
+  \item[{ignore}] \normalfont switches to disregard
+\end{description}
+
+\noindent\textbf{Output.} the switch that stopped the motion and how many steps were taken.
+
+
+\paragraph{What it is for}
+Drives one axis in one direction until a switch stops it, counting the steps. It is the primitive the homing and calibration are built from, and the step count it returns is the measurement that calibration converts into steps per millimetre.
+
+
+\paragraph{Why the stopping condition is a test rather than a name}
+The caller supplies a function saying which switch is the expected one, rather than naming it. That is necessary because homing begins without knowing which end of the axis it will reach: the carriage may be anywhere, so driving in one direction may bring it to either switch. The first call accepts either, and the second accepts only the opposite one.
+
+
+\paragraph{Why an unexpected switch is an error rather than a stop}
+A switch that trips which is not the expected one raises an error naming the wiring, rather than being treated as a normal stop. The distinction matters because the step count is about to be used as a measurement: stopping on the wrong switch means the count does not measure what it is believed to, and a calibration built on it would scale every subsequent move wrongly. A measurement known to be invalid should fail rather than be used.
+
+
+\paragraph{Why the step limit is also an error}
+Exceeding the step bound raises an error too. A correctly functioning machine reaches a switch in a fraction of that distance, so the bound being reached means no switch is going to trip, which is the disconnected-wiring case. Again the appropriate response is to stop and say so, since there is no sensible way to proceed without a reference position.
+
+
+\section{\_CalibrateAxis}
+\begin{lstlisting}[style=sig]
+def _CalibrateAxis(stepPin, dirPin, minName, maxName, OtherAxisNames=frozenset())
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{stepPin}] \normalfont the step pin
+  \item[{dirPin}] \normalfont the direction pin
+  \item[{minName}] \normalfont the minimum switch's name
+  \item[{maxName}] \normalfont the maximum switch's name
+  \item[{OtherAxisNames}] \normalfont the other axis's switches, to disregard
+\end{description}
+
+\noindent\textbf{Output.} the first switch reached, the second, and the steps measured between them.
+
+
+\paragraph{The measurement}
+The axis is driven in one direction until either switch trips, then reversed until the opposite one does, counting the steps of the second move. That count is the full travel of the axis in steps, which divided by the known travel in millimetres gives the steps per millimetre.
+
+
+\paragraph{Why the count comes from the second move}
+The first move starts from wherever the carriage happened to be and ends at a switch, so its length is arbitrary and carries no information. The second starts at a known position, one switch, and ends at another known position, the other switch, so its length is the distance between two physical references. Only a move between two known points measures anything.
+
+
+\paragraph{Why the first switch is ignored during the reverse}
+The reverse move begins with the first switch still pressed, since the carriage is resting against it, and it stays pressed for the first few steps until the lever releases. The code comment calls this release lag and notes it is not a fault. Without adding that switch to the ignore set, the reverse move would immediately detect it, decide it was unexpected, and raise an error on every calibration.
+
+
+\paragraph{Why the other axis is ignored throughout}
+The other axis may be resting against one of its own limits while this one is being calibrated, which is a perfectly normal state and nothing to do with this axis's motion. Ignoring its switches lets each axis be calibrated regardless of where the other happens to be parked.
+
+
+\section{Calibrate}
+\begin{lstlisting}[style=sig]
+def Calibrate()
+\end{lstlisting}
+
+\noindent\textbf{Output.} a copy of the calibration record: the measured scaling for both axes and the usable area.
+
+
+\paragraph{What it establishes}
+Two things the machine cannot otherwise know: where it is, and how far a step moves it. Both come from driving to physical references, since the motors report neither.
+
+
+\paragraph{The sequence}
+
+\begin{itemize}\setlength\itemsep{0pt}
+  \item \textbf{Refuse if a switch is already pressed.} Calibration drives until a switch trips, so starting against one makes the first move meaningless.
+  \item \textbf{Measure the X axis} between its two switches, and set its steps per millimetre from the count.
+  \item \textbf{Retract off the switch} it finished against, so it is clear of its limit.
+  \item \textbf{Measure the Y axis} the same way, ignoring the X switches.
+  \item \textbf{Retract} again, record the usable area, and park at the safe corner.
+\end{itemize}
+
+\paragraph{Where the position count comes from}
+After each axis, the step count is set to the full travel if the axis finished at its maximum switch, and to zero if at its minimum. That is the whole point of homing: the carriage is at a switch, the switch is at a known place, so the count can be set rather than guessed. Every subsequent absolute move is measured from it.
+
+
+\paragraph{The usable area and the switch-travel allowance}
+
+\begin{equation}
+\mathrm{usable} \;=\; \mathrm{switchTravel} \;-\; 2 \cdot \mathrm{edgeTolerance}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{usable}$}] \normalfont the area the machine will address, per axis
+  \item[{$\mathrm{switchTravel}$}] \normalfont the hand-measured distance between the two switches
+  \item[{$\mathrm{edgeTolerance}$}] \normalfont the margin kept clear at each end
+\end{description}
+The usable area is deliberately smaller than the measured travel, for the reasons given under EDGE\_TOLERANCE\_MM. The coordinate origin is placed at the margin's distance in from the minimum switches, so a commanded zero is a position the machine is allowed to occupy rather than the switch itself.
+
+
+\paragraph{Why it parks at the end}
+Calibration finishes with a move to the origin of the usable area. That leaves the machine at a known, legal position, clear of every switch, which is what a drawing job expects to start from. Finishing while resting against a limit would mean the first motion check of the next job found a tripped switch.
+
+
+\section{ParseGcodeLine}
+\begin{lstlisting}[style=sig]
+def ParseGcodeLine(raw)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{raw}] \normalfont one line of a G-code file
+\end{description}
+
+\noindent\textbf{Output.} the command and its parameters, or nothing for a line with no command.
+
+
+\paragraph{What it does}
+Strips comments, splits the line into words, takes the first G or M word as the command, and collects the rest as parameters keyed by their letters.
+
+
+\paragraph{The two comment conventions}
+G-code has two: a semicolon makes the rest of the line a comment, and text in parentheses is a comment wherever it appears, including in the middle of a line. Both are handled, the first by truncating at the semicolon and the second by removing every parenthesised span. Handling only the first would leave comment text to be parsed as words, and a comment containing a letter followed by a digit would be read as a parameter.
+
+
+\paragraph{Why the first G or M word becomes the command}
+A line has one command and any number of parameters, and the command is identified by being a G or M word. Taking the first such word rather than the first word generally is what lets a line with a leading line number be parsed, and the test that the command slot is still empty is what stops a later G word being mistaken for a second command.
+
+
+\begin{quote}\small\itshape The command's number is converted to an integer while parameters stay as floating point. That is correct for each: G1 and G01 denote the same command, so an integer normalises them, while a coordinate of 12.5 must keep its fraction.\end{quote}
+
+\section{\_ClampToUsableArea}
+\begin{lstlisting}[style=sig]
+def _ClampToUsableArea(xMm, yMm)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{xMm}] \normalfont the target X coordinate
+  \item[{yMm}] \normalfont the target Y coordinate
+\end{description}
+
+\noindent\textbf{Output.} the coordinates forced inside the homed usable area.
+
+
+\paragraph{Why the machine clamps as well as the writer}
+The G-code writer already clamps to the configured bounds. This clamps again, against the \emph{measured} usable area, and the two are not the same check. The writer's bounds are configuration, stated in advance; this one is what calibration actually found, which may be smaller, and it applies to any file whatever its origin, including a hand-written one or one from another program.
+
+The principle is that the machine must protect itself rather than trusting its input. A clamp at the point of motion is the last line of defence and the only one that cannot be bypassed by using a different generator.
+
+
+\paragraph{Why it prints when it acts}
+A clamp that fires means the file asked for something outside the machine, so the drawing will be wrong: strokes are flattened against the boundary. Printing the original and clamped coordinates makes that visible while the job runs, so the operator can stop it rather than discovering afterwards that part of the drawing is a straight line along one edge.
+
+
+\section{\_GcodeLinearMove}
+\begin{lstlisting}[style=sig]
+def _GcodeLinearMove(targetXMm, targetYMm, feedMmMin)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{targetXMm}] \normalfont the destination X coordinate
+  \item[{targetYMm}] \normalfont the destination Y
+  \item[{feedMmMin}] \normalfont the feed rate in millimetres per minute
+\end{description}
+
+\noindent\textbf{Output.} nothing; it moves the carriage there at that rate.
+
+
+\paragraph{What it does}
+Converts a destination in millimetres into a step displacement, works out the step timing from the feed rate, and hands the move to the Bresenham stepper.
+
+
+\paragraph{The coordinate conversion}
+
+\begin{equation}
+\mathrm{targetSteps}_X \;=\; \mathrm{round}\big( (x_{\mathrm{mm}} + \mathrm{edgeTol}) \cdot \mathrm{stepsPerMm}_X \big)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{targetSteps}_X$}] \normalfont the absolute step position wanted
+  \item[{$x_{\mathrm{mm}}$}] \normalfont the commanded coordinate
+  \item[{$\mathrm{edgeTol}$}] \normalfont the margin, added because a commanded zero sits that far in from the minimum switch
+  \item[{$\mathrm{stepsPerMm}_X$}] \normalfont the calibrated scaling for this axis
+\end{description}
+The margin must be added here and subtracted when the current position is read back, and the two must agree. If one applied the offset and the other did not, every move would be out by the margin, and because both appear in the same function the error would be a constant five-millimetre shift of the whole drawing.
+
+
+\paragraph{The step timing}
+
+\begin{equation}
+t_{\mathrm{step}} \;=\; \max\!\left( \frac{d_{\mathrm{mm}} / v}{\mathrm{majorSteps}},\; t_{\min} \right), \qquad v = \max\!\left(\frac{\mathrm{feed}}{60},\; v_{\min}\right)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$t_{\mathrm{step}}$}] \normalfont the delay between step edges
+  \item[{$d_{\mathrm{mm}}$}] \normalfont the straight-line distance of the move
+  \item[{$v$}] \normalfont the feed rate in millimetres per second
+  \item[{$\mathrm{majorSteps}$}] \normalfont the step count on the axis that moves furthest, which is how many loop iterations the move takes
+  \item[{$t_{\min}$}] \normalfont the minimum step delay
+  \item[{$v_{\min}$}] \normalfont the minimum feed, guarding against a zero feed rate
+  \item[{$60$}] \normalfont the conversion from per-minute to per-second
+\end{description}
+Dividing by the major axis step count rather than the total is correct because the Bresenham loop iterates once per major-axis step, taking a minor step inside some of those iterations. So the major count is the number of delays the move will actually contain, and dividing the intended duration by it gives the delay each must be.
+
+
+\begin{quote}\small\itshape No acceleration is applied: the move begins and ends at full speed. For a light gantry at these feeds that is tolerable, though it is the likeliest source of lost steps on a fast travel move, and it is why the configuration's acceleration field, which is never read, would be the first thing to implement.\end{quote}
+
+\section{\_GcodeArcMove}
+\begin{lstlisting}[style=sig]
+def _GcodeArcMove(x0Mm, y0Mm, x1Mm, y1Mm, iMm, jMm, clockwise, feedMmMin)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{x0Mm}] \normalfont the arc's start X
+  \item[{y0Mm}] \normalfont its start Y
+  \item[{x1Mm}] \normalfont its end X
+  \item[{y1Mm}] \normalfont its end Y
+  \item[{iMm}] \normalfont the centre's X offset from the start
+  \item[{jMm}] \normalfont the centre's Y offset from the start
+  \item[{clockwise}] \normalfont the direction of travel
+  \item[{feedMmMin}] \normalfont the feed rate
+\end{description}
+
+\noindent\textbf{Output.} nothing; it draws the arc as a sequence of short straight moves.
+
+
+\paragraph{Why arcs must be subdivided}
+The machine can only move in straight lines, because that is what the Bresenham stepper does. An arc is therefore approximated by a sequence of short chords. This is what every machine controller does; the only question is how short.
+
+
+\paragraph{How G-code specifies an arc}
+The command gives the end point and the \textbf{centre offset}, the vector from the start point to the centre, conventionally written as I and J. The radius is then the length of that offset, and the start and end angles follow from the two endpoints relative to the centre. Specifying the centre by offset rather than absolutely is the convention because it makes the command independent of where the arc sits.
+
+
+\paragraph{Forcing the sweep to go the right way}
+The two angles alone do not determine the arc: the same pair of endpoints can be joined by a short arc one way or a long one the other. The direction flag settles it, and the code enforces it by adjusting the end angle by whole turns until the sweep runs strictly the right way. For a clockwise arc the end angle is decreased until it is below the start; for anticlockwise, increased until above. Without that, an arc crossing the point where the angle measurement wraps would be traced the long way round, sweeping nearly a full circle instead of a small arc.
+
+
+\paragraph{How many chords}
+
+\begin{equation}
+n \;=\; \max\!\left(4,\; \left\lfloor \frac{|\Delta\theta| \cdot r}{0.4} \right\rfloor \right)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$n$}] \normalfont the number of straight segments the arc becomes
+  \item[{$|\Delta\theta|$}] \normalfont the angle swept, in radians
+  \item[{$r$}] \normalfont the arc's radius in millimetres
+  \item[{$0.4$}] \normalfont the target chord length in millimetres
+  \item[{$\max(4,\cdot)$}] \normalfont a floor, so even a tiny arc is drawn as a curve rather than a straight line
+\end{description}
+The numerator is the arc's length, since arc length is radius times angle in radians, so the expression is simply the arc length divided by the wanted chord length. Fixing the chord length rather than the number of segments is what makes the approximation uniformly good: a large arc gets proportionally more segments, so the deviation from the true curve is the same whatever the size.
+
+
+\paragraph{Why 0.4 millimetres}
+The relevant quantity is the \textbf{sagitta}, how far the chord departs from the arc at its midpoint, which for a short chord is approximately the chord length squared divided by eight times the radius. For a 0.4 mm chord on a 5 mm radius that is about 4 micrometres, far below the pen's line width and well below what the machine can position to. So the approximation is invisible, and making the chords shorter would add moves without changing the drawing.
+
+
+\begin{quote}\small\itshape Arcs are included for completeness of the G-code reader rather than because this project emits them: handwriting is written out as straight segments throughout. They matter because the reader is meant to run any ordinary G-code file, and arcs are among the commonest commands in files from other sources.\end{quote}
+
+\section{RunGcodeFile}
+\begin{lstlisting}[style=sig]
+def RunGcodeFile(path)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{path}] \normalfont the G-code file to execute
+\end{description}
+
+\noindent\textbf{Output.} nothing; it draws the file or aborts.
+
+
+\paragraph{What it does}
+Reads the file and executes it line by line, maintaining the current position, the feed rate and whether coordinates are absolute or relative, and carrying out each move.
+
+
+\paragraph{Why calibration is required first}
+The function refuses with a dedicated error if homing has not run. A file's coordinates are absolute positions on the bed, and an absolute position is meaningless until the machine knows where it is. Executing one anyway would drive from an unknown origin toward a position computed as though it were known.
+
+
+\paragraph{The safety check before every line}
+Each line begins by checking the endstops and the latched fault flag, and aborts on either. Checking per line as well as per step gives two different guarantees: the per-step check inside the stepper stops a move in progress, and this one stops the job rather than merely the move. Without it, a move cut short by a switch would be followed by the next line of the file being executed from the wrong position.
+
+The abort reports the line number. That is what makes a failure diagnosable: it says how far the drawing got and which command was being executed, so the file can be examined at that point rather than searched.
+
+
+\paragraph{Modal state}
+G-code is \textbf{modal}, meaning several settings persist until changed: the feed rate, absolute or relative coordinates, and the units. The interpreter must therefore carry that state across lines, which is why the feed and the absolute-mode flag are variables of the loop rather than parameters of each move. A line consisting only of coordinates inherits the feed set many lines earlier, which is how G-code files are normally written.
+
+
+\begin{quote}\small\itshape The starting position is read using the uncalibrated steps-per-millimetre constant rather than the measured value, so the position the job believes it starts from is slightly wrong even after calibration. Subsequent moves use the calibrated figure, so the error does not accumulate, but the first move of a job is displaced by the difference between the calculated and measured scaling.\end{quote}
+
+\section{WriteGcodeFile}
+\begin{lstlisting}[style=sig]
+def WriteGcodeFile(path)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{path}] \normalfont where to write
+\end{description}
+
+\noindent\textbf{Output.} nothing; it writes a small test file.
+
+
+\paragraph{What it is for}
+Emits a short G-code file for exercising the machine during bring-up, so the execution path can be tested without the synthesis half being involved. It is a diagnostic convenience, not part of drawing handwriting: a real drawing is written by WriteGcode from a trajectory.
+
+
+\section{InputListener}
+\begin{lstlisting}[style=sig]
+def InputListener()
+\end{lstlisting}
+
+\noindent\textbf{Output.} nothing; it runs the keyboard control loop until told to stop.
+
+
+\paragraph{What it is for}
+A console for operating the machine by hand: home it, run a file, set a speed, draw a test circle, clear a latched fault, quit. It is what the machine is brought up and diagnosed with.
+
+
+\paragraph{Why it runs in its own thread}
+Reading a line from the keyboard blocks until something is typed. If that happened in the main loop, the machine would stop stepping while waiting for input, so motion would proceed only while the operator was typing. Running the console in a separate thread lets it wait on the keyboard while the main loop continues to step the motors.
+
+
+\paragraph{How the two threads communicate}
+Entirely through the module-level state: the console sets the mode, the speed, the fault flag, and the loop reads them. There are no locks. That is sound here for a specific reason rather than by luck: every shared value is a single machine word, whose assignment cannot be observed half-complete, and each is written by only one of the two threads. Nothing requires two values to change together, which is the situation locks exist to protect.
+
+
+\paragraph{Why the thread is a daemon}
+A \textbf{daemon} thread does not keep the program alive: when the main thread finishes, the process exits whether or not the daemon is still running. That is wanted here because the console is blocked reading the keyboard most of the time, so if it had to finish before the program could exit, a quit command issued from anywhere else would hang until a further key was pressed.
+
+
+\begin{quote}\small\itshape The clear command for a latched fault is deliberately a manual action. It is the acknowledgement described under the latching flag: the machine stopped because its idea of the world was wrong, and only a person standing at it can establish that it is right again.\end{quote}

@@ -1,0 +1,135 @@
+%%
+%%  Department of Electrical, Electronic and Computer Engineering.
+%%  EPR400/2 Final Report - Preamble.
+%%  Copyright (C) 2011-2021 University of Pretoria.
+%%
+%%  NOTE ON THE DECLARATIONS BELOW.
+%%  Appendix 4 states that the texts of declarations 5 and 6 "must appear in the
+%%  report, modified to reflect the actual facts", and that the student must
+%%  "clearly indicate if any AI tools were used for any aspect of the work or
+%%  writing".  The template's default wording denies all AI and all library use.
+%%  That wording is NOT true of this project, so it has been replaced with a
+%%  factual disclosure.  The red blocks mark what only the student can confirm.
+%%
+
+This report describes work I completed in my final year project, designing and implementing a handwriting robot that recognises handwritten text and its writer and reproduces text on paper in a chosen writer's handwriting style.
+\\[2ex]
+% Included comment line to break spacing
+\textbf{\textit{1. Project proposal and technical documentation}} \newline
+This main report contains an unaltered copy of the approved Project Proposal (as Part 2 of the report).
+
+All the code that I developed appears as a separate submission on the AMS.
+
+\textbf{\textit{2. Project history}} \newline
+This project does not continue the work of a previous student project, and no part of a previous
+project's design or code was reused. The following parts of the work are not my own and are
+identified as such wherever they appear in the report. The physical components of the gantry and the
+capture rig (the two stepper motors, the two driver modules, the camera, the single-board computer,
+the switches, the pen, the power supply and the standard belts, pulleys, rods, bearings and
+fasteners) were bought, as the project proposal stated they would be. The layer arrangement of the
+text recogniser follows a published network described in the literature study, and is cited where it
+is used in Section~3.4; the implementation of that arrangement is my own. The public handwriting
+database used for training, and its transcriptions, are the work of its compilers and are cited. The
+software libraries listed under declaration~6 below are the work of their authors. Everything else
+reported on here, including all of the image processing, the training and inference code, the style
+extraction and synthesis, the G-code generation and the motion control, I designed and implemented
+myself. Section~6.3 states this in full.
+
+\mustcomplete{Confirm the first sentence above before submission. Appendix~4 requires this
+paragraph to state explicitly whether the project builds on an earlier project, and to cite that
+project by author and year if it does. I could not establish this from the project files, so I have
+written the statement that matches my own understanding --- if any part of this project continues a
+previous student's work, name that work here by author and year and say exactly what was taken
+from it.}
+
+\textbf{\textit{3. Language editing}} \newline
+This document has been language edited by a knowledgeable person. By submitting this document in its present form, I declare that this is the written material that I wish to be examined on.
+\\[2ex]
+%
+My language editor was \makebox[3in]{\hrulefill}.
+
+\vspace*{0.75cm}
+
+\begin{tabular}{lp{1cm}ll}
+\makebox[3in]{\hrulefill}  &  & \makebox[1.5in]{\hrulefill} \\
+\textit{Language editor signature}  &  & \textit{Date}
+\end{tabular}
+
+\vspace*{0.5cm}
+
+\mustcomplete{Fill in the language editor's name and obtain their signature and date, or attach
+their written confirmation at the end of the report and write ``proof of language editing is
+attached'' in place of the signature. The report is rejected without this.}
+
+\textbf{\textit{4. Plagiarism declaration}}
+\\[2ex]
+I, D.R.\ Braune, understand what plagiarism is and have carefully studied the plagiarism policy of the University. I hereby declare that all the work described in this report is my own, except where explicitly indicated otherwise. Although I may have discussed the design and investigation with my study leader, fellow students or consulted various books, articles or the internet, the design/investigative work is my own. I have mastered the design and I have made all the required calculations in my lab book (and/or they are reflected in this report) to authenticate this. I am not presenting a complete solution of someone else or that I found somewhere.
+
+Wherever I have used information from other sources, I have given credit by proper and complete referencing of the source material so that it can be clearly discerned what is my own work and what was quoted from other sources. I acknowledge that failure to comply with the instructions regarding referencing will be regarded as plagiarism.  If there is any doubt about the authenticity of my work, I understand that I may have to attend an oral ancillary examination/evaluation about the work.
+
+\textbf{\textit{5. AI usage declaration}}
+\\[2ex]
+Artificial intelligence tools, including large language models and code-generation tools, were used
+during this project. They were used to draft and edit the text of this report, to assist with
+writing, refactoring and reviewing source code, and to help build scripts that audited the code and
+checked the reported measurements. They were not used to produce any of the measured results
+reported in Section~4: every number in this report comes from running the project's own code on the
+project's own data, and the raw output files are part of the code submission. The choice of methods,
+the design of the system, the decisions about what to build and what to abandon, and the
+interpretation of the results in Section~5 are my own.
+
+\mustcomplete{Read declaration~5 above and make it exactly true before submission, adding or
+removing items as needed. The template's default wording, which denies any AI use, was deleted
+because it is not true of this project. A declaration that does not match the facts is itself an
+integrity violation, independently of the quality of the work, so this paragraph must be checked
+word by word and signed off by me.}
+
+\textbf{\textit{6. Software library usage declaration}}
+\\[2ex]
+Unless explicitly stated otherwise in the next paragraph, the author confirms that no software library functions, packages, or toolboxes were used in the design, implementation, or analysis presented in this report. All code and computations were developed entirely by the author.
+
+The exceptions to the above are the following. NumPy (\texttt{numpy.org}) was used for array
+storage and elementary array arithmetic, and Pillow (\texttt{python-pillow.org}) for reading and
+writing image files; no image-processing, machine-learning or scientific routine from either was
+used in the signal path, and the convolution, normalisation, pooling, recurrent, loss and
+optimisation routines were written from first principles as Section~3.4 describes. SciPy
+(\texttt{scipy.org}) was used in two places that are not part of the deployed system:
+\texttt{scipy.ndimage.gaussian\_filter} and \texttt{scipy.ndimage.map\_coordinates} in the
+training-time image augmentation, and \texttt{scipy.signal.find\_peaks} in the script that cuts the
+public database pages into lines. Flask and Flask-CORS (\texttt{flask.palletsprojects.com}) provide
+the web server. OpenCV (\texttt{opencv.org}) is used only to read frames from the USB camera, and
+libgpiod (\texttt{libgpiod} Python bindings) only to drive and read the general-purpose input and
+output pins of the single-board computer; both are hardware-interfacing libraries and are imported
+only inside the single function that needs each. The Hugging Face \texttt{datasets} package
+(\texttt{huggingface.co/docs/datasets}) was used once, in a standalone script, to download the
+public line-level handwriting database; nothing in the running system imports it. Finally, the
+weights of the writer-identification network were trained with PyTorch (\texttt{pytorch.org}) and
+then converted into this project's own weight format; the network that runs on the machine, and the
+from-scratch training program described in Section~3.4, contain no PyTorch code and do not import
+it.
+
+\mustcomplete{Two things to settle in declaration~6. First, confirm whether the deployed text
+recogniser's weights (\texttt{paper\_cnn\_bilstm\_ctc\_scratch\_best.npz}) were trained from random
+initialisation by my own training program, or were warm-started from the PyTorch-trained checkpoint
+using the \texttt{-{}-warm-start} option. I could not determine this from the saved file, and the
+answer changes what Section~3.4 and this declaration may claim. Second, check this list against the
+code submission and add anything I have missed.}
+
+\textbf{\textit{7. Unaltered Project Proposal}}
+\\[2ex]
+I certify that the Project Proposal appearing as the Introduction section of the report is an unaltered copy of the approved Project Proposal.
+
+\textbf{\textit{Signature}}
+\\[2ex]
+With my signature below, I hereby certify that all statements, declarations, and information presented above are complete.\newline \newline \newline
+
+\begin{tabular}{lp{1cm}ll}
+\makebox[3in]{\hrulefill}  &  & \makebox[1.5in]{\hrulefill} \\
+\eprthecandidatename       &  & Date
+\end{tabular}
+
+\vspace*{0.5cm}
+
+\mustcomplete{Sign and date the report here. The report is rejected without this signature.}
+
+%% End of File.

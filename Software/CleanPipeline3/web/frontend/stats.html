@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Handwriting Robot — Model &amp; Style</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div id="topbar"></div>
+
+<main>
+  <h1>Model &amp; style information</h1>
+  <p class="subtitle">What's actually running, how big it is, how accurate it measured, and what each author's extracted handwriting style looks like.</p>
+
+  <div class="error-banner" id="loadError"></div>
+
+  <div class="panel" id="modelsPanel" style="margin-bottom:24px;">
+    <h2>Models</h2>
+    <table class="model-table" id="modelsTable">
+      <thead>
+        <tr><th>Model</th><th>Architecture</th><th>Parameters</th><th>File size</th><th>Measured accuracy</th></tr>
+      </thead>
+      <tbody id="modelsBody"></tbody>
+    </table>
+    <p class="hint" id="deviceHint"></p>
+  </div>
+
+  <div class="panel" id="reproPanel" style="margin-bottom:32px;">
+    <h2>Reproduction pipeline (whole-system accuracy)</h2>
+    <div id="reproStats"></div>
+  </div>
+
+  <h2 style="color:var(--cyan); margin-bottom:16px;">Per-author style</h2>
+  <div id="authorGallery"></div>
+</main>
+
+<script src="app.js"></script>
+<script>
+renderTopbar("stats");
+
+async function load() {
+  try {
+    const info = await apiFetch("/api/model_info");
+    renderModels(info);
+    renderRepro(info.reproduction_pipeline);
+    await renderAuthorGallery(info.reproduction_pipeline.authors);
+  } catch (e) {
+    showError("loadError", e.message);
+  }
+}
+
+function renderModels(info) {
+  const rows = [
+    ["Text recognizer", info.text_recognizer],
+    ["Writer-ID (ink-based — for real photos)", info.writer_id_ink_based],
+    ["Writer-ID (stroke-normalised — for synthesis)", info.writer_id_stroke_normalised],
+  ];
+  const body = document.getElementById("modelsBody");
+  body.innerHTML = rows.map(([label, m]) => {
+    const acc = Object.entries(m.measured_accuracy)
+      .filter(([k]) => k !== "note")
+      .map(([k, v]) => `${k.replace(/_/g, " ")}: <b>${v}%</b>`)
+      .join("<br/>");
+    return `<tr>
+      <td><b>${label}</b><br/><span class="hint">${m.weights_file}</span></td>
+      <td>${m.architecture}</td>
+      <td>${m.parameters.toLocaleString()}</td>
+      <td>${m.file_size_mb} MB</td>
+      <td>${acc}<br/><span class="hint">${m.measured_accuracy.note || ""}</span></td>
+    </tr>`;
+  }).join("");
+  document.getElementById("deviceHint").textContent = `Running on: ${info.device.toUpperCase()}`;
+}
+
+function renderRepro(r) {
+  const m = r.measured_on_novel_sentences;
+  document.getElementById("reproStats").innerHTML = `
+    <div class="stat-row"><span class="k">Authors</span><span class="v">${r.n_authors} (${r.authors.join(", ")})</span></div>
+    <div class="stat-row"><span class="k">Writer-ID accuracy (direct / via G-code)</span><span class="v good">${m.writer_id_direct_pct}% / ${m.writer_id_gcode_pct}%</span></div>
+    <div class="stat-row"><span class="k">Text accuracy (direct / via G-code)</span><span class="v good">${m.text_char_direct_pct}% / ${m.text_char_gcode_pct}%</span></div>
+    <div class="stat-row"><span class="k">Word accuracy</span><span class="v">${m.text_word_pct}%</span></div>
+    <p class="hint" style="margin-top:12px">${m.method}<br/>Measured via: ${m.measured_via}</p>
+  `;
+}
+
+async function renderAuthorGallery(authors) {
+  const container = document.getElementById("authorGallery");
+  container.innerHTML = authors.map(a => `
+    <div class="author-card" id="card-${a}">
+      <h3>Author ${a}</h3>
+      <div class="meta">Loading samples...</div>
+    </div>
+  `).join("");
+
+  for (const a of authors) {
+    const card = document.getElementById(`card-${a}`);
+    try {
+      const authorsInfo = await apiFetch("/api/authors");
+      const info = authorsInfo.find(x => x.id === a) || {};
+      const samples = await apiFetch(`/api/samples/${a}`);
+      if (samples && samples.error) {
+        card.innerHTML = `<h3>Author ${a}</h3><div class="meta">${samples.error}</div>`;
+        continue;
+      }
+      const samplesHtml = samples.map(s => `
+        <img src="${absoluteUrl(s.image_url)}" />
+        <div class="sample-caption">"${s.text}"</div>
+      `).join("");
+      card.innerHTML = `
+        <h3>Author ${a}</h3>
+        <div class="meta">slant ${info.slantDeg > 0 ? "+" : ""}${info.slantDeg}&deg; &nbsp;·&nbsp; connectedness ${info.connectedness}</div>
+        <div class="samples">${samplesHtml || '<span class="hint">No real sample crops available.</span>'}</div>
+        <details class="glyphs">
+          <summary>Show extracted character glyphs</summary>
+          <img src="${absoluteUrl(`/api/glyphs/${a}`)}" loading="lazy" />
+        </details>
+      `;
+    } catch (e) {
+      card.innerHTML = `<h3>Author ${a}</h3><div class="meta">Failed to load: ${e.message}</div>`;
+    }
+  }
+}
+
+load();
+</script>
+</body>
+</html>

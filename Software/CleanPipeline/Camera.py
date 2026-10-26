@@ -10,7 +10,7 @@
 #what runs on the Odroid later, no platform-specific branching needed.
 #
 #usage:
-#    from Camera import CaptureImage, CameraAvailable
+#    from Camera import CaptureImage
 #    path = CaptureImage()   # returns a Path to the saved JPEG
 import time
 from pathlib import Path
@@ -27,21 +27,6 @@ CAMERA_INDEX = int(os.environ.get("CAMERA_INDEX","0"))   #which /dev/videoN (Lin
 
 WARMUP_FRAMES = 5   #a UVC webcam's first frame after opening is often dark/unfocused
 
-
-#cheap check: can we actually open and read one frame from the camera?
-#used by the server to report a clean 'no camera' error instead of a
-#stack trace when testing off the Odroid
-def CameraAvailable(index=None):
-    import cv2
-    idx = CAMERA_INDEX if index is None else index
-    cap = cv2.VideoCapture(idx)
-    try:
-        if not cap.isOpened():
-            return False
-        ok,_frame = cap.read()
-        return ok
-    finally:
-        cap.release()
 
 _previewCap = None
 _previewLock = None

@@ -1,13 +1,13 @@
 \subsection{Writer identification}
 \label{sec:writerid}
 
-This subsection describes the neural networks that identify which of the ten stored writers wrote a line or a page (functional unit FU~2.3 of the proposal, requirement R2), and that additionally act as the judge of how closely synthesised handwriting resembles a writer (requirement R1).
+This subsection describes the neural networks that identify which of the thirteen stored writers wrote a line or a page (functional unit FU~2.3 of the proposal, requirement R2), and that additionally act as the judge of how closely synthesised handwriting resembles a writer (requirement R1).
 Two classifiers with the same architecture were designed; they differ in their input pre-processing and in what was trained.
-The training programs, the stroke-normalisation algorithm, the aggregation rule and the from-scratch inference code were written by the student.
+The training programs, the stroke-normalisation algorithm, the aggregation rule, the shared from-scratch forward-and-backward layer library and the inference code were all written by the student; training and inference call the same Python functions, described in Section~\ref{sec:textrec-numpynn}.
 
 \subsubsection{Problem statement and the need for two classifiers}
 
-The task is closed-set writer identification: given a line image, choose one of $K=10$ known writers, namely eight writers of a public handwriting database and the two personal writers whose pages were photographed for this project.
+The task is closed-set writer identification: given a line image, choose one of $K=13$ known writers, namely eight writers of a public handwriting database and the five personal writers whose pages were photographed for this project.
 A line-level image classifier was chosen, and a classifier of this kind has to be trained with few lines per writer (63 to 184 training lines per writer, Table~\ref{tab:wid-data}).
 
 A first classifier, trained on the raw grey-scale line crops, was found to classify real held-out lines of the writers almost perfectly (99.78\,\% over 1358 lines in the final system) but to identify the writer of \emph{synthesised} output in only about 28\,\% of trials, with the errors concentrated on a few classes rather than scattered.
@@ -16,8 +16,8 @@ A judge that relies on such cues does not predict what the robot can achieve, an
 A second classifier was therefore built whose input contains only geometry, because the thickness has been removed by construction by the stroke-normalisation algorithm of Section~\ref{sec:wid-strokenorm}.
 The roles of the two classifiers are as follows.
 
-The ink-based classifier takes the raw grey-scale line crop, is used for real photographed pages in the classification mode, and has all 966\,154 parameters trained, starting from the recogniser backbone.
-The shape classifier takes the stroke-normalised crop, is used to judge synthesised and G-code-rendered output inside the best-of-$N$ search of Section~\ref{sec:synthesis}, and trains only the 13\,354 parameters of its head on top of the frozen recogniser backbone.
+The ink-based classifier takes the raw grey-scale line crop, is used for real photographed pages in the classification mode, and has all 966\,445 parameters trained, starting from the recogniser backbone.
+The shape classifier takes the stroke-normalised crop, is used to judge synthesised and G-code-rendered output inside the best-of-$N$ search of Section~\ref{sec:synthesis}, and trains only the 13\,645 parameters of its head on top of the frozen recogniser backbone.
 
 \subsubsection{Architecture}
 
@@ -33,7 +33,7 @@ m_{c,t}=\max_{r=1,\ldots,16}F_{c,r,t},\qquad f_c=\frac1{160}\sum_{t=1}^{160}m_{c
 where $c$ is the channel, $r$ the row and $t$ the column of $F$.
 The network is fully convolutional along the width, so the representation is a ``bag of local stroke patterns'', independent of the position along the line.
 The mean runs over all 160 columns, including the white padding of short lines, so the feature of a short line is diluted; this is the same in training and in use, but it makes the absolute size of the scores, and therefore the confidence, depend on the line length.
-A small two-layer head converts $f$ into scores for the $K=10$ writers (Equation~\ref{eq:wid-head}):
+A small two-layer head converts $f$ into scores for the $K=13$ writers (Equation~\ref{eq:wid-head}):
 \begin{equation}
 h=\mathrm{ReLU}(W_1f+b_1)\in\mathbb R^{96},\qquad z=W_2\,\mathrm{Drop}_{0.2}(h)+b_2\in\mathbb R^{K},
 \label{eq:wid-head}
@@ -56,12 +56,12 @@ where $B$ is the batch size, $y_n$ the true writer of sample $n$, and $p_k$ the 
 \node[wb] (hm) at (0,0) {\textbf{Height max-pool}\\ $128\times160$};
 \node[wb] (wm) at (3.1,0) {\textbf{Width mean-pool}\\ $128$};
 \node[wb] (fc1) at (6.2,0) {\textbf{FC 128$\to$96}\\ ReLU, dropout 0.2};
-\node[wb] (fc2) at (6.2,-2.2) {\textbf{FC 96$\to$10}\\ scores $z$};
+\node[wb] (fc2) at (6.2,-2.2) {\textbf{FC 96$\to$13}\\ scores $z$};
 \node[wb] (sm) at (3.1,-2.2) {\textbf{Softmax}\\ probabilities $p$};
 \node[wb] (am) at (0,-2.2) {\textbf{Arg-max}\\ writer, confidence};
 \foreach \a/\b in {in/bb,bb/hm,hm/wm,wm/fc1,fc1/fc2,fc2/sm,sm/am} \draw[w2arr] (\a)--(\b);
 \end{tikzpicture}
-\caption{Architecture of the two writer classifiers. The backbone is that of the text recogniser; the head has 13\,354 parameters. FC denotes a fully connected (linear) layer.}
+\caption{Architecture of the two writer classifiers. The backbone is that of the text recogniser; the head has 13\,645 parameters. FC denotes a fully connected (linear) layer.}
 \label{fig:wid-arch}
 \end{figure}
 
@@ -125,10 +125,11 @@ A defensible mitigation that was not carried out is to hold out whole pages of t
 The augmentation of the recogniser (shear, rotation, elastic and perspective distortion, at most one per image) is applied to the training images. Shear and perspective change slant and proportions, which are themselves writer cues (a shear of $\pm0.6$ is about $\pm31^\circ$ against measured writer slants between about $-7.5^\circ$ and $+42^\circ$); it was inherited from the recogniser and not tuned.
 
 \paragraph{Optimisation.}
-Both classifiers are trained with AdamW \cite{kingma2015,loshchilov2019}, which applies the weight decay (here $10^{-4}$) separately from the gradient step, with a cosine schedule of the learning rate (Equation~\ref{eq:wid-adamw} and Table~\ref{tab:wid-hyper} in the Appendix).
+Both classifiers are trained with AdamW \cite{kingma2015,loshchilov2019}, which applies the weight decay (here $10^{-4}$) separately from the gradient step, with a cosine schedule of the learning rate (Equation~\ref{eq:wid-adamw} and Table~\ref{tab:wid-hyper} in the Appendix); as described in Section~\ref{sec:textrec-numpynn}, the AdamW update rule and the gradient-norm clip of Equation~\ref{eq:rec-clip} were both implemented by the student from the defining equations, inside the same from-scratch layer library used for the text recogniser, rather than taken from an existing training framework.
 The ink classifier is fully fine-tuned from the recogniser backbone, and all 84 backbone tensors differ from the recogniser's afterwards.
 For the shape classifier the frozen backbone computes the 128-dimensional feature of every training image once, each line appearing four times (once unaugmented and three times with a different random augmentation), and only the head is trained on these 3\,680 stored vectors; all 84 backbone tensors of the stored shape model are bit-identical to those of the recogniser.
 This is fast and cannot overfit the thickness cue in the backbone, but augmentation is not re-sampled between epochs.
+Both training programs share one checkpoint format with the recogniser: every tensor is written to a single plain array archive (no object serialisation of any kind), keyed by the same dotted names as the layer functions (for example \texttt{author\_head.0.weight}), and, because the archive format cannot store a Python dictionary directly, the list of thirteen writer names is written as one extra array of strings and rebuilt into a name-to-index mapping when the checkpoint is opened.
 
 \subsubsection{From line decisions to a page decision}
 
@@ -186,7 +187,7 @@ The known limits of the design are that it is a closed set without an ``unknown 
 \subsubsection{Inference on the single-board computer}
 
 The classifiers run with the same layer functions as the recogniser (Section~\ref{sec:textrec}): convolution as one matrix product per layer, batch normalisation in the folded form of Equation~\ref{eq:rec-bnfold}, windowed pooling, a matrix product for each linear layer, the dropout skipped and the softmax computed after subtraction of the maximum score.
-The weights are read directly from the training checkpoint by the student's weight reader.
+Unlike the earlier design, in which an independent inference-only program had to be checked against a separate training program, these are literally the same Python functions: the evaluation pass that the training script calls after every epoch to measure validation accuracy (eval-mode batch normalisation, no dropout) and the pass that the web server calls on a photographed page both call the identical backbone and head functions, so no separate numerical comparison between a ``training'' and a ``deployment'' implementation is needed for this network, only the one gradient check described in Section~\ref{sec:textrec-numpynn}.
+The weights are read from the plain array checkpoint written by the training script, with no parsing of any third-party model format.
 A forward pass needs about $3.79\times10^9$ multiply--accumulate operations, and the parameters occupy about 3.9\,MB as 32-bit floating-point numbers.
-The layer-level equality of the matrix-product convolution with a direct summation was checked to floating-point rounding, but no end-to-end comparison of the writer network with the training code was recorded; the equivalence is supported by the fact that all evaluation results were produced with this inference path.
 \textbf{[TO BE COMPLETED BY STUDENT: execution time of one classifier pass on the ODROID N2+.]}

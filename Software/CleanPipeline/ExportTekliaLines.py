@@ -7,22 +7,28 @@
 #ever will -- once this has been run once and the files are on disk,
 #`datasets` is never touched again. compare to downloading IAMpages671/10
 #by hand: this just automates fetching+unpacking one specific dataset.
-#run by hand, once: python ExportTekliaLines.py
+#run by hand, once: python ExportTekliaLines.py [--out-dir PATH]
+#on Colab, pass --out-dir pointed at your mounted Drive directly (e.g.
+#/content/drive/MyDrive/.../Data/Datasets/TekliaIamLines) so the export
+#lands somewhere that survives the session ending -- the default path is
+#relative to this script's own location, which on Colab is the ephemeral
+#local clone, not Drive
+import argparse
 import sys
 from pathlib import Path
 
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 from Charset import CHAR_TO_IDX
 
-OUT_DIR = Path(__file__).resolve().parents[2]/"Data"/"Datasets"/"TekliaIamLines"
+DEFAULT_OUT_DIR = Path(__file__).resolve().parents[2]/"Data"/"Datasets"/"TekliaIamLines"
 MAX_SAFE_LABEL_CHARS = int((640//4)*0.75)   #matches TrainText.py's own ctc-time-dimension cap
 
 
-#writes one split ("train"/"validation") to OUT_DIR/<split>/, one PNG +
+#writes one split ("train"/"validation") to outDir/<split>/, one PNG +
 #one "<idx>_labels.txt" per usable line, same filtering TrainText.py's old
 #torch-based hf path used (drop chars outside CHARSET, drop empty/oversized)
-def ExportSplit(hfSplit,splitName):
-    outDir = OUT_DIR/splitName
+def ExportSplit(hfSplit,splitName,outDirRoot):
+    outDir = outDirRoot/splitName
     outDir.mkdir(parents=True,exist_ok=True)
     kept,droppedEmpty,droppedLong = 0,0,0
     total = len(hfSplit)
@@ -45,6 +51,14 @@ def ExportSplit(hfSplit,splitName):
 
 
 def Main():
+    parser = argparse.ArgumentParser(description="One-time export of Teklia/IAM-line to plain PNG+label files.")
+    parser.add_argument("--out-dir",type=str,default=None,
+                        help="where to write train/validation folders -- point this at your "
+                             "mounted Drive on Colab, or leave blank for the local default "
+                             f"({DEFAULT_OUT_DIR})")
+    args = parser.parse_args()
+    outDirRoot = Path(args.out_dir) if args.out_dir else DEFAULT_OUT_DIR
+
     try:
         from datasets import load_dataset
     except ImportError:
@@ -54,12 +68,12 @@ def Main():
             "it is not needed anywhere else in this project -- safe to uninstall "
             "once this script finishes."
         )
-    print("[ExportTekliaLines] downloading Teklia/IAM-line (one-time, cached by "
-          "the datasets library on first run)...")
+    print(f"[ExportTekliaLines] downloading Teklia/IAM-line (one-time, cached by "
+          f"the datasets library on first run)... writing to {outDirRoot}")
     ds = load_dataset("Teklia/IAM-line")
-    ExportSplit(ds["train"],"train")
-    ExportSplit(ds["validation"],"validation")
-    print(f"\nDone. Exported to: {OUT_DIR}")
+    ExportSplit(ds["train"],"train",outDirRoot)
+    ExportSplit(ds["validation"],"validation",outDirRoot)
+    print(f"\nDone. Exported to: {outDirRoot}")
     print("TrainScratch.py's TekliaLineDataset reads this directly -- no further "
           "export runs or `datasets` imports needed.")
 

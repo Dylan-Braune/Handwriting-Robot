@@ -1,0 +1,2923 @@
+
+\chapter{train.py}
+This is where the networks are trained. recognise.py runs them forward; everything that works out how the weights should change is here, derived by hand and written in numpy. No automatic differentiation is used, which is the main reason this file is the largest in the project.
+
+
+\paragraph{Background: what training actually is}
+A network starts with random weights and gives nonsense answers. Training is a loop: run some examples through, measure how wrong the output is with a \textbf{loss function}, work out how each weight would have to change to make the loss smaller, and change it a little in that direction. Repeat for days.
+
+The quantity that says how a weight should change is the \textbf{gradient}: the rate at which the loss changes as that weight changes. If the gradient with respect to some weight is positive, increasing that weight increases the loss, so the weight should decrease. Moving every weight a small step against its gradient is \textbf{gradient descent}, and the size of that step is the \textbf{learning rate}.
+
+
+\begin{equation}
+w \;\leftarrow\; w \;-\; \eta \, \frac{\partial L}{\partial w}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$w$}] \normalfont one weight of the network
+  \item[{$\eta$}] \normalfont the learning rate: how big a step to take
+  \item[{$L$}] \normalfont the loss, a single number saying how wrong the output was
+  \item[{$\frac{\partial L}{\partial w}$}] \normalfont the \textbf{partial derivative} of the loss with respect to that weight: how much the loss changes per unit change in the weight, holding every other weight fixed
+  \item[{$\leftarrow$}] \normalfont assignment: the weight is replaced by the value on the right
+\end{description}
+
+\paragraph{Background: the chain rule and backpropagation}
+A network has millions of weights and the loss depends on all of them through many layers, so computing each gradient separately is out of the question. What makes it feasible is the \textbf{chain rule} of calculus: if a quantity depends on another through an intermediate step, the derivatives multiply.
+
+
+\begin{equation}
+\frac{\partial L}{\partial x} \;=\; \frac{\partial L}{\partial y} \cdot \frac{\partial y}{\partial x}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$L$}] \normalfont the loss
+  \item[{$y$}] \normalfont a layer's output
+  \item[{$x$}] \normalfont that layer's input
+  \item[{$\frac{\partial L}{\partial y}$}] \normalfont the gradient arriving from the layer above: how the loss changes with this layer's output
+  \item[{$\frac{\partial y}{\partial x}$}] \normalfont the layer's own derivative: how its output changes with its input
+  \item[{$\frac{\partial L}{\partial x}$}] \normalfont the gradient to pass down to the layer below
+\end{description}
+So each layer needs to know only two things: the gradient of the loss with respect to its own output, which the layer above hands it, and how its own output depends on its input and weights, which is local knowledge. It multiplies them, keeps the weight gradients, and passes the input gradient down. Starting at the loss and working backwards layer by layer computes every gradient in the network in one sweep, at about the cost of one forward pass. That is \textbf{backpropagation}.
+
+
+\paragraph{Why every function here comes in pairs}
+A layer's backward pass needs values from its forward pass. The gradient through a ReLU depends on which inputs were positive; the gradient through a convolution depends on what the input patches were. So each forward function returns its output together with a \textbf{cache} of exactly what its backward partner will need, and the backward function takes that cache. The pairing is the whole structure of the first part of this file.
+
+The naming convention follows from it: a function named Forward here differs from the same-named function in recognise.py only in returning that cache, and sometimes in behaving differently during training, as batch normalisation and dropout do.
+
+
+\paragraph{A note on notation}
+Throughout, a quantity written with a leading d, such as \texttt{dout} or \texttt{dx}, means the gradient of the loss with respect to that quantity, not a small change in it. So \texttt{dx} has exactly the same shape as x, because there is one gradient per element. This is the usual convention in hand-written backpropagation code and it is worth fixing in mind before reading any of what follows.
+
+
+\section{Conv2dForward}
+\begin{lstlisting}[style=sig]
+def Conv2dForward(x, weight, bias, padding=1)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{x}] \normalfont the input, shaped (batch, channels, height, width)
+  \item[{weight}] \normalfont the filters
+  \item[{bias}] \normalfont one number per output channel, or nothing
+  \item[{padding}] \normalfont zeros added round the input, default 1
+\end{description}
+
+\noindent\textbf{Output.} a pair: the filtered result, and the cache the backward pass needs.
+
+
+\paragraph{What it adds to the inference version}
+The arithmetic is identical to Conv2d in recognise.py, including the im2col rearrangement and the strided view, both explained in that entry. The only difference is that this one keeps a cache.
+
+
+\paragraph{What is cached, and why each item is needed}
+
+\begin{itemize}\setlength\itemsep{0pt}
+  \item \textbf{The input's shape,} not the input itself. The backward pass builds a gradient array of that shape and never needs the values.
+  \item \textbf{The weights,} because the input gradient is formed by multiplying the output gradient by them.
+  \item \textbf{The flattened columns,} which is the significant one. The weight gradient is the output gradient multiplied by exactly these patches, so keeping them avoids rebuilding them, which would mean redoing the strided view and the reshape.
+  \item \textbf{The padding and the filter and output sizes,} so the backward pass can fold the column gradient back into image shape without recomputing the geometry.
+\end{itemize}
+
+\paragraph{The cost of caching, and why it is accepted}
+The columns are the memory cost of training. A 3 by 3 filter over three channels makes each patch 27 numbers, and there is one patch per output position, so the cached columns are roughly nine times the size of the input feature map. Every convolution in the network holds its own for the whole forward pass, since none can be released until the backward pass has used it. That, rather than the weights, is what sets the largest batch size that fits in memory, and it is why training needs far more memory than inference.
+
+
+\begin{quote}\small\itshape No bias-related value is cached. The bias gradient is just the output gradient summed over every position, which needs nothing from the forward pass, because adding a constant has a derivative of one.\end{quote}
+
+\section{Conv2dBackward}
+\begin{lstlisting}[style=sig]
+def Conv2dBackward(dout, cache)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{dout}] \normalfont the gradient of the loss with respect to this layer's output
+  \item[{cache}] \normalfont what the forward pass saved
+\end{description}
+
+\noindent\textbf{Output.} three gradients: with respect to the input, the weights and the bias.
+
+
+\paragraph{Where the three formulas come from}
+The forward pass, in matrix form, is the flattened weights multiplied by the columns. Everything below follows from differentiating a matrix product, so it is worth stating that rule first: if Y = W X, then the gradient with respect to W is the output gradient times X transposed, and the gradient with respect to X is W transposed times the output gradient. Both the shapes and the transposes follow from requiring the result to have the same shape as the thing differentiated.
+
+
+\paragraph{The weight gradient}
+
+\begin{equation}
+\frac{\partial L}{\partial W} \;=\; \sum_{b} \frac{\partial L}{\partial Y_b} \; X_b^{\mathsf{T}}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\frac{\partial L}{\partial W}$}] \normalfont the gradient for the filters, same shape as the filters
+  \item[{$\frac{\partial L}{\partial Y_b}$}] \normalfont the output gradient for batch item b, as a matrix of output channels by positions
+  \item[{$X_b$}] \normalfont the cached columns for that item
+  \item[{${}^{\mathsf{T}}$}] \normalfont matrix transpose
+  \item[{$\sum_b$}] \normalfont summed over the batch
+\end{description}
+The sum over the batch is not an approximation or an average applied afterwards; it is what the derivative is. The same filter was applied to every item in the batch and at every position, so the loss depends on each weight through all of them, and the chain rule adds the contributions. This is the general rule for a shared parameter: wherever one value is used in several places, its gradient is the sum over those places.
+
+
+\paragraph{The input gradient, and the fold back into image shape}
+
+\begin{equation}
+\frac{\partial L}{\partial X} \;=\; W^{\mathsf{T}} \, \frac{\partial L}{\partial Y}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\frac{\partial L}{\partial X}$}] \normalfont the gradient with respect to the columns
+  \item[{$W$}] \normalfont the flattened filters
+  \item[{$\frac{\partial L}{\partial Y}$}] \normalfont the output gradient
+\end{description}
+That gives a gradient with respect to the \emph{columns}, which is not what is wanted: the layer below needs a gradient with respect to the image. Converting one to the other is the only part of this function that is not a matrix product, and it is the subtle part.
+
+The reason it is subtle is that the forward view was overlapping. One input pixel appears in up to nine patches, so it influenced up to nine output positions, and by the chain rule its gradient is the sum of the gradients from all of them. The loop over the nine filter offsets does exactly that: for each offset, the corresponding slice of the column gradient is \emph{added} into the padded image gradient at the shifted position. Nine additions over whole arrays accumulate every contribution.
+
+The accumulation is the whole point, and it is why the forward trick cannot be run in reverse. The forward pass could use a strided view because reading the same memory from several places is harmless; writing to it from several places is not, since the writes would overwrite rather than accumulate. So the backward direction must be an explicit addition, and the operation is known as \textbf{col2im}, the counterpart of im2col.
+
+
+\paragraph{Finally, removing the padding}
+The gradient was accumulated into an array the size of the padded input, and the layer below knows nothing of the padding, so the border is discarded. That is correct rather than merely convenient: the padding was constant zeros, not data, so the gradient with respect to it has nowhere to go.
+
+
+\paragraph{The bias gradient}
+
+\begin{equation}
+\frac{\partial L}{\partial b_o} \;=\; \sum_{b,p,q} \frac{\partial L}{\partial Y[b,o,p,q]}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\frac{\partial L}{\partial b_o}$}] \normalfont the gradient for the bias of output channel o
+  \item[{$\sum_{b,p,q}$}] \normalfont summed over the batch and both spatial axes
+\end{description}
+One bias is added to every position of its channel, so by the shared-parameter rule its gradient is the sum of the output gradient over all those positions. No cache is needed because the derivative of adding a constant is one.
+
+
+\section{BatchNorm2dForwardTrain}
+\begin{lstlisting}[style=sig]
+def BatchNorm2dForwardTrain(x,gamma,beta,runningMean,runningVar,momentum=0.1,
+        eps=1e-05)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{x}] \normalfont the input
+  \item[{gamma}] \normalfont the learned scale per channel
+  \item[{beta}] \normalfont the learned shift per channel
+  \item[{runningMean}] \normalfont the stored mean, updated in place
+  \item[{runningVar}] \normalfont the stored variance, updated in place
+  \item[{momentum}] \normalfont how fast the stored statistics follow the batches, default 0.1
+  \item[{eps}] \normalfont the guard on the division, default 1e-5
+\end{description}
+
+\noindent\textbf{Output.} a pair: the normalised and rescaled output, and the cache.
+
+
+\paragraph{How this differs from the inference version}
+The inference version, in recognise.py, standardises using statistics stored in the checkpoint. This one standardises using the current batch's own mean and variance, and updates the stored ones as a side effect.
+
+
+\begin{equation}
+\mu_c \;=\; \frac{1}{N} \sum_{b,p,q} x[b,c,p,q], \qquad \sigma^2_c \;=\; \frac{1}{N} \sum_{b,p,q} \big(x[b,c,p,q] - \mu_c\big)^2
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mu_c$}] \normalfont the mean of channel c over this batch
+  \item[{$\sigma^2_c$}] \normalfont its variance
+  \item[{$N$}] \normalfont how many values that is: the batch size times the height times the width
+  \item[{$\sum_{b,p,q}$}] \normalfont summed over the batch and both spatial axes, but not over channels
+\end{description}
+The statistics are per channel and pooled over everything else, for the reason given in the inference entry: a channel is the map of where one filter responded, and that filter's typical response size is one property however many positions and examples it is measured over.
+
+
+\paragraph{Why using the batch is what makes it work}
+Standardising by the batch is not a convenience; it is the mechanism. The purpose of the layer is to fix the scale a layer presents to the next one, and during training that scale is changing constantly because the layers below are being updated. Measuring it fresh from the current batch tracks those changes immediately, where stored statistics would always describe an earlier state of the network.
+
+
+\paragraph{The running statistics, and why they are an exponential average}
+
+\begin{equation}
+\hat{\mu} \;\leftarrow\; (1-m)\,\hat{\mu} \;+\; m\,\mu_c
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\hat{\mu}$}] \normalfont the stored mean, kept for inference
+  \item[{$m$}] \normalfont the momentum, 0.1
+  \item[{$\mu_c$}] \normalfont this batch's mean
+\end{description}
+This is an \textbf{exponential moving average}: each update keeps 90 percent of the old value and takes 10 percent from the new observation, so the stored figure is a weighted average over recent batches with older ones fading away. It is used rather than a plain average over all batches for two reasons. It needs no count and no accumulator, only the current value. And the fading is correct here: early batches were produced by a network whose weights were nearly random, so their statistics do not describe the trained network and should be forgotten.
+
+
+\paragraph{Why the stored variance is the unbiased estimate}
+
+\begin{equation}
+\sigma^2_{\mathrm{unbiased}} \;=\; \sigma^2_{\mathrm{biased}} \cdot \frac{N}{N-1}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\sigma^2_{\mathrm{biased}}$}] \normalfont the variance computed with the mean measured from the same data
+  \item[{$\sigma^2_{\mathrm{unbiased}}$}] \normalfont the corrected estimate of the population variance
+  \item[{$N$}] \normalfont the number of values
+\end{description}
+Measuring the variance about a mean estimated from the same sample systematically underestimates it, because the sample mean is by construction the point about which the squared deviations are smallest. \textbf{Bessel's correction}, dividing by N$-$1 rather than N, compensates. The biased form is used to normalise this batch, since that is the quantity that actually standardises these values, while the corrected form is stored, since that is an estimate of the variance of all data. The code comment notes this matches the reference framework's behaviour, which matters because checkpoints must be interchangeable.
+
+
+\paragraph{What is cached}
+The standardised values, the standard deviation, the scale and the element count. Notably the input itself is not cached: the backward derivation below is written entirely in terms of the standardised values, which is both less memory and fewer operations than recovering the input.
+
+
+\section{BatchNorm2dBackward}
+\begin{lstlisting}[style=sig]
+def BatchNorm2dBackward(dout, cache)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{dout}] \normalfont the gradient with respect to this layer's output
+  \item[{cache}] \normalfont what the forward pass saved
+\end{description}
+
+\noindent\textbf{Output.} three gradients: with respect to the input, the scale and the shift.
+
+
+\paragraph{Why this one is genuinely hard}
+Every other layer in this file has a local derivative: the output at one position depends on the input at one position, or a few. Batch normalisation does not. The mean and variance are computed from \emph{every} value in the channel, so changing one input changes the mean, which changes the normalisation of every other value in the channel as well. Each input therefore affects its own output directly and every other output indirectly, and the gradient must account for all three routes.
+
+
+\paragraph{The three paths}
+
+\begin{itemize}\setlength\itemsep{0pt}
+  \item \textbf{Directly,} through its own standardised value.
+  \item \textbf{Through the mean,} since the input contributed to the mean, and the mean is subtracted from every value in the channel.
+  \item \textbf{Through the variance,} since the input contributed to the variance, and the variance divides every value in the channel.
+\end{itemize}
+Differentiating each path and collecting the terms gives an expression that simplifies considerably, which is the form the code uses.
+
+
+\begin{equation}
+\frac{\partial L}{\partial x} \;=\; \frac{1}{N\sigma}\left( N \, \frac{\partial L}{\partial \hat{x}} \;-\; \sum \frac{\partial L}{\partial \hat{x}} \;-\; \hat{x} \sum \left( \frac{\partial L}{\partial \hat{x}} \, \hat{x} \right) \right)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\frac{\partial L}{\partial x}$}] \normalfont the gradient to pass down
+  \item[{$\frac{\partial L}{\partial \hat{x}}$}] \normalfont the gradient with respect to the standardised values, which is the incoming gradient multiplied by the learned scale
+  \item[{$\hat{x}$}] \normalfont the cached standardised values
+  \item[{$\sigma$}] \normalfont the cached standard deviation
+  \item[{$N$}] \normalfont the number of values per channel
+  \item[{$\sum$}] \normalfont summed over the batch and both spatial axes, per channel
+\end{description}
+The three terms correspond to the three paths, and each has a readable meaning. The first is the direct effect. The second subtracts the average gradient over the channel, which is the correction for the mean: it ensures the gradients sum to zero, so the layer below cannot be pushed in a direction that would merely shift the whole channel, since such a shift would be normalised away anyway. The third subtracts the component aligned with the standardised values themselves, which is the correction for the variance: it removes any push that would merely scale the channel, for the same reason.
+
+So the layer passes down only the part of the gradient that is not a pure shift or a pure rescaling of the channel. That is the deeper statement of what batch normalisation does: it makes the network's behaviour independent of the scale and offset of each channel, and the backward pass correspondingly refuses to pass down gradients that would only change those.
+
+
+\paragraph{The scale and shift gradients}
+
+\begin{equation}
+\frac{\partial L}{\partial \gamma} \;=\; \sum \frac{\partial L}{\partial y} \, \hat{x}, \qquad \frac{\partial L}{\partial \beta} \;=\; \sum \frac{\partial L}{\partial y}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\gamma,\, \beta$}] \normalfont the learned scale and shift
+  \item[{$\frac{\partial L}{\partial y}$}] \normalfont the incoming gradient
+  \item[{$\hat{x}$}] \normalfont the standardised values
+  \item[{$\sum$}] \normalfont summed over everything but the channel axis
+\end{description}
+These two are straightforward by comparison. The output is the scale times the standardised value plus the shift, so the derivative with respect to the scale is the standardised value and with respect to the shift is one, each summed over every position the parameter was used at, by the shared-parameter rule.
+
+
+\begin{quote}\small\itshape The code comment attributes the simplified form to the standard derivation taught in the Stanford CS231n course notes, which is where this arrangement of the terms is usually given. The project's numerical gradient check exists largely to confirm that this function in particular is right, since it is the one most easily got wrong and an error in it produces slow or unstable training rather than an obvious failure.\end{quote}
+
+\section{ReluForward}
+\begin{lstlisting}[style=sig]
+def ReluForward(x)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{x}] \normalfont any array
+\end{description}
+
+\noindent\textbf{Output.} a pair: the rectified array, and a mask of which entries were positive.
+
+
+\paragraph{What is cached and why it is cheap}
+The forward arithmetic is the same clamping as in recognise.py. What it adds is a boolean mask recording which inputs were positive, which is all the backward pass needs. A boolean array is one byte per element against eight for a double, so this is the cheapest cache of any layer, which matters because ReLU appears after every convolution.
+
+
+\begin{quote}\small\itshape The mask could be derived from the output instead, since the output is positive exactly where the input was. Caching it explicitly costs a little memory and keeps the backward pass independent of what the caller did with the output, which would otherwise be a hidden requirement that the output not be modified in place.\end{quote}
+
+\section{ReluBackward}
+\begin{lstlisting}[style=sig]
+def ReluBackward(dout, cache)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{dout}] \normalfont the gradient with respect to the output
+  \item[{cache}] \normalfont the positivity mask
+\end{description}
+
+\noindent\textbf{Output.} the gradient with respect to the input.
+
+
+\paragraph{The derivative}
+
+\begin{equation}
+\frac{\partial L}{\partial x} \;=\; \frac{\partial L}{\partial y} \cdot \begin{cases} 1 & x > 0 \\ 0 & x \le 0 \end{cases}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\frac{\partial L}{\partial x}$}] \normalfont the gradient to pass down
+  \item[{$\frac{\partial L}{\partial y}$}] \normalfont the gradient arriving
+  \item[{$x$}] \normalfont the original input, consulted only through the cached mask
+\end{description}
+ReLU is the identity where the input was positive and constant zero where it was not, so its derivative is one or zero accordingly. The backward pass is therefore the incoming gradient with the inactive positions zeroed: the gradient passes unchanged through the units that fired and stops dead at the ones that did not.
+
+
+\paragraph{Why this is the property that makes deep networks trainable}
+A derivative of exactly 1 on the active path is what distinguishes ReLU from the smooth activations it replaced. The sigmoid's derivative is at most 0.25 and much smaller when saturated, so a gradient crossing twelve sigmoid layers is multiplied by twelve such factors and arrives at the first layer effectively zero. That is the vanishing gradient problem, and it is why networks of this depth were impractical before ReLU. With a factor of exactly 1 the gradient reaches the first layer at full strength.
+
+
+\begin{quote}\small\itshape The derivative at exactly zero does not exist, since the function has a corner there. Taking it as zero is conventional and the choice has no practical consequence: an input of exactly zero is a measure-zero event in floating point, and either choice gives a valid subgradient.\end{quote}
+
+\section{MaxPool2dForward}
+\begin{lstlisting}[style=sig]
+def MaxPool2dForward(x, kernel=2, stride=2)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{x}] \normalfont the input
+  \item[{kernel}] \normalfont the window size, default 2
+  \item[{stride}] \normalfont the step between windows, default 2
+\end{description}
+
+\noindent\textbf{Output.} a pair: the pooled output, and the cache recording which element won each window.
+
+
+\paragraph{What must be cached, and why}
+The forward arithmetic is as in recognise.py. What training requires in addition is the \textbf{position} of the winner in each window, not merely its value. The backward pass must send the gradient to the element that was passed through, and only the position identifies it.
+
+The position is stored as an index into the flattened window, a number from 0 to 3 for a 2 by 2 window, rather than as a pair of coordinates. A single index is one array instead of two and can be used directly by the indexed-write operation the backward pass uses to place the gradient.
+
+
+\begin{quote}\small\itshape This is why the forward pass flattens the window axes and takes the maximum by finding the winning index and then reading it, instead of simply taking a maximum over two axes. The inference version does the latter, which is simpler; here the index is needed anyway, so the value is obtained by reading it.\end{quote}
+
+\section{MaxPool2dBackward}
+\begin{lstlisting}[style=sig]
+def MaxPool2dBackward(dout, cache)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{dout}] \normalfont the gradient with respect to the pooled output
+  \item[{cache}] \normalfont the winning indices and the geometry
+\end{description}
+
+\noindent\textbf{Output.} the gradient with respect to the input.
+
+
+\paragraph{The routing rule}
+Max pooling passes one element of each window through unchanged, so its derivative with respect to that element is one and with respect to every other element of the window is zero. The gradient is therefore routed entirely to the winner and the rest of the window receives nothing.
+
+
+\begin{equation}
+\frac{\partial L}{\partial x[b,c,i,j]} \;=\; \begin{cases} \dfrac{\partial L}{\partial y[b,c,p,q]} & (i,j) \text{ was the maximum of window } (p,q) \\[6pt] 0 & \text{otherwise} \end{cases}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$x[b,c,i,j]$}] \normalfont an input element
+  \item[{$y[b,c,p,q]$}] \normalfont the pooled output of the window containing it
+  \item[{$(p,q)$}] \normalfont which window
+\end{description}
+An input that lost its window has no influence on the output at all, so changing it slightly changes nothing and its gradient is genuinely zero. That is a real consequence of pooling rather than an approximation: only a quarter of the inputs to a 2 by 2 pooling receive any gradient on a given example, which is part of why the layers below a pooling train more slowly.
+
+
+\paragraph{Why no accumulation is needed here}
+The code comment notes that the stride equals the kernel, so the windows do not overlap and each input belongs to exactly one window. The gradient blocks can therefore be written straight into position rather than added. With overlapping windows an input could win several, and the contributions would have to be accumulated as they are in the convolution's backward pass.
+
+
+\begin{quote}\small\itshape The transpose before the final reshape interleaves the window axes back with the output axes, so that the blocks land in the right places. Getting this wrong produces a gradient that is correct in magnitude and scrambled in position, which trains to something, slowly and wrongly, without any error being raised. It is exactly the kind of fault the numerical gradient check exists to catch.\end{quote}
+
+\section{AdaptiveMaxPoolHeightForward}
+\begin{lstlisting}[style=sig]
+def AdaptiveMaxPoolHeightForward(x)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{x}] \normalfont the input
+\end{description}
+
+\noindent\textbf{Output.} a pair: the height collapsed to one row by taking the maximum, and the winning row indices.
+
+
+\paragraph{What is cached}
+Which row won in each column of each channel. The reasoning is the same as for ordinary max pooling: the gradient goes entirely to the element that was passed through, so its position must be known.
+
+This is the layer that converts the image into a sequence, as described in the inference entry, so it is also the point where the gradient converts back: the sequence gradient coming from the recurrent layers becomes an image gradient here, placed into the rows that won.
+
+
+\section{AdaptiveMaxPoolHeightBackward}
+\begin{lstlisting}[style=sig]
+def AdaptiveMaxPoolHeightBackward(dout, cache)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{dout}] \normalfont the gradient with respect to the collapsed output
+  \item[{cache}] \normalfont the input shape and the winning rows
+\end{description}
+
+\noindent\textbf{Output.} the gradient with respect to the full-height input.
+
+
+\paragraph{What it does}
+Creates a zero array of the original shape and writes the incoming gradient into the winning row of each column. Every other row gets nothing.
+
+
+\paragraph{What that means for training}
+Of the sixteen rows the feature map has at this point, exactly one per column receives any gradient on a given example. So each column of each channel trains from one row at a time, though which row varies between examples and over the course of training as the weights change. The effect is that the layer below learns to make its strongest response correct, rather than learning anything about the rows that lose, which is the behaviour a maximum should produce: the network is being asked whether a feature appears anywhere in the column, so only the best evidence matters.
+
+
+\section{AdaptiveAvgPoolWidthForward}
+\begin{lstlisting}[style=sig]
+def AdaptiveAvgPoolWidthForward(x)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{x}] \normalfont the input
+\end{description}
+
+\noindent\textbf{Output.} a pair: the average along axis 2, and the length averaged over.
+
+
+\paragraph{Why the cache is a single number}
+An average needs nothing from its input to be differentiated, only how many values it was taken over, which is one integer. That is the cheapest cache in the file, and the contrast with max pooling is instructive: a maximum depends on \emph{which} value won and so must remember it, whereas an average treats every value identically and so has nothing to remember.
+
+
+\section{AdaptiveAvgPoolWidthBackward}
+\begin{lstlisting}[style=sig]
+def AdaptiveAvgPoolWidthBackward(dout, cache)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{dout}] \normalfont the gradient with respect to the pooled output
+  \item[{cache}] \normalfont how many values were averaged
+\end{description}
+
+\noindent\textbf{Output.} the gradient spread evenly back over those values.
+
+
+\paragraph{The derivative}
+
+\begin{equation}
+y \;=\; \frac{1}{N}\sum_{k} x_k \quad\Longrightarrow\quad \frac{\partial y}{\partial x_k} \;=\; \frac{1}{N} \quad\text{for every } k
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$y$}] \normalfont the pooled output
+  \item[{$x_k$}] \normalfont the k-th input averaged over
+  \item[{$N$}] \normalfont how many there were
+  \item[{$\Longrightarrow$}] \normalfont implies
+\end{description}
+Each input contributes one N-th of the average, so each receives one N-th of the gradient. The backward pass is therefore the incoming gradient repeated across the axis and divided by the length.
+
+
+\paragraph{The contrast with maximum pooling, and what it means for training}
+Where max pooling routes the whole gradient to one element and nothing to the rest, average pooling spreads it thinly over all of them. Every position therefore receives gradient on every example, which is why the writer namer's backbone trains more evenly than the reader's. It is also the right behaviour for what that layer means: the namer asks how prevalent a feature is across the line, so every position genuinely contributes to the answer and every position should be told how it contributed.
+
+
+\section{LinearForward}
+\begin{lstlisting}[style=sig]
+def LinearForward(x, weight, bias)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{x}] \normalfont the input, with features along the last axis
+  \item[{weight}] \normalfont the weight matrix
+  \item[{bias}] \normalfont the bias, or nothing
+\end{description}
+
+\noindent\textbf{Output.} a pair: the result, and the cache holding the input and the weights.
+
+
+\paragraph{What is cached and why both items are needed}
+Both the input and the weights, because the backward pass needs each for a different gradient: the weight gradient is formed from the input and the input gradient is formed from the weights. This is the only layer here that caches its full input values, which is affordable because a linear layer sits at the end of the network where the data is small, a vector of a few hundred numbers rather than a feature map.
+
+
+\section{LinearBackward}
+\begin{lstlisting}[style=sig]
+def LinearBackward(dout, cache)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{dout}] \normalfont the gradient with respect to the output
+  \item[{cache}] \normalfont the input and the weights
+\end{description}
+
+\noindent\textbf{Output.} three gradients: with respect to the input, the weights and the bias.
+
+
+\paragraph{The three gradients}
+
+\begin{equation}
+\frac{\partial L}{\partial W} \;=\; \frac{\partial L}{\partial Y}^{\mathsf{T}} X, \qquad \frac{\partial L}{\partial X} \;=\; \frac{\partial L}{\partial Y} \, W, \qquad \frac{\partial L}{\partial b} \;=\; \sum_{\text{rows}} \frac{\partial L}{\partial Y}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\frac{\partial L}{\partial Y}$}] \normalfont the incoming gradient, one row per example
+  \item[{$X$}] \normalfont the cached input, one row per example
+  \item[{$W$}] \normalfont the weight matrix, one row per output
+  \item[{${}^{\mathsf{T}}$}] \normalfont transpose
+  \item[{$\sum_{\text{rows}}$}] \normalfont summed over the examples
+\end{description}
+All three follow from differentiating a matrix product, as in the convolution. The transposes are determined by the shapes: there is only one arrangement of each product that yields an array the same shape as the quantity being differentiated, which is a useful check when deriving such expressions by hand.
+
+
+\paragraph{Why the leading axes are flattened}
+The code comment explains the one wrinkle. The input may carry more than a batch axis before its feature axis: the reader's text head applies this layer to a sequence, shaped time by batch by features, so there are two leading axes. The weight gradient must sum over every one of those positions, since the same weights were used at each.
+
+Flattening every leading axis into one reduces any such case to the two-dimensional form, after which the single matrix product performs the sum automatically. The input gradient needs no flattening, because it has the same leading axes as the output and the product acts only on the last; it is reshaped back to the input's shape at the end. This is what lets one implementation serve both the namer's single vector and the reader's sequence.
+
+
+\section{DropoutForward}
+\begin{lstlisting}[style=sig]
+def DropoutForward(x, p, training, rng)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{x}] \normalfont the input
+  \item[{p}] \normalfont the fraction to drop
+  \item[{training}] \normalfont whether this is a training pass
+  \item[{rng}] \normalfont the seeded random generator
+\end{description}
+
+\noindent\textbf{Output.} a pair: the input with some entries zeroed and the rest scaled up, and the mask; or the input unchanged outside training.
+
+
+\paragraph{What dropout is for}
+\textbf{Overfitting} is when a network learns the training examples rather than the pattern in them, so it performs well on what it has seen and poorly on anything new. One way it happens is that the network comes to rely on a particular combination of features that happens to be reliable in the training data. \textbf{Dropout} \cite{srivastava2014} prevents that by randomly removing a fraction of the values at each training step, so no feature can be depended on: it may not be there. The network is forced to spread its evidence across several features, which generalises better.
+
+
+\paragraph{Why the survivors are scaled up}
+
+\begin{equation}
+\mathrm{mask} \;=\; \frac{[\,u \ge p\,]}{1 - p}, \qquad u \sim \mathrm{Uniform}(0,1)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{mask}$}] \normalfont what the input is multiplied by, elementwise
+  \item[{$u$}] \normalfont a random number drawn uniformly between 0 and 1, one per element
+  \item[{$p$}] \normalfont the drop probability
+  \item[{$[\,u \ge p\,]$}] \normalfont 1 when the element survives and 0 when it is dropped
+  \item[{$\frac{1}{1-p}$}] \normalfont the compensating scale applied to the survivors
+\end{description}
+Dropping a fraction p of the values reduces the sum reaching the next layer by that fraction, so without compensation the layer below would see a smaller signal during training than at inference, and everything calibrated for one would be wrong for the other. Dividing the survivors by 1$-$p restores the expected total: a fraction 1$-$p of the values survive and each is multiplied by 1/(1$-$p), so the expectation is unchanged.
+
+
+\paragraph{Why the scaling is done here rather than at inference}
+The compensation could instead be applied by scaling everything down by 1$-$p at inference, which is how dropout was originally described. Putting it in the training path instead is called \textbf{inverted dropout}, and it is now standard for a practical reason: inference then requires no dropout-related code at all. The layer simply vanishes outside training, which is exactly what recognise.py does, where the gap in the parameter numbering is the only trace of it.
+
+
+\begin{quote}\small\itshape Outside training the input is returned unchanged with no mask. The backward pass accepts that absent mask and passes the gradient through untouched, which keeps the two halves consistent without either needing to know whether the other is in training mode.\end{quote}
+
+\section{DropoutBackward}
+\begin{lstlisting}[style=sig]
+def DropoutBackward(dout, cache)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{dout}] \normalfont the gradient with respect to the output
+  \item[{cache}] \normalfont the mask, or nothing
+\end{description}
+
+\noindent\textbf{Output.} the gradient with respect to the input.
+
+
+\paragraph{The derivative}
+Dropout multiplies elementwise by a mask, and the derivative of multiplying by a constant is that constant, so the backward pass multiplies by the same mask. The mask includes the scaling factor, so the gradient is scaled by it too, which is necessary: the forward pass amplified the survivors, so their influence on the loss is amplified by the same factor.
+
+A dropped element receives exactly zero gradient, which is correct rather than approximate. It genuinely had no effect on the output for this example, so the loss does not depend on it at all this step. It will receive gradient on steps where it survives, which is how a unit that is dropped half the time still trains, from half the examples.
+
+
+\section{ConvBlockForwardTrain}
+\begin{lstlisting}[style=sig]
+def ConvBlockForwardTrain(x, params, prefix, nLayers)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{x}] \normalfont the input feature maps
+  \item[{params}] \normalfont the parameter dictionary
+  \item[{prefix}] \normalfont the block's name prefix
+  \item[{nLayers}] \normalfont how many groups the block contains
+\end{description}
+
+\noindent\textbf{Output.} a pair: the output, and a list of per-group caches.
+
+
+\paragraph{What it adds to the inference version}
+The same convolution, normalise, activate repetition, with the batch-statistics version of the normalisation and with every group's three caches collected into a list.
+
+
+\paragraph{Why the caches are kept in order}
+The list is built front to back as the groups are applied, and the backward pass walks it in reverse. That correspondence is the whole structure of backpropagation through a sequence of layers: the gradient must pass through them in the opposite order to the data, so the last cache created is the first one needed.
+
+
+\begin{quote}\small\itshape The running statistics are updated in place inside the parameter dictionary rather than returned. They are not parameters in the usual sense, since no gradient is computed for them and no optimiser touches them, but they must be saved in the checkpoint, so they live alongside the parameters and are excluded from the trainable set by name.\end{quote}
+
+\section{ConvBlockBackwardTrain}
+\begin{lstlisting}[style=sig]
+def ConvBlockBackwardTrain(dout, caches, prefix, nLayers)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{dout}] \normalfont the gradient with respect to the block's output
+  \item[{caches}] \normalfont the per-group caches from the forward pass
+  \item[{prefix}] \normalfont the block's name prefix
+  \item[{nLayers}] \normalfont how many groups
+\end{description}
+
+\noindent\textbf{Output.} a pair: the gradient with respect to the block's input, and a dictionary of weight gradients keyed as the parameters are.
+
+
+\paragraph{The reversal}
+The groups are walked in reverse, and within each group the three layers are walked in reverse too: activation, then normalisation, then convolution. Each step takes the gradient from the step before it, so the gradient flows back through the block in exactly the opposite order to the way the data flowed forward.
+
+
+\paragraph{Why the gradients are keyed by parameter name}
+The weight gradients are collected into a dictionary using the same names the parameters themselves use. That is what lets the optimiser be written without any knowledge of the network's structure: it iterates over the parameters and looks up each one's gradient by name. The names are therefore a contract between three separate things, the initialiser, the backward pass and the checkpoint format, and a mismatch in any of them fails with a missing key rather than silently training the wrong array.
+
+
+\begin{quote}\small\itshape The variable holding the gradient is reassigned at each step rather than being given a new name per layer. That reads oddly but is exactly right: there is only ever one gradient travelling backwards at a time, and naming its successive values separately would suggest they coexist.\end{quote}
+
+\section{LstmForwardTrain}
+\begin{lstlisting}[style=sig]
+def LstmForwardTrain(x, weightIh, weightHh, biasIh, biasHh, hiddenSize)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{x}] \normalfont the input sequence, shaped (time, batch, features)
+  \item[{weightIh}] \normalfont the input weights, all four gates stacked
+  \item[{weightHh}] \normalfont the recurrent weights
+  \item[{biasIh}] \normalfont the input bias
+  \item[{biasHh}] \normalfont the recurrent bias
+  \item[{hiddenSize}] \normalfont the width of the hidden and cell state
+\end{description}
+
+\noindent\textbf{Output.} a pair: the output at every step, and a cache holding every intermediate value at every step.
+
+
+\paragraph{What it adds to the inference version}
+The same gate arithmetic as LstmForward in recognise.py, with one addition that dominates its memory use: at every time step it records the input, the two incoming states, all four gate activations and the squashed cell value.
+
+
+\paragraph{Why so much must be kept}
+The backward pass needs each of them, and the reason is that the LSTM's updates are products of the gates with the states. Differentiating a product requires both factors, so the gradient with respect to the forget gate needs the previous cell value and the gradient with respect to the previous cell needs the forget gate. None of it can be recomputed cheaply either, because recomputing the state at step t requires replaying every step before it.
+
+
+\begin{equation}
+\mathrm{memory} \;\approx\; T \times B \times \big(\,\mathrm{inputSize} + 6H\,\big)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{memory}$}] \normalfont the number of values cached, per LSTM direction per layer
+  \item[{$T$}] \normalfont the sequence length, 160 columns here
+  \item[{$B$}] \normalfont the batch size
+  \item[{$\mathrm{inputSize}$}] \normalfont the width of the input at that layer
+  \item[{$H$}] \normalfont the hidden size, 256
+  \item[{$6H$}] \normalfont the six vectors kept per step: two incoming states, four gates, and the squashed cell, less the one that is recomputed
+\end{description}
+With two layers and two directions that is eight such caches. At a hidden size of 256 and 160 steps it comes to a few million values per batch item, which is why the text model trains with small batches. This is the characteristic cost of \textbf{backpropagation through time}: the whole history of the sequence must be held in memory until the backward pass has consumed it.
+
+
+\begin{quote}\small\itshape The step caches are kept in a plain list indexed by time, built forwards and consumed backwards, which is the same arrangement as the convolution block's cache list and for the same reason.\end{quote}
+
+\section{LstmBackward}
+\begin{lstlisting}[style=sig]
+def LstmBackward(dOutputs, cache)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{dOutputs}] \normalfont the gradient with respect to the output at every step
+  \item[{cache}] \normalfont the per-step values and the weights
+\end{description}
+
+\noindent\textbf{Output.} five gradients: with respect to the input sequence, both weight matrices and both biases.
+
+
+\paragraph{Backpropagation through time}
+An LSTM applies the same weights at every step, so the loss depends on each weight through all 160 steps. By the shared-parameter rule the weight gradient is the sum over the steps, and the state gradients must be carried backwards through them, because the state at step t influenced the output at every later step. The procedure is \textbf{backpropagation through time}: walk the steps in reverse, accumulating weight gradients and carrying state gradients.
+
+
+\paragraph{The two gradients carried backwards}
+At each step two quantities arrive from the step after it: the gradient with respect to the hidden state and the gradient with respect to the cell state. The hidden gradient is combined with the gradient arriving directly from the layer above, because the hidden state at step t is used twice, as that step's output and as the next step's input.
+
+
+\begin{equation}
+\mathrm{d}h_t \;=\; \frac{\partial L}{\partial y_t} \;+\; \mathrm{d}h_{t+1}^{\mathrm{carried}}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{d}h_t$}] \normalfont the total gradient with respect to the hidden state at step t
+  \item[{$\frac{\partial L}{\partial y_t}$}] \normalfont the gradient arriving from the layer above for this step's output
+  \item[{$\mathrm{d}h_{t+1}^{\mathrm{carried}}$}] \normalfont the gradient the following step computed with respect to its incoming hidden state
+\end{description}
+Adding the two is the single most important line of the function. Omitting the carried term computes the gradient as though each step's output were independent, which trains something that works tolerably on short sequences and never learns any long-range dependency, which is the entire reason an LSTM was chosen.
+
+
+\paragraph{Differentiating the two state updates}
+The updates are h = o $\cdot$ tanh(c) and c = f $\cdot$ c\_prev + i $\cdot$ g, and everything else follows from differentiating them. Each gate's gradient is the gradient of whatever it multiplied, and then each is passed back through its own squashing function.
+
+
+\begin{equation}
+\begin{aligned} \mathrm{d}o &= \mathrm{d}h \odot \tanh(c_t) \\[2pt] \mathrm{d}c &= \mathrm{d}c^{\mathrm{carried}} + \mathrm{d}h \odot o \odot \big(1 - \tanh^2(c_t)\big) \\[2pt] \mathrm{d}f &= \mathrm{d}c \odot c_{t-1} \\[2pt] \mathrm{d}i &= \mathrm{d}c \odot g \\[2pt] \mathrm{d}g &= \mathrm{d}c \odot i \\[2pt] \mathrm{d}c_{t-1} &= \mathrm{d}c \odot f \end{aligned}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{d}o,\,\mathrm{d}f,\,\mathrm{d}i,\,\mathrm{d}g$}] \normalfont the gradients with respect to the four gate outputs
+  \item[{$\mathrm{d}c$}] \normalfont the gradient with respect to this step's cell state
+  \item[{$\mathrm{d}c_{t-1}$}] \normalfont the gradient carried back to the previous cell state
+  \item[{$c_t,\,c_{t-1}$}] \normalfont the cell states at this and the previous step
+  \item[{$\odot$}] \normalfont elementwise multiplication
+  \item[{$1-\tanh^2$}] \normalfont the derivative of the hyperbolic tangent
+\end{description}
+Every line is the product rule: the gradient with respect to one factor is the incoming gradient times the other factor. The cell gradient has two contributions because the cell is used twice, revealed through the hidden state at this step and carried forward to the next, which is the same double-use argument as for the hidden state.
+
+
+\paragraph{The gradient path that makes long memory possible}
+The last line is worth isolating. The gradient carried back to the previous cell state is the current cell gradient multiplied by the forget gate, and by nothing else: no weight matrix is applied along this path. So if the forget gate is near 1, the gradient passes backwards through that step essentially unchanged, and it can do so for many steps in succession without shrinking.
+
+That is the precise sense in which the LSTM solves the vanishing gradient problem. A plain recurrent layer multiplies the carried gradient by its recurrent weight matrix at every step, so after a hundred steps it has been multiplied by that matrix a hundred times and is either negligible or enormous. The LSTM's cell path multiplies only by gate values the network itself controls, and it can learn to set them near 1 where information must survive.
+
+
+\paragraph{Through the squashing functions}
+Each gate gradient is then passed back through its own activation to reach the pre-activation value, which is what the weights actually produced. For the three sigmoid gates the derivative is the output times one minus the output, and for the candidate it is one minus the output squared. Both are written in terms of the output rather than the input, which is why the cache holds the gate activations and not the pre-activations.
+
+
+\paragraph{The weight gradients}
+The four pre-activation gradients are concatenated back into the stacked layout the weights use, and the weight gradients are then matrix products of that stack with the step's input and previous hidden state. They are accumulated across steps with addition rather than assignment, which is the shared-parameter sum. Both biases receive the same gradient, since both were added to the same quantity, which is the backward counterpart of the inference note that only their sum has any effect.
+
+
+\begin{quote}\small\itshape The input gradient is written per step into a preallocated array rather than appended, because the steps are visited in reverse and the result must come back in forward order. Appending and reversing would also work; writing by index makes the ordering explicit at the point it matters.\end{quote}
+
+\section{BidirectionalLstmForwardTrain}
+\begin{lstlisting}[style=sig]
+def BidirectionalLstmForwardTrain(x, paramsFwd, paramsBwd, hiddenSize)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{x}] \normalfont the input sequence
+  \item[{paramsFwd}] \normalfont the forward direction's parameters
+  \item[{paramsBwd}] \normalfont the backward direction's parameters
+  \item[{hiddenSize}] \normalfont the width per direction
+\end{description}
+
+\noindent\textbf{Output.} a pair: the two directions concatenated, and a cache holding both directions' caches.
+
+
+\paragraph{What it does}
+Runs both directions as in the inference version and keeps both caches. Each direction is a complete independent LSTM with its own weights, so each has its own full set of per-step values, and the memory cost is doubled.
+
+
+\begin{quote}\small\itshape The backward direction is run on a reversed view of the input, which is free, and its output is reversed again to align positions. The reversals must be undone consistently in the backward pass too, which is the one real opportunity for error in an otherwise mechanical function.\end{quote}
+
+\section{BidirectionalLstmBackward}
+\begin{lstlisting}[style=sig]
+def BidirectionalLstmBackward(dout, cache)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{dout}] \normalfont the gradient with respect to the concatenated output
+  \item[{cache}] \normalfont both directions' caches and the hidden size
+\end{description}
+
+\noindent\textbf{Output.} the gradient with respect to the input, and both directions' weight gradients.
+
+
+\paragraph{Splitting the gradient}
+The forward pass concatenated the two directions along the feature axis, so the incoming gradient is split at the same point: the first half belongs to the forward direction and the second to the backward one. Concatenation and splitting are exact inverses, so no arithmetic is involved.
+
+
+\paragraph{Why the two input gradients are added}
+Both directions read the \emph{same} input sequence, so the input is a shared quantity and by the shared-parameter rule its gradient is the sum of the two directions' contributions. This is easy to get wrong by treating them as separate inputs and returning only one, which halves the gradient reaching the convolutional backbone and makes it train at half rate with no visible symptom.
+
+
+\paragraph{The reversal, undone}
+The backward direction's gradient must be reversed before being handed to its LSTM backward pass and reversed again afterwards, mirroring the two reversals of the forward pass. The invariant to hold on to is that every array crossing the boundary of this function is in forward time order, and the reversed order exists only inside it.
+
+
+\section{MultilayerBidirectionalLstmForwardTrain}
+\begin{lstlisting}[style=sig]
+def MultilayerBidirectionalLstmForwardTrain(x, layerParams, hiddenSize)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{x}] \normalfont the input sequence
+  \item[{layerParams}] \normalfont a list of per-layer parameters
+  \item[{hiddenSize}] \normalfont the width per direction
+\end{description}
+
+\noindent\textbf{Output.} a pair: the final output, and the list of per-layer caches.
+
+
+\paragraph{What it does}
+Applies each bidirectional layer in turn, collecting the caches. The same build-forwards, consume-backwards arrangement as the convolution block, one level up: a list of layer caches, each of which holds two direction caches, each of which holds a list of step caches.
+
+
+\section{MultilayerBidirectionalLstmBackward}
+\begin{lstlisting}[style=sig]
+def MultilayerBidirectionalLstmBackward(dout, caches)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{dout}] \normalfont the gradient with respect to the final output
+  \item[{caches}] \normalfont the per-layer caches
+\end{description}
+
+\noindent\textbf{Output.} the gradient with respect to the input, and every layer's weight gradients.
+
+
+\paragraph{What it does}
+Walks the layers in reverse, passing each layer's input gradient to the layer below and collecting the weight gradients. There is no arithmetic of its own; it is the sequencing that makes the chain rule hold across the stack.
+
+
+\begin{quote}\small\itshape This completes the recurrent half. The gradient arriving here came from the text head, and the gradient leaving goes to the height-collapsing pool, which converts it back from a sequence gradient into an image gradient. Those two conversions, forward and backward, are what join the convolutional and recurrent halves of the reader.\end{quote}
+
+\section{LogSumExp}
+\begin{lstlisting}[style=sig]
+def LogSumExp(a, b)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{a}] \normalfont one array of log-space values
+  \item[{b}] \normalfont another of the same shape
+\end{description}
+
+\noindent\textbf{Output.} the logarithm of the sum of their exponentials, computed without overflow.
+
+
+\paragraph{What it is for}
+CTC adds probabilities together, and the probabilities are held as logarithms to avoid underflow, as explained under LogSoftmax. But a logarithm turns a \emph{product} into a sum, not a \emph{sum} into anything simple: adding two probabilities held as logarithms requires this function.
+
+
+\begin{equation}
+\log(e^a + e^b) \;=\; m + \log\!\big(e^{a-m} + e^{b-m}\big), \qquad m = \max(a,b)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$a,\,b$}] \normalfont the two log-space values being combined
+  \item[{$m$}] \normalfont the larger of the two, factored out
+  \item[{$e^{a-m}$}] \normalfont at most 1, since a is at most m, so it cannot overflow
+\end{description}
+The identity follows from factoring the larger exponential out of the sum and taking the logarithm. Its value is numerical: the exponentials in the rearranged form are at most 1, so nothing can overflow, while a direct computation would exponentiate a log probability of $-$800 and get zero, or of a large positive number and get infinity.
+
+
+\paragraph{The infinity case, and why it needs handling}
+A forbidden transition is represented by negative infinity, meaning zero probability. When both arguments are that, the maximum is negative infinity and the rearranged expression computes infinity minus infinity, which is not a number. The answer should be negative infinity: the sum of two impossibilities is still impossible.
+
+So the result is selected explicitly in that case. The code comment notes that numpy evaluates both branches of the selection eagerly, so the invalid arithmetic still happens and still warns even though its result is discarded, and the warning is suppressed for that reason. Suppressing a warning is usually a bad sign; here it is suppressing a warning about a value that has already been correctly replaced, and the suppression is scoped narrowly to this one expression.
+
+
+\begin{quote}\small\itshape Preserving negative infinity exactly, rather than using a large negative number, matters for correctness: an impossible path must contribute exactly nothing, and a finite stand-in contributes a tiny amount that accumulates over 160 steps and can make a forbidden alignment the winner.\end{quote}
+
+\section{CtcLoss}
+\begin{lstlisting}[style=sig]
+def CtcLoss(rawLogits, targets)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{rawLogits}] \normalfont the network's raw output, shaped (time, batch, classes)
+  \item[{targets}] \normalfont the label sequences, one per batch item
+\end{description}
+
+\noindent\textbf{Output.} a pair: the mean loss over the batch, and the gradient with respect to the raw output.
+
+
+\paragraph{What is being computed}
+This is the heart of training the reader. The label says what was written and not where, so the loss cannot compare the output to a target column by column. Instead CTC \cite{graves2006} defines the probability of the target text as the total probability of \emph{every} alignment of it to the columns, and the loss is the negative logarithm of that.
+
+
+\begin{equation}
+L \;=\; -\log P(\mathbf{y} \mid \mathbf{x}) \;=\; -\log \!\!\sum_{\pi \,\in\, \mathcal{B}^{-1}(\mathbf{y})} \prod_{t=1}^{T} p_t\big(\pi_t\big)
+\end{equation}
+\noindent\emph{Source: }\cite{graves2006}
+
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$L$}] \normalfont the loss for one example
+  \item[{$\mathbf{y}$}] \normalfont the target text
+  \item[{$\mathbf{x}$}] \normalfont the input image
+  \item[{$\pi$}] \normalfont one alignment: a choice of label for each column
+  \item[{$\mathcal{B}^{-1}(\mathbf{y})$}] \normalfont the set of every alignment that collapses to the target text, by the merge-then-remove-blanks rule described under DecodeCtc
+  \item[{$p_t(\pi_t)$}] \normalfont the network's probability for the label this alignment chose at column t
+  \item[{$T$}] \normalfont the number of columns
+\end{description}
+The negative logarithm is the standard form for a loss built from a probability: maximising the probability is minimising its negative logarithm, and the logarithm turns the product over columns into a sum, which is both numerically stable and what makes the gradient manageable.
+
+
+\paragraph{Why the sum cannot be computed directly}
+The number of alignments is enormous. A 40-character label across 160 columns has on the order of 10 to the power 40 valid alignments, so enumerating them is as impossible as enumerating the seam paths in segment.py, and for the same reason. The remedy is also the same: dynamic programming over a quantity that can be built up column by column.
+
+
+\paragraph{The forward variable}
+
+\begin{equation}
+\alpha_t(s) \;=\; \Big(\alpha_{t-1}(s) + \alpha_{t-1}(s-1) + \alpha_{t-1}(s-2)\Big) \cdot p_t\big(\mathrm{ext}[s]\big)
+\end{equation}
+\noindent\emph{Source: }\cite{graves2006}
+
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\alpha_t(s)$}] \normalfont the total probability of every alignment that reaches state s of the extended label sequence by column t
+  \item[{$\mathrm{ext}[s]$}] \normalfont the label at position s of the extended sequence, built as blank, label, blank, label, … as described under CtcForcedAlign
+  \item[{$p_t(\cdot)$}] \normalfont the network's probability for that label at column t
+  \item[{$\alpha_{t-1}(s-2)$}] \normalfont the skip term, excluded when the skip is forbidden
+\end{description}
+The recurrence is the same topology as the forced alignment: the same three transitions and the same restriction that a skip may not land on a blank or repeat the label two states back. The one crucial difference is that alignment took the maximum of the three arrivals and this takes the \textbf{sum}.
+
+
+\paragraph{Why sum here and maximum there}
+This is the distinction worth being clear about. Alignment wants one particular layout, the most probable, so it takes the best arrival. Training wants the total probability of the text however it is laid out, so it adds the arrivals: every alignment that reaches this state contributes, and their probabilities add because they are mutually exclusive ways of the same thing happening.
+
+Summing is also what makes CTC trainable at all. If training used the maximum it would be committing to one alignment and pushing the network toward it, which would be arbitrary early on when the network has no idea where anything is. Summing lets the network be rewarded for any layout that spells the right text, and the alignment emerges from training rather than being imposed.
+
+In log space the sum is performed by LogSumExp, applied twice to combine the three terms, which is why that function exists.
+
+
+\paragraph{The backward variable}
+
+\begin{equation}
+\beta_t(s) \;=\; \sum_{s' \in \{s,\,s+1,\,s+2\}} \beta_{t+1}(s') \cdot p_{t+1}\big(\mathrm{ext}[s']\big)
+\end{equation}
+\noindent\emph{Source: }\cite{graves2006}
+
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\beta_t(s)$}] \normalfont the total probability of completing the label from state s at column t onwards
+  \item[{$s'$}] \normalfont the states reachable from s, the mirror of the forward transitions
+  \item[{$p_{t+1}(\cdot)$}] \normalfont the probability of the label emitted on arrival
+\end{description}
+The forward variable measures the probability of everything \emph{before} a point and the backward variable the probability of everything \emph{after} it. Both are needed because the gradient requires knowing, for each column and each label, the total probability of all the complete alignments passing through that point, and that is the product of the two.
+
+
+\paragraph{The total probability, and the loss}
+The total probability of the label is the forward variable at the final column, in either of the two states a valid alignment may end in, the last character or the trailing blank, summed. The loss is its negative logarithm.
+
+
+\paragraph{The gradient, and why it takes this remarkably simple form}
+
+\begin{equation}
+\frac{\partial L}{\partial z_t(k)} \;=\; p_t(k) \;-\; \frac{1}{P(\mathbf{y}\mid\mathbf{x})} \!\!\sum_{s \,:\, \mathrm{ext}[s] = k} \!\! \alpha_t(s)\,\beta_t(s)
+\end{equation}
+\noindent\emph{Source: }\cite{graves2006}
+
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\frac{\partial L}{\partial z_t(k)}$}] \normalfont the gradient with respect to the raw score for class k at column t
+  \item[{$p_t(k)$}] \normalfont the network's current probability for that class, from the softmax
+  \item[{$\alpha_t(s)\beta_t(s)$}] \normalfont the total probability of all complete alignments passing through state s at column t
+  \item[{$\sum_{s : \mathrm{ext}[s]=k}$}] \normalfont summed over every state of the extended sequence that emits class k, since a character may appear several times
+  \item[{$P(\mathbf{y}\mid\mathbf{x})$}] \normalfont the total probability of the label, which normalises the product into a proportion
+\end{description}
+The second term is called the \textbf{occupation}: among all the alignments that spell the target, the proportion that have class k at column t. So the gradient is the difference between what the network currently predicts for that class and what it \emph{should} predict given the target. Where the network already agrees with the occupation the gradient is zero; where it predicts too much of a class the gradient is positive and that score is pushed down.
+
+That this comes out as a simple difference is the same simplification that makes the cross-entropy gradient a difference, and it arises for the same reason: the softmax and the logarithm in the loss are inverse operations, so differentiating their composition cancels the awkward terms. It is why the gradient is computed with respect to the raw logits rather than with respect to the log probabilities, even though the loss was defined on the latter: taking the whole softmax and loss together is far simpler than either separately.
+
+
+\paragraph{Why there is a loop over the batch}
+Each example has its own label and so its own length of extended sequence, so the dynamic programming tables are different shapes and cannot be computed as one array. The loop over the batch is therefore unavoidable, and inside it the loops over time and over states remain in Python too, which makes this the slowest function in the file. The small loop over states checking the skip restriction could be vectorised by precomputing the mask once per example instead of once per column, which is the obvious remaining optimisation.
+
+
+\begin{quote}\small\itshape Both the loss and the gradient are divided by the batch size, so the loss is a mean over examples rather than a total. That makes it comparable between batch sizes, which matters because the learning rate is tuned against the gradient's magnitude: without the division, doubling the batch size would double the gradient and effectively double the learning rate.\end{quote}
+
+\section{CrossEntropyLoss}
+\begin{lstlisting}[style=sig]
+def CrossEntropyLoss(logits, targetIdx)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{logits}] \normalfont the raw scores, one row per example
+  \item[{targetIdx}] \normalfont the correct class index for each example
+\end{description}
+
+\noindent\textbf{Output.} a pair: the mean loss, and the gradient with respect to the logits.
+
+
+\paragraph{What it is for}
+The loss for the writer namer, which is an ordinary classification: one correct answer per example, and its position is known, so none of the CTC machinery is needed.
+
+
+\begin{equation}
+L \;=\; -\frac{1}{B}\sum_{b=1}^{B} \log p_b\big(c_b\big)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$L$}] \normalfont the mean loss over the batch
+  \item[{$B$}] \normalfont the batch size
+  \item[{$c_b$}] \normalfont the correct class for example b
+  \item[{$p_b(c_b)$}] \normalfont the probability the network assigned to that class, from the softmax
+\end{description}
+
+\paragraph{Why the negative logarithm of the correct class}
+\textbf{Cross-entropy} for a single correct answer reduces to the negative logarithm of the probability assigned to it. Its shape is what makes it a good loss: a probability of 1 gives a loss of 0, a probability of 0.5 gives about 0.69, and as the probability approaches zero the loss grows without bound. So being confidently wrong is punished far more than being uncertain, which is the behaviour wanted from a classifier that reports confidences.
+
+
+\paragraph{The gradient}
+
+\begin{equation}
+\frac{\partial L}{\partial z_b(k)} \;=\; \frac{1}{B}\Big( p_b(k) - [\,k = c_b\,] \Big)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\frac{\partial L}{\partial z_b(k)}$}] \normalfont the gradient with respect to the raw score for class k of example b
+  \item[{$p_b(k)$}] \normalfont the predicted probability for that class
+  \item[{$[\,k = c_b\,]$}] \normalfont 1 for the correct class and 0 for every other
+  \item[{$\frac{1}{B}$}] \normalfont the batch mean, matching the loss
+\end{description}
+The gradient is the predicted distribution minus the target distribution, the latter being 1 on the correct class and 0 elsewhere. The code expresses it exactly that way: copy the probabilities and subtract one from the correct class. Every wrong class is pushed down in proportion to how much it was predicted, and the right one is pushed up in proportion to how much it was missed.
+
+The same cancellation as in CTC produces this. Differentiating the softmax alone gives a full matrix of terms, and differentiating the logarithm gives a reciprocal, and composing them cancels almost everything. This is the standard reason softmax and cross-entropy are implemented as one unit rather than two layers.
+
+
+\begin{quote}\small\itshape The log-sum-exp stabilisation is applied here too, the maximum being subtracted before exponentiating, for the reason given under LogSoftmax. It costs one pass and removes any possibility of overflow on a large logit.\end{quote}
+
+\section{RMSprop}
+\begin{lstlisting}[style=sig]
+class RMSprop
+\end{lstlisting}
+
+\noindent\textbf{Output.} an optimiser object holding the parameters and a running average of squared gradients.
+
+
+\paragraph{The problem plain gradient descent has}
+A single learning rate must suit every weight, and it cannot. Different weights have gradients of wildly different magnitudes, by orders of magnitude between layers and between a bias and a convolution weight. A rate small enough to be stable for the largest gradients is far too small for the smallest, so some weights barely move while others oscillate.
+
+
+\paragraph{The idea: divide by the typical gradient size}
+\textbf{RMSprop} \cite{tieleman2012} keeps, for each weight, a running average of its squared gradient, and divides the step by the square root of that. A weight whose gradients are habitually large is divided by a large number and takes a small step; one with habitually small gradients takes a comparatively large one. The effect is that every weight moves at a comparable rate regardless of its gradient's scale.
+
+
+\begin{equation}
+v \;\leftarrow\; \alpha\,v + (1-\alpha)\,g^2, \qquad w \;\leftarrow\; w - \eta\,\frac{g}{\sqrt{v} + \epsilon}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$v$}] \normalfont the running average of the squared gradient, per weight
+  \item[{$\alpha$}] \normalfont how much of the old average to keep, 0.99 here
+  \item[{$g$}] \normalfont the current gradient for this weight
+  \item[{$w$}] \normalfont the weight
+  \item[{$\eta$}] \normalfont the learning rate
+  \item[{$\epsilon$}] \normalfont a small constant, 1e-8, so a weight with no gradient history does not divide by zero
+\end{description}
+The square root is what makes the division dimensionally sensible: the running average is of squared gradients, so its square root is in the same units as a gradient, and the ratio is dimensionless. The name is from that root-mean-square. At 0.99 the average covers roughly the last hundred steps, so it describes the gradient's recent typical size rather than this step's value, which is what makes the scaling stable.
+
+
+\begin{quote}\small\itshape Weight decay here is added to the gradient, which is the classical formulation. The entry for AdamW explains why that interacts badly with the per-weight scaling and what the alternative is.\end{quote}
+
+\section{AdamW}
+\begin{lstlisting}[style=sig]
+class AdamW
+\end{lstlisting}
+
+\noindent\textbf{Output.} an optimiser object holding the parameters and two running averages per weight.
+
+
+\paragraph{What it adds to RMSprop}
+\textbf{Adam} \cite{kingma2015} keeps a running average of the gradient itself as well as of its square, and uses the smoothed gradient for the step direction. The first is \textbf{momentum}: averaging successive gradients cancels the part that fluctuates between batches and keeps the part that is consistent, so the step follows the persistent downhill direction rather than the noise of whichever examples happened to be in this batch.
+
+
+\begin{equation}
+\begin{aligned} m &\leftarrow \beta_1 m + (1-\beta_1)\,g \\[2pt] v &\leftarrow \beta_2 v + (1-\beta_2)\,g^2 \\[2pt] \hat{m} &= \frac{m}{1-\beta_1^{\,t}}, \qquad \hat{v} = \frac{v}{1-\beta_2^{\,t}} \\[2pt] w &\leftarrow w - \eta\left(\frac{\hat{m}}{\sqrt{\hat{v}}+\epsilon} + \lambda w\right) \end{aligned}
+\end{equation}
+\noindent\emph{Source: }\cite{kingma2015}
+
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$m$}] \normalfont the running average of the gradient, the first moment
+  \item[{$v$}] \normalfont the running average of its square, the second moment
+  \item[{$\beta_1$}] \normalfont the decay for the first, 0.9: an average over roughly ten steps
+  \item[{$\beta_2$}] \normalfont the decay for the second, 0.999: roughly a thousand steps
+  \item[{$t$}] \normalfont the step number, counted from 1
+  \item[{$\hat{m},\,\hat{v}$}] \normalfont the bias-corrected averages
+  \item[{$\lambda$}] \normalfont the weight decay coefficient
+  \item[{$\eta$}] \normalfont the learning rate
+\end{description}
+
+\paragraph{Why the averages must be bias-corrected}
+Both averages start at zero, which is not a neutral starting point but a strong claim that the gradient is zero. After one step the first moment is only one tenth of the observed gradient, and the second is one thousandth of its square, so early steps would be far too small and, worse, badly misproportioned between the two, since they are biased by different amounts.
+
+The correction divides each by one minus its decay raised to the step number, which is exactly the total weight the average has accumulated so far. At step 1 the first moment is divided by 0.1, recovering the full gradient; by step 100 the divisor is nearly 1 and the correction fades away. So the optimiser behaves sensibly from its very first step, which matters because the first steps are taken from random weights where large corrections are most needed.
+
+
+\paragraph{Why the W, and what it fixes}
+\textbf{Weight decay} shrinks every weight slightly at each step, which discourages large weights and reduces overfitting. Classically it is implemented by adding a multiple of the weight to its gradient, which for plain gradient descent is exactly equivalent.
+
+With Adam it is not equivalent, and that is the point of AdamW \cite{loshchilov2019}. A decay term added to the gradient passes through the division by the square-root average like any other gradient, so a weight with large gradients has its decay divided down and is barely regularised, while one with small gradients is decayed heavily. The strength of the regularisation therefore varies per weight in a way nobody intended, and it depends on the gradient history rather than on the weight.
+
+The fix is to apply the decay to the weight directly, outside the scaled step, which is the separate term in the update above. Every weight is then shrunk by the same proportion, which is what weight decay is supposed to mean. This is called \textbf{decoupled} weight decay, and the W in the name stands for it.
+
+
+\begin{quote}\small\itshape Writing the decay inside the same parenthesis as the scaled step means it is multiplied by the learning rate, so the effective decay changes as the learning rate is annealed. The original formulation decouples it from the learning rate as well. The difference matters mainly late in training, when the rate has fallen and the decay falls with it.\end{quote}
+
+\section{ReduceLrOnPlateau}
+\begin{lstlisting}[style=sig]
+class ReduceLrOnPlateau
+\end{lstlisting}
+
+\noindent\textbf{Output.} a scheduler object that lowers the learning rate when progress stalls.
+
+
+\paragraph{Why the learning rate should change during training}
+A large rate is right early on, when the weights are far from any good configuration and large steps make rapid progress. It is wrong later, when the weights are close and a large step jumps past the minimum and bounces around it. So the rate should start large and end small, and a \textbf{scheduler} is what changes it.
+
+
+\paragraph{This scheduler's rule}
+It watches a metric, usually the validation loss, and remembers the best value seen. Each epoch that fails to beat the best counts as a bad epoch; once the bad epochs exceed the patience, the learning rate is multiplied by the factor and the count resets. A new best resets it too.
+
+
+\paragraph{Why it reacts rather than following a schedule}
+The advantage over a fixed schedule is that it needs no estimate of how long training will take. It lowers the rate exactly when progress has stopped, which is the evidence that the current rate is now too large, whatever epoch that happens to be. The disadvantage is that it only reacts after the patience has elapsed, so several epochs are spent at a rate already known to be too large.
+
+
+\paragraph{Why the patience is needed}
+Validation loss is noisy, because it is measured on a finite set and the weights change between epochs. A single epoch failing to improve means little. Requiring five consecutive failures distinguishes a genuine plateau from the ordinary fluctuation of a metric that is still improving overall. Too little patience lowers the rate on noise and ends training early at a rate too small to make progress.
+
+
+\begin{quote}\small\itshape The floor on the learning rate stops the repeated halving from reaching zero, at which point training would continue indefinitely without changing anything. It is a way of bounding wasted time rather than a property of the method.\end{quote}
+
+\section{CosineAnnealingLr}
+\begin{lstlisting}[style=sig]
+class CosineAnnealingLr
+\end{lstlisting}
+
+\noindent\textbf{Output.} a scheduler object that eases the learning rate down a cosine curve.
+
+
+\paragraph{The schedule}
+
+\begin{equation}
+\eta_t \;=\; \frac{\eta_0}{2}\left(1 + \cos\!\left(\frac{\pi t}{T}\right)\right)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\eta_t$}] \normalfont the learning rate at epoch t
+  \item[{$\eta_0$}] \normalfont the initial learning rate
+  \item[{$t$}] \normalfont the current epoch
+  \item[{$T$}] \normalfont the total number of epochs planned
+  \item[{$\cos$}] \normalfont the cosine, which runs from 1 at the start to $-$1 at the end over half a period
+\end{description}
+At epoch 0 the cosine is 1 and the rate is the full initial value; at the final epoch it is $-$1 and the rate is zero, with a smooth decrease between.
+
+
+\paragraph{Why a cosine rather than a straight line}
+The shape is what recommends it. The cosine is flat at both ends and steepest in the middle, so training spends a while at nearly the full rate, then drops briskly, then spends a while at a very small rate. Both plateaux are useful: the first makes rapid early progress, and the second lets the weights settle precisely into a minimum rather than continuing to step past it. A linear decay spends equal time at every rate, including the middling ones that are neither fast nor precise.
+
+
+\paragraph{The trade-off against the plateau scheduler}
+This one requires knowing the total number of epochs in advance, since the schedule is defined against it. In exchange it never wastes epochs at a rate that has become too large, because it lowers the rate continuously rather than waiting for evidence. Having both available lets the choice be made per training run according to whether the length is known.
+
+
+\section{ClipGradNorm}
+\begin{lstlisting}[style=sig]
+def ClipGradNorm(grads, maxNorm=5.0)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{grads}] \normalfont the gradient dictionary, modified in place
+  \item[{maxNorm}] \normalfont the greatest allowed total magnitude, default 5.0
+\end{description}
+
+\noindent\textbf{Output.} the total gradient magnitude before any clipping.
+
+
+\paragraph{The problem it addresses}
+Recurrent networks occasionally produce an enormous gradient. A particular batch, often one with an unusually long or badly labelled line, can give gradients orders of magnitude larger than usual, and a single step with such a gradient moves the weights so far that everything learned so far is destroyed. Training then has to recover from near-random weights, and hours of work are lost to one batch. This is the \textbf{exploding gradient} problem.
+
+
+\paragraph{The remedy}
+
+\begin{equation}
+\|g\| \;=\; \sqrt{\sum_{k} \sum_{i} g_k[i]^2}, \qquad g \;\leftarrow\; g \cdot \min\!\left(1,\; \frac{\tau}{\|g\| + \delta}\right)
+\end{equation}
+\noindent\emph{Source: }\cite{pascanu2013}
+
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\|g\|$}] \normalfont the total gradient norm: every parameter's gradient treated as one long vector
+  \item[{$g_k[i]$}] \normalfont element i of the gradient for parameter k
+  \item[{$\tau$}] \normalfont the maximum norm allowed, 5.0
+  \item[{$\delta$}] \normalfont a tiny constant preventing a division by zero
+  \item[{$\min(1,\cdot)$}] \normalfont so the scaling only ever shrinks
+\end{description}
+If the total magnitude exceeds the limit, every gradient is multiplied by the same factor so that the total comes to exactly the limit. The published remedy for exploding gradients is precisely this \cite{pascanu2013}.
+
+
+\paragraph{Why the whole network is scaled together}
+This is the part worth understanding. The norm is computed over every parameter at once, and one factor is applied to all of them, rather than each being clipped separately. The reason is that the gradient's \emph{direction} is the useful information: it says which way the loss decreases. Scaling everything by one factor preserves that direction exactly and changes only the distance travelled. Clipping each parameter independently would shorten some components and not others, which rotates the direction into one that is not a descent direction at all, so the step might increase the loss.
+
+
+\paragraph{Why the norm is returned}
+The function returns the magnitude it measured, before any clipping, so the training loop can log it. That number is one of the most informative diagnostics available during training: a norm that is steady and comfortably below the limit means training is healthy, one that is clipped on most batches means the learning rate or the limit is wrong, and a sudden spike identifies the batch that caused it. Without the return value, clipping would silently conceal the very instability it is protecting against.
+
+
+\section{EncodeCrop}
+\begin{lstlisting}[style=sig]
+def EncodeCrop(arr)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{arr}] \normalfont a line crop as an array
+\end{description}
+
+\noindent\textbf{Output.} the crop packed into bytes for storage.
+
+
+\paragraph{Why crops are cached at all}
+Extracting line crops from a page is slow: the page must be read, binarised, analysed for line positions and cut. Training visits every line once per epoch for dozens of epochs, so repeating that work would dominate the run. The crops are therefore extracted once and stored.
+
+
+\paragraph{What encoding means here}
+The array is flattened into a byte sequence with its shape recorded alongside, so it can be written into a single file and read back by offset. Storing each crop as a separate image file would mean tens of thousands of small files, which is slow to open and wasteful of disk, since a filesystem allocates a whole block to a file however small.
+
+
+\section{DecodeCrop}
+\begin{lstlisting}[style=sig]
+def DecodeCrop(raw)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{raw}] \normalfont the stored bytes
+\end{description}
+
+\noindent\textbf{Output.} the crop as an array again.
+
+
+\paragraph{What it does}
+Reverses the encoding: reads the shape and reinterprets the bytes as an array of that shape. Reinterpreting rather than converting means no arithmetic is performed and no copy is made beyond the read itself, which matters because this runs for every crop of every batch of every epoch.
+
+
+\section{ReadLabelLines}
+\begin{lstlisting}[style=sig]
+def ReadLabelLines(imgPath, labelPath=None)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{imgPath}] \normalfont the page image's path
+  \item[{labelPath}] \normalfont the transcript's path, derived from the image's if not given
+\end{description}
+
+\noindent\textbf{Output.} the transcript as a list of lines.
+
+
+\paragraph{What it is for}
+Reads the text that was written on a page. Supervised training needs the correct answer for every input, and for a page of handwriting that is the transcript, typed when the page was collected.
+
+
+\paragraph{Why the transcript is per line rather than per page}
+The reader works on one line at a time, so each crop needs its own label. Keeping the transcript as one line of text per line of writing means the correspondence is positional: the n-th transcript line labels the n-th crop. That is what makes it possible to check the extraction, since a page whose crop count does not match its transcript line count has been segmented wrongly and can be rejected rather than silently mislabelled.
+
+
+\begin{quote}\small\itshape Deriving the transcript's path from the image's by convention, rather than being told it, is what lets a directory of pages be processed by listing the images alone. The cost is that the convention is implicit: a transcript named differently is simply not found, and the page is skipped.\end{quote}
+
+\section{ClusterRows}
+\begin{lstlisting}[style=sig]
+def ClusterRows(rows, maxGap=5)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{rows}] \normalfont row indices
+  \item[{maxGap}] \normalfont the largest gap that still counts as the same cluster, default 5
+\end{description}
+
+\noindent\textbf{Output.} the indices grouped into runs of nearby rows.
+
+
+\paragraph{What it is for}
+Given a set of interesting rows, such as those containing a printed rule, groups the ones that are close together. A single printed line a few pixels thick registers as several adjacent rows, and what is wanted is one entry per rule rather than one per row.
+
+
+\paragraph{The rule}
+The indices are taken in order and a new cluster is started whenever the gap to the previous one exceeds the limit. This is single-link clustering in one dimension, and it is the natural formulation when the data is ordered: two rows belong together if they are close, and closeness chains, so a run of rows each near the last forms one cluster however long it is.
+
+
+\begin{quote}\small\itshape A gap of five pixels suits the printed rules on ruled paper, which are a pixel or two thick with occasional breaks where writing crosses them. The chaining property is what bridges those breaks, and it is also the method's weakness: a dense enough sequence of separate features merges into one cluster.\end{quote}
+
+\section{FindRuleLineClusters}
+\begin{lstlisting}[style=sig]
+def FindRuleLineClusters(binaryImg, rawGrayscaleArray=None)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{binaryImg}] \normalfont the binarised page
+  \item[{rawGrayscaleArray}] \normalfont the original grey page, if available
+\end{description}
+
+\noindent\textbf{Output.} the row clusters that look like printed rules.
+
+
+\paragraph{What it is for}
+Finds the printed ruling on lined paper, so that it can be removed before the handwriting is analysed and so that its positions can hint at where the lines of writing sit.
+
+
+\paragraph{How a printed rule is recognised}
+By the same property segment.py uses: a printed rule crosses the whole page in one straight unbroken run, which handwriting never does. Rows containing an unusually long horizontal run of ink are therefore candidates, and clustering them groups each rule into one entry.
+
+
+\paragraph{Why the rules are useful as well as unwanted}
+They are removed because they corrupt the analysis, joining every letter on a line into one blob. But their positions are also the best possible evidence about where lines of writing are, because the writer wrote on them. So they are returned rather than merely deleted, and the line splitter takes them as hints.
+
+
+\begin{quote}\small\itshape This is a separate implementation from the equivalent in segment.py, because this file processes database pages and that one processes photographs, which differ enough that one routine serving both would be a compromise for each. The duplication is real but the inputs genuinely differ: a database scan has even lighting and no perspective.\end{quote}
+
+\section{RemoveStraightFormLines}
+\begin{lstlisting}[style=sig]
+def RemoveStraightFormLines(hwRegion)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{hwRegion}] \normalfont the region of the page containing handwriting
+\end{description}
+
+\noindent\textbf{Output.} the region with the printed ruling deleted.
+
+
+\paragraph{What it does}
+Deletes the long straight runs identified as printing, leaving the handwriting. The reasoning is set out at length under RemovePrintedStructure in segment.py: length, not darkness or thickness, distinguishes printing from writing, and the threshold sits in a wide gap between the two.
+
+
+\paragraph{Why the removal must be of whole runs}
+Removing the rule at the places where writing crosses it would cut the writing too, since at a crossing the same pixels belong to both. The remedy used here and in segment.py is to restrict the deletion to pixels that form part of a long run, which a letter's stroke does not, so a crossing loses the rule and keeps the letter.
+
+
+\section{DetectPageBounds}
+\begin{lstlisting}[style=sig]
+def DetectPageBounds(binaryImg, rawGrayscaleArray=None)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{binaryImg}] \normalfont the binarised page
+  \item[{rawGrayscaleArray}] \normalfont the grey page, if available
+\end{description}
+
+\noindent\textbf{Output.} the rectangle of the page that holds handwriting.
+
+
+\paragraph{What it is for}
+A database page is a scanned form, with a printed header, a typed prompt and sometimes a footer, of which only the handwritten region is wanted. This finds that region so the rest can be ignored.
+
+
+\paragraph{Why the printed parts must be excluded rather than tolerated}
+Printed text is text, so the reader would read it, and it has no corresponding transcript line, so every crop after it would be labelled with the wrong line. A single extra crop at the top of a page misaligns the whole page's labels, which is far worse than losing the page: a mislabelled example teaches the network something false, where a missing one teaches nothing.
+
+
+\begin{quote}\small\itshape This is why the crop count is checked against the transcript line count and the page rejected if they disagree. The check cannot tell which crop is wrong, only that something is, and rejecting the page is the right response: the database has thousands of pages and losing a few is cheaper than training on bad labels.\end{quote}
+
+\section{MergeUndersizedFragments}
+\begin{lstlisting}[style=sig]
+def MergeUndersizedFragments(lines, minRelativeHeight=0.4)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{lines}] \normalfont the candidate line regions
+  \item[{minRelativeHeight}] \normalfont the least height relative to the typical line, default 0.4
+\end{description}
+
+\noindent\textbf{Output.} the regions with the too-short ones merged into their neighbours.
+
+
+\paragraph{The problem it solves}
+Line splitting can divide one line of writing into two, typically when a row of low ink inside the line is mistaken for the gap between lines. The symptom is a region much shorter than the others, since one real line has been halved.
+
+
+\paragraph{Why the test is relative}
+The height is compared with the typical line height on the same page rather than with a fixed figure, because the right height depends on the writing and the scan resolution. A region under 40 percent of the typical height cannot be a line, since no writer varies their line height that much within a page, so it must be a fragment of one.
+
+
+\paragraph{Why merging rather than discarding}
+A fragment contains real writing, which the transcript expects to find. Discarding it would lose that text and, worse, would change the crop count and so misalign every label after it. Merging it back into its neighbour restores both the writing and the count.
+
+
+\section{MergeOrSplitToExpectedLineCount}
+\begin{lstlisting}[style=sig]
+def MergeOrSplitToExpectedLineCount(lines, rowInkCount, expectedLineCount)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{lines}] \normalfont the candidate line regions
+  \item[{rowInkCount}] \normalfont the ink per row profile
+  \item[{expectedLineCount}] \normalfont how many lines the transcript has
+\end{description}
+
+\noindent\textbf{Output.} the regions adjusted to match that count.
+
+
+\paragraph{The idea: use the answer to fix the method}
+The transcript says how many lines the page has. That is information the splitter did not use, and it is reliable, because it was typed by a person reading the page. So if the splitter produced the wrong number, the discrepancy is known exactly, and the regions can be adjusted until the count agrees: merging the most doubtful boundary when there are too many, splitting the most promising region when there are too few.
+
+
+\paragraph{Why this is legitimate and where its limit is}
+Using the label to guide the extraction would be improper if the label were being predicted, and it is not: the task here is to prepare training data, and the transcript is given for exactly that purpose. It is the same reasoning that justifies forced alignment in style.py, where the known text is used to locate characters rather than to recognise them.
+
+The limit is that it cannot verify correctness, only count. A page split in the wrong places but into the right number of pieces passes, and its labels are then confidently wrong. The count is a necessary condition for a correct extraction, not a sufficient one.
+
+
+\section{EstimateLinePitch}
+\begin{lstlisting}[style=sig]
+def EstimateLinePitch(smoothedRowInk, minPitch=40, maxPitch=400)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{smoothedRowInk}] \normalfont the smoothed ink per row profile
+  \item[{minPitch}] \normalfont the smallest pitch considered, default 40
+  \item[{maxPitch}] \normalfont the largest, default 400
+\end{description}
+
+\noindent\textbf{Output.} the estimated spacing between lines of writing, in pixels.
+
+
+\paragraph{What it is for}
+The same quantity LinePitch finds in segment.py, estimated from a smoothed row profile, and used as the scale for the line splitting below. The reasoning for using a projection profile, and for smoothing it first, is given in that entry.
+
+
+\paragraph{Why the search is bounded}
+The bounds keep the estimate within the range a line of writing on a scanned page can plausibly occupy. Without a lower bound the method can lock onto the spacing between the strokes within a word, which is a genuine periodicity in the profile and a much shorter one. Without an upper bound it can lock onto the spacing between paragraphs. Both are real patterns; the bounds say which scale is being asked about.
+
+
+\section{SplitLinesByPeriodicity}
+\begin{lstlisting}[style=sig]
+def SplitLinesByPeriodicity(binaryRegion,ruleLineHints=None,smoothWindow=9,
+        minLineHeight=30)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{binaryRegion}] \normalfont the handwriting region
+  \item[{ruleLineHints}] \normalfont the printed rule positions, if found
+  \item[{smoothWindow}] \normalfont the profile smoothing width, default 9
+  \item[{minLineHeight}] \normalfont the shortest acceptable line, default 30
+\end{description}
+
+\noindent\textbf{Output.} the row ranges of the individual lines of writing.
+
+
+\paragraph{The approach, and why periodicity is the right tool}
+Lines of writing on a page are close to evenly spaced, because the writer followed the ruling or kept a steady hand. That regularity is strong evidence and it is what the splitter uses: rather than looking for each gap independently, it establishes the pitch and then expects boundaries at roughly that spacing.
+
+The advantage over independent gap-finding is robustness to a single bad gap. A line whose descenders reach into the next line leaves almost no gap at all, and a method looking only for gaps misses that boundary entirely, merging two lines. A method that knows the expected spacing looks for a boundary where one ought to be and places it at the best available row, even where that row is not a clear gap.
+
+
+\paragraph{Why the printed rules are used as hints}
+Where the ruling was found, it says where the writer intended each line to sit, which is better evidence than the ink profile: it is unaffected by descenders, by a line of unusual height, or by a blank line. The hints are used to guide the boundaries rather than to set them, because writers do not follow ruling exactly.
+
+
+\begin{quote}\small\itshape This whole routine is a separate, earlier solution to the problem segment.py solves with seam carving. The seam approach is better, since it cuts around descenders instead of choosing a row to cut through. This one remains because it is what the cached training data was extracted with, and re-extracting it would change the data the reported checkpoints were trained on.\end{quote}
+
+\section{ExtractLinePatches}
+\begin{lstlisting}[style=sig]
+def ExtractLinePatches(page,targetHeight=32,maxWidth=1024,expectedLineCount=None,
+        labelLines=None,isDataset=True)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{page}] \normalfont the page image
+  \item[{targetHeight}] \normalfont the height to scale crops to, default 32
+  \item[{maxWidth}] \normalfont the greatest width kept, default 1024
+  \item[{expectedLineCount}] \normalfont how many lines the transcript has
+  \item[{labelLines}] \normalfont the transcript lines
+\end{description}
+
+\noindent\textbf{Output.} the line crops, with their labels where the count matched.
+
+
+\paragraph{What it is for}
+The whole page-to-crops pipeline for database pages, in one call: find the page bounds, remove the printed ruling, split into lines, merge the fragments, reconcile against the expected count, and cut and scale each crop.
+
+
+\paragraph{Why the crops are scaled here}
+Each crop is scaled to a fixed height, preserving its aspect ratio. Doing it at extraction rather than at training time means the cache holds crops of a known height, so loading a batch needs no resizing, and the cache is smaller, since a scanned line is several times taller than the network needs.
+
+
+\paragraph{Why width is capped rather than scaled}
+An unusually wide crop is truncated rather than squeezed. Squeezing would change the aspect ratio and so the letter proportions, for the reasons given under ResizeLineImageFixed. An over-wide crop is also usually a fault rather than a long line, two lines having been merged, so truncating loses little that was right.
+
+
+\begin{quote}\small\itshape Where the crop count does not match the transcript, the crops are returned without labels and the page cannot be used for training the reader, though it remains usable for the writer namer, which needs only to know who wrote the page. That is why the two networks are trained from different views of the same cache.\end{quote}
+
+\section{EncodeText}
+\begin{lstlisting}[style=sig]
+def EncodeText(text)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{text}] \normalfont a line of text
+\end{description}
+
+\noindent\textbf{Output.} the sequence of class indices for its characters.
+
+
+\paragraph{What it does}
+Converts a label into the numbers CTC works with, by looking each character up in the charset mapping from recognise.py and dropping anything not in it.
+
+
+\paragraph{Why unknown characters are dropped rather than substituted}
+A character outside the charset has no output slot, so the network cannot be asked to produce it. Substituting a placeholder would teach it to emit that placeholder whenever something unfamiliar appears, which is worse than omitting it: the network would learn a response to a situation it can never handle correctly.
+
+Dropping the character does introduce a small inconsistency, since the image contains a mark the label does not mention. CTC tolerates that, because it allows the network to emit blank there, and the alternative would be discarding every line containing any unusual character, which over a large database is a substantial loss.
+
+
+\section{FindPeaks}
+\begin{lstlisting}[style=sig]
+def FindPeaks(sm, floorFrac=0.0, minGap=0, prominence=None, distance=None)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{sm}] \normalfont a smoothed profile
+  \item[{floorFrac}] \normalfont the least height as a fraction of the maximum
+  \item[{minGap}] \normalfont the least separation between peaks
+  \item[{prominence}] \normalfont the least prominence required
+  \item[{distance}] \normalfont an alternative name for the separation
+\end{description}
+
+\noindent\textbf{Output.} the indices of the accepted peaks, in order.
+
+
+\paragraph{What it is for}
+A general peak finder, used by the line splitting. It applies three filters in turn, each addressing a different way a spurious peak arises.
+
+
+\paragraph{Finding candidates}
+A candidate is at least as large as its left neighbour and strictly larger than its right. The asymmetry is deliberate, as the code comment notes: if both comparisons were inclusive, a flat-topped peak several samples wide would report every one of those samples. With one strict comparison it reports exactly one.
+
+
+\paragraph{The height floor, and a trap in it}
+A candidate must exceed a fraction of the profile's maximum. The comment records a real pitfall: the floor must not default to zero, because the profile can be negative. A profile with its mean removed has negative valleys, and a peak in a negative region is still a peak. Defaulting the floor to negative infinity rather than zero is what makes the filter optional rather than silently active.
+
+
+\paragraph{Prominence, which is the interesting filter}
+\textbf{Prominence} measures how much a peak stands out from its surroundings, as opposed to how tall it is. It is defined as the peak's height above the higher of the two lowest points reached before the profile rises above the peak again on either side.
+
+
+\begin{equation}
+\mathrm{prom}(i) \;=\; \mathrm{sm}[i] \;-\; \max\big(\min_{j \in \mathrm{left}} \mathrm{sm}[j],\; \min_{j \in \mathrm{right}} \mathrm{sm}[j]\big)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{prom}(i)$}] \normalfont the prominence of the peak at index i
+  \item[{$\mathrm{sm}[i]$}] \normalfont the profile value at the peak
+  \item[{$\mathrm{left},\, \mathrm{right}$}] \normalfont the stretches on each side, walked outward until the profile exceeds the peak
+  \item[{$\min$}] \normalfont the lowest value reached in each stretch, called the key saddle
+  \item[{$\max$}] \normalfont the higher of the two, which is what the peak must rise above to be independent
+\end{description}
+The code comment names what this rejects: a ripple riding on a big peak's flank. Such a ripple can be tall in absolute terms, taller than a genuine small peak elsewhere, so a height filter keeps it. But it does not descend far on either side before the profile rises again, so its prominence is small and this filter removes it. Height asks how large a peak is; prominence asks whether it is a peak at all rather than a bump on something larger. The term is borrowed from topography, where it distinguishes an independent summit from a shoulder of a bigger mountain.
+
+
+\paragraph{The separation filter}
+Finally, peaks too close together are thinned by the same greedy strongest-first suppression used for the line centres in segment.py: take the tallest, exclude everything within the minimum separation, repeat. Processing tallest first is what makes it correct rather than arbitrary, for the reason given there.
+
+
+\begin{quote}\small\itshape The three filters are each optional and disabled by default, so the function is a plain local-maximum finder unless asked for more. That keeps one implementation usable for both the careful line-splitting case and the simple ones.\end{quote}
+
+\section{MyAffine}
+\begin{lstlisting}[style=sig]
+def MyAffine(img, angleDeg=0.0, shearDeg=0.0, fillValue=255)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{img}] \normalfont the image
+  \item[{angleDeg}] \normalfont the rotation in degrees
+  \item[{shearDeg}] \normalfont the shear in degrees
+  \item[{fillValue}] \normalfont what to fill uncovered pixels with, default 255
+\end{description}
+
+\noindent\textbf{Output.} the image rotated and sheared about its centre.
+
+
+\paragraph{Background: what an affine transformation is}
+An \textbf{affine} transformation is any combination of rotation, scaling, shearing and translation: it maps straight lines to straight lines and keeps parallel lines parallel. Every such transformation can be written as a matrix multiplication once the coordinates are expressed in \textbf{homogeneous} form, which means appending a 1 to each point so that a translation becomes part of the matrix rather than a separate addition.
+
+
+\paragraph{Why the transformations are composed as matrices}
+
+\begin{equation}
+M \;=\; T_{+c} \; R \; S \; T_{-c}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$M$}] \normalfont the combined transformation
+  \item[{$T_{-c}$}] \normalfont a translation moving the image's centre to the origin
+  \item[{$S$}] \normalfont the shear
+  \item[{$R$}] \normalfont the rotation
+  \item[{$T_{+c}$}] \normalfont a translation moving the centre back
+\end{description}
+Rotation and shear are both defined about the origin, which for an image is a corner. Applying them directly would swing the image about that corner and out of frame. Translating the centre to the origin first, transforming, and translating back makes both act about the centre instead. Matrix composition is what allows the four steps to be combined into one, so the image is resampled once rather than four times, which matters because each resampling blurs it slightly.
+
+The order reads right to left, since the rightmost matrix acts on the point first. That is the usual convention for column-vector coordinates and it is the opposite of the order the operations are listed in prose.
+
+
+\paragraph{Why the matrix is inverted}
+The combined matrix is inverted before being used. The reason is the direction resampling works in: for each \emph{output} pixel, the warp asks which input position it came from, which is the inverse map. Working forward instead, pushing each input pixel to its output position, leaves gaps where no input pixel happens to land and collisions where two do. Working backwards fills every output pixel exactly once, which is why it is universal in image warping. The same argument appears under Warp in segment.py.
+
+
+\section{AugmentShear}
+\begin{lstlisting}[style=sig]
+def AugmentShear(img)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{img}] \normalfont a line crop
+\end{description}
+
+\noindent\textbf{Output.} the crop with a random shear applied.
+
+
+\paragraph{Background: what augmentation is for}
+\textbf{Data augmentation} creates extra training examples by altering existing ones in ways that do not change their label. A sheared line of handwriting still says the same words, so it is a valid extra example. The purpose is to teach the network which variations are irrelevant: having seen the same line at many slants, it learns to read the letters rather than to recognise one particular slant.
+
+
+\paragraph{Why shear in particular}
+Slant is the largest single source of variation between hands, and between one writer's pages. Augmenting it is directly useful because the network must read every slant, and it is cheap because shearing is exactly the transformation that changes slant and nothing else.
+
+
+\paragraph{The range, and why it is expressed as a tangent}
+The shear factor is drawn uniformly from $-$0.6 to 0.6 and then converted to an angle. Working in the factor rather than the angle is deliberate: the factor is what the shear matrix contains, so a uniform draw on it gives a uniform transformation strength, where a uniform draw on the angle would concentrate the effect near the extremes. A factor of 0.6 is about 31 degrees, which spans the range of real handwriting, from upright to the steepest cursive in this project's writers.
+
+
+\section{AugmentRotate}
+\begin{lstlisting}[style=sig]
+def AugmentRotate(img)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{img}] \normalfont a line crop
+\end{description}
+
+\noindent\textbf{Output.} the crop rotated by a small random angle.
+
+
+\paragraph{What it simulates}
+A line that is not quite level, which happens when a page is photographed slightly askew or when a writer's line drifts. The range is only 2.5 degrees either way, far smaller than the shear range.
+
+
+\paragraph{Why the range is small}
+Because the real variation is small. The segmenter deskews every page before cutting crops, so by the time a crop reaches the network its residual tilt is a fraction of a degree. Augmenting much further than the real variation teaches the network to handle a situation that never occurs, at the cost of capacity it could spend on ones that do. A rotation also changes the measured slant and the apparent x-height, so a large one would conflict with the shear augmentation rather than complementing it.
+
+
+\section{FindPerspectiveCoeffs}
+\begin{lstlisting}[style=sig]
+def FindPerspectiveCoeffs(startpoints, endpoints)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{startpoints}] \normalfont the four source corners
+  \item[{endpoints}] \normalfont where they should land
+\end{description}
+
+\noindent\textbf{Output.} the eight coefficients of the perspective transformation.
+
+
+\paragraph{Background: what a perspective transformation is}
+An affine transformation keeps parallel lines parallel, which a photograph taken at an angle does not: the far edge of a page appears shorter than the near one, so its sides converge. A \textbf{perspective} or \textbf{projective} transformation is the more general map that allows that convergence, and it is what actually happens when a flat page is photographed from an angle.
+
+
+\begin{equation}
+x' \;=\; \frac{a x + b y + c}{g x + h y + 1}, \qquad y' \;=\; \frac{d x + e y + f}{g x + h y + 1}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$x,\,y$}] \normalfont a point in the source image
+  \item[{$x',\,y'$}] \normalfont where it lands
+  \item[{$a \dots f$}] \normalfont the six coefficients an affine map would also have
+  \item[{$g,\,h$}] \normalfont the two extra coefficients that produce the perspective effect
+  \item[{$1$}] \normalfont the fixed ninth coefficient; the map is unchanged by scaling all nine, so one can be fixed
+\end{description}
+The division by a function of position is what distinguishes it from an affine map and what makes parallel lines converge: points further away in the implied depth direction are divided by a larger number and so are compressed toward one another.
+
+
+\paragraph{How the eight coefficients are found}
+Four corner correspondences are given, each fixing two equations, giving eight equations for the eight unknowns. The equations above are not linear in the coefficients because of the division, but multiplying each through by its denominator makes them linear, and that rearrangement is what the rows of the matrix in the code are: each row is one such multiplied-out equation, with the cross terms carrying the negative signs the rearrangement produces.
+
+The resulting system is then solved by standard linear algebra. The reason four corners are exactly right is that eight unknowns need eight equations: three corners would leave the system underdetermined and five would overdetermine it, requiring a least-squares fit rather than a solution.
+
+
+\section{AugmentPerspective}
+\begin{lstlisting}[style=sig]
+def AugmentPerspective(img)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{img}] \normalfont a line crop
+\end{description}
+
+\noindent\textbf{Output.} the crop with a random perspective distortion applied.
+
+
+\paragraph{What it simulates, and why it matters for this project}
+A page photographed from an angle rather than square on. This augmentation matters more here than it would for a database-only system, because this project's own pages are phone photographs: a page on a desk photographed by hand always carries some perspective. A network trained only on flat scans would be seeing a distortion it had never met.
+
+
+\paragraph{Why it is applied to the line rather than the page}
+Strictly the perspective applies to the whole page, and a line crop is a narrow strip of it, so the distortion within one strip is a small part of the page's. Applying a crop-sized perspective is therefore an approximation, and a slightly stronger one than reality. That is acceptable for augmentation, whose purpose is to cover the variation rather than to model it exactly, and erring toward stronger distortion is the safer direction.
+
+
+\section{PerspectiveJitterPoints}
+\begin{lstlisting}[style=sig]
+def PerspectiveJitterPoints(width, height, DistortionScale)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{width}] \normalfont the crop width
+  \item[{height}] \normalfont its height
+  \item[{DistortionScale}] \normalfont how far the corners may move, as a fraction
+\end{description}
+
+\noindent\textbf{Output.} a pair of corner lists: the originals and the jittered destinations.
+
+
+\paragraph{What it does}
+Moves each of the four corners by a random amount within a fraction of the crop's size, producing the correspondences the coefficient solver needs.
+
+
+\paragraph{Why the corners are moved independently}
+Independent corner displacements generate a general perspective distortion rather than a parameterised one. The alternative, choosing a viewing angle and deriving the corners from it, would be more physically faithful and would require a camera model, a focal length and an assumed distance, none of which are known. Moving the corners directly covers the same space of distortions with no model at all, which is what augmentation needs.
+
+
+\begin{quote}\small\itshape The displacement is a fraction of the crop's dimensions rather than a number of pixels, so the strength of the distortion is the same for a crop of any size. This is the same scale-relative reasoning that governs the thresholds throughout the project.\end{quote}
+
+\section{AugmentElastic}
+\begin{lstlisting}[style=sig]
+def AugmentElastic(img)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{img}] \normalfont a line crop
+\end{description}
+
+\noindent\textbf{Output.} the crop with a smooth random warp applied.
+
+
+\paragraph{What it simulates}
+\textbf{Elastic distortion} \cite{simard2003} displaces every pixel by a small smoothly varying random amount, so the image is stretched here and compressed there. For handwriting it imitates the natural variation of a hand: the same person writing the same word twice produces shapes that differ in just this way, locally stretched and squeezed rather than globally transformed.
+
+
+\paragraph{How the smoothness is obtained, and why it is essential}
+Two random displacement fields are generated, one per axis, and each is blurred with a Gaussian before being applied. The blurring is what makes the method work. An unblurred random displacement moves each pixel independently, which is simply noise: it destroys the strokes rather than deforming them. After blurring, nearby pixels move together, so a stroke stays a connected stroke and is merely bent.
+
+The blur width therefore controls the character of the distortion. A wide blur gives a nearly uniform displacement, which is just a translation; a narrow one approaches noise. The useful range is a width comparable to the features being deformed, which for handwriting is around a letter's size. The amplitude scales the displacement after blurring, since blurring reduces the magnitude as well as smoothing it.
+
+
+\begin{quote}\small\itshape The implementation calls the Elastic function in segment.py, which is the same operation the glyph pipeline uses. Sharing it means the augmentation applied during training and any distortion applied elsewhere are identical, which matters if the two are ever compared.\end{quote}
+
+\section{AugmentLineImage}
+\begin{lstlisting}[style=sig]
+def AugmentLineImage(pilImg)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{pilImg}] \normalfont a line crop
+\end{description}
+
+\noindent\textbf{Output.} the crop with a randomly chosen augmentation applied, or unchanged.
+
+
+\paragraph{What it does}
+Picks one augmentation at random from the available list and applies it, or sometimes leaves the crop alone.
+
+
+\paragraph{Why one at a time rather than all of them}
+Composing several distortions compounds their severity, and the result quickly stops resembling handwriting: a crop sheared, rotated, warped in perspective and elastically distorted is unreadable, and training on unreadable examples teaches nothing. Applying one at a time keeps every augmented example plausible while still covering each kind of variation across the training set as a whole.
+
+
+\paragraph{Why unaugmented crops are kept too}
+Some proportion of crops pass through untouched, so the network sees the real distribution as well as the augmented one. If every example were distorted, the network would be trained exclusively on distorted data and would be slightly mismatched to the undistorted crops it meets at inference, which is the domain-shift problem applied to augmentation itself.
+
+
+\section{AUGMENTATIONS}
+\begin{lstlisting}[style=sig]
+AUGMENTATIONS = [AugmentShear, AugmentRotate, AugmentElastic, AugmentPerspective]
+\end{lstlisting}
+
+\noindent\textbf{Output.} the list of augmentation functions to choose from.
+
+
+\paragraph{Why the augmentations are a list}
+Collecting them in a list means the chooser needs no knowledge of what they are: it picks an entry and calls it. Adding or removing one is an edit to the list alone, and more importantly, running an experiment on which augmentations help means editing one line, which is how such questions are answered in practice.
+
+
+\begin{quote}\small\itshape All four take a crop and return a crop, which is what makes them interchangeable. That uniform signature is the real content of the design: a function needing extra parameters could not be in the list, so each augmentation draws its own random amounts internally rather than being given them.\end{quote}
+
+\section{LineImageCache}
+\begin{lstlisting}[style=sig]
+class LineImageCache
+\end{lstlisting}
+
+\noindent\textbf{Output.} an object holding extracted crops on disk and serving them by index.
+
+
+\paragraph{What it is for}
+Stores every extracted crop in a single file with an index of where each one starts, so a crop can be read by number without reading the rest. It is what makes the extraction cost payable once rather than once per epoch.
+
+
+\paragraph{Why one file with an index}
+Tens of thousands of separate image files would be slow, because each open is a separate filesystem operation, and wasteful, because a filesystem allocates a whole block per file. One file read at an offset is a single operation, and the index is small enough to hold in memory.
+
+
+\paragraph{Why the whole cache is not simply loaded into memory}
+The extracted crops for the full database run to several gigabytes, more than is comfortable to hold while also holding the activations a training step needs. Reading each crop as the batch needs it keeps the memory use to the batch, and the operating system's own file cache keeps the recently used parts in memory anyway, which recovers most of the speed without the program managing it.
+
+
+\section{IAMLineDatasetRaw}
+\begin{lstlisting}[style=sig]
+class IAMLineDatasetRaw
+\end{lstlisting}
+
+\noindent\textbf{Output.} an object presenting the database's pages as a sequence of labelled line crops.
+
+
+\paragraph{What it is for}
+Wraps the cache and the labels so that training sees a simple sequence: ask for item n and get a crop and its text. Where the pages came from, how they were cut and how they are stored are all hidden behind that.
+
+
+\paragraph{Why this separation matters}
+The training loop should not know whether its data came from the public database, from this project's own photographs, or from a third source. Presenting every source through the same interface is what allows TrainTextModel to accept a source argument and otherwise be unchanged, and what allows the two sources to be combined by AddPersonalSamples without the loop being aware of it.
+
+
+\begin{quote}\small\itshape The dataset is the public IAM database of handwritten English \cite{marti2002}, whose value for this project is its transcripts: without a known text per line there is nothing to train against and no way to align characters.\end{quote}
+
+\section{TrainEvalView}
+\begin{lstlisting}[style=sig]
+class TrainEvalView
+\end{lstlisting}
+
+\noindent\textbf{Output.} a view of a dataset that applies augmentation or does not.
+
+
+\paragraph{Why the same data needs two views}
+Augmentation must be applied when training and must not be applied when validating. The reason is what validation is for: it estimates how the network will perform on real data, so it must use real data. Measuring on augmented crops would measure performance on distorted handwriting, which nobody is going to present.
+
+A \textbf{view} wraps the same underlying dataset and changes how items are served, rather than copying the data. So the training and validation views share one cache and one set of labels, and there is no possibility of them drifting apart, which two copies would allow.
+
+
+\begin{quote}\small\itshape This also makes the training and validation split a property of which indices each view holds rather than of the data itself. A line can therefore appear in only one of them, which is the whole requirement of a held-out set, and it is enforced by construction rather than by care.\end{quote}
+
+\section{TextCollateFn}
+\begin{lstlisting}[style=sig]
+def TextCollateFn(batch)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{batch}] \normalfont a list of crop and label pairs
+\end{description}
+
+\noindent\textbf{Output.} the batch assembled into arrays.
+
+
+\paragraph{What collation is}
+A dataset serves one item at a time; a network wants a batch as one array. \textbf{Collation} is the step between: taking a list of items and stacking them, which for images means padding them to a common size.
+
+
+\paragraph{Why the labels stay as a list}
+The crops are stacked into one array, but the labels cannot be: they are sequences of different lengths, and CTC requires each one's true length, since padding a label would add characters the image does not contain. So the labels are kept as a list of varying-length sequences, which is exactly what CtcLoss expects and why that function loops over the batch.
+
+
+\section{AuthorLabeledView}
+\begin{lstlisting}[style=sig]
+class AuthorLabeledView
+\end{lstlisting}
+
+\noindent\textbf{Output.} a view of the same crops labelled by who wrote them.
+
+
+\paragraph{What it is for}
+Presents the same cached crops with a different label: the writer's identity instead of the text. The namer is trained from this view and the reader from the text view, over one shared cache.
+
+
+\paragraph{Why one cache can serve both}
+Because the input is the same object and only the question differs. Extracting the crops twice would double the slowest part of the pipeline and, worse, would allow the two extractions to differ, so that a finding about one network might not transfer to the other.
+
+There is also a practical gain: a page whose crop count did not match its transcript is unusable for the reader but perfectly usable here, since the writer's identity is a property of the page and does not depend on the lines being correctly divided. So this view can draw on pages the text view must reject.
+
+
+\section{AuthorCollateFn}
+\begin{lstlisting}[style=sig]
+def AuthorCollateFn(batch)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{batch}] \normalfont a list of crop and writer-index pairs
+\end{description}
+
+\noindent\textbf{Output.} the batch assembled into arrays.
+
+
+\paragraph{How it differs from the text version}
+Simpler, because the labels are single integers rather than sequences, so they stack into one array like the crops. There is no variable length to preserve and no padding question for the labels.
+
+
+\begin{quote}\small\itshape That simplicity is a direct consequence of the task: classification has one answer per example, where transcription has a sequence whose length varies. It is the same distinction that makes the namer need no CTC and no recurrence.\end{quote}
+
+\section{AddPersonalSamples}
+\begin{lstlisting}[style=sig]
+def AddPersonalSamples(base)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{base}] \normalfont the database-derived dataset
+\end{description}
+
+\noindent\textbf{Output.} the dataset with this project's own photographed pages added.
+
+
+\paragraph{What it is for}
+Mixes the five photographed writers' pages into the database training set. The result is the joint checkpoint, as opposed to the scratch one trained on the database alone.
+
+
+\paragraph{Why mixing rather than training separately}
+Two things are wanted at once. The database supplies volume: thousands of writers, which is what teaches the network the general shape of handwriting. This project's pages supply the specific domain: phone photographs of these particular hands, which is what the system will actually be given.
+
+Training on the database alone leaves a domain gap, since the network has never seen a photograph. Training on the personal pages alone gives far too few examples, a few hundred lines against tens of thousands, and the network would overfit them immediately. Mixing gets the volume and the domain together, which is why the joint checkpoint measures so much better on this project's crops than the scratch one: 96 to 99 percent character accuracy against 22 to 26.
+
+
+\begin{quote}\small\itshape That difference is the single largest measured effect in the project, and it is a statement about which data a network was trained on rather than about any architectural choice. It is also why the checkpoint actually loaded at inference matters so much, and why the candidate ordering in recognise.py deserves attention.\end{quote}
+
+\section{TekliaLineDataset}
+\begin{lstlisting}[style=sig]
+class TekliaLineDataset
+\end{lstlisting}
+
+\noindent\textbf{Output.} a dataset presenting an alternative public corpus of line images.
+
+
+\paragraph{What it is for}
+A second public source of labelled line images, already segmented into lines, selectable by the source argument of the training function.
+
+
+\paragraph{Why a second source is useful}
+It arrives already cut into lines, so it exercises the training path without the page-segmentation path, which separates two possible causes of poor results: a network that trains well on pre-cut lines and badly on self-cut ones has a segmentation problem rather than a training one. It is also simply more data, from a different collection with different scanning conventions, which broadens what the network has seen.
+
+
+\section{MAX\_SAFE\_LABEL\_CHARS}
+\begin{lstlisting}[style=sig]
+MAX_SAFE_LABEL_CHARS = int(INPUT_WIDTH // 4 * 0.75)
+\end{lstlisting}
+
+\noindent\textbf{Output.} the longest label that can safely be trained on, derived from the input width.
+
+
+\paragraph{The constraint it expresses}
+CTC needs at least one column per character, and in practice more, since a character usually occupies several columns and blanks need somewhere to go. The network produces one column per four input pixels, after two halvings, so the number of columns is fixed by the input width and the longest trainable label follows from it.
+
+
+\begin{equation}
+\mathrm{maxChars} \;=\; \left\lfloor 0.75 \cdot \frac{\mathrm{INPUT\_WIDTH}}{4} \right\rfloor
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{maxChars}$}] \normalfont the longest label accepted
+  \item[{$\mathrm{INPUT\_WIDTH}$}] \normalfont the network's input width, 640
+  \item[{$4$}] \normalfont the downsampling factor from the two poolings
+  \item[{$0.75$}] \normalfont a safety margin, leaving a quarter of the columns spare for blanks and for characters occupying more than one
+\end{description}
+
+\paragraph{What happens without the limit}
+A label longer than the available columns has no valid alignment at all, so its total probability is zero and the loss is infinite. Infinity propagates through the gradient and destroys every weight in the network on that single step. So this is not a quality filter but a correctness one: a single over-long label in a training set ruins the run, and the symptom is a loss that becomes not-a-number and never recovers.
+
+
+\section{HIDDEN\_SIZE}
+\begin{lstlisting}[style=sig]
+HIDDEN_SIZE = 256
+\end{lstlisting}
+
+\noindent\textbf{Output.} 256, the LSTM width per direction.
+
+
+\paragraph{What it sets}
+How many numbers the recurrent layer carries from one column to the next, per direction. With two directions concatenated, each position is described by 512 numbers after the first layer.
+
+
+\paragraph{The trade-off}
+A wider state can remember more about the line, which the task needs: the reader must carry enough about preceding letters to resolve an ambiguous one. But the recurrent weight matrices are four times the hidden size by the hidden size, so the parameter count grows with the square of this number, as does the work per step, and the cached activations grow with it linearly. At 256 the two layers hold the large majority of the network's parameters.
+
+
+\begin{quote}\small\itshape 256 is the value the architecture this network follows uses \cite{shi2017}. Taking a published figure rather than searching for one is reasonable for a parameter whose effect is gradual and whose evaluation would cost a full training run each time.\end{quote}
+
+\section{WEIGHTS\_DIR}
+\begin{lstlisting}[style=sig]
+WEIGHTS_DIR = paths.Weights
+\end{lstlisting}
+
+\noindent\textbf{Output.} the directory checkpoints are written to and read from.
+
+
+\paragraph{What it is for}
+One named location for trained weights, taken from the central paths module, so that the training code and the inference code agree on where checkpoints live without either hard-coding a path.
+
+
+\section{DEFAULT\_TEXT\_CACHE\_DIR}
+\begin{lstlisting}[style=sig]
+DEFAULT_TEXT_CACHE_DIR = paths.Cache / 'line_image_cache'
+\end{lstlisting}
+
+\noindent\textbf{Output.} where the reader's extracted line crops are cached.
+
+
+\paragraph{Why the two networks have separate caches}
+The reader and the namer are trained from different page sets: the reader from as much labelled text as possible, the namer from the specific enrolled writers. The extractions differ in which pages they cover and in whether a page lacking a usable transcript is kept, so they are stored separately rather than one being a subset of the other.
+
+
+\section{DEFAULT\_AUTHOR\_CACHE\_DIR}
+\begin{lstlisting}[style=sig]
+DEFAULT_AUTHOR_CACHE_DIR = paths.Cache / 'line_cache_authors10'
+\end{lstlisting}
+
+\noindent\textbf{Output.} where the namer's extracted crops are cached.
+
+
+\paragraph{What it holds}
+Crops from the ten writers the namer is trained to distinguish, labelled by writer rather than by text. The directory name records the writer count, which is useful because the namer's output layer size is fixed by it: a cache built for a different number of writers is incompatible with a checkpoint trained on this one, and a differently named directory makes that visible.
+
+
+\section{DEFAULT\_AUTHOR\_DATA\_DIR}
+\begin{lstlisting}[style=sig]
+DEFAULT_AUTHOR_DATA_DIR = paths.Data.parents[1] / 'Data' / 'Datasets' / 'IAMpages10'
+\end{lstlisting}
+
+\noindent\textbf{Output.} where the source pages for the namer live.
+
+
+\paragraph{What it points at}
+The page images and transcripts for the enrolled writers, built from the central paths module. The distinction from the cache directory is worth keeping clear: this holds the original scanned or photographed pages, which are the input, and the cache holds what was extracted from them, which can be regenerated and is excluded from version control for that reason.
+
+
+\section{DEFAULT\_TEXT\_DATA\_DIR}
+\begin{lstlisting}[style=sig]
+DEFAULT_TEXT_DATA_DIR = DEFAULT_AUTHOR_DATA_DIR
+\end{lstlisting}
+
+\noindent\textbf{Output.} where the source pages for the reader live, the same directory as the namer's.
+
+
+\paragraph{Why they are the same}
+Both networks are trained from the same collection of pages, differing in what is taken from them rather than in where they come from. Defining one as the other rather than repeating the path means the two cannot drift apart, and it records that the sharing is intentional rather than coincidental.
+
+
+\section{InitConv}
+\begin{lstlisting}[style=sig]
+def InitConv(rng, outCh, inCh, kh, kw)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{rng}] \normalfont the seeded random generator
+  \item[{outCh}] \normalfont the number of filters
+  \item[{inCh}] \normalfont the input channel count
+  \item[{kh}] \normalfont the filter height
+  \item[{kw}] \normalfont its width
+\end{description}
+
+\noindent\textbf{Output.} a pair: the randomly initialised filters and a zero bias.
+
+
+\paragraph{Why initialisation matters at all}
+The starting weights are random, but not arbitrarily so. If they are too small, the signal shrinks as it passes through each layer and arrives at the output as nearly nothing, so there is no gradient to learn from. If too large, it grows and saturates. With twelve convolutional layers either effect compounds twelve times, so the scale of the initial weights determines whether the network trains at all.
+
+
+\paragraph{He initialisation}
+
+\begin{equation}
+w \;\sim\; \mathcal{N}\!\left(0,\; \sqrt{\frac{2}{\mathrm{fanIn}}}\,\right), \qquad \mathrm{fanIn} \;=\; \mathrm{inCh} \times k_h \times k_w
+\end{equation}
+\noindent\emph{Source: }\cite{he2015}
+
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$w$}] \normalfont each weight, drawn independently
+  \item[{$\mathcal{N}(0,s)$}] \normalfont a normal distribution with mean 0 and standard deviation s
+  \item[{$\mathrm{fanIn}$}] \normalfont how many input values each output is computed from
+  \item[{$2$}] \normalfont the factor that accounts for ReLU, explained below
+\end{description}
+The reasoning runs as follows. An output is a sum of fanIn products of a weight and an input. For independent terms, variances add, so the output's variance is fanIn times the product of the weight and input variances. Keeping the output's variance equal to the input's therefore requires the weight variance to be one over fanIn. That is the Glorot argument \cite{glorot2010}.
+
+The factor of 2 is the correction for ReLU \cite{he2015}. ReLU sets every negative value to zero, discarding about half the signal's variance, so without compensation the variance would halve at every layer and after twelve layers be reduced by a factor of four thousand. Doubling the weight variance exactly offsets it. The difference between the two initialisations is only that factor, and for a network this deep it is the difference between training and not.
+
+
+\paragraph{Why the bias starts at zero}
+There is nothing to break symmetry in a bias, because the weights are already random, so each unit already computes something different. Zero is the neutral starting point, and it is also harmless here because the batch normalisation that follows removes any constant offset anyway, as noted under ConvBlockForward.
+
+
+\section{InitBatchNorm}
+\begin{lstlisting}[style=sig]
+def InitBatchNorm(ch)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{ch}] \normalfont the channel count
+\end{description}
+
+\noindent\textbf{Output.} four arrays: the scale at one, the shift at zero, and the running statistics at zero and one.
+
+
+\paragraph{Why the scale starts at one and the shift at zero}
+Those values make the learned part of the layer the identity: the output is the standardised input unchanged. So the layer begins by doing exactly the normalisation it exists for and nothing else, and any departure from that is something training chose. Starting the scale at a random value would add a per-channel distortion the network would have to learn to undo before making progress.
+
+
+\paragraph{Why the running statistics start at zero and one}
+A mean of zero and a variance of one describe already-standardised data, so a network evaluated before any training behaves as though normalisation had been applied correctly. They are also the values the exponential average converges away from fastest: being the neutral assumption, any real data moves them in a meaningful direction immediately.
+
+
+\begin{quote}\small\itshape These two pairs are treated differently everywhere else in the file. The scale and shift are parameters with gradients and are updated by the optimiser; the running statistics have no gradients and are updated by observation. TrainableParams separates them by name, which is why the naming convention for them is load-bearing.\end{quote}
+
+\section{InitLinear}
+\begin{lstlisting}[style=sig]
+def InitLinear(rng, outF, inF)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{rng}] \normalfont the random generator
+  \item[{outF}] \normalfont the output size
+  \item[{inF}] \normalfont the input size
+\end{description}
+
+\noindent\textbf{Output.} a pair: the randomly initialised weight matrix and bias.
+
+
+\paragraph{The distribution used}
+
+\begin{equation}
+w,\, b \;\sim\; \mathrm{Uniform}\!\left(-\frac{1}{\sqrt{\mathrm{inF}}},\; +\frac{1}{\sqrt{\mathrm{inF}}}\right)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$w,\,b$}] \normalfont each weight and each bias, drawn independently
+  \item[{$\mathrm{Uniform}(a,b)$}] \normalfont a uniform distribution between the two bounds
+  \item[{$\mathrm{inF}$}] \normalfont the number of inputs to each output
+\end{description}
+The same one-over-fan-in scaling as the convolution, expressed as a uniform range rather than a normal distribution and without the ReLU factor of two. The reasoning for the scale is identical; the differences are matters of convention, and they are followed here because the reference framework's linear layer uses exactly this, which keeps checkpoints interchangeable.
+
+
+\paragraph{Why the bias is random here but zero for a convolution}
+Because no normalisation follows a linear layer. A convolution's bias is removed by the batch normalisation after it, so its initial value is immaterial; a linear layer's bias survives into the output and a small random value is as good a starting point as zero.
+
+
+\section{InitLstmDirection}
+\begin{lstlisting}[style=sig]
+def InitLstmDirection(rng, inputSize, hiddenSize)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{rng}] \normalfont the random generator
+  \item[{inputSize}] \normalfont the input width
+  \item[{hiddenSize}] \normalfont the hidden width
+\end{description}
+
+\noindent\textbf{Output.} four arrays: both weight matrices and both biases for one direction.
+
+
+\paragraph{The distribution}
+Uniform between plus and minus one over the square root of the hidden size, for every weight and both biases. The code comment records that this matches the reference framework's own initialisation, which is the reason for the specific form.
+
+
+\paragraph{Why the hidden size rather than the input size sets the scale}
+The input weights are scaled by the hidden size too, although their fan-in is the input size. That is the framework's convention rather than what the variance argument would give. It is defensible because the two are comparable in this network, the input to the second layer being twice the hidden size, and because the gates' sigmoids are forgiving: they saturate gracefully rather than destroying the signal, so the initialisation scale is less critical than for a deep convolutional stack.
+
+
+\begin{quote}\small\itshape All four gates are initialised identically here. A common refinement is to initialise the forget gate's bias to a positive value, so the gate starts near 1 and the cell retains information from the first step, which helps a network learn long dependencies sooner. It is not done here, which matches the reference framework's default.\end{quote}
+
+\section{InitConvBlock}
+\begin{lstlisting}[style=sig]
+def InitConvBlock(rng, params, prefix, inCh, outCh, nLayers)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{rng}] \normalfont the random generator
+  \item[{params}] \normalfont the parameter dictionary, filled in place
+  \item[{prefix}] \normalfont the block's name prefix
+  \item[{inCh}] \normalfont the input channels
+  \item[{outCh}] \normalfont the output channels
+  \item[{nLayers}] \normalfont how many groups
+\end{description}
+
+\noindent\textbf{Output.} nothing; the parameters are added to the dictionary.
+
+
+\paragraph{What it does}
+Creates one block's worth of parameters under the names the forward and backward passes expect, with the channel count switching from the block's input to its output after the first group.
+
+
+\paragraph{Why the naming convention is load-bearing}
+These names are a contract between four separate pieces of code: this initialiser, the forward pass, the backward pass and the checkpoint format. They must agree exactly, and a disagreement fails with a missing key rather than silently training the wrong array, which is the reason for building them from the same arithmetic in every one of those places rather than listing them.
+
+
+\begin{quote}\small\itshape The first group takes the block's input channel count and every later group takes its output count, which is why the channel variable is reassigned inside the loop. Getting that wrong produces a shape mismatch at the first forward pass rather than a subtle fault.\end{quote}
+
+\section{InitBackboneParams}
+\begin{lstlisting}[style=sig]
+def InitBackboneParams(rng, params)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{rng}] \normalfont the random generator
+  \item[{params}] \normalfont the parameter dictionary, filled in place
+\end{description}
+
+\noindent\textbf{Output.} nothing; the backbone's parameters are added.
+
+
+\paragraph{The channel progression}
+One channel in, then 32, then 64, then 128, with two, four and six groups in the three stages. The channel count doubles at each stage while the spatial size halves, which is the standard arrangement in a convolutional backbone.
+
+
+\paragraph{Why that arrangement}
+Two reasons, one about capacity and one about cost. Deeper layers represent larger and more varied structures, strokes giving way to junctions and then to letter parts, and there are more distinguishable large structures than small ones, so more channels are needed to hold them. And since each pooling quarters the spatial size, doubling the channels leaves the work per layer roughly halved rather than growing, so the deeper stages are affordable despite being wider and having more groups.
+
+
+\paragraph{Why the backbone is shared between the two networks}
+Both the reader and the namer use exactly this backbone, initialised by this one function. The features useful for recognising a letter and for recognising a hand are largely the same features, as argued under AuthorClassifierCNNNumpy, so there is no reason for the two to differ, and sharing the initialiser means a change to the architecture applies to both rather than to one.
+
+
+\section{TrainableParams}
+\begin{lstlisting}[style=sig]
+def TrainableParams(params)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{params}] \normalfont the full parameter dictionary
+\end{description}
+
+\noindent\textbf{Output.} the subset the optimiser may update.
+
+
+\paragraph{What it excludes and why}
+The running mean and variance of every batch normalisation. They are stored alongside the parameters, because they must be saved in the checkpoint, but they are not parameters: no gradient is computed for them, and they are updated by observing the data rather than by descending a loss.
+
+
+\paragraph{What would happen if they were included}
+The optimiser would look up a gradient for them, find none, and fail with a missing key, which is the benign outcome. Had a zero gradient been supplied instead, the optimiser would apply weight decay to them and shrink them steadily toward zero, so the stored variances would fall and inference would divide by a smaller and smaller number, amplifying every activation. That is a silent corruption which would appear only at inference, as a network whose validation accuracy during training was fine and whose saved checkpoint performs badly.
+
+
+\begin{quote}\small\itshape The separation is by name suffix, which works but ties correctness to a naming convention. A parameter accidentally named with one of those suffixes would be silently frozen, and one of these accidentally named otherwise would be silently decayed.\end{quote}
+
+\section{SaveCheckpoint}
+\begin{lstlisting}[style=sig]
+def SaveCheckpoint(path, params, extra=None)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{path}] \normalfont where to write
+  \item[{params}] \normalfont the parameters
+  \item[{extra}] \normalfont additional values such as the epoch number
+\end{description}
+
+\noindent\textbf{Output.} nothing; the checkpoint file is written.
+
+
+\paragraph{What goes into a checkpoint}
+Every parameter, including the running statistics, plus metadata: which epoch it came from and the best validation loss seen so far. The metadata is what makes resuming possible.
+
+
+\paragraph{Why the metadata must be in the file}
+Resuming a run requires knowing which epoch to continue from and what the best loss was, so that the scheduler and the best-checkpoint logic behave as though the run had never stopped. Keeping those in the checkpoint rather than in a separate file means they cannot be separated from the weights they describe, which is the failure a parallel log file invites: resuming from the wrong epoch number silently misschedules the learning rate.
+
+
+\begin{quote}\small\itshape The metadata keys begin with a double underscore, which is the same convention LoadStateDictAny uses to tell metadata from weights. The two functions are in different files and must agree on it, which is worth noting as another implicit contract.\end{quote}
+
+\section{LoadCheckpointMeta}
+\begin{lstlisting}[style=sig]
+def LoadCheckpointMeta(path)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{path}] \normalfont a checkpoint file
+\end{description}
+
+\noindent\textbf{Output.} the epoch it was saved at and the best loss recorded, where present.
+
+
+\paragraph{What it is for}
+Reads only the metadata, without the weights, so that a resume can establish where it is continuing from. Reading the metadata alone is cheap, where loading several hundred megabytes of weights to read two numbers is not.
+
+
+\begin{quote}\small\itshape Both values are optional, since a checkpoint written before the metadata convention existed has neither. Returning nothing rather than a default lets the caller distinguish "no record" from "epoch zero", and it starts the run at epoch 1 rather than claiming to resume.\end{quote}
+
+\section{LoadParamsInto}
+\begin{lstlisting}[style=sig]
+def LoadParamsInto(params, checkpointPath)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{params}] \normalfont the parameter dictionary, filled in place
+  \item[{checkpointPath}] \normalfont the checkpoint to read
+\end{description}
+
+\noindent\textbf{Output.} how many arrays were loaded.
+
+
+\paragraph{Why it loads into an existing dictionary}
+The parameters are created first by the initialiser, with the right names and shapes, and the checkpoint's values are then copied into them. The alternative, building the dictionary from the checkpoint, would take the network's structure from the file, so a checkpoint from a different architecture would load without complaint and fail later with a shape mismatch deep in a forward pass.
+
+
+\paragraph{Why partial loading is allowed, and why the count is returned}
+Names present in both are copied and the rest are left as initialised. That is what makes a \textbf{warm start} possible: loading the backbone from one checkpoint while leaving the head freshly initialised, which is how the namer is started from the reader's learned features.
+
+But partial loading is also how a wrong checkpoint fails quietly: a file matching nothing loads nothing and training proceeds from random weights, which looks like training that is simply going badly. Returning the count, which the callers print as a fraction of the total, is what makes that visible. A warm start reporting a small fraction is a warning that the two checkpoints do not correspond.
+
+
+\section{AppendLog}
+\begin{lstlisting}[style=sig]
+def AppendLog(path, line)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{path}] \normalfont the log file
+  \item[{line}] \normalfont the line to add
+\end{description}
+
+\noindent\textbf{Output.} nothing; the line is appended.
+
+
+\paragraph{Why a log file as well as printed output}
+Training runs for days, so the console scrollback is lost or truncated long before the run ends. A log file persists, and because each epoch writes one line of keyed values, the whole history of a run can be read or plotted afterwards.
+
+
+\paragraph{Why appending rather than rewriting}
+Appending means a resumed run continues the same log rather than replacing it, so the record spans the interruptions. Appending is also safe against a crash: each line is complete when written, so an interrupted run leaves a readable log ending at the last finished epoch, where a rewritten file could be truncated mid-write.
+
+
+\section{BackboneForwardTrain}
+\begin{lstlisting}[style=sig]
+def BackboneForwardTrain(x, params)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{x}] \normalfont the input crops
+  \item[{params}] \normalfont the parameters
+\end{description}
+
+\noindent\textbf{Output.} a pair: the collapsed feature sequence, and the cache.
+
+
+\paragraph{What it is for}
+The shared convolutional backbone with caching: three blocks, two poolings, and the collapse of the height. Both networks call it, so the part they have in common is written once.
+
+
+\paragraph{Why sharing the implementation matters more than sharing the weights}
+The two networks do not share weights; each trains its own copy. What they share is the code, and that is what guarantees the architectures are identical, which in turn is what makes a warm start from one to the other possible: the parameter names and shapes agree because they were produced by the same function.
+
+
+\section{BackboneBackwardTrain}
+\begin{lstlisting}[style=sig]
+def BackboneBackwardTrain(dx, cache)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{dx}] \normalfont the gradient with respect to the backbone's output
+  \item[{cache}] \normalfont what the forward pass saved
+\end{description}
+
+\noindent\textbf{Output.} the gradient with respect to the input and every backbone weight gradient.
+
+
+\paragraph{What it does}
+Walks the backbone in reverse: uncollapse the height, then the third block, then the second pooling, the second block, the first pooling and the first block, collecting weight gradients. It is the mirror of the forward sequence and contains no arithmetic beyond the sequencing.
+
+
+\begin{quote}\small\itshape The input gradient is computed and returned although nothing uses it, since the crops are data rather than parameters. It is produced because each layer's backward pass produces it as a matter of course, and discarding it earlier would mean a special case in the first convolution. It is also what the numerical gradient check compares against when verifying the backbone.\end{quote}
+
+\section{EvalBackboneForward}
+\begin{lstlisting}[style=sig]
+def EvalBackboneForward(params, x)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{params}] \normalfont the parameters
+  \item[{x}] \normalfont the input crops
+\end{description}
+
+\noindent\textbf{Output.} the backbone's output, with no cache.
+
+
+\paragraph{Why a third version of the backbone exists}
+Validation needs a forward pass with the inference behaviour, using the stored batch statistics rather than the batch's own, and with no caching, since no backward pass follows. Running the training version and discarding the caches would use the wrong statistics and would allocate the caches anyway.
+
+
+\paragraph{Why using the stored statistics for validation is the point}
+Validation estimates how the saved checkpoint will perform, and the saved checkpoint will be used with the stored statistics. Validating with batch statistics would measure something slightly different and, worse, something that depends on how the validation set happened to be divided into batches, so the same weights would score differently with a different batch size.
+
+
+\section{IterateBatches}
+\begin{lstlisting}[style=sig]
+def IterateBatches(dataset, batchSize, rng, shuffle)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{dataset}] \normalfont the dataset to iterate
+  \item[{batchSize}] \normalfont how many items per batch
+  \item[{rng}] \normalfont the random generator
+  \item[{shuffle}] \normalfont whether to shuffle the order
+\end{description}
+
+\noindent\textbf{Output.} batches of items, one at a time.
+
+
+\paragraph{Why the order is shuffled for training}
+The examples arrive grouped by page and therefore by writer. Without shuffling, consecutive batches would each contain one writer's hand, so the network would be pulled toward that hand and then away from it, which both slows convergence and makes the loss oscillate with the data order rather than with learning. Shuffling makes each batch an approximately representative sample, which is the assumption the gradient estimate rests on.
+
+
+\paragraph{Why validation is not shuffled}
+Validation computes a mean over the whole set, and a mean does not depend on the order. Keeping the order fixed makes the measurement exactly reproducible between runs, which matters when comparing two checkpoints: any difference is then attributable to the weights rather than to the batching.
+
+
+\begin{quote}\small\itshape Batches are produced one at a time rather than built as a list, so only the current batch is in memory. For a dataset of tens of thousands of crops that is the difference between a few hundred megabytes and several gigabytes.\end{quote}
+
+\section{InitTextModelParams}
+\begin{lstlisting}[style=sig]
+def InitTextModelParams(seed, numClasses)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{seed}] \normalfont the random seed
+  \item[{numClasses}] \normalfont the output size, the charset plus the blank
+\end{description}
+
+\noindent\textbf{Output.} the reader's complete parameter dictionary.
+
+
+\paragraph{What it builds}
+The shared backbone, two bidirectional LSTM layers, and a linear text head producing one score per class.
+
+
+\paragraph{Why the seed is explicit}
+Every random draw comes from a generator created from this seed, so the same seed gives the same initial weights. That is what makes a training run reproducible, which matters for comparing two configurations: without it, a difference in the result could be a difference in the starting point rather than in the change being tested.
+
+
+\paragraph{Why the class count is one more than the charset}
+The extra class is the CTC blank, which is not a character but needs an output slot of its own, as described under DecodeCtc. Deriving the count from the charset rather than stating it means the two cannot disagree, and a disagreement would be severe: the network would be trained with every character's index shifted by one relative to what inference assumes.
+
+
+\section{BuildLstmLayerParams}
+\begin{lstlisting}[style=sig]
+def BuildLstmLayerParams(sd)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{sd}] \normalfont the parameter dictionary
+\end{description}
+
+\noindent\textbf{Output.} the LSTM parameters gathered into the nested structure the forward pass expects.
+
+
+\paragraph{What it is for}
+The parameters are stored flat, keyed by name, because that is what a checkpoint is and what the optimiser iterates over. The recurrent forward pass wants them nested: a list of layers, each with a forward and a backward direction, each with its four arrays. This converts one view to the other.
+
+
+\paragraph{Why the flat storage is the primary form}
+Because three separate things need it flat: the optimiser, which iterates over every parameter without knowing the structure; the checkpoint, which is a flat collection of named arrays; and the gradient dictionary, which must be keyed the same way. The nested form is needed by one function, so it is the derived one.
+
+
+\begin{quote}\small\itshape The nested structure holds references to the same arrays, not copies, so an update applied by the optimiser to the flat dictionary is visible through the nested view. That is essential and would break silently if any step copied.\end{quote}
+
+\section{TextModelForward}
+\begin{lstlisting}[style=sig]
+def TextModelForward(x, params)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{x}] \normalfont the input crops
+  \item[{params}] \normalfont the parameters
+\end{description}
+
+\noindent\textbf{Output.} a pair: the raw per-column class scores, and the cache.
+
+
+\paragraph{What it does}
+The reader's whole forward pass with caching: the backbone, the transpose that turns the image into a sequence, the two recurrent layers, and the text head.
+
+
+\paragraph{Why it returns raw scores rather than log probabilities}
+The inference version ends with a log softmax; this one stops at the raw scores, because CtcLoss performs the softmax itself. The reason is the cancellation described in that entry: taking the softmax and the loss together gives a gradient that is a simple difference, whereas computing the softmax here would require differentiating back through it as a separate step, which is both more work and numerically worse.
+
+
+\begin{quote}\small\itshape This is why the gradient the loss returns is named for the raw logits: it is the gradient with respect to the output of this function, so the backward pass can start here with no intervening layer.\end{quote}
+
+\section{TextModelBackward}
+\begin{lstlisting}[style=sig]
+def TextModelBackward(dRawLogits, cache)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{dRawLogits}] \normalfont the gradient from the loss
+  \item[{cache}] \normalfont what the forward pass saved
+\end{description}
+
+\noindent\textbf{Output.} the gradient with respect to the input and every weight gradient.
+
+
+\paragraph{What it does}
+Reverses the forward sequence: the text head, the two recurrent layers, the transpose, and the backbone, collecting weight gradients keyed by parameter name.
+
+
+\paragraph{The transpose, reversed}
+The forward pass moved the width axis to the front to make a sequence; the backward pass moves it back, so the gradient leaving for the backbone is an image gradient again. A transpose is its own inverse given the right axis order, so nothing is computed, but the axes must be put back in exactly the order the backbone expects, and an error there produces a gradient that is correct in magnitude and scrambled in arrangement.
+
+
+\section{EvalTextForward}
+\begin{lstlisting}[style=sig]
+def EvalTextForward(params, x)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{params}] \normalfont the parameters
+  \item[{x}] \normalfont the input crops
+\end{description}
+
+\noindent\textbf{Output.} the log probabilities per column, with no cache.
+
+
+\paragraph{What it is for}
+The reader's forward pass in inference mode, for validation: stored batch statistics, no caching, and the log softmax applied, since validation decodes the output rather than passing it to the loss.
+
+
+\section{TextNumpyBatch}
+\begin{lstlisting}[style=sig]
+def TextNumpyBatch(batch)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{batch}] \normalfont a collated batch
+\end{description}
+
+\noindent\textbf{Output.} the images, the encoded labels and the original texts.
+
+
+\paragraph{What it does}
+Prepares a batch for the network: the images converted to the input convention and the labels encoded into class indices. The original texts are carried through as well so that validation can compare the decoded output against them.
+
+
+\begin{quote}\small\itshape The image conversion must match TensorFromResized in recognise.py exactly, including the inversion and the standardisation. A difference between the two would produce a network that trains successfully and reads nothing at inference, which is the hardest class of fault to find because both halves appear to work.\end{quote}
+
+\section{ValidateTextModel}
+\begin{lstlisting}[style=sig]
+def ValidateTextModel(valSet, params, batchSize, rng)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{valSet}] \normalfont the held-out set
+  \item[{params}] \normalfont the parameters
+  \item[{batchSize}] \normalfont the batch size
+  \item[{rng}] \normalfont the random generator
+\end{description}
+
+\noindent\textbf{Output.} a pair: the mean validation loss and the character accuracy.
+
+
+\paragraph{Why a held-out set is necessary}
+Training loss falls whether or not the network is learning anything general, because a network with enough capacity can memorise its training examples. The only way to tell memorisation from learning is to measure on data the network has never been trained on. That is the \textbf{held-out} or validation set, and the gap between training and validation loss is the measure of overfitting.
+
+
+\paragraph{Why two numbers are reported}
+The loss and the character accuracy answer different questions, and both are needed. The loss is what training minimises, so it is the quantity the scheduler and the best-checkpoint logic must use, and it is sensitive to small changes in confidence. Character accuracy is what anyone actually cares about, but it is coarse: a network can improve its loss substantially with no change in accuracy, because it has become more confident about answers it already had right.
+
+
+\begin{quote}\small\itshape Augmentation is off here, through the evaluation view, and batch normalisation uses its stored statistics, through the evaluation forward pass. Both are necessary for the measurement to describe the checkpoint that will be saved rather than some variant of it.\end{quote}
+
+\section{BuildPagesSplit}
+\begin{lstlisting}[style=sig]
+def BuildPagesSplit(maxPages, dataDir)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{maxPages}] \normalfont how many pages to use
+  \item[{dataDir}] \normalfont where the pages are
+\end{description}
+
+\noindent\textbf{Output.} a pair of training and validation datasets.
+
+
+\paragraph{Why the split is by page and not by line}
+This is the important decision. Lines from one page are written by one person, on one sheet, with one pen, in one session. Splitting by line would put some of a page's lines in training and others in validation, and the network could then score well on validation by recognising that particular page's characteristics rather than by reading. The validation figure would be optimistic, and the amount by which it was optimistic would be unknowable.
+
+Splitting by page makes the validation lines come from sheets the network has never seen, which is the situation it will actually face. This is \textbf{leakage} avoidance, and it is the commonest way a held-out measurement is quietly invalidated: the split has to be made at the level at which examples are genuinely correlated, which here is the page.
+
+
+\begin{quote}\small\itshape The page limit exists to allow short runs during development. It takes the first n pages rather than a random sample, which means a short run always uses the same pages, so two such runs are comparable with each other even though neither represents the whole database.\end{quote}
+
+\section{BuildTekliaSplit}
+\begin{lstlisting}[style=sig]
+def BuildTekliaSplit(dataDir)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{dataDir}] \normalfont where the corpus is
+\end{description}
+
+\noindent\textbf{Output.} a pair of training and validation datasets from the alternative corpus.
+
+
+\paragraph{What it is for}
+The same split for the second corpus, which arrives already cut into lines. Having both behind the same interface is what lets the training function take a source argument and otherwise be identical, so a change to the training procedure applies to both without being made twice.
+
+
+\section{TrainTextModel}
+\begin{lstlisting}[style=sig]
+def TrainTextModel(numEpochs,batchSize,lr,seed,maxPages,dataDir,source='pages',
+        resume=False,warmStart=None)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{numEpochs}] \normalfont how many passes over the data
+  \item[{batchSize}] \normalfont examples per step
+  \item[{lr}] \normalfont the initial learning rate
+  \item[{seed}] \normalfont the random seed
+  \item[{maxPages}] \normalfont how many pages to use
+  \item[{dataDir}] \normalfont where the data is
+  \item[{source}] \normalfont which corpus, default pages
+  \item[{resume}] \normalfont whether to continue a previous run
+  \item[{warmStart}] \normalfont a checkpoint to initialise from
+\end{description}
+
+\noindent\textbf{Output.} the best validation loss reached.
+
+
+\paragraph{The training loop}
+
+\begin{itemize}\setlength\itemsep{0pt}
+  \item \textbf{Build the split} and initialise the parameters.
+  \item \textbf{Create the optimiser and scheduler:} RMSprop with a small weight decay, and the plateau scheduler watching validation loss.
+  \item \textbf{Optionally warm start or resume.}
+  \item \textbf{For each epoch:} iterate shuffled batches, and for each run the forward pass, compute the CTC loss and its gradient, run the backward pass, select the trainable gradients and take an optimiser step.
+  \item \textbf{After each epoch:} validate, step the scheduler, save the checkpoint and append to the log.
+\end{itemize}
+
+\paragraph{Why two checkpoints are kept}
+A best checkpoint, written only when validation loss improves, and a rolling checkpoint written every epoch. They serve different purposes and neither substitutes for the other. The best one is the model to use, since later epochs may overfit and be worse. The rolling one is for resuming, since resuming must continue from where the run actually stopped, not from the best epoch, or the epochs between would be repeated.
+
+
+\paragraph{Why the best is chosen on loss rather than accuracy}
+Loss is the finer measure. Character accuracy on a validation set of a few thousand lines moves in visible steps, so several epochs can tie, and choosing between them would be arbitrary. Loss distinguishes them, because it responds to confidence as well as to correctness.
+
+
+\paragraph{What warm starting is for}
+Initialising from an existing checkpoint rather than from random weights. It is how the joint checkpoint is produced: start from the database-trained weights and continue on the mixed data, so the network keeps what it learned from the large corpus while adapting to the photographs. Training that from scratch would need the whole corpus again and would reach a similar place far more slowly.
+
+
+\begin{quote}\small\itshape The progress line is printed with a carriage return and no newline, so it overwrites itself rather than filling the console with thousands of lines. The per-epoch summary is printed normally and also written to the log, so the transient detail stays transient and the durable record is kept.\end{quote}
+
+\section{InitAuthorModelParams}
+\begin{lstlisting}[style=sig]
+def InitAuthorModelParams(seed, numAuthors)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{seed}] \normalfont the random seed
+  \item[{numAuthors}] \normalfont how many writers to distinguish
+\end{description}
+
+\noindent\textbf{Output.} the namer's complete parameter dictionary.
+
+
+\paragraph{What it builds}
+The same shared backbone, then a two-layer head: a linear layer, a ReLU, a dropout, and a second linear layer producing one score per writer. No recurrent layers, for the reasons given under AuthorClassifierCNNNumpy.
+
+
+\paragraph{Why the writer count is a parameter}
+It sets the final layer's output size, so a checkpoint is tied to the number of writers it was trained on. Adding a writer means a new final layer and retraining it, and a checkpoint from a different count cannot be loaded. That is also why the writer names are stored inside the checkpoint, as described under LoadStateDictAny: the count alone is not enough, since the same ten writers in a different order would load without complaint and attribute every page to the wrong person.
+
+
+\section{AuthorModelForward}
+\begin{lstlisting}[style=sig]
+def AuthorModelForward(x, params, training, rng)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{x}] \normalfont the input crops
+  \item[{params}] \normalfont the parameters
+  \item[{training}] \normalfont whether dropout should be active
+  \item[{rng}] \normalfont the random generator for dropout
+\end{description}
+
+\noindent\textbf{Output.} a pair: the raw per-writer scores, and the cache.
+
+
+\paragraph{What it does}
+The backbone, the average pooling over position, and the two-layer head with dropout between the layers.
+
+
+\paragraph{Why the training flag is an argument}
+Because dropout must be active during training and inactive during validation, and the same function serves both. Passing it explicitly rather than holding it as state makes it impossible to validate with dropout accidentally left on, which would add noise to the measurement, or to train with it off, which would silently remove the regularisation.
+
+
+\begin{quote}\small\itshape The random generator is passed in rather than created here, so that the dropout masks come from the run's own seeded generator and a training run is reproducible. A generator created inside the function would reseed itself on every call and the masks would be unrepeatable.\end{quote}
+
+\section{AuthorModelBackward}
+\begin{lstlisting}[style=sig]
+def AuthorModelBackward(dLogits, cache)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{dLogits}] \normalfont the gradient from the loss
+  \item[{cache}] \normalfont what the forward pass saved
+\end{description}
+
+\noindent\textbf{Output.} the gradient with respect to the input and every weight gradient.
+
+
+\paragraph{What it does}
+Reverses the namer's forward sequence: the second linear layer, the dropout, the ReLU, the first linear layer, the average pooling, and the backbone. The average pooling's backward pass spreads the gradient evenly back over every position, which is why the namer's backbone receives gradient everywhere rather than only at the winning rows as the reader's does.
+
+
+\section{EvalAuthorForward}
+\begin{lstlisting}[style=sig]
+def EvalAuthorForward(params, x)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{params}] \normalfont the parameters
+  \item[{x}] \normalfont the input crops
+\end{description}
+
+\noindent\textbf{Output.} the raw per-writer scores, with no cache and no dropout.
+
+
+\paragraph{What it is for}
+The namer's inference-mode forward pass for validation: stored batch statistics, dropout off, no caching. The same three differences as the reader's evaluation pass, and for the same reasons.
+
+
+\section{AuthorNumpyBatch}
+\begin{lstlisting}[style=sig]
+def AuthorNumpyBatch(batch)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{batch}] \normalfont a collated batch
+\end{description}
+
+\noindent\textbf{Output.} the images and the writer indices.
+
+
+\paragraph{What it does}
+Prepares a batch for the namer. Simpler than the text version, because the labels are single integers needing no encoding, though the image conversion is identical and must stay so.
+
+
+\section{ValidateAuthorModel}
+\begin{lstlisting}[style=sig]
+def ValidateAuthorModel(valSet, params, batchSize, rng)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{valSet}] \normalfont the held-out set
+  \item[{params}] \normalfont the parameters
+  \item[{batchSize}] \normalfont the batch size
+  \item[{rng}] \normalfont the random generator
+\end{description}
+
+\noindent\textbf{Output.} a pair: the mean validation loss and the accuracy.
+
+
+\paragraph{What it measures}
+The cross-entropy loss and the fraction of crops attributed to the right writer, over the held-out set with dropout off and stored statistics in use.
+
+
+\paragraph{Why accuracy means more here than for the reader}
+For a classifier, accuracy is the quantity of interest directly: the crop is attributed correctly or it is not. For the reader, character accuracy is an aggregate over a sequence and a line can be mostly right, so the measure is coarser relative to what matters. The namer's accuracy is therefore the headline figure and the loss is the finer measure used for choosing the checkpoint.
+
+
+\begin{quote}\small\itshape The split for the namer must also be by page, for the leakage reason given under BuildPagesSplit, and it matters more here. The namer's task is to recognise a writer, and lines from the same sheet share far more than handwriting: the same paper, pen, lighting and scan. A line-level split would let it score nearly perfectly by recognising the sheet.\end{quote}
+
+\section{TrainAuthorModel}
+\begin{lstlisting}[style=sig]
+def TrainAuthorModel(numEpochs, batchSize, lr, seed, resume=False, warmStart=None)
+\end{lstlisting}
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{numEpochs}] \normalfont how many passes
+  \item[{batchSize}] \normalfont examples per step
+  \item[{lr}] \normalfont the initial learning rate
+  \item[{seed}] \normalfont the random seed
+  \item[{resume}] \normalfont whether to continue a previous run
+  \item[{warmStart}] \normalfont a checkpoint to initialise from
+\end{description}
+
+\noindent\textbf{Output.} the best validation loss reached.
+
+
+\paragraph{What differs from the reader's loop}
+The same structure: batches, forward, loss, backward, step, validate, save, log. The differences are the loss, which is cross-entropy rather than CTC, the dropout, which must be enabled for training and disabled for validation, and the data, which is labelled by writer.
+
+
+\paragraph{Why warm starting matters more here}
+The namer has far less data: ten writers' pages against a database of thousands. Training its backbone from scratch on that would overfit badly, because a deep convolutional stack has ample capacity to memorise a few thousand crops. Starting from the reader's backbone gives it features already learned from a large corpus, so the small dataset is spent on learning to tell writers apart rather than on learning what a stroke is.
+
+This is \textbf{transfer learning}, and the reason it works here is the argument made earlier: the features that distinguish letters and the features that distinguish hands are largely the same features. The reader learned them from data the namer could never have had.
+
+
+\begin{quote}\small\itshape The two networks are trained separately rather than together with a shared backbone and two heads, which would be the obvious alternative. Separate training keeps each network's accuracy independent of the other's, which matters for this project because both are used as judges of the synthesised output: a shared backbone would make the two scores correlated, and the harmonic mean that combines them assumes they are measuring different things.\end{quote}

@@ -38,7 +38,6 @@ from Classify import (
 )
 from ProfileIO import (
     PROFILE_DIR,
-    LoadProfile,
     CtcForcedAlign,
     Skeletonize,
     BinarizeLine,
@@ -58,19 +57,19 @@ CNN_DATA_DIR = SCRIPT_DIR.parent/"CNN"
 DATA_DIR = SCRIPT_DIR.parents[1]/"Data"/"Datasets"/"IAMpages10"
 CACHE_DIR = CNN_DATA_DIR/"NOGIT"/"line_cache_authors10"
 NOGIT_DIR = CNN_DATA_DIR/"NOGIT"
-TEXT_WEIGHTS = CNN_DATA_DIR/"weights"/"paper_cnn_bilstm_ctc_best.pt"
+TEXT_WEIGHTS = CNN_DATA_DIR/"weights"/"paper_cnn_bilstm_ctc_best.npz"
 
 #prefer the personal fine-tune's own joint checkpoint when present -- it
 #reads the 2 personal authors' handwriting far better than the general model
-PERSONAL_WEIGHTS = CNN_DATA_DIR/"weights"/"paper_cnn_bilstm_ctc_personal_best.pt"
-for _pw in ("paper_cnn_bilstm_ctc_joint_best.pt",):
+PERSONAL_WEIGHTS = CNN_DATA_DIR/"weights"/"paper_cnn_bilstm_ctc_personal_best.npz"
+for _pw in ("paper_cnn_bilstm_ctc_joint_best.npz",):
     _cand = CNN_DATA_DIR/"weights"/_pw
     if _cand.exists():
         PERSONAL_WEIGHTS = _cand
         break
 
 #prefer joint (teklia+personal) > hf-only > the original checkpoint, in that order
-for _name in ("paper_cnn_bilstm_ctc_joint_best.pt","paper_cnn_bilstm_ctc_hf_best.pt"):
+for _name in ("paper_cnn_bilstm_ctc_joint_best.npz","paper_cnn_bilstm_ctc_hf_best.npz"):
     _candidate = CNN_DATA_DIR/"weights"/_name
     if _candidate.exists():
         TEXT_WEIGHTS = _candidate

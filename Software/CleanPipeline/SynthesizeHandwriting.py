@@ -33,8 +33,7 @@
 #rotation TOGGLES the pen, so it is never commanded to a state, only
 #pulsed, and this module tracks pen state in software.
 #
-#public API (G-code generation): WriteGcode, WriteStepSchedule,
-#RenderGcodePreview.
+#public API (G-code generation): WriteGcode, RenderGcodePreview.
 import json
 import math
 import os
@@ -45,12 +44,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+import MyImage
 from PIL import Image,ImageDraw,ImageFilter
 
 sys.path.insert(0,os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0,os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from ProfileIO import LoadProfile,PROFILE_DIR
+from ProfileIO import PROFILE_DIR
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 #this file lives in Software/CleanPipeline, a sibling of Software/CNN where
@@ -362,9 +362,21 @@ _GLYPH_GARBAGE = 0.55   #at/above this it is replaced regardless of lam
 #when it's a genuinely clean extraction (priorD<=_GLYPH_CLEAN); everything
 #else swaps to the anchor readily, scaled by `lam`. The anchor still
 #carries the author's slant/size/spacing/joins, so the hand isn't erased.
+#above this lam the author's library is committed to the anchor ENTIRELY,
+#rather than tapering. Measured on the most joined hand: mixing her own
+#fragments into anchor strokes mid-line scored WORSE on writer-ID than
+#either pure extreme (p=63% mixed vs 76% own-only vs 94% all-anchor), so
+#there is no safe middle ground to taper through -- a line that keeps a
+#consistent letterform throughout reads as one hand, a line that alternates
+#between two sources reads as neither.
+_COMMIT_LAM = 0.85
+
+
 def _SwapProb(lam,priorD):
     d = float(priorD)
     if d>=_GLYPH_GARBAGE:
+        return 1.0
+    if lam>=_COMMIT_LAM:
         return 1.0
     if lam<=1e-3:
         return 0.0
@@ -373,6 +385,31 @@ def _SwapProb(lam,priorD):
     bad = float(np.clip((d-_GLYPH_CLEAN)/(_GLYPH_GARBAGE-_GLYPH_CLEAN),
                         0.0,1.0))
     return float(np.clip(lam*(0.55+0.9*bad),0.0,1.0))
+
+
+#how good an author's OWN extracted glyph library is, and therefore how far
+#to trust it. The median priorD of all their variants is the measurement:
+#a well separated hand cuts cleanly into one glyph per character and sits
+#near 0.18-0.22, a heavily joined hand has no gap to cut at, so its
+#"variants" are arbitrary fragments of one continuous curve and the median
+#climbs past 0.30 (measured over the 13 stored writers: owen 0.191,
+#abhinav 0.180, yeukita 0.224, writer 153 0.242, writer 151 0.307,
+#thiya 0.318). The ramp below therefore leaves the clean hands on their own
+#letterforms and sends the broken ones to the style-aware anchor, instead of
+#applying one hand-set legibility to writers whose libraries are not
+#comparably trustworthy.
+_AUTO_LAM_GOOD = 0.24   #median priorD at/below which the library is trusted
+_AUTO_LAM_BAD = 0.32   #at/above this the library is fragments, not letters
+
+
+def AutoLegibility(profile):
+    ds = [float(g.get('priorD',0.5))
+          for v in profile.get('glyphs',{}).values() for g in v]
+    if not ds:
+        return 1.0
+    med = float(np.median(ds))
+    return float(np.clip((med-_AUTO_LAM_GOOD)/(_AUTO_LAM_BAD-_AUTO_LAM_GOOD),
+                         0.0,1.0))
 
 
 #returns (strokes, advance, lead, source). Uses one of the author's own
@@ -498,12 +535,15 @@ def _Resample(poly,step):
 
 #text -> Trajectory (mm, y up, origin at first baseline). mmPerXh: physical
 #size of one x-height. lineWidthMm: wrap width. legibility=None (default)
-#reads the author's own tuned profile['legibilityLambda'] (0.0 fallback)
-#-- pass an explicit float to override for one call, e.g. an A/B test.
+#reads the author's own tuned profile['legibilityLambda'], falling back to
+#AutoLegibility(profile), which measures how trustworthy that author's own
+#extracted glyph library actually is -- pass an explicit float to override
+#for one call, e.g. an A/B test.
 def SynthesizeText(text,profile,mmPerXh=4.0,seed=None,lineWidthMm=180.0,
                    jitter=0.15,legibility=None,perCharLam=None,_cal=None):
     if legibility is None:
-        legibility = float(profile.get('legibilityLambda',0.0))
+        legibility = float(profile.get('legibilityLambda',
+                                       AutoLegibility(profile)))
     rng = random.Random(seed)
     xh = float(mmPerXh)
     cal = _cal if _cal is not None else (
@@ -769,24 +809,24 @@ def _Draw(traj,pxPerMm,padMm,strokePx,paper=255,ink=0,softPx=0.0):
     x0,y0,x1,y1 = traj.Bounds()
     W = max(8,int((x1-x0+2*padMm)*pxPerMm))
     H = max(8,int((y1-y0+2*padMm)*pxPerMm))
-    img = Image.new('L',(W,H),int(round(paper)))
-    d = ImageDraw.Draw(img)
+    #drawn with my own rasteriser, not a library.  this image is what both
+    #judges score in the best-of-N search, so how the ink is laid down is
+    #part of the design and not a detail
+    arr = np.full((H,W),np.uint8(np.clip(round(float(paper)),0,255)),np.uint8)
     fill = int(round(ink))
     for s in traj.strokes:
+        #trajectory is in mm with y UP, the image is in pixels with y DOWN,
+        #so y flips here: (y1-y) measures down from the top of the bounds
         pts = [((x-x0+padMm)*pxPerMm,(y1-y+padMm)*pxPerMm)
                for (x,y) in s]
-        if len(pts)>=2:
-            d.line(pts,fill=fill,width=strokePx,joint='curve')
-            #round the stroke ends: a pen leaves no square corners
-            r = strokePx/2.0
-            if r>=1.0:
-                for (px,py) in (pts[0],pts[-1]):
-                    d.ellipse([px-r,py-r,px+r,py+r],fill=fill)
-        else:
-            d.point(pts,fill=fill)
+        #DrawPolyline measures distance to the stroke so the round pen ends
+        #and round joins come out on their own, no separate end caps needed
+        MyImage.DrawPolyline(arr,pts,fill,strokePx)
     if softPx>0.05:
-        img = img.filter(ImageFilter.GaussianBlur(radius=softPx))
-    return img
+        #a real pen edge is not a hard step, the blur softens it.  sigma is
+        #a fraction of the pen width so a thick pen gets a wider soft edge
+        arr = MyImage.Blur(arr,softPx)
+    return Image.fromarray(arr)
 
 
 #render as a training-style crop (black ink, white paper). With
@@ -811,7 +851,8 @@ def RenderTrajectory(traj,pxPerMm=8.0,padMm=None,strokePx=None,
         img = _Draw(traj,pxPerMm,padMm,sp,paper=255,ink=0,
                     softPx=UNIFORM_SOFT_FRAC*max(1.0,sp))
         if size is not None:
-            img = img.resize(size,Image.Resampling.BILINEAR)
+            #my own resampler, see MyImage.Resize
+            img = Image.fromarray(MyImage.Resize(np.asarray(img,dtype=np.uint8),size[0],size[1],'linear'))
         return img
 
     if strokePx is None:
@@ -833,7 +874,8 @@ def RenderTrajectory(traj,pxPerMm=8.0,padMm=None,strokePx=None,
     else:
         img = _Draw(traj,pxPerMm,padMm,strokePx,paper,inkLv,soft)
     if size is not None:
-        img = img.resize(size,Image.Resampling.BILINEAR)
+        #my own resampler, see MyImage.Resize
+        img = Image.fromarray(MyImage.Resize(np.asarray(img,dtype=np.uint8),size[0],size[1],'linear'))
     return img
 
 
@@ -1044,7 +1086,8 @@ def SynthesizeJointBestOf(author,text,profile,nTries=6,mmPerXh=4.0,
                           pxPerMm=18.0,legibility=None,
                           repair=True,repairRounds=3,repairWorstK=2):
     if legibility is None:
-        legibility = float(profile.get('legibilityLambda',0.0))
+        legibility = float(profile.get('legibilityLambda',
+                                       AutoLegibility(profile)))
     if reader is None:
         from Classify import PaperCRNNNumpy
         reader = PaperCRNNNumpy()
@@ -1326,81 +1369,6 @@ def WriteGcode(traj,cfg,path,title=''):
 
 
 #===========================================================================
-#step / direction schedule
-#===========================================================================
-#time to move `dist` mm under a trapezoidal profile from rest to rest
-def _TrapezoidTime(dist,vMax,accel):
-    if dist<=0:
-        return 0.0
-    dAcc = vMax*vMax/(2.0*accel)
-    if dist<2*dAcc:   #triangular
-        vPeak = math.sqrt(dist*accel)
-        return 2.0*vPeak/accel
-    return 2.0*vMax/accel+(dist-2*dAcc)/vMax
-
-
-#bresenham-style per-segment step counts with a trapezoidal time budget:
-#rows are (t_us, dxSteps, dySteps, penState) per move plus explicit PEN
-#rows for the 90-degree pulses -- exactly what a step/dir firmware clocks out
-def WriteStepSchedule(traj,cfg,path):
-    strokes,scale = ToMachine(traj,cfg)
-    strokes,_ = _Clamp(strokes,cfg)
-    pen = PenController(cfg)
-    rows = ['t_us,type,x_steps,y_steps,dir_x,dir_y,pen_state']
-    tUs = 0.0
-    curX = cfg.originXmm
-    curY = cfg.originYmm
-    sx = cfg.stepsPerMmX
-    sy = cfg.stepsPerMmY
-    totalSteps = 0
-
-    def move(x,y,drawing):
-        nonlocal tUs,curX,curY,totalSteps
-        dxMm,dyMm = x-curX,y-curY
-        dist = math.hypot(dxMm,dyMm)
-        if dist<1e-9:
-            return
-        dxS = int(round(dxMm*sx))
-        dyS = int(round(dyMm*sy))
-        if dxS==0 and dyS==0:
-            curX,curY = x,y
-            return
-        feed = (cfg.drawFeedMmMin if drawing else cfg.travelFeedMmMin)/60.0
-        dt = _TrapezoidTime(dist,feed,cfg.accelMmS2)
-        tUs+=dt*1e6
-        rows.append(f"{tUs:.0f},{'DRAW' if drawing else 'TRAVEL'},"
-                    f"{abs(dxS)},{abs(dyS)},{1 if dxS>=0 else -1},"
-                    f"{1 if dyS>=0 else -1},{'UP' if pen.isUp else 'DOWN'}")
-        totalSteps+=abs(dxS)+abs(dyS)
-        curX,curY = x,y
-
-    def penTo(up):
-        nonlocal tUs
-        if pen.SetPen(up):
-            tUs+=(cfg.penPulseMs+cfg.penSettleMs)*1000.0
-            rows.append(f"{tUs:.0f},PEN_PULSE_90DEG,0,0,1,1,"
-                        f"{'UP' if up else 'DOWN'}")
-
-    penTo(True)
-    for s in strokes:
-        if len(s)<2:
-            continue
-        penTo(True)
-        move(s[0][0],s[0][1], False)
-        penTo(False)
-        for (x,y) in s[1:]:
-            move(x,y, True)
-    penTo(True)
-    move(cfg.originXmm,cfg.originYmm, False)
-
-    Path(path).parent.mkdir(parents=True,exist_ok=True)
-    with open(path,'w',encoding='utf-8') as f:
-        f.write('\n'.join(rows)+'\n')
-    return dict(rows=len(rows)-1,seconds=tUs/1e6,steps=totalSteps,
-                penPulses=pen.pulses,path=str(path))
-
-
-#===========================================================================
 #preview: rasterize the EMITTED G-code (round-trip check)
 #===========================================================================
 #returns pen-down polylines in machine mm, by replaying the file
@@ -1465,59 +1433,3 @@ def RenderGcodePreview(gcodePath,cfg,pxPerMm=6.0,strokePx=2,
         img.save(path)
     return img,strokes
 
-
-#binary raster of a stroke set (used by the simulation check)
-def RasterizeStrokes(strokes,pxPerMm=8.0,strokePx=2,bounds=None):
-    if bounds is None:
-        pts = [p for s in strokes for p in s]
-        xs = [p[0] for p in pts]
-        ys = [p[1] for p in pts]
-        bounds = (min(xs),min(ys),max(xs),max(ys))
-    x0,y0,x1,y1 = bounds
-    W = max(8,int((x1-x0)*pxPerMm)+4)
-    H = max(8,int((y1-y0)*pxPerMm)+4)
-    img = Image.new('L',(W,H),255)
-    d = ImageDraw.Draw(img)
-    for s in strokes:
-        pts = [((x-x0)*pxPerMm+2,(y1-y)*pxPerMm+2) for (x,y) in s]
-        if len(pts)>=2:
-            d.line(pts,fill=0,width=strokePx,joint='curve')
-    return np.array(img)<128,bounds
-
-
-#rasterizes the synthesized trajectory and the G-code that was actually
-#emitted, and reports their agreement (IoU + mean nearest-neighbour
-#deviation in mm). This is the digital->machine loss.
-def SimulateAndCompare(traj,cfg,gcodePath,pxPerMm=8.0,strokePx=2):
-    machineStrokes,_ = ToMachine(traj,cfg)
-    machineStrokes,_ = _Clamp(machineStrokes,cfg)
-    gStrokes = ParseGcode(gcodePath)
-    if not gStrokes or not machineStrokes:
-        return dict(iou=0.0,meanDevMm=float('inf'),maxDevMm=float('inf'))
-    allPts = [p for s in (machineStrokes+gStrokes) for p in s]
-    xs = [p[0] for p in allPts]
-    ys = [p[1] for p in allPts]
-    bounds = (min(xs),min(ys),max(xs),max(ys))
-    a,_ = RasterizeStrokes(machineStrokes,pxPerMm,strokePx,bounds)
-    b,_ = RasterizeStrokes(gStrokes,pxPerMm,strokePx,bounds)
-    inter = float((a&b).sum())
-    union = float((a|b).sum())
-    iou = inter/max(1.0,union)
-
-    #geometric deviation: nearest-point distance from every emitted G-code
-    #vertex to the synthesized polyline vertices
-    src = np.array([p for s in machineStrokes for p in s])
-    dst = np.array([p for s in gStrokes for p in s])
-    if len(src)>6000:
-        src = src[np.linspace(0,len(src)-1,6000).astype(int)]
-    if len(dst)>4000:
-        dst = dst[np.linspace(0,len(dst)-1,4000).astype(int)]
-    devs = []
-    for i in range(0,len(dst),256):
-        chunk = dst[i:i+256]
-        dd = np.sqrt(((chunk[:, None,:]-src[None,:,:])**2).sum(-1))
-        devs.append(dd.min(axis=1))
-    devs = np.concatenate(devs) if devs else np.array([0.0])
-    return dict(iou=round(iou,4),meanDevMm=round(float(devs.mean()),4),
-                maxDevMm=round(float(devs.max()),4),
-                nStrokesSynth=len(machineStrokes),nStrokesGcode=len(gStrokes))

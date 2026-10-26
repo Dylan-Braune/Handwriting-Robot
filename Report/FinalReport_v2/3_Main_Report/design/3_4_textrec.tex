@@ -2,7 +2,7 @@
 \label{sec:textrec}
 
 This subsection describes the neural network that decodes the written content of a handwritten line image into text (functional unit FU~2.3 of the proposal, requirement R2).
-The network, its training procedure and a separate from-scratch inference implementation for the single-board computer were designed and written by the student.
+The network, its training procedure and the layer library that both trains it and runs it on the single-board computer were designed and written by the student, with no machine-learning library used anywhere in the recogniser, the writer classifiers of Section~\ref{sec:writerid} or the forced-alignment step of Section~\ref{sec:styleprofile}: forward passes, backward (gradient) passes and the optimiser update rules are all evaluated by the student's own code, described in Section~\ref{sec:textrec-numpynn}.
 Readers are not assumed to know machine learning, so every building block is explained first in words and then with its equations.
 
 \subsubsection{Problem statement and design approach}
@@ -235,6 +235,52 @@ Training was carried out in four stages (Table~\ref{tab:rec-stages} and Figure~\
 A sweep over learning rate, LSTM width, depth, convolution width, dropout and optimiser (14 configurations) was programmed, but no result file was kept, so the deployed architecture is the published one and not an optimum found by the student.
 Training was done offline on a general-purpose computer; the log of the joint stage was not kept, and the stored joint checkpoint contains weights only.
 
+\subsubsection{From-scratch forward-and-backward implementation}
+\label{sec:textrec-numpynn}
+
+The credit rule of this report is that only work done from first principles by the student is counted, so a machine-learning framework that supplies ready-made layers and automatic differentiation would earn no credit for the recogniser's training even though the student designed the architecture and the data pipeline around it.
+To avoid this, the student wrote one Python module that implements, from the defining equations and with no machine-learning library, both the forward pass \emph{and} the backward (gradient) pass of every layer used by the recogniser and the two writer classifiers of Section~\ref{sec:writerid}: the two-dimensional convolution of Equation~\ref{eq:rec-conv}, batch normalisation in both its training form (batch statistics) and its folded inference form (Equation~\ref{eq:rec-bnfold}), the rectified linear unit, max-pooling and the two adaptive pools of Equations~\ref{eq:rec-hmax} and~\ref{eq:wid-pool}, a fully connected (linear) layer, dropout, the multilayer bidirectional LSTM of Equations~\ref{eq:rec-lstm} and~\ref{eq:rec-bi}, and the CTC forward--backward recursion of Equations~\ref{eq:rec-alpha} to~\ref{eq:rec-ctcgrad}.
+The same module also implements the RMSprop update of Equation~\ref{eq:rec-rmsprop}, the AdamW update used by the writer classifiers (Equation~\ref{eq:wid-adamw}), the plateau and cosine learning-rate schedules and the gradient-norm clip of Equation~\ref{eq:rec-clip}, so that no part of training, not only the forward pass, depends on an external library.
+One shared training program calls this module to build and train either the recogniser or a writer classifier, since the two share the convolutional backbone (Section~\ref{sec:writerid}), and the convolutional stack, the pooling layers and the fully connected layer are also called, in their inference (eval) form, by the validation step that runs at the end of every training epoch and by the deployed program on the single-board computer, so training, validation and deployment are three uses of one implementation rather than three separate ones.
+
+\paragraph{Verification by numerical differentiation.}
+Because no automatic differentiation tool checks these hand-derived backward passes, each one was verified independently of the others by comparing its analytic gradient against a numerical estimate obtained by perturbing one parameter at a time (Equation~\ref{eq:rec-gradcheck}):
+\begin{equation}
+\frac{\partial\mathcal L}{\partial\theta_i}\approx\frac{\mathcal L(\theta+\varepsilon e_i)-\mathcal L(\theta-\varepsilon e_i)}{2\varepsilon},\qquad\varepsilon=10^{-5},
+\label{eq:rec-gradcheck}
+\end{equation}
+where $e_i$ is the unit vector of parameter $i$ and $\mathcal L$ is a scalar loss computed on a small random input; the analytic gradient returned by the backward pass is accepted when its relative difference from the numerical estimate is below $10^{-4}$.
+This check was run, with a small random input and a small random target in each case, on every layer listed above individually (22 configurations in total, including both the forward-only inference form and the training form of batch normalisation, and every gate of the LSTM), before any layer was trusted inside the shared training program; every configuration passed, with relative differences of the order of $10^{-8}$ to $10^{-9}$ for the simpler layers and below $10^{-4}$ for the LSTM and the CTC loss.
+Figure~\ref{fig:rec-conv2d} shows the forward and backward implementation of the two-dimensional convolution as it exists in the module, which illustrates the general technique used throughout: every layer is first written as an explicit loop over the batch for clarity and correctness, and the batch loop is then replaced, where it dominates the running time, by a single call to a batched matrix product, which the gradient check was re-run against to confirm that the faster version computes the same values.
+
+\begin{figure}[h]
+\centering
+\fontsize{8.5}{10}\selectfont
+\begin{verbatim}
+def Conv2dForward(x, w, b, padding=1):
+    cols = Im2Col(x, kernelSize=3, padding=padding)      # (B, Cin*9, H*W)
+    wFlat = w.reshape(w.shape[0], -1)                    # (Cout, Cin*9)
+    out = (wFlat @ cols).reshape(B, Cout, H, W) + b[:, None, None]
+    return out, (x, w, cols)                             # cache for backward
+
+def Conv2dBackward(dOut, cache):
+    x, w, cols = cache
+    dOutFlat = dOut.reshape(B, Cout, -1)
+    dw = (dOutFlat @ cols.transpose(0, 2, 1)).sum(axis=0).reshape(w.shape)
+    db = dOut.sum(axis=(0, 2, 3))
+    dCols = w.reshape(Cout, -1).T @ dOutFlat
+    dx = Col2Im(dCols, x.shape, kernelSize=3, padding=padding)
+    return dx, dw, db
+\end{verbatim}
+\caption{Forward and backward pass of the two-dimensional convolution, simplified from the student's implementation. The batch dimension $B$ is handled by a single broadcasted matrix product (\texttt{@}) rather than a Python loop over samples, which was measured to be about 35\,\% faster than an equivalent per-sample loop for a realistic training batch.}
+\label{fig:rec-conv2d}
+\end{figure}
+
+\paragraph{Training speed and warm-starting.}
+With no graphics processor and no vectorised automatic-differentiation engine behind it, one training step of a batch of 16 real lines under this implementation took on the order of tens of seconds on a general-purpose laptop processor, substantially slower than the published-framework implementation used for the four-stage recipe above; the batched matrix product of Figure~\ref{fig:rec-conv2d} was adopted specifically to reduce this, after timing showed that an un-vectorised convolution, not the recurrent layers or the CTC loss, was the dominant cost.
+Rather than train a new network to convergence from a random initial condition at this slower speed, the training program can instead load every tensor of an existing checkpoint whose shape matches (a warm start), so that a further training run only has to continue improving an already-competent network; the program also writes the current epoch number and the best validation score into the checkpoint itself after every epoch, so that a run interrupted by a crash or a time limit can resume from the last completed epoch rather than restarting.
+Complete code for this module, the shared training program and the deployed inference program has been submitted separately on the AMS.
+
 \subsubsection{Evaluation metrics}
 
 Accuracy is measured with the Levenshtein edit distance \cite{levenshtein1966}, the minimum number of insertions, deletions and substitutions that turn one string into another (recursion in the Appendix).
@@ -288,7 +334,7 @@ Establishing the split between the two causes requires re-running the full page 
 
 \subsubsection{Inference implementation for the single-board computer}
 
-Training needs a large software environment, so the student wrote a separate from-scratch inference implementation in Python (about 480 lines) that reads the trained weights directly and uses only array arithmetic.
+The single-board computer runs the eval-mode form of the same module described in Section~\ref{sec:textrec-numpynn}, in Python, using only array arithmetic, so no separate re-implementation step was needed to go from training to deployment.
 Each convolution is converted to one matrix product (the im2col method): the padded input is cut into overlapping $3\times3$ patches that become the columns of a matrix $\mathrm{cols}$, and
 \begin{equation}
 Y=\tilde W\,\mathrm{cols}+b\,\mathbf 1^{\top},
@@ -297,8 +343,8 @@ Y=\tilde W\,\mathrm{cols}+b\,\mathbf 1^{\top},
 where $\tilde W\in\mathbb R^{C_{\mathrm{out}}\times C_{\mathrm{in}}k^2}$ is the weight tensor reshaped to a matrix and $b\,\mathbf 1^\top$ adds the channel bias at all positions.
 One optimised matrix product replaces the six nested loops of Equation~\ref{eq:rec-conv} and was about ten times faster than a general summation routine; the largest matrix (second convolution of stage 1, $288\times40\,960$ entries) needs 47\,MB, so the working set is a few tens of megabytes.
 Batch normalisation is applied in the folded form of Equation~\ref{eq:rec-bnfold}, and the LSTM is an explicit loop over the 160 steps with one product of 1024 rows per step and direction.
-A weight reader parses the training checkpoint file directly (details in the Appendix, subsection ``Text recogniser: weight file and inference details'').
-For one random $64\times640$ input the largest difference between the log-probabilities of the two implementations was $2.3\times10^{-5}$, with identical arg-max (hence decoded text) at all 160 steps; on the final trained weights the agreement was re-verified over 1358 real lines as 100.00\,\% top-1 agreement with a maximum absolute logit difference of $7.6\times10^{-6}$.
+The weights are read directly from the plain array checkpoint written by training, with no parsing of any third-party model format (details in the Appendix, subsection ``Text recogniser: weight file and inference details'').
+Before the eval-mode form was trusted, its forward pass was cross-checked, independently of the gradient check of Section~\ref{sec:textrec-numpynn}, against the training-mode forward pass on the same weights with the batch-normalisation statistics frozen: for one random $64\times640$ input the largest difference between the two log-probabilities was $2.3\times10^{-5}$, with identical arg-max (hence decoded text) at all 160 steps; on the final trained weights the agreement was re-verified over 1358 real lines as 100.00\,\% top-1 agreement with a maximum absolute logit difference of $7.6\times10^{-6}$.
 Recognition measured 8.86\,ms per character and 353\,ms per line over 669 real crops, which is inside the 25\,ms per character of requirement R4 with a margin of about 2.8 times; this is a throughput figure obtained with the model already resident in memory on the development laptop.
 The contrast with the earlier figure of 65 to 75\,ms per character is explained by measurement conditions rather than by a change of model: the earlier number was taken as a single isolated forward pass including image preparation, whereas the current figure is the total inference time divided by the total number of characters over a full run.
 Timing on the ODROID N2+ was not measured, and the ARM processor is expected to be slower than the development laptop, so the margin is expected to shrink on the target hardware.

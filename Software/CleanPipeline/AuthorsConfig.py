@@ -18,9 +18,11 @@ SPLIT_SEED = 0   #fixed seed so the same lines are held out everywhere
 AUTHOR_CLASSIFIER_RUN_NAME = "author_classifier_10new"
 
 
-#builds the writer-id classifier checkpoint filename from the run name above
+#builds the writer-id classifier checkpoint filename from the run name above.
+#.npz now (ConvertPtToNpz.py converted the original .pt once) -- nothing in
+#the live pipeline reads .pt files directly anymore
 def AuthorClassifierWeightsFilename():
-    return f"{AUTHOR_CLASSIFIER_RUN_NAME}_weights.pt"
+    return f"{AUTHOR_CLASSIFIER_RUN_NAME}_weights.npz"
 
 
 #yields (imagepath, labelpath) pairs for one personal author's scanned pages

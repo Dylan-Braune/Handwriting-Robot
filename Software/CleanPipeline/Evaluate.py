@@ -31,6 +31,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import MyImage
 from PIL import Image,ImageDraw
 
 sys.path.insert(0,os.path.dirname(os.path.abspath(__file__)))
@@ -47,23 +48,21 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 #the actual weights/NOGIT output dirs still live -- data is not duplicated
 CNN_DATA_DIR = SCRIPT_DIR.parent/"CNN"
 
-#prefers a from-scratch .npz checkpoint (TrainScratch.py's output) over the
-#old torch-trained .pt ones -- falls back through the .pt chain only if no
-#.npz exists yet. the plain ink-aware classifier collapses to ~20% on
+#prefers your own from-scratch .npz checkpoint (TrainScratch.py's output) over
+#the converted-from-.pt ones (ConvertPtToNpz.py's output, same naming as the
+#original .pt files). the plain ink-aware classifier collapses to ~20% on
 #synthesized/gantry output (it leans on ink density, which a constant-width
 #pen can't reproduce) -- the stroke-normalized shape-only model has no such
 #dependency and is the correct judge here
 _NPZ = CNN_DATA_DIR/"weights"/"author_classifier_10new_scratch_weights.npz"
-_SHAPE = CNN_DATA_DIR/"weights"/"author_shape_10new_weights.pt"
-_W1 = CNN_DATA_DIR/"weights"/"author_classifier_10_weights.pt"
-_W2 = CNN_DATA_DIR/"weights"/"author_fast_10_weights.pt"
-AUTHOR_WEIGHTS = _NPZ if _NPZ.exists() else (_SHAPE if _SHAPE.exists() else (_W1 if _W1.exists() else _W2))
+_SHAPE = CNN_DATA_DIR/"weights"/"author_shape_10new_weights.npz"
+_W1 = CNN_DATA_DIR/"weights"/"author_classifier_10new_weights.npz"
+AUTHOR_WEIGHTS = _NPZ if _NPZ.exists() else (_SHAPE if _SHAPE.exists() else _W1)
 StyleOutDir = CNN_DATA_DIR/"NOGIT"/"StyleEval"
 
 
-#AuthorClassifierCNNNumpy's own __init__ reads "author_mapping" from a .pt
-#checkpoint or "__author_names__" from a .npz one -- either way it comes back
-#as model.author_mapping, so this loader doesn't need to know which format
+#AuthorClassifierCNNNumpy's own __init__ reads "__author_names__" from the
+#.npz and rebuilds it into model.author_mapping
 def LoadAuthorModel():
     model = AuthorClassifierCNNNumpy(checkpoint_path=AUTHOR_WEIGHTS)
     mapping = model.author_mapping
@@ -196,7 +195,9 @@ def BuildComparisonSheet(profiles,holdoutTexts,path,mmPerXh=4.0,
         def fit(im):
             s = h/im.height
             w = max(1,int(im.width*s))
-            im = im.resize((w,h),Image.Resampling.LANCZOS)
+            #my own resampler.  linear not lanczos: lanczos rings at a
+            #hard ink edge and leaves a pale halo next to every stroke
+            im = Image.fromarray(MyImage.Resize(np.asarray(im.convert('L'),dtype=np.uint8),w,h,'linear'))
             if im.width>maxW:
                 im = im.crop((0,0,maxW,h))
             return im
@@ -338,17 +339,12 @@ def RunFullEvaluation(mmPerXh=4.0,pxPerMm=18.0,nSeeds=3,jitter=1.0):
 
 #=== from VerifyRewrite.py: does the output say the right words in the
 #right hand, on text the system has never seen? ===
-#prefers a from-scratch .npz checkpoint over the torch-trained .pt chain
-#(joint > hf-only > original), same precedence rule as AUTHOR_WEIGHTS above
-_TEXT_NPZ = CNN_DATA_DIR/"weights"/"paper_cnn_bilstm_ctc_scratch_best.npz"
-TEXT_WEIGHTS = CNN_DATA_DIR/"weights"/"paper_cnn_bilstm_ctc_best.pt"
-for _name in ("paper_cnn_bilstm_ctc_joint_best.pt","paper_cnn_bilstm_ctc_hf_best.pt"):
-    _candidate = CNN_DATA_DIR/"weights"/_name
-    if _candidate.exists():
-        TEXT_WEIGHTS = _candidate
-        break
-if _TEXT_NPZ.exists():
-    TEXT_WEIGHTS = _TEXT_NPZ
+#prefers your own from-scratch .npz over the converted-from-.pt chain
+#(joint > hf-only), same precedence rule as AUTHOR_WEIGHTS above
+_TEXT_CANDIDATES = ["paper_cnn_bilstm_ctc_scratch_best.npz","paper_cnn_bilstm_ctc_joint_best.npz",
+                    "paper_cnn_bilstm_ctc_hf_best.npz"]
+TEXT_WEIGHTS = next((CNN_DATA_DIR/"weights"/n for n in _TEXT_CANDIDATES
+                     if (CNN_DATA_DIR/"weights"/n).exists()),CNN_DATA_DIR/"weights"/_TEXT_CANDIDATES[0])
 RewriteOutDir = CNN_DATA_DIR/"NOGIT"/"EndToEnd"
 
 #ordinary english, not drawn from IAM, exercising letter combinations the
@@ -502,7 +498,7 @@ def RunRewrite(nSeeds=2,mmPerXh=4.0,pxPerMm=18.0,saveSamples=True):
 #actually be judged -- the shape-only model, on stroke-normalized ink,
 #since the single pen can't reproduce ink density as a style channel ===
 _SHAPE_NPZ = CNN_DATA_DIR/"weights"/"author_classifier_10new_scratch_weights.npz"
-SHAPE_WEIGHTS = _SHAPE_NPZ if _SHAPE_NPZ.exists() else CNN_DATA_DIR/"weights"/"author_shape_10new_weights.pt"
+SHAPE_WEIGHTS = _SHAPE_NPZ if _SHAPE_NPZ.exists() else CNN_DATA_DIR/"weights"/"author_shape_10new_weights.npz"
 ShapeOutDir = CNN_DATA_DIR/"NOGIT"/"ShapeEval"
 
 
@@ -861,8 +857,10 @@ def _SaveSheet(author,rows,path):
     imgs = []
     for text,got,im in rows:
         s = h/im.height
-        imgs.append((text,got,im.resize((max(1,int(im.width*s)),h),
-                                          Image.Resampling.LANCZOS)))
+        #my own resampler, linear for the same reason as above
+        imgs.append((text,got,Image.fromarray(
+            MyImage.Resize(np.asarray(im.convert('L'),dtype=np.uint8),
+                           max(1,int(im.width*s)),h,'linear'))))
     W = min(1600,max(i.width for _,_,i in imgs))+12
     H = sum(h+34 for _ in imgs)+12
     sheet = Image.new("L",(W,H),245)

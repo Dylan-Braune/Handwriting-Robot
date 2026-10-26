@@ -1,0 +1,86 @@
+\subsection{G-code generation}
+\label{sec:gcode}
+
+This subsection describes how a trajectory in millimetres becomes a machine program (functional unit FU~2.8, first stage; requirements R3 and R5).
+The format is G-code, the command language of plotters and numerically controlled machines standardised as ISO 6983-1~\cite{iso6983}. A G-code program is a list of text lines, each naming a command and its arguments. Only five commands are used here: \texttt{G21} and \texttt{G90} set the units to millimetres and the coordinates to absolute, \texttt{G0} is a move with the pen up and \texttt{G1} a move with the pen down, \texttt{M3} and \texttt{M5} lower and raise the pen, \texttt{G4} pauses, and \texttt{M2} ends the program.
+
+Two conventions of the format matter to the design. Coordinates are \emph{absolute}, meaning each move names where to go rather than how far to move, so a rounding error in one move cannot accumulate into the next. Settings such as the feed rate are \emph{modal}, meaning a value stays in force until another line changes it, so the feed need not be repeated on every move. Fault~2 of Section~\ref{sec:gc-faults} is a consequence of that second convention being overlooked.
+
+The format was chosen because it splits the motion chain in two. The generator needs to know nothing about the gantry electronics, the interpreter of Section~\ref{sec:gantry} needs to know nothing about handwriting, and the file between them is plain text that can be inspected and replayed without the machine being present, which is what makes the verification of Section~\ref{sec:gc-verify} possible at all. The generator was written for this project; the file format itself was not designed here and carries no design credit.
+
+\subsubsection{Placement, ordering and program structure}
+
+The trajectory of Section~\ref{sec:synthesis} and the machine frame both have $X$ to the right and $Y$ upwards, so no mirroring is needed.
+The origin is the safe corner 5\,mm inside the minimum switches (Section~\ref{sec:gan-calib}), leaving the driver $194\times252$\,mm of the machine's $204\times262$\,mm switch-to-switch travel, and the text block starts at $(X_{\mathrm o},Y_{\mathrm o})=(10,180)$\,mm with later lines descending.
+For a trajectory of bounding box $(x_0,y_0,x_1,y_1)$, width $w$ and height $h$, the block is shrunk by Equation~\ref{eq:gc-map}, never enlarged, if it would leave the work area $[0,X_{\max}]\times[0,Y_{\max}]$ with $X_{\max}=Y_{\max}=200$\,mm:
+\begin{equation}
+s=\min\Bigl(1,\ \frac{X_{\max}-X_{\mathrm o}}{w},\ \frac{Y_{\mathrm o}-Y_{\min}}{h}\Bigr),\qquad X=X_{\mathrm o}+(x-x_0)\,s,\quad Y=Y_{\mathrm o}-(y_1-y)\,s,
+\label{eq:gc-map}
+\end{equation}
+with $Y_{\min}=0$; at scale 1 the area holds at most $\lfloor(180-9.2)/12.6\rfloor+1=14$ lines of the default size, where $9.2=(A-D)x_{\mathrm{mm}}$ and the pitch is 12.6\,mm.
+A final clamp moves outlying vertices onto the border and writes a header warning, and vertices closer than 0.12\,mm to the previous one are dropped, which is inert in practice because the synthesiser resamples at 0.35\,mm.
+The strokes are then ordered by a greedy nearest-endpoint rule, grouped into text rows and, within a row, the next stroke being the one whose end is nearest to the pen and entered from that end; only order and direction change, so the ink is identical, and this is the pen-movement optimisation of R3, with the row-order fault of Section~\ref{sec:gc-faults}.
+
+The pen lift is a one-way toggle motor (Section~\ref{sec:gan-pen}), so the generator tracks the pen state in software and emits \texttt{M3} for down or \texttt{M5} for up only when the state changes, a pulse where none is needed inverting the pen for the rest of the job.
+Each change is followed by a \emph{dwell}, which is a commanded pause that holds the machine still while something mechanical finishes. Here it covers one $90^\circ$ rotation of the cam and the settling of the pen afterwards, assumed to be $260+90=350$\,ms. A dwell is needed because the pen motor is not synchronised with the motion: without it, the next move would begin while the pen was still travelling, drawing a stroke that starts in the wrong place. Since every stroke needs the pen down and then up again, a stroke costs 0.7\,s of dwell, which is why dwell rather than drawing dominates the predicted job time. The interpreter additionally confirms the pen state with the pen switch rather than trusting the dwell alone.
+A program is a comment header, \texttt{G21} for millimetres and \texttt{G90} for absolute coordinates, then one block per stroke of at least two points at the 900\,mm/min draw feed, and finally pen up, parking and \texttt{M2}, with vertices written to three decimals; Figure~\ref{fig:gc-emit} is the start of a generated program and Figure~\ref{fig:gc-emitpseudo} in Appendix~\ref{sec:app-sys} the loop that writes it.
+Table~\ref{tab:gc-config} in the same appendix lists every constant with its role; the motor, driver and transmission values are assumptions made in the program comments, and the calibrated steps per millimetre of Section~\ref{sec:gan-calib} replace the derived ones in the interpreter, so a wrong assumption in the file header cannot reach the machine.
+
+\begin{figure}[!htbp]
+\centering
+\fontsize{8}{9.2}\selectfont
+\begin{lstlisting}[basicstyle=\ttfamily\fontsize{8}{9.2}\selectfont,frame=none]
+; start of a generated program -- author yeukita
+; steps/mm  X=80.000  Y=80.000 (3200 microsteps/rev)
+G21   ; millimetres
+G90   ; absolute
+G0 F2400                     ; travel feed, emitted once
+G0 X10.059 Y179.271          ; travel to the first stroke
+M3   ; pen DOWN (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G1 F900                      ; draw feed
+G1 X10.084 Y178.920          ; one line per vertex (0.35 mm apart)
+\end{lstlisting}
+\caption{Start of a generated program for the test word of writer yeukita (14 strokes, 239 draw moves, vertices 0.348\,mm apart on average). The trailing comments on the motion lines are annotations added here. Every line of the format is accounted for: the two setting codes, one travel feed emitted once, a rapid move to the first point, the pen toggle with its dwell, the draw feed, and then one linear move per vertex. The loop that writes it is given as pseudocode in Appendix~\ref{sec:app-sys}.}
+\label{fig:gc-emit}
+\end{figure}
+
+
+\subsubsection{Time model and verification}
+\label{sec:gc-verify}
+
+The generator can also write a step schedule with a time estimate, which assumes each move starts and ends at rest under the ramp that keeps an open-loop stepper from losing steps, with acceleration $a=400$\,mm/s$^2$ and cruise speed $v$, 15\,mm/s drawing and 40\,mm/s travelling.
+The distance needed to reach $v$ is $d_a=v^2/(2a)$, so a move of length $d$ is \emph{trapezoidal} if $d\ge2d_a$ and otherwise \emph{triangular}, never reaching $v$ (Equation~\ref{eq:gc-trap}):
+\begin{equation}
+T(d)=\begin{cases}\dfrac{2v}{a}+\dfrac{d-2d_a}{v}=\dfrac{d}{v}+\dfrac{v}{a},&d\ge2d_a,\\[2mm]\dfrac{2v_{\mathrm p}}{a}=2\sqrt{\dfrac{d}{a}},\quad v_{\mathrm p}=\sqrt{d\,a},&d<2d_a.\end{cases}
+\label{eq:gc-trap}
+\end{equation}
+For drawing $d_a=0.28$\,mm, so moves below 0.56\,mm are triangular with a 37.5\,ms ramp; for travel $d_a=2$\,mm, so moves below 4\,mm are triangular with 100\,ms.
+A typical 0.35\,mm segment is therefore always triangular, with $T=2\sqrt{0.35/400}=59.2$\,ms, an average of 5.9\,mm/s and not 15.
+For the test word of Figure~\ref{fig:gc-emit}, a draw path of 83.2\,mm in 239 moves and a pen-up path of 250.3\,mm in 14 moves with 26 pen pulses, the model gives 14.1\,s drawing, 7.5\,s travel and 9.1\,s dwell, 30.7\,s in all, or 2.8\,s per character for an assumed 11 characters, the text not being stored in the file.
+
+The generator is the one stage whose output can be checked exactly, because both its input and its output are geometry and the correct answer is therefore known. The check is run by a second, independent parser that reads the finished file back as though it were the machine: it follows $X$ and $Y$, starts a polyline at \texttt{M3} and closes it at \texttt{M5}, and parses only \texttt{G0} and \texttt{G1} because nothing else is emitted. Writing a separate reader rather than reusing the generator's own data is the point of the exercise, since a fault shared by both would otherwise cancel out and go unseen.
+
+The trajectory that went in and the polylines that come back out are then compared in two ways, in Equation~\ref{eq:gc-verify}.
+\begin{equation}
+\mathrm{IoU}=\frac{|M_{\mathrm t}\cap M_{\mathrm g}|}{|M_{\mathrm t}\cup M_{\mathrm g}|},\qquad e_{\mathrm{mean}}=\frac{1}{J}\sum_j\min_i\lVert g_j-s_i\rVert,\qquad e_{\max}=\max_j\min_i\lVert g_j-s_i\rVert
+\label{eq:gc-verify}
+\end{equation}
+The first is an area comparison. Both are drawn onto a common grid of 8 pixels per millimetre, giving two masks $M_{\mathrm t}$ and $M_{\mathrm g}$, and the \emph{intersection over union} is the number of pixels inked by both divided by the number inked by either. It is 1 when the two drawings coincide exactly and falls towards 0 as they diverge, so it answers the question ``does the file draw the same picture'' with a single number. It is used rather than counting differing pixels because that count would depend on how much ink there is, whereas a ratio does not.
+
+The second is a vertex comparison. For each vertex $g_j$ of the G-code, the distance to the nearest vertex $s_i$ of the original trajectory is found, and the mean and the worst of those distances are reported. The mean shows whether the whole drawing has shifted and the maximum catches a single vertex that has moved, which an area measure would hide because one misplaced point changes almost no pixels. The vertices are sub-sampled to at most 4000 and 6000 respectively to keep the all-pairs search affordable.
+
+What Equation~\ref{eq:gc-verify} does and does not cover should be clear. It measures only the loss between the trajectory and the file, which is rounding to three decimals, the stroke reordering and the clamping to the work area. It says nothing about whether the machine then draws the file correctly, which is the mechanical error of Section~\ref{sec:gan-res} and a separate matter entirely.
+
+\subsubsection{Known faults and limitations}
+\label{sec:gc-faults}
+
+\begin{enumerate}\setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}
+\item The stroke rows are sorted by ascending $Y$, so a multi-line job starts with the \emph{bottom} line and not in reading order; this was found by reading the code and was not checked on the machine.
+\item The interpreter has one \emph{modal} feed register and no rapid mode (Section~\ref{sec:gantry}), but the generator emits \texttt{G0 F2400} once at the start and \texttt{G1 F900} before every stroke, so every pen-up travel after the first stroke runs at 900\,mm/min and not 2400; the real job time is therefore longer than the time model assumes, and emitting the feed before every travel would remove the discrepancy.
+\item Lines wrap at 185\,mm from $X_{\mathrm o}=10$\,mm, so a full-width line reaches $X=195$\,mm, but the driver clamps $X$ to 194\,mm and would distort the last millimetre; $X_{\max}$ or the line width should be reduced.
+\item Equation~\ref{eq:gc-trap} is a model and not a measurement: it stops fully between 0.35\,mm segments and assumes 40\,mm/s travel, so it overestimates drawing time and underestimates travel time against the real interpreter (Section~\ref{sec:gan-timing}).
+\item Equation~\ref{eq:gc-verify} compares vertices with vertices, so it covers only the loss between trajectory and file, namely rounding, ordering and clamping, and not the mechanical error (Section~\ref{sec:gan-res}). The project notes quote $\mathrm{IoU}\approx0.99$ and a text-accuracy change of at most 0.3 percentage points between direct and read-back rendering, for an earlier system state and judged by the networks of the search (Table~\ref{tab:syn-evid} shows later pairs); $e_{\mathrm{mean}}$ and $e_{\max}$ were never logged.
+\mustdo{run the comparison for a set of generated programs and report $\mathrm{IoU}$, $e_{\mathrm{mean}}$ and $e_{\max}$.}
+\item The saving produced by the stroke-ordering optimisation of R3 was not measured.
+\end{enumerate}

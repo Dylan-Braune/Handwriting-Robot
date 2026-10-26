@@ -1,16 +1,17 @@
 #from scratch numpy only inference for both classifiers: the text recognizer
 #(conv backbone + bidirectional lstm + ctc) and the writer-id classifier (same
-#conv backbone + pooling head). no torch import anywhere in this file -- .pt
-#checkpoints are read directly as a zip of pickled metadata + raw tensor bytes.
-#merged from the old np_inference package (weight_io+layers+text_model+author_model)
-import pickle
-import zipfile
+#conv backbone + pooling head). no torch import anywhere in this file, and no
+#.pt/pickle parsing either -- every checkpoint is .npz now (ConvertPtToNpz.py
+#converted the old torch-trained ones once; TrainScratch.py produces new ones
+#in the same format). merged from the old np_inference package
+#(weight_io+layers+text_model+author_model)
 from pathlib import Path
 
 import numpy as np
 from PIL import Image
 
-from Charset import CHARSET,CHAR_TO_IDX,IDX_TO_CHAR
+from Charset import IDX_TO_CHAR
+import MyImage
 import ProfileIO as PIO
 
 #this file lives in Software/CleanPipeline, a sibling of Software/CNN where
@@ -18,167 +19,39 @@ import ProfileIO as PIO
 CNN_DATA_DIR = Path(__file__).resolve().parent.parent/"CNN"
 WEIGHTS_DIR = CNN_DATA_DIR/"weights"
 
-INPUT_HEIGHT = 64
+INPUT_HEIGHT = 64   #the fixed canvas both models were trained on
 INPUT_WIDTH = 640
-PEN_WIDTH_XH = 0.14
 
-#prefers a from-scratch .npz checkpoint (TrainScratch.py's output) over the
-#old torch-trained .pt chain -- same precedence rule in both places that
-#pick a default checkpoint (here, and Evaluate.py's own AUTHOR_WEIGHTS/
-#TEXT_WEIGHTS/SHAPE_WEIGHTS), so anything that trains with TrainScratch.py
-#gets picked up everywhere a model is loaded with no explicit path argument
-DEFAULT_TEXT_WEIGHTS = WEIGHTS_DIR/"paper_cnn_bilstm_ctc_best.pt"
-for _name in ("paper_cnn_bilstm_ctc_joint_best.pt","paper_cnn_bilstm_ctc_hf_best.pt"):
-    _candidate = WEIGHTS_DIR/_name
-    if _candidate.exists():
-        DEFAULT_TEXT_WEIGHTS = _candidate
-        break
-_TEXT_NPZ = WEIGHTS_DIR/"paper_cnn_bilstm_ctc_scratch_best.npz"
-if _TEXT_NPZ.exists():
-    DEFAULT_TEXT_WEIGHTS = _TEXT_NPZ
+#prefers your own from-scratch .npz checkpoint (TrainScratch.py's output) over
+#the converted-from-.pt ones (ConvertPtToNpz.py's output) -- same precedence
+#rule in both places that pick a default checkpoint (here, and Evaluate.py's
+#own AUTHOR_WEIGHTS/TEXT_WEIGHTS/SHAPE_WEIGHTS), so anything trained with
+#TrainScratch.py gets picked up everywhere with no explicit path argument
+_TEXT_CANDIDATES = ["paper_cnn_bilstm_ctc_scratch_best.npz","paper_cnn_bilstm_ctc_joint_best.npz",
+                    "paper_cnn_bilstm_ctc_hf_best.npz"]
+DEFAULT_TEXT_WEIGHTS = next((WEIGHTS_DIR/n for n in _TEXT_CANDIDATES if (WEIGHTS_DIR/n).exists()),
+                            WEIGHTS_DIR/_TEXT_CANDIDATES[0])
 
 _AUTHOR_NPZ = WEIGHTS_DIR/"author_classifier_10new_scratch_weights.npz"
-_SHAPE = WEIGHTS_DIR/"author_shape_10new_weights.pt"
-_W1 = WEIGHTS_DIR/"author_classifier_10_weights.pt"
-_W2 = WEIGHTS_DIR/"author_fast_10_weights.pt"
-DEFAULT_AUTHOR_WEIGHTS = _AUTHOR_NPZ if _AUTHOR_NPZ.exists() else (
-    _SHAPE if _SHAPE.exists() else (_W1 if _W1.exists() else _W2))
+_SHAPE = WEIGHTS_DIR/"author_shape_10new_weights.npz"
+_W1 = WEIGHTS_DIR/"author_classifier_10new_weights.npz"
+DEFAULT_AUTHOR_WEIGHTS = _AUTHOR_NPZ if _AUTHOR_NPZ.exists() else (_SHAPE if _SHAPE.exists() else _W1)
 
-STORAGE_DTYPES = {
-    "FloatStorage": np.dtype("<f4"),
-    "DoubleStorage": np.dtype("<f8"),
-    "HalfStorage": np.dtype("<f2"),
-    "LongStorage": np.dtype("<i8"),
-    "IntStorage": np.dtype("<i4"),
-    "ShortStorage": np.dtype("<i2"),
-    "CharStorage": np.dtype("<i1"),
-    "ByteStorage": np.dtype("<u1"),
-    "BoolStorage": np.dtype("?"),
-}
-
-
-#=== checkpoint loading: reads a .pt file (zip of pickled graph + raw tensor
-#bytes) straight into numpy arrays, without ever importing torch ===
-
-#placeholder for a torch storage class, real bytes arrive later via persistent_load
-class StorageStub:
-    def __init__(self,dtype):
-        self.dtype = dtype
-
-    def __call__(self,*args,**kwargs):
-        return self
-
-
-#rebuilds a numpy array from a flat storage array and its view info. pytorch
-#strides are in elements, as_strided needs strides in bytes
-def RebuildTensor(storage,storage_offset,size,stride,requires_grad=False,backward_hooks=None,metadata=None):
-    itemsize = storage.dtype.itemsize
-    byte_strides = tuple(s*itemsize for s in stride)
-    if len(size)==0:
-        return storage[storage_offset:storage_offset+1].reshape(()).copy()
-    view = np.lib.stride_tricks.as_strided(storage[storage_offset:],shape=tuple(size),strides=byte_strides)
-    return view.copy()
-
-
-#pickle unpickler that intercepts torch specific classes and resolves everything else normally
-class TorchUnpickler(pickle.Unpickler):
-    def __init__(self,file,zf,data_prefix):
-        super().__init__(file)
-        self._zf = zf
-        self._data_prefix = data_prefix
-
-    def find_class(self,module,name):
-        if module=="torch._utils" and name=="_rebuild_tensor_v2":
-            return RebuildTensor
-        if module=="torch" and name in STORAGE_DTYPES:
-            return StorageStub(STORAGE_DTYPES[name])
-        if module=="collections" and name=="OrderedDict":
-            import collections
-            return collections.OrderedDict
-        if module=="torch._utils" and name=="_rebuild_parameter":
-            return lambda data,requires_grad,backward_hooks: data
-        return super().find_class(module,name)
-
-    def persistent_load(self,pid):
-        tag,storage_type,key,location,numel = pid   #format: ('storage', type_stub, key, location, numel)
-        assert tag=="storage"
-        dtype = storage_type.dtype
-        raw = self._zf.read(f"{self._data_prefix}data/{key}")
-        arr = np.frombuffer(raw,dtype=dtype,count=numel)
-        return arr
-
-
-#unpickles a .pt checkpoint's full object graph, tensors as numpy arrays
-def LoadCheckpoint(pt_path):
-    pt_path = str(pt_path)
-    import io
-    with zipfile.ZipFile(pt_path,"r") as zf:
-        names = zf.namelist()
-        pkl_name = next(n for n in names if n.endswith("data.pkl"))
-        prefix = pkl_name[:-len("data.pkl")]   #archive folder name varies, derive it from data.pkl's own path
-        with zf.open(pkl_name) as f:
-            buf = io.BytesIO(f.read())
-            unpickler = TorchUnpickler(buf,zf,prefix)
-            return unpickler.load()
-
-
-#thin wrapper: unwraps 'model_state_dict' if the checkpoint is a dict wrapping the state dict
-def LoadStateDict(pt_path):
-    obj = LoadCheckpoint(pt_path)
-    if isinstance(obj,dict) and "model_state_dict" in obj:
-        obj = obj["model_state_dict"]
-    return dict(obj)
-
-
-#=== .npz loading path (new) -- for checkpoints produced by TrainTextScratch.py/
-#TrainAuthorScratch.py. kept entirely separate from the .pt pickle path above,
-#which is untouched and stays the fallback for already-existing .pt checkpoints.
+#loads a .npz checkpoint (TrainScratch.py's own output, or an old .pt
+#converted once via ConvertPtToNpz.py -- both land in this exact same format).
 #npz can't hold a python dict, so a saved author_mapping is stashed as a plain
 #"__author_names__" string array (names sorted by index) and rebuilt into a
-#{name: idx} dict here ===
+#{name: idx} dict here. this replaces what used to be an 84-line from-scratch
+#pickle/zip unpickler for reading .pt files directly -- no longer needed now
+#that every checkpoint this pipeline touches is .npz
 def LoadStateDictAny(checkpoint_path):
-    checkpoint_path = Path(checkpoint_path)
-    if checkpoint_path.suffix==".npz":
-        with np.load(checkpoint_path,allow_pickle=False) as npz:
-            sd = {k: npz[k] for k in npz.files if k!="__author_names__"}
-            author_mapping = None
-            if "__author_names__" in npz.files:
-                names = [str(n) for n in npz["__author_names__"]]
-                author_mapping = {name: idx for idx,name in enumerate(names)}
-        return sd,author_mapping
-    obj = LoadCheckpoint(checkpoint_path)
-    author_mapping = obj.get("author_mapping") if isinstance(obj,dict) else None
-    if isinstance(obj,dict) and "model_state_dict" in obj:
-        obj = obj["model_state_dict"]
-    return dict(obj),author_mapping
-
-
-#dumps a checkpoint's tensors to .npz (+json sidecar for other metadata), so
-#downstream code can skip re-parsing pickle. convenience only, not on the live path
-def ExportToNpz(pt_path,out_npz_path):
-    import json
-    obj = LoadCheckpoint(pt_path)
-    if isinstance(obj,dict) and "model_state_dict" in obj:
-        tensors = obj["model_state_dict"]
-        meta = {k:v for k,v in obj.items() if k!="model_state_dict"}
-    else:
-        tensors = obj
-        meta = {}
-    out_npz_path = Path(out_npz_path)
-    np.savez(out_npz_path,**{k:v for k,v in tensors.items()})
-
-    def _jsonable(v):
-        if isinstance(v,dict):
-            return {str(k):_jsonable(x) for k,x in v.items()}
-        if isinstance(v,np.ndarray):
-            return v.tolist()
-        if isinstance(v,(np.integer,np.floating)):
-            return v.item()
-        return v
-
-    if meta:
-        with open(out_npz_path.with_suffix(".json"),"w") as f:
-            json.dump(_jsonable(meta),f,indent=2)
+    with np.load(checkpoint_path,allow_pickle=False) as npz:
+        sd = {k: npz[k] for k in npz.files if not k.startswith("__")}
+        author_mapping = None
+        if "__author_names__" in npz.files:
+            names = [str(n) for n in npz["__author_names__"]]
+            author_mapping = {name: idx for idx,name in enumerate(names)}
+    return sd,author_mapping
 
 
 #=== numpy layer primitives, shared by both models ===
@@ -303,17 +176,9 @@ def Softmax(x,axis):
 
 #resizes/pads one line image to the fixed classifier input size, same as SegmentLean's version
 def ResizeLineImageFixed(pil_img,height=INPUT_HEIGHT,width=INPUT_WIDTH,pad_value=255):
-    img = pil_img.convert("L")
-    w,h = img.size
-    if w<=0 or h<=0:
-        return Image.new("L",(width,height),pad_value)
-    s = min(height/h,width/w)
-    new_w = max(1,round(w*s))
-    new_h = max(1,round(h*s))
-    resized = img.resize((new_w,new_h),Image.Resampling.BILINEAR)
-    canvas = Image.new("L",(width,height),pad_value)
-    canvas.paste(resized,(0,max(0,(height-new_h)//2)))
-    return canvas
+    gray = np.asarray(pil_img.convert("L") if hasattr(pil_img,'convert')
+                      else pil_img,dtype=np.uint8)
+    return Image.fromarray(MyImage.FitFixedCanvas(gray,height,width,pad_value))
 
 
 #pil image -> (1,1,H,W) numpy array, ink inverted to high values and normalised to ~[-1,1]
@@ -355,12 +220,7 @@ def ConvBlockForward(x,sd,prefix,n_layers):
 class PaperCRNNNumpy:
     def __init__(self,checkpoint_path=None,hidden_size=256):
         self.checkpoint_path = Path(checkpoint_path or DEFAULT_TEXT_WEIGHTS)
-        #.npz (new, from TrainTextScratch.py) vs .pt (existing pickle path) --
-        #see LoadStateDictAny's own comment
-        if self.checkpoint_path.suffix==".npz":
-            self.sd,_ = LoadStateDictAny(self.checkpoint_path)
-        else:
-            self.sd = LoadStateDict(self.checkpoint_path)
+        self.sd,_ = LoadStateDictAny(self.checkpoint_path)
         self.hidden_size = hidden_size
 
         self.lstm_layer_params = []
@@ -439,14 +299,7 @@ def WordAcc(pred,truth):
 class AuthorClassifierCNNNumpy:
     def __init__(self,checkpoint_path=None):
         self.checkpoint_path = Path(checkpoint_path or DEFAULT_AUTHOR_WEIGHTS)
-        #.npz (new, from TrainAuthorScratch.py) vs .pt (existing pickle path) --
-        #see LoadStateDictAny's own comment
-        if self.checkpoint_path.suffix==".npz":
-            self.sd,self.author_mapping = LoadStateDictAny(self.checkpoint_path)
-        else:
-            raw = LoadCheckpoint(self.checkpoint_path)
-            self.sd = raw["model_state_dict"] if isinstance(raw,dict) and "model_state_dict" in raw else raw
-            self.author_mapping = raw.get("author_mapping") if isinstance(raw,dict) else None
+        self.sd,self.author_mapping = LoadStateDictAny(self.checkpoint_path)
 
     #x: (B,1,H,W) numpy array -> (B,num_authors) raw logits
     def forward(self,x):

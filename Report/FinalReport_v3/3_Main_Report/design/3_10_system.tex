@@ -1,0 +1,191 @@
+\subsection{Software architecture and system integration}
+\label{sec:system}
+
+This subsection describes how the software blocks of Sections~\ref{sec:segmentation} to~\ref{sec:gantry} form one application on the single-board computer, operated from a web browser (the display and input interface of the proposal). All blocks are Python programs written by the student; only the camera interface, the pin interface and the transport of web requests come from libraries, with the one exception of the sample-crop warm-up discussed below.
+\mustdo{confirm that the complete source code has been submitted separately.}
+
+\subsubsection{Modules, data flow, start-up and deployment}
+
+Figure~\ref{fig:sys-arch} shows the modules: one server application on the ODROID N2+ links the blocks of Sections~\ref{sec:segmentation} to~\ref{sec:gantry}, holds the style profiles and the job store, talks to the camera and the gantry, and answers three static browser pages over HTTP. The three modes map onto those pages as \emph{classification} on the Read page, \emph{reproduction} on the Write page and \emph{training} offline with no page at all, since the thirteen writers are pre-built files and the interface has no training function.
+At start-up the server loads the text recogniser, the stroke-normalised classifier that judges the synthesis, the ink-based classifier that classifies photographs, and all profiles, each network a from-scratch array-arithmetic implementation of the trained weights (Sections~\ref{sec:textrec} and~\ref{sec:writerid}); a job is then refused unless calibration has succeeded in this server session. Security suits a trusted local network only: no accounts, an optional shared key, requests from any origin accepted, and anyone who can reach the port can start a motion.
+\mustdo{the network configuration of the board (address, connection to the laptop), operating system and Python version, how the server is started, and the memory used by the loaded models.}
+
+\paragraph{The inference path is library-free; the sample-crop warm-up is not.}
+A recorded cold-boot import closure of the server confirms that \texttt{torch}, \texttt{scipy}, \texttt{cv2} and \texttt{tensorflow} are all absent from the three networks and from the classification, synthesis, G-code and motion paths, which is the claim the design rests on: every weight is read from a plain array archive and every layer is evaluated by the student's own array arithmetic.
+It would be wrong, however, to say that no machine-learning library is ever loaded by the running server.
+The start-up pre-warm thread of \texttt{Server.py} (about lines 120 to 130) calls \texttt{WRH.GlyphGridPath} and \texttt{WRH.SampleCrops} for every writer, and on a cache miss \texttt{SampleCrops} (\texttt{WebRenderHelpers.py}, about lines 118 and 119) executes \texttt{import BuildStyleProfile}, \texttt{from TrainAuthor import \ldots} and \texttt{from TrainText import \ldots}.
+Those three names do not resolve to the delivered pipeline: \texttt{WebRenderHelpers.py} (about lines 22 and 23) prepends \texttt{Software/CNN} and \texttt{Software/CNN/AuthorReproductionStuff} to \texttt{sys.path}, so they resolve to the \emph{retired} tree, whose \texttt{TrainText.py} and \texttt{TrainAuthor.py} import \texttt{torch}, \texttt{torchvision}, \texttt{pytesseract} and \texttt{scipy} at module level.
+The cached result cannot be relied on to prevent this, because the delivered cache \texttt{Software/CNN/NOGIT/WebCache} is incomplete: it holds no glyph grid and no sample crops for owen or thiya and no sample crops for abhinav, so the miss, and the import, occur on \emph{every} server start.
+The honest statement is therefore the narrow one: the inference path itself is free of machine-learning libraries, but the sample-crop warm-up of the third browser page reaches into the retired tree and pulls in the full training stack.
+\mustdo{either port the two sample-crop helpers into \texttt{CleanPipeline} so that no import reaches \texttt{Software/CNN}, or pre-populate \texttt{WebCache} with the glyph grids and sample crops of owen, thiya and abhinav so that the warm-up never misses; then repeat the cold-boot import closure on the board and record whether \texttt{torch} is loaded at any point.}
+
+\begin{figure}[!htbp]
+\centering
+\begin{tikzpicture}[x=1cm,y=1cm]
+\tikzset{m/.style={w3box,text width=2.55cm,minimum height=0.9cm,font=\scriptsize}}
+\node[w3io,text width=2.2cm,minimum height=0.85cm,font=\scriptsize] (rd) at (-6.3,3.1) {Read page};
+\node[w3io,text width=2.2cm,minimum height=0.85cm,font=\scriptsize] (wr) at (-6.3,0.5) {Write page};
+\node[w3io,text width=2.2cm,minimum height=0.85cm,font=\scriptsize] (ms) at (-6.3,-2.0) {Model and style page};
+\node[m] (cam) at (-2.3,3.3) {Camera capture and live preview};
+\node[m] (seg) at (0.9,3.3) {Page conditioning and line segmentation};
+\node[m] (txt) at (-2.3,1.9) {Text recogniser};
+\node[m] (ink) at (0.9,1.9) {Ink-based writer classifier};
+\node[m] (syn) at (-2.3,0.5) {Synthesiser and best-of-$N$ search};
+\node[m] (shp) at (0.9,0.5) {Stroke-normalised writer classifier};
+\node[m] (gen) at (-2.3,-0.9) {G-code generator and preview};
+\node[w3store,text width=2.55cm,minimum height=0.9cm,font=\scriptsize] (prof) at (0.9,-0.9) {Thirteen style profiles (JSON)};
+\node[m] (drv) at (-2.3,-2.3) {Gantry driver (interpreter, GPIO)};
+\node[w3store,text width=2.55cm,minimum height=0.9cm,font=\scriptsize] (job) at (0.9,-2.3) {Jobs, uploads, caches};
+\begin{scope}[on background layer]
+\node[w3group,fit=(cam)(seg)(drv)(job),inner sep=8pt] (srv) {};
+\end{scope}
+\node[font=\scriptsize\bfseries,anchor=south west] at (srv.north west) {Web server application on the ODROID N2+};
+\node[w3io,text width=2.0cm,minimum height=0.85cm,font=\scriptsize] (hc) at (5.6,3.3) {USB camera};
+\node[w3io,text width=2.0cm,minimum height=0.85cm,font=\scriptsize] (hg) at (5.6,-2.3) {Gantry, pen, switches};
+\draw[w3arr,<->] (rd) -- (-3.9,3.1) node[midway,above,w3lab] {HTTP, JSON};
+\draw[w3arr,<->] (wr) -- (-3.9,0.5);
+\draw[w3arr,<->] (ms) -- (-3.9,-2.0);
+\draw[w3arr] (hc) -- (seg.east |- hc);
+\draw[w3arr] (cam) -- (seg);
+\draw[w3arr] (seg) -- (ink);
+\draw[w3arr] (seg.south west) -- (txt.north east);
+\draw[w3arr,<->] (syn) -- (shp);
+\draw[w3arr] (txt) -- (syn);
+\draw[w3arr] (prof) -- (syn);
+\draw[w3arr] (syn) -- (gen);
+\draw[w3arr] (gen) -- (drv);
+\draw[w3arr] (gen.east) -- (job.west |- gen.east);
+\draw[w3arr] (drv.south) -- ++(0,-0.55) -| (hg.south);
+\end{tikzpicture}
+\caption{Software architecture. The three browser pages talk to one server application that links the blocks of Sections~\ref{sec:segmentation} to~\ref{sec:gantry}; the text recogniser also reads back every synthesised preview.}
+\label{fig:sys-arch}
+\end{figure}
+
+\paragraph{The browser pages.}
+The server offers the blocks as HTTP requests with JSON bodies; its 18 routes are listed in Table~\ref{tab:sys-endpoints}.
+The browser pages are static files any machine can serve; each reads the server address from a browser setting, attaches an optional access key to every request, and shows a green or red dot according to whether the list of writers can be fetched.
+Table~\ref{tab:sys-modes} gives the chain of operations of each mode and the content of the third page.
+
+\begin{table}[!htbp]
+\centering
+\fontsize{9}{11}\selectfont
+\begin{tabularx}{\linewidth}{|c|p{4.0cm}|X|}
+\hline
+\textbf{Method} & \textbf{Path} & \textbf{Behaviour} \\
+\hline
+GET & \texttt{/\allowbreak api/\allowbreak authors} & List of the loaded writers (thirteen) with slant and connectedness. \\
+\hline
+POST & \texttt{/\allowbreak api/\allowbreak camera/\allowbreak capture} & Capture a still (from the open preview if there is one), store it, return an image identifier. \\
+\hline
+POST & \texttt{/\allowbreak api/\allowbreak camera/\allowbreak preview/\allowbreak start} and \texttt{/stop} & Open or release the camera for live framing. \\
+\hline
+GET & \texttt{/\allowbreak api/\allowbreak camera/\allowbreak preview/\allowbreak stream} & Live motion-JPEG stream; refused unless the preview is active. \\
+\hline
+GET & \texttt{/\allowbreak api/\allowbreak images/\allowbreak <id>} & Return a stored photograph. \\
+\hline
+POST & \texttt{/\allowbreak api/\allowbreak classify} & Photograph (file or identifier), optional expected text and writer; returns the recognised text, the character accuracy, the writer with its confidence, the per-writer mean probabilities and the number of lines; error 422 if no line is found. \\
+\hline
+POST & \texttt{/\allowbreak api/\allowbreak generate} & Text, writer and optional $N$ (default 20); returns the job identifier, G-code and preview addresses, line count, pen pulses, read-back text and accuracy and the synthesis time. \\
+\hline
+GET & \texttt{/\allowbreak api/\allowbreak gantry/\allowbreak status} & Connected, calibrated and the calibration; tries to connect as a side effect. \\
+\hline
+POST & \texttt{/\allowbreak api/\allowbreak gantry/\allowbreak calibrate} & Run the calibration (blocking). \\
+\hline
+POST & \texttt{/\allowbreak api/\allowbreak write/\allowbreak <job>} & Run the stored G-code on the gantry (blocking); reports not connected, not calibrated, aborted by an end-stop, or completed. \\
+\hline
+POST & \texttt{/\allowbreak api/\allowbreak gcode/\allowbreak upload} & Store an uploaded G-code file as a job and return its preview rendered from the file; nothing is sent to the gantry. \\
+\hline
+GET & \texttt{/\allowbreak api/\allowbreak gcode/\allowbreak <job>} and \texttt{/\allowbreak api/\allowbreak images/\allowbreak job\_<job>} & Raw G-code text and preview image of a job. \\
+\hline
+GET & \texttt{/\allowbreak api/\allowbreak model\_info} & Model architectures, sizes and stored accuracy figures. The accuracy figures are hard-coded in the source and are out of date (see below). \\
+\hline
+GET & \texttt{/\allowbreak api/\allowbreak glyphs/\allowbreak <writer>} & Glyph-grid image of a writer's library (status 202 while it is being prepared). \\
+\hline
+GET & \texttt{/\allowbreak api/\allowbreak samples/\allowbreak <writer>} and \texttt{/\allowbreak api/\allowbreak samples/\allowbreak <writer>/\allowbreak <file>} & Sample crops of real lines with their transcriptions. \\
+\hline
+\end{tabularx}
+\caption{Routes of the server application (18 routes; the optional access key is checked before every route).}
+\label{tab:sys-endpoints}
+\end{table}
+
+\begin{table}[!htbp]
+\centering
+\fontsize{9.5}{11.5}\selectfont
+\begin{tabularx}{\linewidth}{|p{2.1cm}|p{2.1cm}|X|}
+\hline
+\textbf{Mode} & \textbf{Page} & \textbf{Chain of operations} \\
+\hline
+Classification & Read & Capture (live preview) or upload $\rightarrow$ conditioning and line segmentation $\rightarrow$ per line the text recogniser and the ink-based writer classifier $\rightarrow$ mean writer probabilities $\rightarrow$ text, writer, confidence and number of lines; with expected text and writer typed, also the character accuracy and a match mark. \\
+\hline
+Reproduction & Write & Calibrate once per session $\rightarrow$ text, writer and $N$ $\rightarrow$ best-of-$N$ synthesis $\rightarrow$ G-code, preview, read-back text and accuracy, pen pulses and synthesis time $\rightarrow$ ``send to gantry''. An uploaded G-code file uses the same preview and send path. \\
+\hline
+Training & (none) & Offline programs: segmentation of photographs, training of the networks and the profile builder (Section~\ref{sec:styleprofile}); the thirteen writers are pre-built files and the interface has no training function. The profile builder cannot at present be re-run on a page image (Section~\ref{sec:styleprofile}). \\
+\hline
+\end{tabularx}
+\caption{Mapping of the proposal's modes to the web interface. A third page shows model architectures, sizes and stored accuracies, and for each writer sample crops and the glyph grid.}
+\label{tab:sys-modes}
+\end{table}
+
+\paragraph{Start-up and caching.}
+A background thread prepares each writer's glyph-grid image and two sample crops (slow on the first run, stored afterwards); the two requests of Table~\ref{tab:sys-endpoints} that need them answer ``still preparing'' until it finishes, so other pages are not blocked.
+It is this thread, not the inference path, that imports the retired training modules whenever the cache misses, as described above; the delivered cache is missing three writers' entries, so it misses on every start.
+
+\paragraph{Job storage and determinism.}
+Photographs and jobs (the G-code and its preview) are stored under random identifiers, and every identifier received from a browser is reduced to alphanumeric characters before use as a file name, preventing path traversal.
+Because the seed is fixed by default, the same text, writer and $N$ give the same trajectory.
+
+\paragraph{Deployment.}
+The server listens on all interfaces on port 5000 by default and is intended for the single-board computer; the port is not hard-coded but read from the \texttt{PORT} environment variable at start-up (\texttt{PORT = int(os.environ.get("PORT","5000"))}), so a different port can be chosen without editing the source.
+The pin interface is imported lazily, so the program also starts on a laptop, where a motion request is answered with ``not connected''.
+
+\paragraph{Known inconsistency: the stored accuracy figures of the statistics page.}
+The route \texttt{/api/model\_info} does not compute anything; it returns a block of accuracy figures written into the source of \texttt{Server.py} by hand.
+Several of them no longer agree with the measurements reported in Section~\ref{sec:results}: the ink-based classifier is given as 100.0\,\% on real photographed pages, the stroke-normalised classifier as 96.7\,\% on real ink and 99.2\,\% on synthesised output, the recogniser as 89.4\,\% on the thirteen writers' real ink, and the reproduction pipeline as 99.2\,\% writer identification with 85.8\,\% and 84.1\,\% character accuracy direct and through G-code.
+Here it is the \emph{code} that is stale rather than the report: the figures date from an earlier evaluation run and were never updated when the final evaluation was made.
+This matters because the third browser page displays them, so an examiner shown the statistics page will read numbers that contradict the Results chapter.
+\mustdo{update the hard-coded accuracy block of \texttt{/api/model\_info} in \texttt{Server.py} to the final figures of Section~\ref{sec:results}, or better, have the route read them from the evaluation output file so that the page cannot drift again.}
+
+\paragraph{Ergonomic choices.}
+The live preview is a toggle used only while framing the page, the quality field ($N$, 1 to 60, default 20) trades synthesis time against quality, and the read-back of every preview allows checking before the pen moves.
+
+\subsubsection{Timing chains of the two modes}
+
+Requirement R4 limits the classification of $x$ characters by Equation~\ref{eq:sys-cls}:
+\begin{equation}
+T_{\mathrm{cls}}=T_{\mathrm{cap}}+T_{\mathrm{seg}}+\sum_{\mathrm{lines}}\bigl(T_{\mathrm{text}}+T_{\mathrm{wid}}\bigr)\le2\ \mathrm{s}+0.025\,x\ \mathrm{s},
+\label{eq:sys-cls}
+\end{equation}
+In Equation~\ref{eq:sys-cls} capture, conditioning and segmentation must fit inside the 2\,s and both network passes inside 25\,ms per character, so a 60-character page allows 1.5\,s of recognition and 3.5\,s in total.
+Requirement R3 limits the reproduction of $x$ characters by Equation~\ref{eq:sys-rep}:
+\begin{equation}
+T_{\mathrm{rep}}=T_{\mathrm{synth}}+T_{\mathrm{gcode}}+T_{\mathrm{motion}}\le4\,x\ \mathrm{s},\qquad T_{\mathrm{synth}}\approx N\,C,
+\label{eq:sys-rep}
+\end{equation}
+In Equation~\ref{eq:sys-rep}, $C$ is the cost of one candidate (Equation~\ref{eq:syn-cost}), $T_{\mathrm{gcode}}$ is milliseconds and $T_{\mathrm{motion}}$ the job time of Section~\ref{sec:gan-timing}; the one-off calibration is excluded and $T_{\mathrm{synth}}$ included, the stricter reading of the proposal.
+Table~\ref{tab:sys-timing} lists the stages and the missing measurements: the server returns the synthesis time of each request, but no timer exists for classification and no stage was timed on the single-board computer.
+For a 56-character sentence the budget is $4\cdot56=224$\,s; the search alone took 23 to 137\,s at $N=14$ on the laptop and the motion model gives 2.4 to 2.8\,s per character, so the two terms are of the same order and it is \emph{not} claimed that R3 or R4 is met.
+\mustdo{the timings of the stages on the single-board computer, listed in Table~\ref{tab:sys-timing}.}
+
+\begin{table}[!htbp]
+\centering
+\fontsize{9.5}{11.5}\selectfont
+\begin{tabularx}{\linewidth}{|p{3.4cm}|X|}
+\hline
+\textbf{Stage} & \textbf{Known information and value to be supplied} \\
+\hline
+Capture & Framing by the user; five discarded frames without preview. \mustdo{time from pressing capture to the stored image.} \\
+\hline
+Conditioning and segmentation & Whole page on the board. \mustdo{time per page on the board.} \\
+\hline
+Recognition and writer classification & Two passes of about $4\times10^9$ multiply--accumulate operations per line. \mustdo{time per line on the board and total for the R4 test paragraph.} \\
+\hline
+Synthesis & Returned in the server response; laptop values in Table~\ref{tab:syn-cost}. \mustdo{time on the board for the $N$ used in the demonstration.} \\
+\hline
+G-code and preview & Milliseconds (not measured). \\
+\hline
+Gantry motion & Model 2.4 to 2.8\,s per character (Section~\ref{sec:gan-timing}). \mustdo{stopwatch time of a sentence of known length, from send to the final pen lift.} \\
+\hline
+\end{tabularx}
+\caption{Stages of the timing chains of the two modes and the measurements still missing.}
+\label{tab:sys-timing}
+\end{table}

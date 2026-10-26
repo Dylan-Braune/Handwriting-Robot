@@ -1,0 +1,67 @@
+\label{sec:approach}
+This section explains how the proposal's functional analysis became a first concept, why the subsystems were then built in the order they were, and which alternatives were weighed. Mathematics, component values and experiments belong to Section~\ref{sec:design}.
+
+\subsection{From functional analysis to concept}
+\label{sec:app-concept}
+
+The functional analysis describes a chain rather than a collection of parts (Figure~\ref{fig:app-concept}): each block consumes the output of the one before it, so the accuracy of the whole is the product of the accuracies of its parts rather than their average.
+
+The first concept kept the proposal's four functional units, namely page scanning (FU\,1), the single-board computer (SBC) and its eight processing steps (FU\,2), the gantry (FU\,3) and the power supply (FU\,4), and made one decision per block; Table~\ref{tab:des-fumap} in Section~\ref{sec:blockdiagram} maps each unit onto the block that implements it. One decision applies to all of them: no computer-vision or machine-learning library was used, so every block was implemented from first principles with only numpy for array arithmetic. That is why Section~\ref{sec:design} derives methods a library call would hide, and it narrowed the field to those that could be written and verified in the time available.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  blk/.style={draw,rounded corners=2pt,fill=gray!15,minimum height=1.25cm,text width=1.85cm,align=center,font=\scriptsize,inner sep=2pt},
+  arr/.style={-{Stealth[length=1.8mm]},thick}]
+\node[blk] (a) at (0,0) {Page photographed\\(FU\,1)};
+\node[blk] (b) at (2.4,0) {Conditioned and cut into lines\\(FU\,2.1, 2.2)};
+\node[blk] (c) at (4.8,0) {Text read and writer named\\(FU\,2.3)};
+\node[blk] (d) at (7.2,0) {Letter shapes and style measured\\(FU\,2.4--2.6)};
+\node[blk] (e) at (9.6,0) {New text synthesised\\(FU\,2.7)};
+\node[blk] (f) at (12,0) {G-code drawn by the gantry\\(FU\,2.8, 3)};
+\draw[arr] (a)--(b); \draw[arr] (b)--(c); \draw[arr] (c)--(d);
+\draw[arr] (d)--(e); \draw[arr] (e)--(f);
+\end{tikzpicture}
+\caption{The chosen concept as a chain, with the proposal's functional-unit numbers. Training builds the style store from the first four blocks and runs offline, classification stops after the third, and reproduction runs the last two. The as-built hardware and software block diagrams are Figures~\ref{fig:des-hw} and~\ref{fig:des-sw}.}
+\label{fig:app-concept}
+\end{figure}
+
+Seven departures from that concept are declared with their reasons in Table~\ref{tab:des-fumap}; the three that shaped it are the separation of text lines rather than characters, since joined letters have no reliable boundaries, the split of FU\,2.3 into two networks instead of one character classifier, and training off the SBC, which needs far more memory than inference, with all inference left on the SBC as required. \mustdo{state on which computer the networks were trained and the profiles built; the proposal requires embedded-only processing.} \mustdo{reason for the pen-lift change.} \mustdo{supply voltages, current ratings and distribution for FU\,4.}
+
+\subsection{Order in which the subsystems were built}
+\label{sec:app-order}
+
+Figure~\ref{fig:app-concept} is a data path, and the subsystems were deliberately not built along it. The design divides into a motion subsystem and a software subsystem meeting at one interface, a file of G-code; fixing it at the outset decoupled them, since the gantry draws any valid G-code whatever produced it. The gantry was therefore built first and on its own (Section~\ref{sec:gantry}): the 0.5\,mm limit of R5 is set by its mechanics, transmission and step resolution alone, so nothing in it depends on which recogniser or synthesis route was later chosen, and it carries the only schedule risk outside the work itself, since parts take time to arrive and may arrive faulty. Hand-written G-code was enough to commission and measure it before any software existed.
+
+The software allowed no such freedom, because an error in one block propagates and compounds and is hardest to see at its origin: a slightly mis-cut text line is still a plausible image while it silently bounds the accuracy of everything downstream. Each block was therefore brought to a measured standard before the next was begun, in pipeline order --- conditioning and line segmentation (Section~\ref{sec:segmentation}), without whose clean labelled line images no network can be trained; the recogniser and then the writer classifier (Sections~\ref{sec:textrec} and~\ref{sec:writerid}), in that order because the second reuses the first's feature extractor; glyph and style extraction (Section~\ref{sec:styleprofile}), which needs the recogniser to locate the letter shapes; synthesis (Section~\ref{sec:synthesis}); and G-code generation (Section~\ref{sec:gcode}). The page-scanning rig was fixed during the first of these, once freehand photographs rather than the algorithm proved to be what limited the result, since a camera held at one height looking straight down removes scale, tilt and framing variation at source; a flatbed scanner would have lit it more evenly but is larger and slower.
+
+\subsection{Design alternatives and trade-offs}
+\label{sec:app-alternatives}
+
+Each decision was weighed against the same criteria: accuracy (R1, R2), processing time on the SBC (R3, R4), the data available for thirteen writers (R6), implementation from first principles, and mechanical and electrical simplicity and safety. Table~\ref{tab:app-tradeoffs} gives the alternatives and the reason for each preference.
+
+\begin{table}[htbp]
+\centering
+\fontsize{8}{9.4}\selectfont
+\begin{tabular}{|p{2.5cm}|p{6.6cm}|p{4.2cm}|}
+\hline
+\textbf{Decision} & \textbf{Alternatives considered and how they compare} & \textbf{Preferred and reason} \\
+\hline
+\multicolumn{3}{|l|}{\textbf{Hardware}} \\
+\hline
+Robot type & (a) Cartesian gantry: identity kinematics, axis errors do not add up. (b) Serial arm: inverse kinematics, joint errors add up. (c) Parallel robot: stiff, but a small workspace and complex kinematics. & (a): position follows from step counts, so the 0.5\,mm limit of R5 is simplest to meet and verify~\cite{teikari2016}. \\
+\hline
+Interface to the gantry & (a) A custom protocol fits the synthesiser exactly, but only the synthesiser can then exercise the machine. (b) G-code is a standard shared with commercial equipment, readable and writable by hand. & (b): it let the gantry be commissioned and measured before any software block existed, and keeps the two subsystems independently testable. \\
+\hline
+\multicolumn{3}{|l|}{\textbf{Software}} \\
+\hline
+Unit of recognition & (a) Cut characters and classify each: needs character-level labels, which are absent, and cannot repair a wrong cut. (b) Cut lines and read with a sequence recogniser: no boundaries below the line, context used, larger network. & (b): cursive cannot be segmented reliably, labels exist per line, and segmenter errors would bound system accuracy. \\
+\hline
+Synthesis of writing & (a) A neural generator needs recorded pen trajectories, which are unavailable. (b) Pretrained image generators give raster output, no control of size or slant, and are slow without a graphics processor. (c) A library of the writer's own letter shapes needs only nine pages and gives controllable strokes, but loses some cursive links. & (c): a from-scratch generator learned slant and roundness but not legible letters, and image generators took tens of seconds per line on a processor-only computer. \\
+\hline
+\end{tabular}
+\caption{Design decisions, alternatives considered and the reason for each preferred solution.}
+\label{tab:app-tradeoffs}
+\end{table}
+
+Each block was held to a measurable criterion from the requirements --- characters read correctly, writers named, lines cut correctly, pen position in millimetres --- and measured alone before the chain was measured end to end; where no known truth exists, as for the drawn page, a round trip was used. That measurement later replaced four designs, collected in Section~\ref{sec:later}. Only the camera, SBC, motors, drivers, switches, pen, standard gantry parts and power supply were bought. \mustdo{list the mechanical parts I designed and made.} Section~\ref{sec:design} takes each block in build order, so each is met with its input explained.
