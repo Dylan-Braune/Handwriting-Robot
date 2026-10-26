@@ -346,8 +346,10 @@ def ApiGenerate():
     jobDir.mkdir(parents=True, exist_ok=True)
 
     with run.Step("rendering"):
+        #RenderTrajectory returns a grey array; the recogniser takes it as is,
+        #only writing it to disk needs it wrapped
         preview = SYN.RenderTrajectory(traj, pxPerMm=18.0, profile=profile, uniformInk=True)
-        preview.save(jobDir/"preview.png")
+        Image.fromarray(np.asarray(preview, dtype=np.uint8)).save(jobDir/"preview.png")
 
     with run.Step("gcode"):
         written = REP.WriteGcode(traj, cfg, str(jobDir/"job.gcode"),
@@ -378,7 +380,7 @@ def ApiGcodeUpload():
         traj = REP.ParseGcode(str(gcodePath))
     with run.Step("rendering"):
         preview = SYN.RenderTrajectory(traj, pxPerMm=18.0)
-        preview.save(jobDir/"preview.png")
+        Image.fromarray(np.asarray(preview, dtype=np.uint8)).save(jobDir/"preview.png")
     written = dict(lines=sum(1 for _ in open(gcodePath, encoding="utf-8", errors="replace")),
                    penPulses=None)
     return JobResponse(jobId, written, preview, run, expectedText=expectedText or None)
@@ -463,18 +465,77 @@ def ApiWriteGcode(jobId):
 #======================================================================
 #INFORMATION
 #======================================================================
+#the figures below are this project's own measurements, weighted by the
+#number of crops, from testing/results/RESULTS.md: 669 real line crops from
+#the five photographed writers, and 13 writers for the synthesis row
 @app.route("/api/model_info")
 def ApiModelInfo():
+    def Params(model):
+        return int(sum(arr.size for arr in model.sd.values()))
+
+    def Mb(path):
+        return round(path.stat().st_size/(1024*1024), 2) if path and path.exists() else None
+
     return jsonify({
-        "reader_checkpoint": REC.DEFAULT_TEXT_WEIGHTS.name,
-        "ink_namer_checkpoint": REC.DEFAULT_AUTHOR_WEIGHTS.name,
-        "shape_namer_checkpoint": REC.SHAPE_AUTHOR_WEIGHTS.name,
-        "writers_with_profiles": sorted(PROFILES),
-        "writers_the_namer_knows": sorted(SHAPE_MAP),
-        "default_tries": DEFAULT_TRIES,
+        "text_recognizer": {
+            "architecture": "CNN-BiLSTM-CTC, 12 convolutions then 2 bidirectional LSTM layers",
+            "weights_file": TEXT_MODEL.checkpointPath.name,
+            "parameters": Params(TEXT_MODEL),
+            "file_size_mb": Mb(TEXT_MODEL.checkpointPath),
+            "measured_accuracy": {
+                "real_ink_characters_pct": 98.61,
+                "real_ink_words_pct": 94.17,
+                "note": "669 real line crops from five photographed writers. The "
+                        "same measurement on the from-scratch checkpoint gives 24.1%, "
+                        "which is why the joint checkpoint is the one loaded.",
+            },
+        },
+        "writer_id_ink_based": {
+            "architecture": "CNN classifier on raw grey crops",
+            "weights_file": INK_MODEL.checkpointPath.name,
+            "parameters": Params(INK_MODEL),
+            "file_size_mb": Mb(INK_MODEL.checkpointPath),
+            "measured_accuracy": {
+                "real_photographed_pages_pct": 99.70,
+                "note": "Use only on real photographed pages. A drawn line has one "
+                        "pen width everywhere, so there is no ink evidence to judge.",
+            },
+        },
+        "writer_id_stroke_normalised": {
+            "architecture": "CNN classifier on stroke-normalised crops, ink-density invariant",
+            "weights_file": SHAPE_MODEL.checkpointPath.name,
+            "parameters": Params(SHAPE_MODEL),
+            "file_size_mb": Mb(SHAPE_MODEL.checkpointPath),
+            "measured_accuracy": {
+                "real_ink_pct": 98.20,
+                "note": "This is the judge used for drawn and synthesised output.",
+            },
+        },
+        "reproduction_pipeline": {
+            "authors": sorted(PROFILES),
+            "n_authors": len(PROFILES),
+            "measured_on_novel_sentences": {
+                "writer_id_direct_pct": 77.86,
+                "writer_id_gcode_pct": 77.86,
+                "text_char_direct_pct": 80.07,
+                "text_char_gcode_pct": 80.07,
+                "text_word_pct": None,
+                "writers_identified": "12 of 13",
+                "seconds_per_line": 10.9,
+                "method": "SynthesizeJointBestOf: %d candidates per line, scored by the "
+                          "harmonic mean of text accuracy and writer-ID confidence "
+                          "together, with the C1 join" % DEFAULT_TRIES,
+                "measured_via": "testing/results/RESULTS.md, 13 writers on novel sentences",
+            },
+        },
+        "gantry": {
+            "gcode_round_trip_iou": 0.9974,
+            "gcode_max_error_mm": 0.0007,
+        },
         "charset_size": len(REC.CHARSET)+1,
         "input_canvas": [REC.INPUT_HEIGHT, REC.INPUT_WIDTH],
         "timing_limits_seconds": TIMING.LIMITS,
+        "device": "cpu (numpy inference, no machine-learning library at runtime)",
     })
 
 

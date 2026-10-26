@@ -24,10 +24,10 @@ CAPTURE_DIR = paths.Cache/"CameraCaptures"
 CAPTURE_DIR.mkdir(parents=True,exist_ok=True)
 
 import os
-#which /dev/videoN (Linux) or device index (Windows) to open.  2 on this
-#board: video0 and video1 are codec nodes, not capture devices, so opening
-#either gives "Not a video capture device"
-CAMERA_INDEX = int(os.environ.get("CAMERA_INDEX","2"))
+#which /dev/videoN (Linux) or device index (Windows) to open.  the board
+#reports two devices, so only 0 and 1 are valid and index 2 is refused
+#outright; 0 answers but is not a capture device, which leaves 1
+CAMERA_INDEX = int(os.environ.get("CAMERA_INDEX","1"))
 
 WARMUP_FRAMES = 5   #a UVC webcam's first frame after opening is often dark/unfocused
 
