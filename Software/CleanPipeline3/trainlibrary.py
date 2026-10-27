@@ -127,9 +127,14 @@ def SaveNpz(path, model, extra=None):
 #THE READER
 #======================================================================
 def TrainReader(args):
-    if args.source == "teklia":
-        root = paths.Data.parents[1]/"Data"/"Datasets"/"TekliaIamLines"
-        trainSet, valSet = TR.BuildTekliaSplit(str(root))
+    personalSet = personalVal = None
+    tekliaRoot = str(paths.Data.parents[1]/"Data"/"Datasets"/"TekliaIamLines")
+    if args.source == "joint":
+        #the mix the deployed reader was trained on, built by the same function
+        #train.py uses, so both routes see identical data
+        trainSet, personalSet, valSet, personalVal = TR.BuildJointSplit(tekliaRoot)
+    elif args.source == "teklia":
+        trainSet, valSet = TR.BuildTekliaSplit(tekliaRoot)
     else:
         trainSet, valSet = TR.BuildPagesSplit(args.pages, str(TR.DEFAULT_TEXT_DATA_DIR))
     print("[split] %d train lines, %d held out" % (len(trainSet), len(valSet)))
@@ -150,7 +155,11 @@ def TrainReader(args):
     for epoch in range(1, args.epochs+1):
         t0 = time.time()
         total, nB = 0.0, 0
-        for batch in TR.IterateBatches(trainSet, args.batch, rng, True):
+        batches = (TR.IterateMixedBatches(trainSet, personalSet, args.batch,
+                                          args.personalFraction, rng)
+                   if personalSet is not None
+                   else TR.IterateBatches(trainSet, args.batch, rng, True))
+        for batch in batches:
             images, flat, lengths, _texts = TR.TextCollateFn(batch)
             x = torch.from_numpy(images).to(DEVICE)
             logProbs = torch.log_softmax(model(x), dim=2)
@@ -166,6 +175,9 @@ def TrainReader(args):
         trainLoss = total/max(1, nB)
         valLoss, valAcc = ScoreReader(model, valSet, args.batch, ctc)
         scheduler.step(valLoss)
+        if personalVal is not None and len(personalVal):
+            _pl, pAcc = ScoreReader(model, personalVal, args.batch, ctc)
+            print("[reader] held-out personal char-acc %.2f%%" % (100*pAcc), flush=True)
         saved = ""
         if valLoss < best:
             best = valLoss
@@ -282,8 +294,12 @@ def Main():
     ap.add_argument("--batch", type=int, default=8)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--seed", type=int, default=7)
-    ap.add_argument("--source", choices=["pages", "teklia"], default="pages",
-                    help="reader only: cut the pages up, or use the pre-cut line crops")
+    ap.add_argument("--source", choices=["joint", "teklia", "pages"], default="joint",
+                    help="joint: the pre-cut Teklia lines plus the photographed writers, "
+                         "which is what the deployed reader was trained on. "
+                         "teklia: public lines only. pages: segment the database pages here")
+    ap.add_argument("--personal-fraction", dest="personalFraction", type=float, default=0.20,
+                    help="joint only: share of every batch drawn from photographed lines")
     ap.add_argument("--pages", type=int, default=None, help="limit how many pages are cut up")
     args = ap.parse_args()
     torch.manual_seed(args.seed)
