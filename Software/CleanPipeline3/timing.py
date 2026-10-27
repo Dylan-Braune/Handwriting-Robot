@@ -19,11 +19,28 @@ import json
 import time
 
 
-#---LIMITS: what the proposal asks for, so a measurement can be marked---
-#R3 and R4 are the timing requirements; the numbers are seconds
-LIMITS = {
-    "classify": 30.0,      #R4: a photographed page read and named
-    "reproduce": 120.0,    #R3: a line generated and drawn
+#----------------------------------------------------------------------
+#ALLOWANCE: the time the proposal allows, as a formula not a constant
+#both requirements scale with how much writing is involved, so a bare
+#total cannot be marked against them: a page holding twice the text is
+#allowed twice as long.  the character count comes from the work itself,
+#the text read back for a classification and the text asked for when
+#reproducing
+#----------------------------------------------------------------------
+ALLOWANCE = {
+    #reading a photographed page: a fixed cost for the page, then per character
+    "classify": lambda chars: 2.0+0.025*chars,
+    #generating a line and drawing it: per character, the pen being the slow part
+    "reproduce": lambda chars: 4.0*chars,
+    #a drawing-only run is judged on the same reproduction allowance
+    "draw": lambda chars: 4.0*chars,
+}
+
+#---AllowanceText: the formula itself, so a reader can check the sum---
+ALLOWANCE_TEXT = {
+    "classify": "2 s + 0.025 s per character",
+    "reproduce": "4 s per character",
+    "draw": "4 s per character",
 }
 
 
@@ -54,6 +71,11 @@ class Run:
         self.chars = chars
         self.lines = lines
         self.stages = []
+        #seconds recorded by Add rather than measured here: work that happened
+        #in an earlier request and still counts towards this one.  drawing a
+        #line is asked for separately from generating it, but the requirement
+        #covers the whole reproduction, so generation is carried across
+        self.external = 0.0
         self.t0 = time.perf_counter()
 
     #---Stage: time one step, naming the characters it covered---
@@ -66,13 +88,20 @@ class Run:
                                 characters=chars,
                                 secondsPerChar=round(wall/chars, 5) if chars else None))
 
-    #---Note: a measurement that was taken rather than timed---
+    #---Add: a stage timed inside this run but measured by the code itself---
+    #the wall clock already covers it, so it must not be added again
     def Add(self, name, seconds, chars=0):
+        self.Record(name, float(seconds), chars)
+
+    #---Carry: a stage measured in an EARLIER request that counts here too---
+    #this one is outside this run's wall clock, so it is added to the total
+    def Carry(self, name, seconds, chars=0):
+        self.external += float(seconds)
         self.Record(name, float(seconds), chars)
 
     #---Total: everything, including whatever was not inside a stage---
     def Total(self):
-        return time.perf_counter()-self.t0
+        return (time.perf_counter()-self.t0)+self.external
 
     #---AsDict: the shape the browser reads---
     def AsDict(self):
@@ -91,11 +120,14 @@ class Run:
             charactersPerSecond=round(self.chars/total, 2) if self.chars and total else None,
             stages=self.stages,
         )
-        limit = LIMITS.get(self.kind)
-        if limit:
-            out["limitSeconds"] = limit
+        formula = ALLOWANCE.get(self.kind)
+        if formula and self.chars:
+            limit = formula(self.chars)
+            out["limitSeconds"] = round(limit, 2)
+            out["limitFormula"] = ALLOWANCE_TEXT.get(self.kind, "")
             out["withinLimit"] = bool(total <= limit)
             out["fractionOfLimit"] = round(total/limit, 3)
+            out["secondsSpare"] = round(limit-total, 2)
         return out
 
     def AsJson(self):
@@ -115,9 +147,11 @@ class Run:
         if d["overheadSeconds"] > 0.001:
             lines.append("  %-*s %8.3f s" % (width, "unaccounted", d["overheadSeconds"]))
         if d.get("limitSeconds"):
-            lines.append("  requirement %.0f s: %s (%.0f%% of the allowance)"
-                         % (d["limitSeconds"], "met" if d["withinLimit"] else "EXCEEDED",
-                            100*d["fractionOfLimit"]))
+            lines.append("  allowed %.2f s (%s for %d characters): %s, %.2f s %s"
+                         % (d["limitSeconds"], d["limitFormula"], d["characters"],
+                            "MET" if d["withinLimit"] else "EXCEEDED",
+                            abs(d["secondsSpare"]),
+                            "to spare" if d["secondsSpare"] >= 0 else "over"))
         if d["secondsPerCharacter"]:
             lines.append("  %.4f s per character, %.2f characters per second"
                          % (d["secondsPerCharacter"], d["charactersPerSecond"]))

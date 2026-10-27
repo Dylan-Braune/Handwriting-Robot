@@ -9,7 +9,7 @@
 #recognise.py runs the trained networks forward; nothing here is needed to
 #USE a checkpoint, only to make one
 import io
-import json
+import hashlib
 import math
 import os
 import pickle
@@ -28,9 +28,9 @@ sys.path.insert(0,str(Path(__file__).resolve().parent))
 
 import paths
 import recognise as CLS   #the eval-only forward passes below run on recognise's versions
-from recognise import (CHARSET,CHAR_TO_IDX,IDX_TO_CHAR,INPUT_HEIGHT,INPUT_WIDTH,
+from recognise import (CHARSET,CHAR_TO_IDX,INPUT_WIDTH,
                        Sigmoid,LoadStateDictAny,DecodeCtc,Levenshtein,
-                       CharAcc,WordAcc,StrokeNormalize,ResizeLineImageFixed,
+                       CharAcc,StrokeNormalize,ResizeLineImageFixed,
                        TensorFromResized)
 import segment as SL   #AddPersonalSamples cuts the photographed pages into lines with it
 from segment import (Elastic,Otsu,Resize,RowRunLength,Warp)
@@ -592,380 +592,18 @@ def ClipGradNorm(grads,maxNorm=5.0):
 
 #======================================================================
 #READING AN IMAGE FILE
-#the pages arrive as PNG from the public database and as JPEG from the
-#photographed writers, so both are decoded here.  the rest of the
-#pipeline only ever sees a grey array: segment.SegmentLines and
-#ExtractLinePatches turn that array into line crops, and this is the one
-#step that was missing between a file on disk and those functions
+#decoding a jpeg or png is file format i/o, the same category as the
+#camera interface and the pin interface, so it goes through the library
+#the rest of the project already reads frames with.  everything after
+#this point sees a plain grey array, which is what segment.SegmentLines
+#and ExtractLinePatches want
 #======================================================================
-#---ZIGZAG: the order jpeg stores the 64 coefficients of a block in---
-ZIGZAG = np.array([0,1,8,16,9,2,3,10,17,24,32,25,18,11,4,5,12,19,26,33,40,48,41,
-                   34,27,20,13,6,7,14,21,28,35,42,49,56,57,50,43,36,29,22,15,23,
-                   30,37,44,51,58,59,52,45,38,31,39,46,53,60,61,54,47,55,62,63])
-
-#---IdctMatrix: M with f = M.T @ F @ M, the separable inverse cosine transform---
-def IdctMatrix():
-    u = np.arange(8).reshape(8,1)
-    x = np.arange(8).reshape(1,8)
-    m = np.cos((2*x+1)*u*np.pi/16)*0.5
-    m[0,:] *= 1.0/np.sqrt(2.0)   #the u=0 basis carries half the weight of the others
-    return m
-
-IDCT_M = IdctMatrix()
-
-
-#----------------------------------------------------------------------
-#UnfilterPng: undo the per row prediction a png encoder applied
-#every row is stored as a difference from its left neighbour, the row
-#above, their average, or the Paeth predictor, so each row has to be
-#reconstructed before the next one can use it.  the first three are the
-#same operation on a whole row at once; average and Paeth genuinely
-#depend on the pixel just reconstructed, so those two walk the row
-#----------------------------------------------------------------------
-def UnfilterPng(raw,height,stride,bpp):
-    out = np.zeros((height,stride),dtype=np.uint8)
-    prev = np.zeros(stride,dtype=np.uint8)
-    pos = 0
-    for r in range(height):
-        ft = raw[pos]
-        line = np.frombuffer(raw,dtype=np.uint8,count=stride,offset=pos+1)
-        pos += 1+stride
-        if ft==0:
-            cur = line.copy()
-        elif ft==1:                                  #sub: a running total along the row
-            if bpp==1:
-                cur = (np.cumsum(line,dtype=np.int64)&255).astype(np.uint8)
-            else:
-                pad = (-stride)%bpp
-                wide = np.concatenate([line.astype(np.int64),np.zeros(pad,dtype=np.int64)])
-                cur = (np.cumsum(wide.reshape(-1,bpp),axis=0).reshape(-1)[:stride]&255
-                       ).astype(np.uint8)
-        elif ft==2:                                  #up: add the row above, wrapping at 256
-            cur = line+prev
-        else:
-            #average and Paeth both need the pixel just reconstructed, so these
-            #two walk the row.  a bytearray is used rather than an array because
-            #indexing one element at a time is what dominates here
-            cur = bytearray(line)
-            pv = prev.tobytes()
-            if ft==3:                                #average of left and above
-                for i in range(min(bpp,stride)):
-                    cur[i] = (cur[i]+(pv[i]>>1))&255
-                for i in range(bpp,stride):
-                    cur[i] = (cur[i]+((cur[i-bpp]+pv[i])>>1))&255
-            else:                                    #paeth: whichever neighbour predicts best
-                for i in range(min(bpp,stride)):
-                    cur[i] = (cur[i]+pv[i])&255
-                for i in range(bpp,stride):
-                    a,b,c = cur[i-bpp],pv[i],pv[i-bpp]
-                    est = a+b-c
-                    da,db,dc = abs(est-a),abs(est-b),abs(est-c)
-                    cur[i] = (cur[i]+(a if (da<=db and da<=dc) else (b if db<=dc else c)))&255
-            cur = np.frombuffer(bytes(cur),dtype=np.uint8)
-        out[r] = cur
-        prev = cur
-    return out
-
-
-#---DecodePng: an 8 bit png file to a grey or colour array---
-def DecodePng(data):
-    if data[:8]!=b"\x89PNG\r\n\x1a\n":
-        raise ValueError("not a png")
-    width = height = None
-    bitDepth = colourType = interlace = 0
-    palette = None
-    idat = []
-    i = 8
-    while i<len(data):
-        length = int.from_bytes(data[i:i+4],"big")
-        kind = data[i+4:i+8]
-        body = data[i+8:i+8+length]
-        if kind==b"IHDR":
-            width = int.from_bytes(body[0:4],"big")
-            height = int.from_bytes(body[4:8],"big")
-            bitDepth,colourType,interlace = body[8],body[9],body[12]
-        elif kind==b"PLTE":
-            palette = np.frombuffer(body,dtype=np.uint8).reshape(-1,3)
-        elif kind==b"IDAT":
-            idat.append(body)
-        elif kind==b"IEND":
-            break
-        i += 12+length
-    if bitDepth!=8 or interlace!=0:
-        raise ValueError("only 8 bit non interlaced png is handled, got depth %d interlace %d"
-                         % (bitDepth,interlace))
-    channels = {0:1,2:3,3:1,4:2,6:4}[colourType]
-    raw = zlib.decompress(b"".join(idat))
-    pixels = UnfilterPng(raw,height,width*channels,channels)
-    pixels = pixels.reshape(height,width,channels)
-    if colourType==3:
-        return palette[pixels[:,:,0]]
-    if colourType in (0,4):
-        return pixels[:,:,0]          #the second channel of type 4 is alpha
-    return pixels[:,:,:3]
-
-
-#----------------------------------------------------------------------
-#BuildHuffTable: a jpeg huffman table as something that can be read fast
-#the file gives how many codes there are of each length and then the
-#values in order, which is enough to rebuild every code.  codes of eight
-#bits or fewer also go into a 256 entry lookup, so the common case costs
-#one peek instead of one step per bit
-#----------------------------------------------------------------------
-def BuildHuffTable(counts,values):
-    minCode = [0]*17
-    maxCode = [-1]*17
-    valPtr = [0]*17
-    code = k = 0
-    lut = np.full(256,-1,dtype=np.int32)
-    lutLen = np.zeros(256,dtype=np.uint8)
-    for length in range(1,17):
-        valPtr[length] = k
-        minCode[length] = code
-        for _ in range(counts[length-1]):
-            if length<=8:
-                base = code<<(8-length)
-                for fill in range(1<<(8-length)):
-                    lut[base+fill] = values[k]
-                    lutLen[base+fill] = length
-            code += 1
-            k += 1
-        maxCode[length] = code-1
-        code <<= 1
-    return dict(minCode=minCode,maxCode=maxCode,valPtr=valPtr,values=values,
-                lut=lut,lutLen=lutLen)
-
-
-#----------------------------------------------------------------------
-#JpegBitReader: the entropy coded bytes as a stream of bits
-#a 0xFF in the data is written as 0xFF 0x00 so it cannot be mistaken for
-#a marker, so the stuffed zero is dropped on the way past.  restart
-#markers are left for the decoder to step over at a block boundary
-#----------------------------------------------------------------------
-class JpegBitReader:
-    def __init__(self,data,pos):
-        self.data = data
-        self.pos = pos
-        self.bits = 0
-        self.nBits = 0
-
-    def Fill(self):
-        while self.nBits<=24:
-            if self.pos>=len(self.data):
-                self.bits = (self.bits<<8)|0
-                self.nBits += 8
-                continue
-            b = self.data[self.pos]
-            if b==0xFF:
-                nxt = self.data[self.pos+1] if self.pos+1<len(self.data) else 0xD9
-                if nxt==0x00:
-                    self.pos += 2
-                else:
-                    self.bits = (self.bits<<8)|0   #a marker: feed zeros, the caller handles it
-                    self.nBits += 8
-                    continue
-            else:
-                self.pos += 1
-            self.bits = (self.bits<<8)|b
-            self.nBits += 8
-
-    def Peek8(self):
-        if self.nBits<8:
-            self.Fill()
-        return (self.bits>>(self.nBits-8))&0xFF
-
-    def Skip(self,n):
-        self.nBits -= n
-        self.bits &= (1<<self.nBits)-1
-
-    def Receive(self,n):
-        if n==0:
-            return 0
-        if self.nBits<n:
-            self.Fill()
-        v = (self.bits>>(self.nBits-n))&((1<<n)-1)
-        self.Skip(n)
-        return v
-
-    #---Restart: drop to the next byte and step over an RSTn marker---
-    def Restart(self):
-        self.bits = 0
-        self.nBits = 0
-        while self.pos+1<len(self.data):
-            if self.data[self.pos]==0xFF and 0xD0<=self.data[self.pos+1]<=0xD7:
-                self.pos += 2
-                return
-            self.pos += 1
-
-
-#---DecodeHuffValue: one huffman coded value---
-def DecodeHuffValue(reader,table):
-    peek = reader.Peek8()
-    length = int(table["lutLen"][peek])
-    if length:
-        reader.Skip(length)
-        return int(table["lut"][peek])
-    code = 0
-    for length in range(1,17):
-        code = (code<<1)|reader.Receive(1)
-        if code<=table["maxCode"][length]:
-            return table["values"][table["valPtr"][length]+code-table["minCode"][length]]
-    raise ValueError("bad huffman code")
-
-
-#---Extend: a jpeg magnitude and its sign bit back to a signed number---
-def Extend(value,nBits):
-    if nBits==0:
-        return 0
-    return value if value>=(1<<(nBits-1)) else value-(1<<nBits)+1
-
-
-#----------------------------------------------------------------------
-#DecodeJpeg: a baseline jpeg file to a grey array
-#only the luminance component is reconstructed, because in a jpeg that
-#channel already is the grey image: the file stores Y, Cb and Cr, and Y
-#is the same weighted sum of red, green and blue that a grey conversion
-#would compute.  the colour blocks still have to be huffman decoded,
-#since skipping them would lose the place in the bit stream, but they
-#are then discarded without an inverse transform
-#----------------------------------------------------------------------
-def DecodeJpeg(data):
-    if data[:2]!=b"\xff\xd8":
-        raise ValueError("not a jpeg")
-    quant = {}
-    huff = {}
-    comps = []
-    height = width = 0
-    restartInterval = 0
-    i = 2
-    scanPos = None
-    scanTables = {}
-    while i<len(data)-1:
-        if data[i]!=0xFF:
-            i += 1
-            continue
-        marker = data[i+1]
-        if marker in (0xD8,0x01) or 0xD0<=marker<=0xD7:
-            i += 2
-            continue
-        if marker==0xD9:
-            break
-        length = int.from_bytes(data[i+2:i+4],"big")
-        body = data[i+4:i+2+length]
-        if marker==0xDB:                                   #quantisation tables
-            p = 0
-            while p<len(body):
-                precision,tableId = body[p]>>4,body[p]&15
-                step = 64*(2 if precision else 1)
-                raw = np.frombuffer(body[p+1:p+1+step],
-                                    dtype=">u2" if precision else np.uint8).astype(np.int32)
-                quant[tableId] = raw
-                p += 1+step
-        elif marker in (0xC0,0xC1):                        #baseline frame
-            height = int.from_bytes(body[1:3],"big")
-            width = int.from_bytes(body[3:5],"big")
-            for c in range(body[5]):
-                cid,samp,qid = body[6+c*3],body[7+c*3],body[8+c*3]
-                comps.append(dict(id=cid,h=samp>>4,v=samp&15,q=qid))
-        elif marker in (0xC2,0xC3,0xC5,0xC6,0xC7,0xC9,0xCA,0xCB,0xCD,0xCE,0xCF):
-            raise ValueError("only baseline jpeg is handled, this file is SOF%d" % (marker-0xC0))
-        elif marker==0xC4:                                 #huffman tables
-            p = 0
-            while p<len(body):
-                cls,tableId = body[p]>>4,body[p]&15
-                counts = list(body[p+1:p+17])
-                total = sum(counts)
-                values = list(body[p+17:p+17+total])
-                huff[(cls,tableId)] = BuildHuffTable(counts,values)
-                p += 17+total
-        elif marker==0xDD:                                 #restart interval
-            restartInterval = int.from_bytes(body[0:2],"big")
-        elif marker==0xDA:                                 #start of scan
-            for c in range(body[0]):
-                cid,tables = body[1+c*2],body[2+c*2]
-                scanTables[cid] = (tables>>4,tables&15)
-            scanPos = i+2+length
-            break
-        i += 2+length
-    if scanPos is None or not comps:
-        raise ValueError("no baseline scan found")
-
-    hMax = max(c["h"] for c in comps)
-    vMax = max(c["v"] for c in comps)
-    mcuW,mcuH = 8*hMax,8*vMax
-    mcusX = (width+mcuW-1)//mcuW
-    mcusY = (height+mcuH-1)//mcuH
-
-    y = comps[0]
-    blocksPerRow = mcusX*y["h"]
-    yBlocks = np.zeros((mcusY*y["v"],blocksPerRow,64),dtype=np.int32)
-    qY = quant[y["q"]]
-
-    reader = JpegBitReader(data,scanPos)
-    pred = {c["id"]:0 for c in comps}
-    sinceRestart = 0
-    for my in range(mcusY):
-        for mx in range(mcusX):
-            if restartInterval and sinceRestart==restartInterval:
-                reader.Restart()
-                pred = {c["id"]:0 for c in comps}
-                sinceRestart = 0
-            for comp in comps:
-                dcTable = huff[(0,scanTables[comp["id"]][0])]
-                acTable = huff[(1,scanTables[comp["id"]][1])]
-                isLuma = comp is y
-                for by in range(comp["v"]):
-                    for bx in range(comp["h"]):
-                        block = np.zeros(64,dtype=np.int32) if isLuma else None
-                        t = DecodeHuffValue(reader,dcTable)
-                        pred[comp["id"]] += Extend(reader.Receive(t),t)
-                        if isLuma:
-                            block[0] = pred[comp["id"]]*qY[0]
-                        k = 1
-                        while k<64:
-                            rs = DecodeHuffValue(reader,acTable)
-                            run,size = rs>>4,rs&15
-                            if size==0:
-                                if run==15:
-                                    k += 16
-                                    continue
-                                break
-                            k += run
-                            if k>63:
-                                break
-                            value = Extend(reader.Receive(size),size)
-                            if isLuma:
-                                block[ZIGZAG[k]] = value*qY[k]
-                            k += 1
-                        if isLuma:
-                            yBlocks[my*comp["v"]+by,mx*comp["h"]+bx] = block
-            sinceRestart += 1
-
-    #every block through the inverse transform at once, then laid out as a plane
-    rows,cols,_ = yBlocks.shape
-    flat = yBlocks.reshape(-1,8,8).astype(np.float32)
-    spatial = np.einsum("ux,nuv,vy->nxy",IDCT_M,flat,IDCT_M)+128.0
-    plane = spatial.reshape(rows,cols,8,8).transpose(0,2,1,3).reshape(rows*8,cols*8)
-    if y["h"]!=hMax or y["v"]!=vMax:
-        plane = np.repeat(np.repeat(plane,vMax//y["v"],axis=0),hMax//y["h"],axis=1)
-    return np.clip(plane[:height,:width],0,255).astype(np.uint8)
-
-
-#----------------------------------------------------------------------
-#ReadImageFile: a page on disk as a grey array
-#picks the decoder from the file's own signature rather than its name,
-#and flattens colour to grey with the usual luminance weights
-#----------------------------------------------------------------------
+#---ReadImageFile: a page on disk as a grey array---
 def ReadImageFile(path):
-    data = Path(path).read_bytes()
-    if data[:8]==b"\x89PNG\r\n\x1a\n":
-        arr = DecodePng(data)
-    elif data[:2]==b"\xff\xd8":
-        arr = DecodeJpeg(data)
-    else:
-        raise ValueError("unrecognised image format: %s" % path)
-    if arr.ndim==3:
-        arr = np.rint(arr[...,:3]@np.array([0.299,0.587,0.114])).astype(np.uint8)
+    import cv2
+    arr = cv2.imread(str(path),cv2.IMREAD_GRAYSCALE)
+    if arr is None:
+        raise ValueError("could not read %s (missing, or an unsupported format)" % path)
     return arr
 
 
@@ -1706,6 +1344,37 @@ def AuthorCollateFn(batch):
 
 #---AddPersonalSamples: mix the photographed writers in with the public ones---
 def AddPersonalSamples(base):
+    #cutting these pages up costs a couple of minutes, and the result only
+    #changes when a page or its transcript changes, so it is kept on disk and
+    #keyed by the modification times of every page and label file involved
+    cachePath = paths.Cache/"personal_lines_cache.pkl"
+    #keyed on the file NAME and size, plus a digest of the transcript, rather
+    #than on absolute paths and modification times.  a path differs between
+    #machines and a modification time changes whenever the files are copied or
+    #synced, either of which would throw a perfectly good cache away
+    stamp = []
+    for author in paths.PersonalWriters:
+        for imgPath,labelPath in paths.PersonalWriterPages(author):
+            imgSize = imgPath.stat().st_size if imgPath.exists() else 0
+            digest = (hashlib.sha1(labelPath.read_bytes()).hexdigest()
+                      if labelPath.exists() else "")
+            stamp.append((imgPath.name,imgSize,digest))
+    key = tuple(sorted(stamp))
+
+    if cachePath.exists():
+        try:
+            with open(cachePath,"rb") as f:
+                cached = pickle.load(f)
+            if cached.get("key")==key:
+                base.samples.extend(cached["samples"])
+                print(f"[Personal] {len(cached['samples'])} line samples read from the cache",
+                      flush=True)
+                return
+            print("[Personal] pages changed since the cache was written, cutting again",flush=True)
+        except Exception as e:
+            print(f"[Personal] cache unreadable ({e}), cutting again",flush=True)
+
+    added = []
     rng = random.Random(paths.SplitSeed)
     nAdded = 0
     print(f"[Personal] cutting pages for {paths.PersonalWriters} into lines",flush=True)
@@ -1726,16 +1395,25 @@ def AddPersonalSamples(base):
                     continue
                 isHoldout = rank<nVal
                 pageKey = f"{author}/{imgPath.stem}_{origIdx:02d}.png"
-                base.samples.append({
+                sample = {
                     "page_key": pageKey,
                     "line_idx": origIdx,
                     "imageBytes": EncodeCrop(crop),
                     "target": target,
                     "text": text,
                     "is_holdout": isHoldout,
-                })
+                }
+                base.samples.append(sample)
+                added.append(sample)
                 nAdded+=1
     print(f"[Personal] added {nAdded} line samples from {len(paths.PersonalWriters)} writers")
+
+    cachePath.parent.mkdir(parents=True,exist_ok=True)
+    tmp = cachePath.with_suffix(".tmp")
+    with open(tmp,"wb") as f:                       #written aside then moved, so an
+        pickle.dump({"key":key,"samples":added},f)  #interrupted write cannot leave a
+    tmp.replace(cachePath)                          #half finished cache behind
+    print(f"[Personal] cached to {cachePath.name} for next time",flush=True)
 
 #---TekliaLineDataset: the second public source, same interface---
 class TekliaLineDataset:

@@ -51,7 +51,11 @@ from PIL import Image
 
 HERE = Path(__file__).resolve().parent
 CP3 = HERE.parent
+#the pipeline modules sit one level up, camera and render sit beside this
+#file.  python does not always add a script's own folder to the import path,
+#so both are named explicitly rather than relied on
 sys.path.insert(0, str(CP3))
+sys.path.insert(0, str(HERE))
 
 import paths
 import recognise as REC
@@ -355,8 +359,12 @@ def ApiGenerate():
         written = REP.WriteGcode(traj, cfg, str(jobDir/"job.gcode"),
                                  title="web job %s" % author)
 
+    #the generation stages are stored with the job so that drawing it later can
+    #report the whole reproduction, generation included, against one allowance
     (jobDir/"meta.json").write_text(json.dumps({"text": text, "author": author,
-                                                "nTries": nTries}), encoding="utf-8")
+                                                "nTries": nTries,
+                                                "generateStages": run.stages}),
+                                    encoding="utf-8")
     _idx, probs = REC.ClassifyImage(preview, SHAPE_MODEL)
     return JobResponse(jobId, written, preview, run, expectedText=text,
                        author=author, n_tries=nTries,
@@ -441,7 +449,12 @@ def ApiWriteGcode(jobId):
         meta = json.loads((jobDir/"meta.json").read_text(encoding="utf-8"))
     chars = len(meta.get("text", ""))
 
-    run = TIMING.Run("draw", chars=chars, lines=1)
+    #replay what generating this job cost, so the figure reported here is the
+    #whole reproduction: synthesis, rendering, gcode and then the pen
+    priorStages = meta.get("generateStages") or []
+    run = TIMING.Run("reproduce", chars=chars, lines=1)
+    for s in priorStages:
+        run.Carry(s.get("stage", "earlier"), s.get("seconds", 0.0), s.get("characters", 0) or 0)
     try:
         with run.Step("drawing", chars=chars):
             result = REP.WriteGcodeFile(str(gcodePath))
@@ -534,7 +547,7 @@ def ApiModelInfo():
         },
         "charset_size": len(REC.CHARSET)+1,
         "input_canvas": [REC.INPUT_HEIGHT, REC.INPUT_WIDTH],
-        "timing_limits_seconds": TIMING.LIMITS,
+        "timing_allowances": TIMING.ALLOWANCE_TEXT,
         "device": "cpu (numpy inference, no machine-learning library at runtime)",
     })
 
@@ -553,7 +566,14 @@ def ApiTimings():
         s["meanSeconds"] = round(s["totalSeconds"]/s["runs"], 3)
         s["meanSecondsPerChar"] = (round(s["totalSeconds"]/s["characters"], 4)
                                    if s["characters"] else None)
-        s["limitSeconds"] = TIMING.LIMITS.get(kind)
+        #the allowance scales with characters, so the mean is marked against
+        #the allowance for the mean number of characters
+        formula = TIMING.ALLOWANCE.get(kind)
+        meanChars = s["characters"]/s["runs"] if s["runs"] else 0
+        s["meanAllowanceSeconds"] = round(formula(meanChars), 2) if formula and meanChars else None
+        s["allowanceFormula"] = TIMING.ALLOWANCE_TEXT.get(kind)
+        s["meanWithinAllowance"] = (bool(s["meanSeconds"] <= s["meanAllowanceSeconds"])
+                                    if s["meanAllowanceSeconds"] else None)
     return jsonify({"summary": summary, "runs": rows})
 
 
@@ -564,9 +584,10 @@ def ApiSamples(author):
     try:
         pairs = RENDER.SampleCrops(author, n=2)
     except Exception as e:
-        return jsonify({"error": str(e), "samples": []}), 200
-    return jsonify({"samples": [{"image_url": "/api/samples/%s/%s" % (author, p.name),
-                                 "text": t} for p, t in pairs]})
+        return jsonify({"error": str(e)}), 200
+    #a bare list, which is what the page maps over
+    return jsonify([{"image_url": "/api/samples/%s/%s" % (author, p.name), "text": t}
+                    for p, t in pairs])
 
 
 @app.route("/api/samples/<author>/<filename>")

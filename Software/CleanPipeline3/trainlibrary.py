@@ -38,6 +38,12 @@ import paths
 import recognise as CLS
 import train as TR
 
+#---DEVICE: the gpu when there is one, otherwise the processor---
+#this is the only part of the project that can use a gpu at all, and only
+#for training.  inference on the robot is numpy on the single-board
+#computer, so nothing about the trained weights depends on this choice
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 
 #======================================================================
 #THE NETWORKS
@@ -130,7 +136,9 @@ def TrainReader(args):
 
     model = ReaderTorch(len(CLS.CHARSET)+1)
     SeedFromNumpy(model, TR.InitTextModelParams(args.seed, len(CLS.CHARSET)+1))
+    model.to(DEVICE)
     model.train()
+    print("[device] training on %s" % DEVICE)
     optimizer = optim.RMSprop(model.parameters(), lr=args.lr, weight_decay=1e-5)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min",
                                                     factor=0.5, patience=5, min_lr=1e-5)
@@ -144,9 +152,11 @@ def TrainReader(args):
         total, nB = 0.0, 0
         for batch in TR.IterateBatches(trainSet, args.batch, rng, True):
             images, flat, lengths, _texts = TR.TextCollateFn(batch)
-            x = torch.from_numpy(images)
+            x = torch.from_numpy(images).to(DEVICE)
             logProbs = torch.log_softmax(model(x), dim=2)
             iLens = torch.full((x.shape[0],), logProbs.shape[0], dtype=torch.long)
+            #the ctc targets and lengths stay on the processor, which is where
+            #torch wants them even when the scores are on the gpu
             loss = ctc(logProbs, torch.from_numpy(flat), iLens, torch.from_numpy(lengths))
             optimizer.zero_grad()
             loss.backward()
@@ -175,13 +185,13 @@ def ScoreReader(model, valSet, batchSize, ctc):
     with torch.no_grad():
         for batch in TR.IterateBatches(valSet, batchSize, rng, False):
             images, flat, lengths, texts = TR.TextCollateFn(batch)
-            x = torch.from_numpy(images)
+            x = torch.from_numpy(images).to(DEVICE)
             logProbs = torch.log_softmax(model(x), dim=2)
             iLens = torch.full((x.shape[0],), logProbs.shape[0], dtype=torch.long)
             total += float(ctc(logProbs, torch.from_numpy(flat), iLens,
                                torch.from_numpy(lengths)))
             nB += 1
-            for pred, truth in zip(CLS.DecodeCtc(logProbs.numpy()), texts):
+            for pred, truth in zip(CLS.DecodeCtc(logProbs.cpu().numpy()), texts):
                 errors += CLS.Levenshtein(pred, truth)
                 chars += max(1, len(truth))
     model.train()
@@ -213,7 +223,9 @@ def TrainNamer(args):
     numAuthors = len(base.author_folders)
     model = NamerTorch(numAuthors)
     SeedFromNumpy(model, TR.InitAuthorModelParams(args.seed, numAuthors))
+    model.to(DEVICE)
     model.train()
+    print("[device] training on %s" % DEVICE)
     optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
     lossFn = nn.CrossEntropyLoss()
@@ -226,8 +238,8 @@ def TrainNamer(args):
         total, nB = 0.0, 0
         for batch in TR.IterateBatches(trainSet, args.batch, rng, True):
             images, labels, _keys = TR.AuthorCollateFn(batch)
-            logits = model(torch.from_numpy(images))
-            loss = lossFn(logits, torch.from_numpy(labels))
+            logits = model(torch.from_numpy(images).to(DEVICE))
+            loss = lossFn(logits, torch.from_numpy(labels).to(DEVICE))
             optimizer.zero_grad()
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
@@ -256,7 +268,7 @@ def ScoreNamer(model, valSet, batchSize):
     with torch.no_grad():
         for batch in TR.IterateBatches(valSet, batchSize, rng, False):
             images, labels, _keys = TR.AuthorCollateFn(batch)
-            preds = model(torch.from_numpy(images)).argmax(dim=1).numpy()
+            preds = model(torch.from_numpy(images).to(DEVICE)).argmax(dim=1).cpu().numpy()
             correct += int((preds == labels).sum())
             seen += len(labels)
     model.train()

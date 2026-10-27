@@ -224,10 +224,21 @@ function renderTiming(containerId, timing) {
   let verdict = "";
   if (timing.limitSeconds) {
     const ok = timing.withinLimit;
+    // a server older than this page will not send secondsSpare or limitFormula,
+    // so both are derived or omitted rather than printed as NaN/undefined
+    const spare = timing.secondsSpare != null
+      ? timing.secondsSpare
+      : timing.limitSeconds - timing.totalSeconds;
+    const used = timing.fractionOfLimit != null
+      ? Math.round(100 * timing.fractionOfLimit)
+      : Math.round((100 * timing.totalSeconds) / timing.limitSeconds);
     verdict = `<p class="${ok ? "pass" : "fail"}">
-      ${timing.totalSeconds.toFixed(2)} s against a ${timing.limitSeconds} s requirement
-      &mdash; ${ok ? "met" : "EXCEEDED"} (${Math.round(100 * timing.fractionOfLimit)}% of the allowance)
-    </p>`;
+      ${timing.totalSeconds.toFixed(2)} s against an allowance of
+      ${timing.limitSeconds.toFixed(2)} s &mdash; ${ok ? "MET" : "EXCEEDED"},
+      ${Math.abs(spare).toFixed(2)} s ${spare >= 0 ? "to spare" : "over"}
+      </p>
+      <p class="muted">${timing.limitFormula ? "allowance = " + timing.limitFormula + ", " : ""}for
+      ${timing.characters} characters (${used}% used)</p>`;
   }
 
   const perChar = timing.secondsPerCharacter
