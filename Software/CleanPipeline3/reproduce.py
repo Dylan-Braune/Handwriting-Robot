@@ -47,6 +47,13 @@ class GantryConfig:
     boundsMaxYmm: float = 200.0
     originXmm: float = 10.0   #where text starts on the bed
     originYmm: float = 180.0
+    #--- page margins ---------------------------------------------------
+    #drawn output is photographed and read back, and the segmenter needs a
+    #page to look like a page: paper around the writing, not writing to the
+    #edge.  these match the writers' own sheets, measured off the
+    #photographs at about 13 to 15 mm at the left and 24 mm at the top
+    pageMarginXmm: float = 15.0
+    pageMarginYmm: float = 24.0
     #--- speeds ---------------------------------------------------------
     drawFeedMmMin: float = 900.0   #pen-down feed
     travelFeedMmMin: float = 2400.0   #pen-up rapid
@@ -92,24 +99,25 @@ class GantryConfig:
 #it would otherwise run off the work area.  never enlarges, so asking
 #for small writing gets small writing
 #----------------------------------------------------------------------
-def ToMachine(traj,cfg,fitToBounds=True,optimizeOrder=True):
+def ToMachine(traj,cfg,fitToBounds=True,optimizeOrder=True,rowTolMm=None):
     x0,y0,x1,y1 = traj.Bounds()
     w,h = max(1e-6,x1-x0),max(1e-6,y1-y0)
     scale = 1.0
+    mx,my = cfg.pageMarginXmm,cfg.pageMarginYmm
     if fitToBounds:
-        availW = cfg.boundsMaxXmm-cfg.originXmm
-        availH = cfg.originYmm-cfg.boundsMinYmm
+        availW = cfg.boundsMaxXmm-cfg.originXmm-mx
+        availH = (cfg.originYmm-my)-cfg.boundsMinYmm
         scale = min(1.0,availW/w,availH/h)
     out = []
     for s in traj.strokes:
         #both frames have y UP (standard plotter convention): the text's
         #top row lands at originY and later rows descend from there
-        q = [(cfg.originXmm+(x-x0)*scale,
-              cfg.originYmm-(y1-y)*scale)
+        q = [(cfg.originXmm+mx+(x-x0)*scale,
+              cfg.originYmm-my-(y1-y)*scale)
              for (x,y) in s]
         out.append(_Decimate(q,cfg.minSegmentMm))
     if optimizeOrder:
-        out = OptimizeStrokeOrder(out)
+        out = OptimizeStrokeOrder(out,rowTolMm=rowTolMm)
     return out,scale
 
 #----------------------------------------------------------------------
@@ -224,8 +232,8 @@ def SetPenLines(state,cfg,wantUp):
 #stroke with the pen up, a pen down, the stroke itself at drawing feed,
 #and a pen up at the end
 #----------------------------------------------------------------------
-def WriteGcode(traj,cfg,path,title=''):
-    strokes,scale = ToMachine(traj,cfg)
+def WriteGcode(traj,cfg,path,title='',rowTolMm=None):
+    strokes,scale = ToMachine(traj,cfg,rowTolMm=rowTolMm)
     strokes,clipped = _Clamp(strokes,cfg)
     pen = NewPenState(cfg)
     L = []

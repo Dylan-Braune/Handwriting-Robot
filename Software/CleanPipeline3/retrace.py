@@ -70,6 +70,15 @@ def PageStrokes(gray, timer=None):
     return strokes, dict(lines=len(lines), strokesPerLine=perLine, **info)
 
 
+#---LinePitchMm: the spacing between text lines, in machine millimetres---
+#the segmenter reports the pitch in half-resolution pixels; the trajectory is
+#in full-resolution page pixels, so the pitch doubles, and ToMachine's own
+#scale converts it to millimetres
+def LinePitchMm(info,cfg,traj):
+    _p,scale = REP.ToMachine(traj,cfg,optimizeOrder=False)
+    return max(1.0,float(info.get("pitch",40))*2.0*scale)
+
+
 #---PruneSpecks: drop paths too short to be writing---
 def PruneSpecks(strokes, xhPx):
     limit = MIN_STROKE_XH*max(1.0, xhPx)
@@ -103,9 +112,15 @@ def RetracePage(imagePath, outPath, cfg=None, previewPath=None):
 
     traj = SYN.Trajectory(strokes, dict(author="retrace", source=str(imagePath),
                                         lines=info["lines"]))
+    #OptimizeStrokeOrder works out its row tolerance from how tall the strokes
+    #are, which is right for one synthesised line and wrong for a page: a
+    #stroke is a part of a letter, not a line, so the tolerance comes out at
+    #about a third of the line pitch and each text line is treated as three
+    #rows.  the pitch is known here, so it is passed in instead
     with run.Step("gcode"):
         written = REP.WriteGcode(traj, cfg, str(outPath),
-                                 title="retrace of %s" % Path(imagePath).name)
+                                 title="retrace of %s" % Path(imagePath).name,
+                                 rowTolMm=LinePitchMm(info, cfg, traj))
 
     preview = None
     if previewPath:

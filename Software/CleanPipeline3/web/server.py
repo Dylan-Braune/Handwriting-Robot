@@ -444,9 +444,15 @@ def ApiGcodeUpload():
 
     run = TIMING.Run("reproduce", chars=len(expectedText), lines=1)
     with run.Step("parsing gcode"):
-        traj = REP.ParseGcode(str(gcodePath))
+        #ParseGcode hands back a list of strokes, which the renderer cannot take
+        #on its own: it reads the writer and the size off a trajectory's meta
+        strokes = REP.ParseGcode(str(gcodePath))
+        traj = SYN.Trajectory(strokes, dict(author="uploaded",
+                                            source=request.files["gcode"].filename))
     with run.Step("rendering"):
-        preview = SYN.RenderTrajectory(traj, pxPerMm=18.0)
+        #a whole page of traced ink at 18 px/mm is several thousand pixels square
+        #and slow to draw, and this preview only has to be recognisable
+        preview = SYN.RenderTrajectory(traj, pxPerMm=8.0)
         Image.fromarray(np.asarray(preview, dtype=np.uint8)).save(jobDir/"preview.png")
     written = dict(lines=sum(1 for _ in open(gcodePath, encoding="utf-8", errors="replace")),
                    penPulses=None)
