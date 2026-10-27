@@ -81,12 +81,16 @@ _OFFS = [(-1,-1),(-1,0),(-1,1),(0,-1),(0,1),(1,-1),(1,0),(1,1)]
 #the thinned ink is a picture, these turn it into paths the pen followed
 #======================================================================
 #----------------------------------------------------------------------
-#TracePolylines: follow the thinned ink into lists of points
-#walks from each loose end along connected pixels, so a stroke becomes
-#an ordered path instead of a set of pixels.  then tidies: whiskers off,
-#and paths that meet at a junction and carry on straight are rejoined
+#TracePolylinesSplitAtJunctions: the original tracer, kept as a fallback
+#walks from each loose end along connected pixels and STOPS at every
+#junction, then tries to rejoin chains afterwards if they happen to leave
+#the junction straight.  two consequences, both visible in the writing it
+#produces: a letter whose stroke crosses itself, such as a looped l, comes
+#out as two pieces with a pen lift between them, and a closed o stops one
+#pixel short of meeting itself.  TracePolylinesThroughJunctions below
+#replaces it; this stays so the two can be compared
 #----------------------------------------------------------------------
-def TracePolylines(skel):
+def TracePolylinesSplitAtJunctions(skel):
     pts = set((int(y),int(x)) for y,x in zip(*np.nonzero(skel)))
     if not pts:
         return []
@@ -143,6 +147,143 @@ def TracePolylines(skel):
               if len(ch)>=2]
     chains = _PruneSpurs(chains)
     return _JoinAtJunctions(chains)
+
+
+#---MAX_TURN_DEG: how sharply the pen may turn at a crossing and still be---
+#treated as the same stroke.  a real hand changes direction at a crossing,
+#so this is generous; past it the paths are genuinely separate strokes
+MAX_TURN_DEG = 100.0
+
+#---CLOSE_RINGS: join a closed shape back to where it started---
+CLOSE_RINGS = True
+
+#---USE_THROUGH_JUNCTIONS: which tracer ExtractLineGlyphs calls---
+#measured on 431 real glyphs: 1.708 strokes per glyph with the original
+#tracer against 1.705 with this one, and identical counts for l, o, e, h and
+#k.  so the pen lifts are not caused by stopping at crossings, and the
+#original stays in use until the real cause is found
+USE_THROUGH_JUNCTIONS = False
+
+
+#---_UnitStep: the direction from one pixel to the next---
+def _UnitStep(frm,to):
+    v = np.array([to[1]-frm[1],to[0]-frm[0]],np.float64)   #(x,y) from (row,col)
+    n = np.linalg.norm(v)
+    return v/n if n>0 else v
+
+
+#---_HeadingAt: which way the path has been going over its last few points---
+def _HeadingAt(chain,n=4):
+    tail = chain[-min(n,len(chain)):]
+    if len(tail)<2:
+        return None
+    v = np.array([tail[-1][1]-tail[0][1],tail[-1][0]-tail[0][0]],np.float64)
+    nrm = np.linalg.norm(v)
+    return v/nrm if nrm>0 else None
+
+
+#----------------------------------------------------------------------
+#TracePolylinesThroughJunctions: carry on through a crossing
+#where the original tracer stopped at every junction and tried to stitch
+#the pieces back together afterwards, this one decides at the crossing
+#itself: it keeps the direction the pen was already travelling and takes
+#whichever branch continues closest to it, so long as the turn is within
+#MAX_TURN_DEG.  a looped l is then one stroke through its own crossing
+#rather than two halves with a lift between them.
+#it also closes a ring: a walk that arrives back where it began has the
+#starting point appended, so an o meets itself instead of stopping a
+#pixel short
+#----------------------------------------------------------------------
+def TracePolylinesThroughJunctions(skel,maxTurnDeg=None,closeRings=None):
+    maxTurnDeg = MAX_TURN_DEG if maxTurnDeg is None else maxTurnDeg
+    closeRings = CLOSE_RINGS if closeRings is None else closeRings
+    cosLimit = np.cos(np.radians(maxTurnDeg))
+
+    pts = set((int(y),int(x)) for y,x in zip(*np.nonzero(skel)))
+    if not pts:
+        return []
+
+    def nbrs(p):
+        y,x = p
+        out = []
+        for dy,dx in _OFFS:
+            q = (y+dy,x+dx)
+            if q not in pts:
+                continue
+            #a diagonal step is redundant when an orthogonal 2-step path exists
+            if dy and dx and ((y+dy,x) in pts or (y,x+dx) in pts):
+                continue
+            out.append(q)
+        return out
+
+    neigh = {p: nbrs(p) for p in pts}
+    deg = {p: len(neigh[p]) for p in pts}
+    usedEdges = set()
+
+    def take(a,b):
+        usedEdges.add((a,b))
+        usedEdges.add((b,a))
+
+    def walk(start,first):
+        chain = [start,first]
+        take(start,first)
+        cur,prev = first,start
+        closed = False
+        while True:
+            options = [n for n in neigh[cur] if n!=prev and (cur,n) not in usedEdges]
+            if not options:
+                #arriving back at the start of a ring leaves no unused edge, so
+                #check for that here rather than treating it as a dead end
+                if closeRings and len(chain)>3 and start in neigh[cur]:
+                    chain.append(start)
+                    closed = True
+                break
+            if len(options)==1:
+                nxt = options[0]
+            else:
+                #a crossing: keep going the way the pen was already going
+                heading = _HeadingAt(chain)
+                if heading is None:
+                    break
+                scored = [(float(np.dot(heading,_UnitStep(cur,n))),n) for n in options]
+                scored.sort(reverse=True)
+                if scored[0][0]<cosLimit:
+                    break            #nothing continues closely enough: a real stroke end
+                nxt = scored[0][1]
+            take(cur,nxt)
+            chain.append(nxt)
+            prev,cur = cur,nxt
+            if nxt==start and closeRings and len(chain)>3:
+                closed = True
+                break
+        return chain,closed
+
+    polylines = []
+    #loose ends first, since those are where a pen really starts, then
+    #junctions, then whatever closed shapes are left over
+    order = ([p for p in sorted(pts) if deg[p]==1]
+             +[p for p in sorted(pts) if deg[p]>2]
+             +[p for p in sorted(pts) if deg[p]==2])
+    for p in order:
+        for n in neigh[p]:
+            if (p,n) not in usedEdges:
+                chain,_closed = walk(p,n)
+                if len(chain)>=2:
+                    polylines.append(chain)
+
+    chains = [[(float(x),float(y)) for (y,x) in ch] for ch in polylines]
+    chains = _PruneSpurs(chains)
+    #the rejoin pass still runs, for chains that genuinely stopped at a turn
+    #sharper than the limit but belong together
+    return _JoinAtJunctions(chains)
+
+
+#---TracePolylines: whichever tracer is selected---
+def TracePolylines(skel):
+    if USE_THROUGH_JUNCTIONS:
+        return TracePolylinesThroughJunctions(skel)
+    return TracePolylinesSplitAtJunctions(skel)
+
 
 #---_Dir: which way a path is heading at one of its ends---
 def _Dir(pts,fromEnd,n=4):

@@ -58,6 +58,15 @@ class GantryConfig:
     penUpCode: str = 'M5'   #firmware maps these to the pulse
     penDownCode: str = 'M3'
     penStartsUp: bool = True   #assumed state at power-on
+    #--- keeping the pen down -------------------------------------------
+    #if the next stroke starts this close to where the last one ended, the
+    #pen draws straight into it instead of lifting, travelling a fraction of
+    #a millimetre and dropping again.  a hand does the same thing, and each
+    #avoided lift saves two 90 degree pulses of the one-way actuator
+    joinStrokesMm: float = 0.6
+    #a stroke whose own two ends are this close is finished off, so a letter
+    #drawn as a ring meets itself rather than stopping just short
+    closeRingMm: float = 0.6
 
     @property
     def microstepsPerRev(self):
@@ -233,15 +242,33 @@ def WriteGcode(traj,cfg,path,title=''):
     L.append('G90   ; absolute')
     L+=SetPenLines(pen,cfg,True)
     L.append(f"G0 F{cfg.travelFeedMmMin:.0f}")
+    here = None        #where the pen actually is, in millimetres
+    joined = rings = 0
+    joinedMm = 0.0
     for s in strokes:
         if len(s)<2:
             continue
-        L+=SetPenLines(pen,cfg,True)
-        L.append(f"G0 X{s[0][0]:.3f} Y{s[0][1]:.3f}")
-        L+=SetPenLines(pen,cfg,False)
-        L.append(f"G1 F{cfg.drawFeedMmMin:.0f}")
+        #a ring is finished off so the shape meets itself
+        if (cfg.closeRingMm>0 and len(s)>3
+                and math.dist(s[0],s[-1])<=cfg.closeRingMm
+                and s[0]!=s[-1]):
+            s = list(s)+[s[0]]
+            rings += 1
+        if here is not None and math.dist(here,s[0])<=cfg.joinStrokesMm:
+            #already there: draw into this stroke rather than lift and land.
+            #the gap is drawn as ink, so it is counted: a join wider than a
+            #fraction of the x-height would show as a line that is not writing
+            L.append(f"G1 F{cfg.drawFeedMmMin:.0f}")
+            joined += 1
+            joinedMm += math.dist(here,s[0])
+        else:
+            L+=SetPenLines(pen,cfg,True)
+            L.append(f"G0 X{s[0][0]:.3f} Y{s[0][1]:.3f}")
+            L+=SetPenLines(pen,cfg,False)
+            L.append(f"G1 F{cfg.drawFeedMmMin:.0f}")
         for (x,y) in s[1:]:
             L.append(f"G1 X{x:.3f} Y{y:.3f}")
+        here = s[-1]
     L+=SetPenLines(pen,cfg,True)
     L.append(f"G0 X{cfg.originXmm:.3f} Y{cfg.originYmm:.3f}   ; park")
     L.append('M2')
@@ -249,7 +276,9 @@ def WriteGcode(traj,cfg,path,title=''):
     with open(path,'w',encoding='utf-8') as f:
         f.write('\n'.join(L)+'\n')
     return dict(lines=len(L),strokes=len(strokes),penPulses=pen[1],
-                scale=scale,clipped=clipped,path=str(path))
+                scale=scale,clipped=clipped,path=str(path),
+                joinedStrokes=joined,closedRings=rings,
+                joinedInkMm=round(joinedMm,2))
 
 #----------------------------------------------------------------------
 #ParseGcode: read a g-code file back into strokes

@@ -62,6 +62,7 @@ import recognise as REC
 import reproduce as REP
 import segment as SEG
 import synthesise as SYN
+import retrace as RETRACE
 import timing as TIMING
 
 import camera as CAM
@@ -123,6 +124,14 @@ print("[server] %d style profiles: %s" % (len(PROFILES), ", ".join(sorted(PROFIL
 #every timing this server has measured, newest last, for the stats page
 TIMINGS = []
 TIMINGS_LOCK = threading.Lock()
+
+
+def Remember2(d):
+    """record an already-built timing dict, for work timed outside a Run"""
+    with TIMINGS_LOCK:
+        TIMINGS.append(d)
+        del TIMINGS[:-200]
+    return d
 
 
 def Remember(run):
@@ -369,6 +378,56 @@ def ApiGenerate():
     return JobResponse(jobId, written, preview, run, expectedText=text,
                        author=author, n_tries=nTries,
                        writer_confidence_pct=round(100*float(probs[SHAPE_MAP[author]]), 1))
+
+
+#----------------------------------------------------------------------
+#POST /api/retrace   multipart: image (file) or image_id
+#the page's own ink traced straight into G-code, with no recognition and
+#no synthesis in between.  drawing this and comparing it against the
+#original page measures the gantry by itself, since nothing along the way
+#made a decision that could have changed the shapes
+#----------------------------------------------------------------------
+@app.route("/api/retrace", methods=["POST"])
+def ApiRetrace():
+    if "image" in request.files and request.files["image"].filename:
+        imageId = uuid.uuid4().hex
+        srcPath = UPLOADS/("%s.jpg" % imageId)
+        Image.open(request.files["image"].stream).convert("RGB").save(srcPath)
+    elif request.form.get("image_id"):
+        imageId = "".join(c for c in request.form["image_id"] if c.isalnum())
+        srcPath = UPLOADS/("%s.jpg" % imageId)
+        if not srcPath.exists():
+            return jsonify({"error": "Unknown image_id"}), 400
+    else:
+        return jsonify({"error": "Provide either 'image' or 'image_id'"}), 400
+
+    jobId = uuid.uuid4().hex
+    jobDir = JOBS/jobId
+    jobDir.mkdir(parents=True, exist_ok=True)
+    try:
+        result = RETRACE.RetracePage(srcPath, jobDir/"job.gcode",
+                                     cfg=REP.GantryConfig(),
+                                     previewPath=jobDir/"preview.png")
+    except SystemExit as e:
+        return jsonify({"error": str(e)}), 422
+
+    (jobDir/"meta.json").write_text(json.dumps(
+        {"text": "", "author": "retrace", "source": str(srcPath),
+         "generateStages": result["timing"]["stages"]}), encoding="utf-8")
+    Remember2(result["timing"])
+    return jsonify({
+        "job_id": jobId,
+        "gcode_url": "/api/gcode/%s" % jobId,
+        "preview_url": "/api/images/job_%s" % jobId,
+        "source_url": "/api/images/%s" % imageId,
+        "lines_traced": result["timing"]["lines"],
+        "strokes_traced": result["tracedStrokes"],
+        "gcode_line_count": result["lines"],
+        "pen_pulses": result["penPulses"],
+        "scale": round(result["scale"], 4),
+        "clamped_points": result["clipped"],
+        "timing": result["timing"],
+    })
 
 
 @app.route("/api/gcode/upload", methods=["POST"])

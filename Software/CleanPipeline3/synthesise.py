@@ -611,6 +611,58 @@ def _ApplyCal(strokes,cal):
 #dip turns a short join into a loop, which is what makes synthetic
 #joined writing look tangled
 #----------------------------------------------------------------------
+#---USE_TANGENT_LIGATURE: shape the join from the pen's heading---
+#measured against the midpoint-sag join on five lightly joined writers over
+#three sentences: character accuracy 83.36 -> 84.24 per cent, writer
+#confidence 78.62 -> 74.29.  the whole of that writer-ID loss is writer 588
+#alone, which fell 83.0 -> 61.4 while 152 gained on both counts, so it is off
+#by default until a full sentence set says whether 588's drop is real
+USE_TANGENT_LIGATURE = False
+
+#---TANGENT_PULL: how far along each tangent the control point sits---
+#as a fraction of the gap being bridged.  larger sweeps more widely out of
+#the previous letter before turning towards the next
+TANGENT_PULL = 0.42
+
+
+#---_Tangent: the direction a path is travelling at one of its ends---
+def _Tangent(pts,atStart,n=4):
+    p = np.asarray(pts,dtype=np.float64)
+    if len(p)<2:
+        return None
+    seg = p[:min(n,len(p))] if atStart else p[-min(n,len(p)):]
+    v = seg[-1]-seg[0]
+    nrm = float(np.linalg.norm(v))
+    return (v/nrm) if nrm>1e-9 else None
+
+
+#----------------------------------------------------------------------
+#_LigatureTangent: a join that leaves and arrives along the pen's heading
+#the earlier join knew only two points, so it left the previous letter at
+#whatever angle its sag produced rather than along the stroke it was
+#continuing from, which is what made a join read as grafted on.  this one
+#places the two control points of a cubic along the outgoing and incoming
+#directions, so the curve is tangent to both letters: it leaves exactly
+#the way the pen was already going and arrives exactly the way the next
+#letter starts, the way a french curve is laid against two fixed slopes
+#----------------------------------------------------------------------
+def _LigatureTangent(p0,p1,dOut,dIn,xh,rng):
+    gap = math.hypot(p1[0]-p0[0],p1[1]-p0[1])
+    if gap<0.06*xh:
+        return [p0,p1]
+    k = TANGENT_PULL*gap
+    jitter = rng.gauss(0.0,0.02*xh)
+    c1 = (p0[0]+dOut[0]*k, p0[1]+dOut[1]*k+jitter)
+    c2 = (p1[0]-dIn[0]*k,  p1[1]-dIn[1]*k)
+    out = []
+    for i in range(11):
+        t = i/10.0
+        u = 1.0-t
+        out.append((u*u*u*p0[0]+3*u*u*t*c1[0]+3*u*t*t*c2[0]+t*t*t*p1[0],
+                    u*u*u*p0[1]+3*u*u*t*c1[1]+3*u*t*t*c2[1]+t*t*t*p1[1]))
+    return _Resample(out,step=0.35)
+
+
 def _Ligature(p0,p1,xh,rng):
     dx = p1[0]-p0[0]
     if abs(dx)<0.06*xh:
@@ -784,7 +836,14 @@ def SynthesizeText(text,profile,mmPerXh=4.0,seed=None,lineWidthMm=180.0,
                         and (bothOwn or bothCursiveCore)   #a print anchor never joins
                         and rng.random()<min(connEff,JOIN_PROB_CAP))   #draw per pair, not a threshold
             if joinable:
-                chain+=_Ligature(prevExit,body[0],xh,rng)
+                #the tangents come from the real geometry either side: the tail
+                #of what has been drawn, and the head of the letter being joined
+                dOut = _Tangent(chain,False) if USE_TANGENT_LIGATURE else None
+                dIn = _Tangent(body,True) if USE_TANGENT_LIGATURE else None
+                if dOut is not None and dIn is not None:
+                    chain+=_LigatureTangent(prevExit,body[0],dOut,dIn,xh,rng)
+                else:
+                    chain+=_Ligature(prevExit,body[0],xh,rng)
                 chain+=body
             else:
                 flush(chain)

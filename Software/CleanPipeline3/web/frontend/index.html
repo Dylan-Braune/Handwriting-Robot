@@ -42,6 +42,7 @@
 
       <div class="btn-row">
         <button id="classifyBtn" disabled>Classify</button>
+        <button id="retraceBtn" disabled title="Trace this page's own ink straight to G-code, with no recognition or synthesis, so drawing it tests the gantry alone">Retrace to G-code</button>
       </div>
       <div class="error-banner" id="classifyError"></div>
     </div>
@@ -50,6 +51,8 @@
       <h2>2. Result</h2>
       <div class="result-box" id="resultBox">
         <div class="timing-box" id="classifyTiming"></div>
+        <div class="result-box show" id="retraceBox"></div>
+        <div class="timing-box" id="retraceTiming"></div>
         <div class="stat-row">
           <span class="k">Lines detected</span>
           <span class="v" id="rLines">—</span>
@@ -91,12 +94,14 @@ let previewOn = false;
 const previewImg = document.getElementById("previewImg");
 const livePreviewImg = document.getElementById("livePreviewImg");
 const classifyBtn = document.getElementById("classifyBtn");
+const retraceBtn = document.getElementById("retraceBtn");
 const captureBtn = document.getElementById("captureBtn");
 const previewToggleBtn = document.getElementById("previewToggleBtn");
 const idlePlaceholder = document.getElementById("idlePlaceholder");
 
 function enableClassify() {
   classifyBtn.disabled = !(capturedImageId || capturedBlob);
+  retraceBtn.disabled = classifyBtn.disabled;
 }
 
 function persist(extra = {}) {
@@ -246,6 +251,36 @@ document.getElementById("fileInput").addEventListener("change", (e) => {
   const reader = new FileReader();
   reader.onload = () => persist({ capturedDataUrl: reader.result });
   reader.readAsDataURL(file);
+});
+
+// Retrace: the page's own ink to G-code, nothing in between. Drawing this
+// and comparing it with the original measures the gantry by itself.
+retraceBtn.addEventListener("click", async () => {
+  clearError("errorBox");
+  retraceBtn.disabled = true;
+  retraceBtn.innerHTML = '<span class="spinner"></span> Tracing...';
+  try {
+    const form = new FormData();
+    if (capturedBlob) form.append("image", capturedBlob, "page.jpg");
+    else if (capturedImageId) form.append("image_id", capturedImageId);
+    const res = await apiFetch("/api/retrace", { method: "POST", body: form });
+    const box = document.getElementById("retraceBox");
+    box.innerHTML = `
+      <h3>Retrace</h3>
+      <p>${res.lines_traced} lines traced into ${res.strokes_traced} strokes &middot;
+         ${res.gcode_line_count} G-code lines &middot; ${res.pen_pulses} pen pulses
+         &middot; scale ${res.scale}</p>
+      ${res.clamped_points ? `<p class="fail">${res.clamped_points} point(s) clamped to the work area</p>` : ""}
+      <p><a href="${absoluteUrl(res.gcode_url)}">download the G-code</a> &middot;
+         job <code>${res.job_id}</code> &mdash; send it to the gantry from the Write page</p>
+      <img src="${absoluteUrl(res.preview_url)}?t=${Date.now()}" class="preview" />`;
+    renderTiming("retraceTiming", res.timing);
+  } catch (e) {
+    showError("errorBox", e.message);
+  } finally {
+    retraceBtn.disabled = false;
+    retraceBtn.innerHTML = "Retrace to G-code";
+  }
 });
 
 classifyBtn.addEventListener("click", async () => {

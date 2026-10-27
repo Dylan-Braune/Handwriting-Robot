@@ -112,6 +112,52 @@ def SeedFromNumpy(model, params):
     model.load_state_dict(sd, strict=False)   #strict off only for num_batches_tracked
 
 
+#---OutDir: where checkpoints are written---
+#on a hosted notebook the clone is deleted when the session ends, so this is
+#pointed at mounted storage instead and a dropped session costs one epoch
+def OutDir(args):
+    d = Path(args.outDir) if args.outDir else paths.Weights
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+#----------------------------------------------------------------------
+#SaveResume / LoadResume: enough to carry on exactly where it stopped
+#the weights go to .npz because that is what recognise.py reads, but the
+#optimiser's running averages and the schedule's patience counter are
+#torch objects and go beside them.  without those the first steps after a
+#restart are oversized, since RMSprop divides by a running average that
+#would otherwise begin again at zero
+#----------------------------------------------------------------------
+def SaveResume(path, model, optimizer, scheduler, epoch, best):
+    torch.save({"optimizer": optimizer.state_dict(),
+                "scheduler": scheduler.state_dict(),
+                "epoch": epoch, "best": best}, str(path))
+
+
+def LoadResume(path, model, optimizer, scheduler, npzPath):
+    startEpoch, best = 1, np.inf
+    if Path(npzPath).exists():
+        sd = model.state_dict()
+        with np.load(npzPath, allow_pickle=False) as z:
+            for k in z.files:
+                if k in sd and not k.startswith("__"):
+                    sd[k] = torch.from_numpy(z[k])
+        model.load_state_dict(sd, strict=False)
+        print("[resume] weights from %s" % Path(npzPath).name)
+    if Path(path).exists():
+        state = torch.load(str(path), map_location=DEVICE, weights_only=False)
+        optimizer.load_state_dict(state["optimizer"])
+        scheduler.load_state_dict(state["scheduler"])
+        startEpoch = int(state["epoch"])+1
+        best = float(state["best"])
+        print("[resume] optimiser and schedule restored, continuing at epoch %d "
+              "(best val loss %.4f)" % (startEpoch, best))
+    else:
+        print("[resume] no optimiser state found, its running averages start cold")
+    return startEpoch, best
+
+
 #---SaveNpz: weights in the layout recognise.py reads---
 def SaveNpz(path, model, extra=None):
     payload = {k: v.detach().cpu().numpy() for k, v in model.state_dict().items()
@@ -148,11 +194,16 @@ def TrainReader(args):
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min",
                                                     factor=0.5, patience=5, min_lr=1e-5)
     ctc = nn.CTCLoss(blank=0, zero_infinity=True)
-    best = np.inf
-    outPath = paths.Weights/"paper_cnn_bilstm_ctc_library_best.npz"
+    outDir = OutDir(args)
+    outPath = outDir/"paper_cnn_bilstm_ctc_library_best.npz"
+    ckptPath = outDir/"paper_cnn_bilstm_ctc_library_checkpoint.npz"
+    resumePath = outDir/"paper_cnn_bilstm_ctc_library_resume.pt"
+    startEpoch, best = 1, np.inf
+    if args.resume:
+        startEpoch, best = LoadResume(resumePath, model, optimizer, scheduler, ckptPath)
     rng = np.random.default_rng(args.seed)
 
-    for epoch in range(1, args.epochs+1):
+    for epoch in range(startEpoch, startEpoch+args.epochs):
         t0 = time.time()
         total, nB = 0.0, 0
         batches = (TR.IterateMixedBatches(trainSet, personalSet, args.batch,
@@ -183,6 +234,10 @@ def TrainReader(args):
             best = valLoss
             SaveNpz(outPath, model, {"__epoch__": np.array(epoch), "__best__": np.array(best)})
             saved = " [best]"
+        #written every epoch, not only on an improvement, so a session that
+        #dies loses at most the epoch it was in the middle of
+        SaveNpz(ckptPath, model, {"__epoch__": np.array(epoch), "__best__": np.array(best)})
+        SaveResume(resumePath, model, optimizer, scheduler, epoch, best)
         print("[reader] epoch %03d | train %.4f | val %.4f | val char acc %.2f%% | %.1f min%s"
               % (epoch, trainLoss, valLoss, 100*valAcc, (time.time()-t0)/60, saved), flush=True)
     return best
@@ -301,6 +356,11 @@ def Main():
     ap.add_argument("--personal-fraction", dest="personalFraction", type=float, default=0.20,
                     help="joint only: share of every batch drawn from photographed lines")
     ap.add_argument("--pages", type=int, default=None, help="limit how many pages are cut up")
+    ap.add_argument("--resume", action="store_true",
+                    help="continue from the checkpoint, optimiser state included")
+    ap.add_argument("--out-dir", dest="outDir", default=None,
+                    help="where checkpoints are written; point this at mounted "
+                         "storage on a hosted notebook so they survive the session")
     args = ap.parse_args()
     torch.manual_seed(args.seed)
     if args.task == "text":
