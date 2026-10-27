@@ -1552,7 +1552,11 @@ def LoadParamsInto(params,checkpointPath):
     loaded = 0
     for k in params:
         if k in sd and sd[k].shape==params[k].shape:
-            params[k] = sd[k].astype(np.float32)
+            #copied INTO the array, not put in its place.  the optimiser was
+            #built before this runs and holds the same arrays, so replacing one
+            #here would leave it updating an array nothing else reads, and the
+            #weights being trained would never change at all
+            params[k][...] = sd[k].astype(np.float32)
             loaded+=1
     return loaded
 

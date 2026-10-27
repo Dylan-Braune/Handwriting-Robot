@@ -35,6 +35,9 @@ Endpoints
     GET  /api/gcode/<jobId>           the raw gcode of a job
     GET  /api/model_info              which checkpoints are loaded
     GET  /api/timings                 every timing this server has measured
+    GET  /api/curate/<writer>         every letterform variant, as strokes
+    POST /api/curate/<writer>         remove the marked ones, rebuild, save
+    DEL  /api/curate/<writer>         throw the curated profile away
 """
 import io
 import json
@@ -58,6 +61,7 @@ sys.path.insert(0, str(CP3))
 sys.path.insert(0, str(HERE))
 
 import paths
+import curate as CUR
 import recognise as REC
 import reproduce as REP
 import segment as SEG
@@ -672,6 +676,67 @@ def ApiGlyphs(author):
         return send_file(str(RENDER.GlyphGridPath(author, PROFILES[author])))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+#======================================================================
+#CURATING A WRITER'S LETTERFORMS
+#the filters that pick variants score how typical a shape is, which
+#cannot tell a badly cut letter from an unusual one, so a wrong glyph
+#can survive.  these three endpoints let a person look at every variant
+#and say which to keep.  all the real work, including rebuilding the
+#prototype, the medoid and the advances, is curate.py's, so the page and
+#the command line cannot disagree about what a removal means
+#======================================================================
+@app.route("/api/curate/<author>")
+def ApiCurateGet(author):
+    base = author[:-8] if author.endswith("_curated") else author
+    if base not in PROFILES and author not in PROFILES:
+        abort(404)
+    curated = request.args.get("curated") in ("1", "true", "yes")
+    try:
+        return jsonify(CUR.Variants(base, curated))
+    except SystemExit as e:
+        return jsonify({"error": str(e)}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/curate/<author>", methods=["POST"])
+def ApiCuratePost(author):
+    if author not in PROFILES:
+        abort(404)
+    body = request.get_json(silent=True) or {}
+    drop = {k: [int(i) for i in v] for k, v in (body.get("drop") or {}).items()}
+    keep = {k: [int(i) for i in v] for k, v in (body.get("keep") or {}).items()}
+    if not drop and not keep:
+        return jsonify({"error": "nothing was marked for removal"}), 200
+    try:
+        summary = CUR.Apply(author, drop, keep,
+                            curated=bool(body.get("curated")),
+                            outName=body.get("out") or None)
+    except SystemExit as e:
+        return jsonify({"error": str(e)}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    #the curated file is a profile like any other, so picking it up here
+    #means it can be written with straight away instead of after a restart
+    PROFILES.clear()
+    PROFILES.update(LoadProfiles())
+    summary["authorsNow"] = sorted(PROFILES)
+    return jsonify(summary)
+
+
+@app.route("/api/curate/<author>", methods=["DELETE"])
+def ApiCurateDelete(author):
+    #start again: the original was never written over, so throwing the
+    #curated file away is the whole of the undo
+    p = paths.Profiles/("%s_curated.json" % author)
+    existed = p.exists()
+    if existed:
+        p.unlink()
+    PROFILES.clear()
+    PROFILES.update(LoadProfiles())
+    return jsonify({"deleted": existed, "file": p.name, "authorsNow": sorted(PROFILES)})
 
 
 if __name__ == "__main__":

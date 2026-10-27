@@ -1,0 +1,215 @@
+%%
+%%  Department of Electrical, Electronic and Computer Engineering.
+%%  EPR400/2 Final Report - supporting detail of the style builder and the
+%%  synthesiser.
+%%
+%%  Sections 3.6 and 3.7 give the twelve builder stages, the synthesis
+%%  construction and the search, with the equations that define each.  This
+%%  file holds the detail: the skeleton-tracing criteria stated as conditions
+%%  rather than described in prose, the curve simplification, the profile
+%%  schema, the constant tables of the synthesiser and its measured cost.
+%%  No code is reproduced; the routines are given as pseudocode.
+%%
+
+\subsection{Supporting detail of the style builder and the synthesiser}
+\label{sec:app-syn}
+
+Sections~\ref{sec:styleprofile} and~\ref{sec:synthesis} describe how a writer's hand is reduced to a library of pen paths and how a new line is then constructed from it.
+This appendix carries the geometric criteria that turn a thinned image into ordered pen paths, which Section~\ref{sec:styleprofile} states in one sentence each, together with the schema of a stored profile, the constants of the synthesiser with the reason for every value, and the measured cost of the search.
+The tracing criteria are given here as explicit conditions because each is a threshold on a measurable geometric quantity, and a reader checking the extraction needs the quantity and not the description.
+
+\subsubsection{From a thinned image to ordered pen paths}
+\label{sec:app-syn-trace}
+
+Thinning leaves a one-pixel-wide set of ink pixels, which is a picture of the pen path and not yet an ordered path.
+Four operations recover the ordering, and each rests on the 8-neighbourhood degree of a skeleton pixel $p$,
+\begin{equation}
+\deg(p)=\#\bigl\{q\in\mathcal N_8(p)\ :\ q\ \text{is a skeleton pixel}\bigr\},
+\label{eq:app-degree}
+\end{equation}
+which classifies every pixel by Equation~\ref{eq:app-degree}: an \emph{end} has $\deg=1$, an \emph{interior} pixel $\deg=2$, and a \emph{junction} $\deg\ge3$.
+
+\emph{Tracing.}
+A chain is grown from each unvisited end or junction and extended through interior pixels only, stopping at the next end or junction, so that the chain set covers every skeleton pixel exactly once and each chain is an ordered pixel sequence.
+Stopping at junctions rather than choosing a branch there is what makes the decomposition unique: a junction is a point at which the true pen order is not recoverable from the image, so the decision is deferred to the re-joining rule below rather than taken arbitrarily.
+
+\emph{Spur pruning.}
+Thinning a stroke of finite width leaves short false branches at the ends of real strokes.
+A chain is discarded as a spur when
+\begin{equation}
+\mathrm{len}(C)<2.5\ \text{pixels}\quad\wedge\quad \exists\,p\in\{p_1,p_{|C|}\}\ :\ \deg(p)=1,
+\label{eq:app-spur}
+\end{equation}
+that is when it is shorter than 2.5 pixels \emph{and} has at least one free end.
+The conjunction in Equation~\ref{eq:app-spur} matters: a short chain between two junctions is the crossbar of a letter such as A or the waist of an e and must be kept, whereas a short chain hanging off a junction carries no pen motion.
+
+\emph{Junction re-joining.}
+A self-crossing stroke, such as the loop of an e or the ascender of an l, breaks into several chains at the junction where it crosses itself, although the pen never left the paper.
+Two chain ends $i$ and $j$ are re-joined into one chain when they are close and nearly collinear,
+\begin{equation}
+\lVert p_i-p_j\rVert\le1.5\ \text{pixels}\quad\wedge\quad \arccos\bigl(-\mathbf d_i\cdot\mathbf d_j\bigr)<75^\circ,
+\label{eq:app-rejoin}
+\end{equation}
+where $\mathbf d_i$ and $\mathbf d_j$ are the unit outward directions of the two chains at those ends.
+The negative sign in Equation~\ref{eq:app-rejoin} is the continuation test rather than a parallelism test: two chains continue each other when one runs \emph{into} the junction along the direction the other runs \emph{out} of it, so their outward directions are nearly opposed and $-\mathbf d_i\cdot\mathbf d_j$ is near $+1$.
+A threshold of $75^\circ$ admits the curvature a pen shows through a crossing while rejecting a genuine corner, at which the two strokes meet at nearer a right angle.
+
+\emph{Curve simplification.}
+A traced chain holds one point per pixel, far more than a pen path needs, and its points lie on a lattice.
+Each chain is therefore simplified by the Douglas--Peucker recursion~\cite{teikari2016}: for a chain from $p_1$ to $p_n$, the vertex of greatest perpendicular distance from the straight line joining its ends,
+\begin{equation}
+d_{\max}=\max_{1<i<n}\frac{\bigl\lvert(p_n-p_1)\times(p_i-p_1)\bigr\rvert}{\lVert p_n-p_1\rVert},
+\label{eq:app-dp}
+\end{equation}
+is found; if $d_{\max}\le\varepsilon$ the whole chain is replaced by its two end points, and otherwise it is split at that vertex and both halves simplified in the same way.
+With $\varepsilon=0.6$ pixels, which is 0.05 to 0.12\,mm at 4\,mm per x-height, the deviation of the simplified path from the traced one is bounded by $\varepsilon$ everywhere by construction.
+Equation~\ref{eq:app-dp} measures distance to the infinite line through the two ends, which fails on a closed chain: there the two ends coincide, the denominator vanishes and the whole loop would collapse to two points.
+A chain whose ends lie within $\max\bigl(1.5,\,0.25\max_i\lVert p_i-p_0\rVert\bigr)$ pixels of each other is therefore split at its farthest vertex first and simplified in two open halves, which is what keeps the loops of e, l and o.
+
+\emph{Resampling and smoothing.}
+Thinning leaves a staircase on a diagonal stroke, whose median turn angle is $8.9^\circ$ with a 90th percentile of $59.5^\circ$; drawn directly, that staircase appears as tremor.
+Kept variants are therefore resampled at 0.055 x-heights of arc length and smoothed by two passes of the three-point average
+\begin{equation}
+q_i\leftarrow\tfrac14q_{i-1}+\tfrac12q_i+\tfrac14q_{i+1},
+\label{eq:app-smooth}
+\end{equation}
+with the end points held fixed.
+Equation~\ref{eq:app-smooth} is a binomial kernel, so it attenuates the highest representable spatial frequency --- the alternating lattice staircase --- completely while leaving a smooth curve almost unchanged, and fixing the ends preserves the entry and exit points that the synthesiser's connectors attach to.
+
+\begin{figure}[!htbp]
+\centering
+\fontsize{8.5}{10.2}\selectfont
+\begin{verbatim}
+  ForcedAlign( log-probabilities, transcript ):
+      build y' <- blank-interleaved transcript            (S = 2U+1)
+      delta[1,.] <- -infinity except the first two positions
+      for t = 2 .. T:
+          for every position s simultaneously:
+              stay    <- delta[t-1, s]
+              advance <- delta[t-1, s-1]
+              skip    <- delta[t-1, s-2]
+              if y'[s] is blank or y'[s] = y'[s-2]:  skip <- -infinity
+              best    <- the largest of the three          # MAX, not a sum
+              backpointer[t,s] <- which one won
+              delta[t,s] <- best + logProb[t, y'[s]]
+      back-trace from the better of the last two positions
+      character i owns the frames whose winning position is 2i
+
+  CutCostPerColumn( column ink profile, baseline, x-height ):
+      smoothed <- profile averaged over max(3, round(0.12 . xh)) columns, odd
+      thin     <- smoothed / 60th percentile of the non-empty columns
+      topAbove <- (baseline - highest ink row) / xh,  clipped to [0, 3]
+      cost     <- thin + 1.15 . topAbove
+      cost     <- 0 wherever the column holds no ink      # a true gap is free
+\end{verbatim}
+\caption{The two routines of the builder that locate each character, as pseudocode. The first is Equation~\ref{eq:sty-viterbi}: it differs from the CTC loss of Equation~\ref{eq:rec-alpha} in taking the maximum where the loss takes a sum, which is what turns a probability into a single best alignment, and it keeps back-pointers so that the path itself can be recovered. The second is the cut cost of Equation~\ref{eq:sty-cut} evaluated for every column, which is minimised near the boundary to place the cut at a ligature, that is at a column that is both thin and low.}
+\label{fig:sty-code}
+\end{figure}
+
+\subsubsection{The five quality gates}
+
+About 2\,122 to 4\,031 raw instances are extracted per writer and roughly 10\,\% survive, the gates being applied per character in this order.
+\emph{Geometry} imposes size limits, at most six strokes, a class prior on height, the absence of a swallowed neighbour, and a pen length above the adaptive floor $\max(0.30,\,0.5\,\tilde p_c)$ measured on that character's own median pen length $\tilde p_c$; the floor is adaptive because one fixed value either kept neighbour bleed or discarded genuinely short letters.
+\emph{Outliers} requires the width and height to lie within fixed ratios of the 40th-percentile width and the median height.
+\emph{The cross-writer prior} of Equation~\ref{eq:sty-prior} keeps the 70\,\% nearest the pooled shape.
+\emph{Consensus} keeps the nearest 75\,\% to the L1-medoid of the kept descriptors, which removes glyphs contaminated by a neighbour.
+\emph{Typicality} keeps the best 12 by closeness to the reference width and height.
+The cascade is ordered cheapest-first and most-local-first: the geometric tests reject on properties of one glyph, the prior on agreement with all thirteen writers, and the last two on agreement with that writer's other instances of the same letter, so a glyph is only compared with its peers once it is known to be a plausible letter at all.
+
+\subsubsection{Schema of a stored style profile}
+
+A profile is one text file per writer, and Table~\ref{tab:sty-schema} lists the keys that carry design meaning, with the values of one writer as an example.
+
+\begin{table}[!htbp]
+\centering
+\fontsize{7.5}{9}\selectfont
+\setlength{\tabcolsep}{3pt}
+\renewcommand{\arraystretch}{1.05}
+\begin{tabularx}{\linewidth}{|p{2.6cm}|X|p{2.1cm}|}
+\hline
+\textbf{Key} & \textbf{Meaning} & \textbf{Example (153)} \\
+\hline
+\texttt{slantDeg}, \texttt{xHeightPx}, \texttt{strokeWidthXh} & Median slant (Equation~\ref{eq:sty-slant}), median pixel x-height and ink area divided by skeleton length in x-heights. & 30.0, 33.0, 0.189 \\
+\hline
+\texttt{ascender}, \texttt{descender} & Typical reach of tall and descending lower-case glyphs, in x-heights (defaults 1.7 and $-0.6$). & 1.59, $-1.10$ \\
+\hline
+\texttt{wordSpaceXh}, \texttt{connectedness} & Word gap measured on the real ink, in x-heights; fraction of adjacent in-word letter pairs that the pen joins. & 1.59, 0.961 \\
+\hline
+\texttt{letterAdvance} & Median advance of each character, in x-heights (45 keys). & \texttt{T}: 1.438, \texttt{e}: 1.147 \\
+\hline
+\texttt{slantMeasRef}, \texttt{ascMeasRef}, \texttt{descMeasRef} & Slant and reach of the real full lines, measured with the estimators later used on synthesised renders; input of the style calibration (Equation~\ref{eq:syn-cal}). & 30.0, 1.933, $-1.468$ \\
+\hline
+\texttt{glyphs}, \texttt{idealGlyphs}, \texttt{idealMedoid} & Variant library: per character up to 12 kept variants and a prepended prototype, each holding its \texttt{strokes} as $[x,y]$ points in x-heights (baseline $y=0$, upright) with the width, advance, lead, reach, entry and exit coordinates, connection flags and $\mathrm{priorD}$ the synthesiser needs; then the per-stroke median prototype and the medoid, which is the anchor. & 37 characters, 283 variants; 23 and 29 prototypes \\
+\hline
+\texttt{legibilityLambda} & Legibility parameter $\lambda$ of Equations~\ref{eq:syn-global} and~\ref{eq:syn-swap}; written by the tuner after the build, \emph{not} by the builder. \emph{Absent from all thirteen stored profiles}, so the deployed code falls back to $\lambda=0$. & not present \\
+\hline
+\end{tabularx}
+\caption{Keys of a style-profile file (JavaScript Object Notation) that carry design meaning; bookkeeping keys and the grey-level reference statistics are omitted. The example column was re-read from the stored file \texttt{StyleProfiles10/153.json}. The whole library is geometry in x-height units, which is why one profile serves any pen size.}
+\label{tab:sty-schema}
+\end{table}
+
+\subsubsection{Constants of the synthesiser}
+
+Every constant of the glyph choice, the placement, the joins and the randomness is listed in Table~\ref{tab:syn-const} with the design reason for its value, so that Section~\ref{sec:synthesis} can describe the construction without interrupting it to justify a number.
+
+\begin{table}[!htbp]
+\centering
+\fontsize{8}{9.6}\selectfont
+\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\linewidth}{|p{3.5cm}|p{3.2cm}|X|}
+\hline
+\textbf{Constant} & \textbf{Value} & \textbf{Reason for the value} \\
+\hline
+Eligible variants per letter & 5 best by $\mathrm{priorD}$ & 80.5 against 75.5\,\% writer identification over all twelve \\
+Anchor taken from the medoid & $\mathrm{priorD}\le0.30$ & above it, not clean enough; skeleton used instead \\
+Cursive anchor threshold & $c\ge0.5$, off above 1 & 0.3 lowered the evaluation score \\
+Anchor re-proportioning & $y\mapsto1+(y-1)\max(0.35,\frac{A-1}{0.75})$, $y\mapsto y\max(0.35,\frac{|D|}{0.55})$ & skeleton takes the writer's reach; floor 0.35 keeps it from flattening \\
+Pen advance & the glyph's own advance & never the character median \\
+Anchor shear cap & $\pm\tan30^\circ$, $\pm\tan22^\circ$ print & $40^\circ$ collides even for a clean letter \\
+Collision guard & $0.05\,x_{\mathrm{mm}}$ & shift right rather than let ink touch \\
+Word gap & $g\,x_{\mathrm{mm}}(0.85+0.3u)$, $u\sim U(0,1)$ & so words do not fall on a grid \\
+Line width; pitch & 185\,mm in the server; $L$ (Eq.~\ref{eq:syn-global}) & wrap inside the work area; writer's line spacing \\
+Connector sag & $\min(0.11x_{\mathrm{mm}},0.16|\Delta x|)$, plus noise & span-proportional: a fixed dip loops a short join \\
+Polyline resampling & 0.35\,mm of arc length & even plotter motion \\
+Jitter rotation; scale; translation & $2.2^\circ J$; $0.05J$; $0.022J$ and $0.0132J$ x-heights & one amplitude sets how unsteady the hand looks \\
+Jitter amplitude $J$ & 0.15 default, 0.5 search, 0.15 anchors & the search needs spread; anchors exist to stay legible \\
+Baseline drift & walk of $0.05J\cdot0.35$ per glyph, clipped $\pm0.25$ x-heights & wanders slowly, clipped to stay on the line \\
+Judges' render settings & 0.085 x-height pen, blur 0.30 of it, 18 px/mm, pad $0.18\,x_{\mathrm{mm}}$ & identical ink for every candidate (Section~\ref{sec:syn-search}) \\
+\hline
+\end{tabularx}
+\caption{Constants of the synthesiser, with the design reason for each. Lengths in $x_{\mathrm{mm}}$ scale with the pen size; $A$, $D$, $c$ and $g$ are the profile's ascender, descender, connectedness and word gap. At the $J=0.5$ the search uses, the jitter comes to a rotation of $1.1^\circ$, a scale change of 2.5\,\% and a translation spread below 0.05\,mm, which perturbs a letter without changing its identity.}
+\label{tab:syn-const}
+\end{table}
+
+\subsubsection{Cost of the candidate search}
+
+A candidate costs one synthesis, one rendering, one recogniser pass and one classifier pass, so the search time is
+\begin{equation}
+T\approx N\,(T_{\mathrm{syn}}+T_{\mathrm{ren}}+T_{\mathrm{text}}+T_{\mathrm{wid}})+\text{(up to three repair candidates)},
+\label{eq:syn-cost}
+\end{equation}
+each network pass being about $4\times10^9$ multiply--accumulate operations (Equation~\ref{eq:rec-macs}, Table~\ref{tab:wid-layers}).
+Table~\ref{tab:syn-cost} resolves Equation~\ref{eq:syn-cost} into its terms on the development laptop, and the result decides where any optimisation must go: synthesis costs 11 to 16\,ms per candidate against 0.5 to 4\,s for the two judges, so the search is entirely judge-bound, and within the judges the dominant cost is thinning the full-resolution render rather than either network.
+
+\begin{table}[!htbp]
+\centering
+\fontsize{8}{9.6}\selectfont
+\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\linewidth}{|X|c|c|c|}
+\hline
+\textbf{Quantity (56-character sentence)} & \textbf{Writer 150} & \textbf{Writer 153} & \textbf{Writer 551} \\
+\hline
+Render size (pixels) & $3585\times225$ & $5508\times207$ & $7876\times277$ \\
+Synthesis of one candidate (ms) & 11 & 13 & 16 \\
+Rendering (ms) & 20 & 27 & 56 \\
+Text recogniser (s) & 0.50 & 0.49 & 0.74 \\
+Writer classifier incl.\ stroke normalisation (s) & 1.03 & 1.65 & 3.74 \\
+Complete search, $N=14$, with repair attempts (s) & 23 & 37 & 137 \\
+\hline
+\end{tabularx}
+\caption{Indicative cost of the search on the development laptop (single profiling run, unknown background load, jitter 0.5); times on the single-board computer were not recorded. The spread across the three writers follows the render width, which follows the writer's own letter size and spacing, so the cost of a search is set by the hand being imitated and not only by $N$.}
+\label{tab:syn-cost}
+\end{table}
+
+Were the candidate scores independent with distribution function $F$, then $\Pr[\max_kS_k\le\tau]=F(\tau)^N$ and the gain from raising $N$ would grow roughly logarithmically, which is the usual order-statistics argument for a best-of-$N$ scheme.
+The seeds share one profile, so independence is only approximate and no per-$N$ curve was kept; the measured values at $N=6$ and $N=14$ in Table~\ref{tab:syn-evid} are consistent with a diminishing return but do not establish its form.

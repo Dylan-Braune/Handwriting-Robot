@@ -103,6 +103,7 @@ function renderTopbar(activePage) {
         <a href="index.html" class="${activePage === "read" ? "active" : ""}">Read</a>
         <a href="write.html" class="${activePage === "write" ? "active" : ""}">Write</a>
         <a href="stats.html" class="${activePage === "stats" ? "active" : ""}">Model &amp; Style</a>
+        <a href="curate.html" class="${activePage === "curate" ? "active" : ""}">Curate</a>
       </nav>
       <div class="settings-toggle" id="settingsToggle">
         <span class="status-dot" id="statusDot"></span>

@@ -1,0 +1,347 @@
+% ---- Writer 2 shared definitions also used here ----
+\subsection{Hardware design}
+\label{sec:gantry}
+
+% Compact display spacing for this subsection only (many design equations are
+% carried here); restored by the \endgroup at the end of the file.
+\begingroup
+\setlength{\abovedisplayskip}{2pt}\setlength{\belowdisplayskip}{2pt}
+\setlength{\abovedisplayshortskip}{1pt}\setlength{\belowdisplayshortskip}{1pt}
+
+This subsection gives, component by component, the theory behind the chosen mechanism, the calculations that fix every value in the circuit, the final design, and the tests that were run on it (functional units FU~2.8, FU~3.1 to FU~3.4; requirements R3 and R5). The computer emits both drivers' STEP and DIR pulses itself, with no microcontroller between, so the end-stop read lies inside the loop that emits every step. All parts were bought; what is claimed is the selection, the four interface circuits, the calculations below, the motion-control program and the 800-line G-code interpreter~\cite{iso6983}.
+
+\subsubsection{Drive train: belts, pulleys and the single Y-axis motor}
+\label{sec:gan-mech}
+
+\paragraph{Theory.} The machine is a Cartesian gantry of two belt axes, so a page target needs no inverse kinematics and an error in one axis does not rotate the other~\cite{teikari2016}. A toothed belt over two pulleys converts a motor's rotation into a linear carriage position with no backlash of the kind a lead screw's nut would show, and its tension carries the load so that a jammed carriage makes the belt slip rather than stalling the motor, protecting the driver and the gearing. Against a ball screw, rack-and-pinion, pneumatic cylinder or direct linear motor, a GT2 belt drive was preferred on durability, reliability and cost for this long, light travel, which needs speed rather than force~\cite{iqs2024}.
+
+A second design question is why the Y axis uses one motor driving a cross-shaft rather than two independent motors, one at each end of the gantry bridge. Two independent motors must be driven in lock-step, because any difference in their step timing, missed steps or load torques rotates the bridge out of square; synchronising two open-loop steppers to the same step count is itself a design problem rather than a given. A single motor turning one cross-shaft through a rigid coupler drives both ends of the bridge from the same shaft rotation, so the bridge cannot go out of square provided the shaft itself does not twist. That assumption is checked quantitatively below.
+
+\paragraph{Calculations.} Equation~\ref{eq:gan-radius} gives the travel per revolution and the pitch radius for pitch $p$ on $N_t$ teeth,
+\begin{equation}
+\ell_{\mathrm{rev}}=p\,N_t=2\cdot20=40\ \mathrm{mm},\qquad r=\frac{\ell_{\mathrm{rev}}}{2\pi}=\frac{40}{2\pi}=6.37\ \mathrm{mm},
+\label{eq:gan-radius}
+\end{equation}
+and Equation~\ref{eq:gan-torque} the torque the motor must supply to accelerate an effective mass $m_{\mathrm{eff}}$ at acceleration $a$ against a friction force $F_f$,
+\begin{equation}
+T=r\,(m_{\mathrm{eff}}\,a+F_f),
+\label{eq:gan-torque}
+\end{equation}
+which decides whether the motor follows the step rates of Section~\ref{sec:gan-res} without stalling, and a separate torsion calculation on the cross-shaft decides whether the single-motor arrangement actually keeps the bridge square under load.
+Three properties make Equation~\ref{eq:gan-torque} harder to satisfy than the carriage mass alone suggests, expanded in Appendix~\ref{sec:app-hw-torque}: the rotating inertia of the pulleys, cross-shaft and rotor refers to the carriage divided by $r^2$, and with $r=6.37$\,mm that divisor is about $2.5\times10^4$\,m$^{-2}$, so even a small rotor inertia adds an equivalent mass of the same order as the carriage; the two axes do not share a load, the upper axis riding on the lower one; and the torque available falls with step rate, because the winding inductance limits how fast current is established, which is why the 24\,V rail was chosen over 12\,V for the same motor.
+Two torque figures are quoted for a stepper and must not be confused. The \emph{holding torque} is the torque the motor resists when stationary and energised, and it is the figure datasheets lead with. The \emph{pull-out torque} is the torque the motor can deliver while actually stepping at a given rate, and it falls as the rate rises for the reason above. Only the pull-out torque at the rates actually used is a safe basis for a design, because a motor that loses synchronisation under load does not stall gracefully: it skips steps, and in open-loop control a skipped step is an unrecoverable position error for the rest of the job.
+
+\paragraph{Design and component choices.} Table~\ref{tab:gan-bom} gives the drive-train components and the reason for each; the twelve interface lines and their initial levels are listed as Table~\ref{tab:gan-pins} in Appendix~\ref{sec:app-hw}. 2\,mm pitch on 20-tooth pulleys gives the 40\,mm per revolution of Equation~\ref{eq:gan-radius}; measured travel is 204\,mm (X) and 262\,mm (Y). One motor turns one 8\,mm cross-shaft through a 5-to-8\,mm coupler, a pulley at each end, so the bridge stays square without a second motor and without a synchronisation scheme; a second motor on that bridge drives the carriage along it, so the lower axis also accelerates that mass.
+
+\begin{table}[!htbp]
+\centering
+\fontsize{8}{9.3}\selectfont
+\setlength{\tabcolsep}{2.5pt}\renewcommand{\arraystretch}{1.0}
+\begin{tabularx}{\linewidth}{|>{\raggedright\arraybackslash}p{2.1cm}|>{\raggedright\arraybackslash}p{1.5cm}|>{\raggedright\arraybackslash}X|}
+\hline
+\textbf{Component} & \textbf{Quantity, rating} & \textbf{Reason for the choice, and content to be supplied} \\
+\hline
+ODROID N2+ board & 1 & The proposal requires all processing on an embedded platform; one board runs everything off its 3.3\,V pins. \\
+\hline
+NEMA 17 stepper & 2, 1.68\,A/phase~\cite{stepperds} & Open-loop position from a step count~\cite{acarnley2002}, so R5 needs no encoder. \mustdo{model number, datasheet revision, holding torque and torque--speed curve of the motors fitted.} \\
+\hline
+A4988 driver carrier~\cite{a4988ds} & 2 & One STEP and one DIR line per axis is the smallest pin count; the chopper runs the 1.68\,A winding from 24\,V, and 1/16 microstepping~\cite{acarnley2002,a4988ds} is set by jumpers. \mustdo{part number, datasheet revision and sense-resistor value of the carriers fitted; the microstepping jumpers, the minimum STEP pulse width, and whether a level shifter is fitted.} \\
+\hline
+Power supply & 1, 24\,V & A higher rail forces current into the winding inductance faster, allowing the step rates of Section~\ref{sec:gan-res}; inside the A4988's 8 to 35\,V range~\cite{a4988ds}. \mustdo{voltage and current ratings of the motor, computer and pen supplies, the grounding scheme and the camera supply.} \\
+\hline
+Bulk capacitor & 1, 100\,\textmu F & Supplies the chopping current locally (Equation~\ref{eq:gan-bulk}). \\
+\hline
+GT2 belt, 2\,mm pitch, 20-tooth pulleys, idlers & 2 axes & Durability, reliability and cost over ball-screw, rack-and-pinion, pneumatic and direct electric drive~\cite{iqs2024}; idler tensioning limits backlash. Measured travel 204\,mm (X), 262\,mm (Y). \mustdo{the calibrated steps per millimetre printed for both axes.} \\
+\hline
+Rods, bearings, 5 to 8\,mm coupler & as required & Carry the carriage so the belt only pulls it; the coupler joins motor shaft to cross-shaft. \\
+\hline
+\end{tabularx}
+\caption{Drive-train components, with the reason for each choice. Every part was bought; the interface circuits, the calculations and the control program are the student's own.}
+\label{tab:gan-bom}
+\end{table}
+
+\mustcomplete{Add to Table~\ref{tab:gan-bom} the part numbers and supplier of the motors, driver carriers and supply, and state how 24\,V is converted to the voltages the ODROID~N2+ and pen motor need: no converter is documented.}
+
+\begin{figure}[htb]
+\centering
+\fbox{\parbox[c][5cm]{0.75\linewidth}{\centering [PLACEHOLDER --- photograph or CAD rendering of the assembled gantry]}}
+\captionsetup{singlelinecheck=false,justification=justified}
+\caption{Placeholder: a labelled photograph or CAD export of the assembled X/Y gantry, showing the cross-shaft, both pulleys, the carriage and the pen holder, to be inserted once the drive-train claims above are documented against the physical build.}
+\label{fig:gan-cad}
+\end{figure}
+
+\paragraph{Tests.} It is this calculation that the design is missing a measurement for: neither the carriage mass nor the friction force was measured, and the pull-out torque at the rates actually used~\cite{acarnley2002,stepperds} was not obtained, so \emph{no torque margin can be stated}. That is also why the design carries no acceleration ramp, a ramp being sized from a margin that does not exist. Mechanical testing that was run is reported qualitatively: sliding the printed carriages with bearings over the rod railings to check friction showed an initial mislabelling between rod diameter and linear-bearing inner diameter, resolved with a vernier calliper, and several bearings found misaligned in their prints were removed to reduce friction.
+\mustdo{weigh the carriages, measure the friction force, evaluate Equation~\ref{eq:gan-torque} at the 400\,mm/s$^2$ of Equation~\ref{eq:gc-trap} using the effective mass of Equation~\ref{eq:app-meff}, and state the margin against pull-out torque at 1200 and 3200 steps/s.}
+
+\subsubsection{Stepper driver, pen-lift motor and their interface circuits}
+\label{sec:gan-components}
+\label{sec:gan-supply}
+
+\paragraph{Theory.} A stepper motor does not turn continuously but advances by a fixed angle each time its windings are switched in sequence; the driver regulates winding current by \emph{chopping}, switching the supply onto the winding, watching the current rise through a small sense resistor, switching off at the target current, and repeating at high frequency, so the average current is set by the target rather than by the winding resistance alone. This is why a 24\,V rail can be used on a motor rated for a lower voltage, and why the driver draws its own supply current in short bursts rather than smoothly. The consequence for the circuit is a chopper current the leads cannot follow, which a local bulk capacitor must absorb.
+
+The pen-lift mechanism is a different problem: a gear motor cannot be switched directly from a logic pin, because the pin cannot supply the motor's current. A bipolar transistor is used as a switch, with the pin driving its base through a current-limiting resistor and the motor's current flowing through the collector--emitter path.
+
+\paragraph{Calculations.} Three component values follow from calculation and are derived in full in Appendix~\ref{sec:app-hw}. The bulk capacitor holds the rail sag over one 1.68\,A chopper burst to 0.17\,V by Equation~\ref{eq:gan-bulk}, small against 24\,V and clear of the undervoltage threshold~\cite{a4988ds}. The driver reference is set from the sense resistors by Equation~\ref{eq:gan-current}, which gives 1.34\,V for the motor's 1.68\,A rating~\cite{stepperds}; that rating is deliberately not used, the reference being derated to about 0.8\,V to hold an unheatsinked carrier near 1\,A per phase, trading holding torque for a driver that will not shut down thermally mid-page. The switch pull-downs draw 0.33\,mA each by Equation~\ref{eq:gan-pull}; the pen motor is switched by a bipolar transistor whose base current, Equation~\ref{eq:gan-base}, gives the switchable collector current of Equation~\ref{eq:gan-ic}, between 130 and 217\,mA depending on the overdrive factor chosen, adequate for a motor drawing up to about 200\,mA.
+
+\paragraph{Design.} Figure~\ref{fig:gan-sch} is the complete circuit, with every component value on it and an undocumented stage making the 5\,V and 3.3\,V the board and pen motor need.
+
+\begin{figure}[!htbp]
+\centering
+\begin{tikzpicture}[x=1cm,y=1cm,font=\scriptsize,>=latex,
+  blk/.style={draw,thick,rounded corners=2pt,align=center,inner sep=3pt,fill=gray!8},
+  mot/.style={draw,thick,circle,minimum size=9mm,fill=white},
+  w/.style={draw,semithick},
+  pw/.style={draw,thick},
+  sig/.style={draw,semithick,dashed,-{Latex[length=1.7mm]}}]
+
+%% ---------------- 24 V rail, supply, bulk capacitor ----------------
+\draw[pw] (0.45,10.05) -- (9.3,10.05);
+\node[anchor=west] at (9.35,10.05) {$+24$\,V};
+\node[blk,text width=1.7cm] (psu) at (1.45,9.45) {24\,V d.c.\\supply};
+\draw[pw] (1.45,9.9) -- (1.45,10.05);
+\fill (1.45,10.05) circle (0.05);
+\draw[pw] (3.3,10.05) -- (3.3,9.62);
+\fill (3.3,10.05) circle (0.05);
+\draw[pw] (3.02,9.62) -- (3.58,9.62);
+\draw[pw] (3.02,9.44) -- (3.58,9.44);
+\draw[pw] (3.3,9.44) -- (3.3,9.14);
+\draw[w] (3.06,9.14) -- (3.54,9.14);
+\draw[w] (3.14,9.04) -- (3.46,9.04);
+\draw[w] (3.22,8.94) -- (3.38,8.94);
+\node[anchor=west] at (3.46,9.53) {$C_{\mathrm B}=100$\,\textmu F};
+
+%% ---------------- conversion, computer, camera ----------------
+\node[blk,text width=1.8cm] (conv) at (1.6,8.1) {24\,V to 5\,V and\\3.3\,V conversion\\(not documented)};
+\draw[pw] (1.45,9.0) -- (1.45,8.6);
+\node[blk,text width=2.6cm] (sbc) at (1.85,5.6) {ODROID N2+\\single-board computer\\3.3\,V pins on\\\texttt{/dev/gpiochip0}\\(Table~\ref{tab:gan-pins})};
+\draw[pw] (1.6,7.6) -- (1.6,7.0);
+\node[anchor=west] at (1.68,7.3) {5\,V};
+\node[blk,text width=1.8cm] (cam) at (1.95,3.35) {USB camera\\(model not\\documented)};
+\draw[sig] (1.95,3.8) -- (1.95,4.2);
+\node[anchor=west] at (2.03,4.0) {USB};
+
+%% ---------------- A4988 drivers and motors ----------------
+\node[blk,text width=2.4cm] (dx) at (5.95,8.95) {A4988 driver, X\\1/16 microstep\\(MS1--MS3)\\$R_S=0.1\,\Omega$,\\$V_{\mathrm{ref}}\approx0.8$\,V};
+\node[blk,text width=2.4cm] (dy) at (9.25,8.95) {A4988 driver, Y\\1/16 microstep\\(MS1--MS3)\\$R_S=0.1\,\Omega$,\\$V_{\mathrm{ref}}\approx0.8$\,V};
+\draw[pw] (5.95,9.7) -- (5.95,10.05);
+\fill (5.95,10.05) circle (0.05);
+\draw[pw] (9.25,9.7) -- (9.25,10.05);
+\fill (9.25,10.05) circle (0.05);
+\node[anchor=east] at (5.9,9.88) {VMOT};
+\node[anchor=east] at (9.2,9.88) {VMOT};
+\draw[pw] (6.95,8.2) -- (6.95,7.9);
+\node[anchor=north] at (6.95,7.88) {$+3.3$\,V};
+\draw[pw] (10.25,8.2) -- (10.25,7.9);
+\node[anchor=north] at (10.25,7.88) {$+3.3$\,V};
+\node[mot] (mx) at (5.95,7.1) {M$_X$};
+\node[mot] (my) at (9.25,7.1) {M$_Y$};
+\draw[pw] (5.60,8.2) -- (5.60,7.38);
+\draw[pw] (6.30,8.2) -- (6.30,7.38);
+\draw[pw] (8.90,8.2) -- (8.90,7.38);
+\draw[pw] (9.60,8.2) -- (9.60,7.38);
+\node[anchor=east,align=right] at (5.50,7.80) {1A, 1B,\\2A, 2B};
+\node[anchor=east,align=right] at (8.80,7.80) {1A, 1B,\\2A, 2B};
+\node[anchor=north,text width=2.4cm,align=center] at (5.95,6.55) {NEMA 17, 1.68\,A\\per phase, 200 full\\steps per revolution};
+\node[anchor=north,text width=2.4cm,align=center] at (9.25,6.55) {NEMA 17, 1.68\,A\\per phase, 200 full\\steps per revolution};
+
+%% ---------------- step and direction lines ----------------
+\draw[sig] (3.4,6.6) -- (3.9,6.6) -- (3.9,8.9) -- (4.75,8.9);
+\node[anchor=east,align=right] at (3.85,7.85) {STEP 11,\\DIR 7};
+\draw[sig] (3.4,6.2) -- (7.6,6.2) -- (7.6,8.5) -- (8.05,8.5);
+\node[anchor=south] at (5.30,6.25) {STEP 13, DIR 12};
+
+%% ---------------- pen-lift motor and its switching stage ----------------
+\draw[pw] (4.50,4.60) -- (7.30,4.60);
+\draw[w,dotted,thick,-{Latex[length=1.7mm]}] (4.05,4.60) -- (4.50,4.60);
+\node[anchor=west] at (7.35,4.60) {$V_{\mathrm{pen}}$};
+\draw[pw] (6.10,4.60) -- (6.10,4.22);
+\node[mot] (pm) at (6.10,3.80) {M$_P$};
+\draw[pw] (6.10,3.38) -- (6.10,3.08);
+\node[anchor=east,align=right] at (5.55,3.80) {N20 gear motor,\\150\,rpm, pen cam};
+% clamp diode, drawn dashed because it is NOT fitted
+\draw[red,dashed,thick] (7.10,4.60) -- (7.10,4.25);
+\draw[red,dashed,thick,fill=red!8] (6.90,3.90) -- (7.30,3.90) -- (7.10,4.25) -- cycle;
+\draw[red,dashed,thick] (6.88,4.25) -- (7.32,4.25);
+\draw[red,dashed,thick] (7.10,3.90) -- (7.10,3.20) -- (6.10,3.20);
+\fill (6.10,3.20) circle (0.05);
+\node[anchor=west,align=left,red] at (7.38,3.80) {clamp diode\\NOT fitted};
+% BC337-40
+\draw[pw] (5.82,2.22) -- (5.82,2.94);
+\draw[pw] (5.82,2.82) -- (6.10,3.06);
+\draw[pw] (5.82,2.34) -- (6.10,2.10);
+\draw[pw,-{Latex[length=1.7mm]}] (5.95,2.23) -- (6.10,2.10);
+\draw[pw] (6.10,2.10) -- (6.10,1.70);
+\draw[w] (5.86,1.70) -- (6.34,1.70);
+\draw[w] (5.94,1.60) -- (6.26,1.60);
+\draw[w] (6.02,1.50) -- (6.18,1.50);
+\node[anchor=west,align=left] at (6.25,2.62) {BC337-40,\\$h_{FE}\ge250$};
+\node[anchor=west,align=left,red] at (6.25,2.05) {no base pull-down fitted};
+\draw[pw] (5.82,2.58) -- (5.38,2.58);
+\draw[pw,fill=white] (4.98,2.40) rectangle (5.38,2.76);
+\node[anchor=south] at (5.18,2.78) {$R_B=1\,\mathrm{k}\Omega$};
+\draw[sig] (3.4,4.4) -- (4.0,4.4) -- (4.0,2.58) -- (4.98,2.58);
+\node[anchor=east,align=right] at (3.95,3.40) {pen drive,\\pin 35};
+
+%% ---------------- switch bank ----------------
+\draw[pw] (10.90,4.70) -- (10.90,9.65);
+\node[anchor=east] at (10.80,4.70) {$+3.3$\,V};
+\foreach \h/\nm/\pn in {9.3/X\_MIN/15,8.15/X\_MAX/16,7.0/Y\_MIN/18,5.85/Y\_MAX/22,4.7/PEN/33}{
+  \fill (10.90,\h) circle (0.05);
+  \draw[w] (10.90,\h) -- (11.25,\h);
+  \fill (11.25,\h) circle (0.045);
+  \draw[w] (11.28,\h-0.02) -- (11.76,\h+0.22);
+  \fill (11.95,\h) circle (0.045);
+  \draw[w] (11.95,\h) -- (12.30,\h);
+  \fill (12.30,\h) circle (0.05);
+  \draw[w] (12.30,\h) -- (12.30,\h-0.25);
+  \draw[w,fill=white] (12.15,\h-0.25) rectangle (12.45,\h-0.62);
+  \draw[w] (12.30,\h-0.62) -- (12.30,\h-0.85);
+  \draw[w] (12.10,\h-0.85) -- (12.50,\h-0.85);
+  \draw[w] (12.17,\h-0.93) -- (12.43,\h-0.93);
+  \draw[w] (12.24,\h-1.01) -- (12.36,\h-1.01);
+  \node[anchor=west] at (12.52,\h-0.44) {$10\,\mathrm{k}\Omega$};
+  \node[anchor=south] at (11.55,\h+0.24) {\texttt{\nm}};
+  \draw[sig] (12.30,\h) -- (13.25,\h);
+  \node[anchor=west] at (13.30,\h) {pin \pn};
+}
+\node[anchor=north west,text width=9.4cm,align=left] at (0.3,1.42) {Solid: power. Dashed: header signals. Dotted: undocumented. One shared ground.};
+\end{tikzpicture}
+\caption{Complete circuit with all component values. The clamp diode is dashed because it is \emph{not} fitted, and no base pull-down is fitted either; the conversion stage, the pen rail and the supply's current rating are not documented.}
+\label{fig:gan-sch}
+\end{figure}
+
+Two items in the pen switching stage are design \emph{faults}, not untested ones. \emph{No clamp diode is fitted}: at turn-off the energy $\tfrac12LI^2$ stored in the motor's inductance appears as a reverse voltage that stresses the transistor and injects noise into the shared ground, a diode across the motor, cathode to supply, having simply been omitted. \emph{No base pull-down is fitted} either, so the base floats in whatever input state the pin holds at power-up. The missing diode is also the mechanism behind the end-stop behaviour of Section~\ref{sec:gan-stop}: with no clamp and a shared ground, a coil current $I$ lifts the local ground by $I\,R_{gnd}$, and the switch inputs are referred to that ground. The fix is a clamp diode across each motor and a switch return to a single ground point, not a longer debounce.
+
+\paragraph{Tests.} STEP, DIR and enable are driven from 3.3\,V pins with no level shifting, sound only if $3.3\,\mathrm{V}>V_{IH}$ with margin~\cite{a4988ds}. During commissioning the X axis drove to its first end-stop but the direction pin was not observed to change level on reversal, and the fault was not resolved; a level incompatibility, a wiring or configuration fault, a damaged pin and a program fault are equally consistent with it, so no cause is claimed.
+\mustcomplete{Resolve the X-axis direction fault, which blocks R5 entirely. Compare $V_{IH}$ with 3.3\,V, then meter DIR at the pin and at the driver while commanding a reversal.}
+
+\subsubsection{Step resolution, microstepping and calibration}
+\label{sec:gan-res}
+\label{sec:gan-timing}
+
+\paragraph{Theory.} Three properties of a stepper drive fix the resolution of this machine. The motors used here take 200 \emph{full steps} per revolution, so one full step is $1.8^\circ$; because position is simply the number of steps commanded, no encoder reports where the carriage actually is, which is what \emph{open-loop} control means, and the design simply trusts the step count. That trust is the assumption on which requirement R5 rests, and it fails silently if a step is ever missed. The driver subdivides each full step by \emph{microstepping}: rather than switching the two windings fully on or off, it holds them at intermediate current ratios, placing the rotor at intermediate angles. At the 1/16 setting used here, one full step becomes 16 microsteps, so a revolution is 3200 microsteps; microstepping buys resolution and smoother motion but not proportionally more accuracy, because the intermediate positions are held by the ratio of two winding currents and are therefore more sensitive to load torque than a full step is.
+
+\paragraph{Calculations.} Equation~\ref{eq:gan-spm} gives the step resolution from 200 full steps~\cite{stepperds}, 16 microsteps~\cite{a4988ds} and $\ell_{\mathrm{rev}}=40$\,mm,
+\begin{equation}
+\kappa=\frac{200\cdot16}{\ell_{\mathrm{rev}}}=\frac{3200}{40}=80\ \mathrm{steps/mm},\qquad\Delta=\frac1\kappa=12.5\ \mu\mathrm{m},
+\label{eq:gan-spm}
+\end{equation}
+which calibration replaces by each axis's measured value. Targets are \emph{absolute} step counts, $\mathrm{round}\bigl((x+5)\kappa\bigr)$ with a 5\,mm offset, differenced against the tracked position, so rounding cannot accumulate. Quantisation error is at most $\Delta/2=6.25\ \mu$m per axis, $8.8\ \mu$m combined, 57 times finer than the 0.5\,mm of R5 --- but that is the \emph{digital} resolution only, and belt stretch, backlash, missed steps, switch repeatability and pen compliance were not measured.
+Equation~\ref{eq:gan-tau} gives the delay of every pulse for a move of length $d$ at feed $v_f$ over $N_{\mathrm{maj}}=\max(|n_x|,|n_y|,1)$ major-axis steps,
+\begin{equation}
+\tau=\max\Bigl(\frac{d/v_f}{N_{\mathrm{maj}}},\ 2\,\mu\mathrm s\Bigr),\qquad v_f=\max(F/60,\,0.1),
+\label{eq:gan-tau}
+\end{equation}
+with $F$ in mm/min: 900 gives $\tau=833\ \mu$s (1200 steps/s), 2400 gives 312.5\,\textmu s (3200 steps/s, 60\,rpm), homing 625 steps/s or 7.8\,mm/s. Because \emph{every} pulse of both axes sleeps for $\tau$, a segment takes $(n_{\mathrm{maj}}+n_{\mathrm{min}})\tau$ and Equation~\ref{eq:gan-eff} gives the effective feed,
+\begin{equation}
+v_{\mathrm{eff}}=v_f\,\frac{n_{\mathrm{maj}}}{n_{\mathrm{maj}}+n_{\mathrm{min}}}\in\Bigl[\frac{v_f}{2},v_f\Bigr],
+\label{eq:gan-eff}
+\end{equation}
+unity axis-parallel, $\tfrac12$ at $45^\circ$. There are \emph{no acceleration ramps}, so abrupt starts at 1200 to 3200 steps/s with an unknown load may lose steps~\cite{acarnley2002}. Stepping the axes independently would draw an L-shaped path, so the program interpolates with Bresenham's integer line algorithm~\cite{bresenham1965}: an error term is carried along the major axis, the major axis is pulsed every iteration and the minor axis whenever that term would go negative, and the end-stops are read before every major step. The path so produced stays within one step of the ideal straight line, about 6\,\textmu m, using integer arithmetic only.
+
+\emph{Direction-agnostic calibration.}
+\label{sec:gan-calib}
+Equation~\ref{eq:gan-spm} rests on assumed transmission values and the position after power-up is unknown, so each session begins with a direction-agnostic calibration: it drives one way at 1.6\,ms per step until \emph{either} end-stop triggers, reverses, and counts the steps to the \emph{other}. That count against the hand-measured travel gives each axis its own resolution and its initial step counter by Equation~\ref{eq:gan-cal}, placing the zero 5\,mm inside the minimum switch and leaving a usable area of $194\times252$\,mm. The tightest tolerance in the hardware design falls on the hand measurement of travel: a travel error scales every commanded position in proportion, so by Equation~\ref{eq:gan-budget} the 204\,mm travel must be known to better than 0.26\,mm, or 0.13\,\%, for the scale error alone to stay inside half of R5. Appendix~\ref{sec:app-hw} derives that bound and the calibration arithmetic.
+
+\paragraph{Design.} Figure~\ref{fig:gan-code} (Appendix~\ref{sec:app-hw}) gives the interpolation loop as pseudocode. The result is deliberately not stored between sessions, since a bump between sessions would silently invalidate it, and an abort refuses all jobs.
+
+\paragraph{Tests.} A model of the interpreter for the test word of Section~\ref{sec:gc-verify} gives 6.8\,s drawing, 10.8\,s travel and 9.1\,s dwell, 26.7\,s in all, 2.4\,s per character, being a model and not a measurement.
+\mustdo{state the method and uncertainty of the $L_X$ and $L_Y$ measurement, which Equation~\ref{eq:gan-budget} requires better than 0.26\,mm; measure the positional error for R5 (the same word drawn twice and overlaid) and the return-to-zero repeatability; measure the highest feed without lost steps.}
+
+\begin{figure}[htb]
+\centering
+\fbox{\parbox[c][5.5cm]{0.8\linewidth}{\centering [PLACEHOLDER --- overlay of the same word drawn twice, with the measured positional deviation annotated]}}
+\captionsetup{singlelinecheck=false,justification=justified}
+\caption{Placeholder: the repeatability test of requirement R5 --- the same word written twice by the gantry, scanned and overlaid, with the maximum and mean deviation between the two traces marked, to show whether the digital resolution of Equation~\ref{eq:gan-spm} is actually realised by the physical machine.}
+\label{fig:gan-repeat}
+\end{figure}
+
+\subsubsection{End-stops, debounce and the pen-lift mechanism}
+\label{sec:gan-stop}
+\label{sec:gan-pen}
+
+\paragraph{Theory.} A mechanical switch does not change state cleanly: its contacts strike, separate and strike again over a few milliseconds, so a single read taken during that interval may return either level. Treating one high read as a trip would stop the machine at random, and treating the first read as final would miss a genuine trip. The standard remedy is to \emph{debounce} the input, requiring the same level on several reads spaced far enough apart to outlast the bouncing.
+
+The pen-lift mechanism itself is a design choice justified against the alternative of a third stepper or a servo motor. A servo motor expects a continuous pulse-width-modulated position command and typically needs its own timer peripheral or a precisely timed software loop running concurrently with the gantry's own step timing, competing for the same processor cycles that generate STEP pulses. An N20 geared d.c.\ motor run in one direction only, with a cam that toggles the pen up or down every $90^\circ$ of rotation, needs only an on/off drive pulse of roughly known duration and a microswitch to confirm the result; it is cheap, widely available, has high torque at low speed through its internal gearbox for its size, and has a smaller profile than a comparable servo, at the cost of giving no absolute position, only a toggle.
+
+\paragraph{Calculations.} All four end-stop switches and the pen switch are read before every major-axis step and every G-code line, and count as triggered only on three consecutive high reads 6\,ms apart. Three reads rather than two were needed because, with no flyback diode on a shared ground (Section~\ref{sec:gan-components}), switching noise held an input high for longer than a single re-check, so the debounce is compensating for a hardware omission as well as for contact bounce. Equation~\ref{eq:gan-latency} gives the resulting trip-to-stop latency,
+\begin{equation}
+t_{\mathrm{stop}}\approx\tau+(3-1)\cdot6\ \mathrm{ms}\approx13\ \mathrm{ms},
+\label{eq:gan-latency}
+\end{equation}
+during which the carriage moves 0.2\,mm at 15\,mm/s and 0.5\,mm at 40\,mm/s, inside the 5\,mm edge tolerance. The pen-lift motor's drive pulse width was found by direct testing to be 260\,ms of rotation plus 90\,ms of settling, 350\,ms in total, rather than by calculation, since the cam geometry and the gearbox reduction were not modelled.
+
+\paragraph{Design.} On a trip the program latches a stop, sets both STEP pins low, retracts off every triggered switch and aborts the job; targets are clamped to the calibrated area and the latch clears only by explicit command, refused while a switch is still triggered. Protection is \emph{software only}: no hardware stop that cuts motor power is documented, the switches are polled only during a job, no endpoint aborts a running job, and no lock prevents two simultaneous jobs. The implemented lift, planned in the proposal as a stepper, gives only pulses, so the pen state must be tracked in software, and the pen switch is feedback only (high = up); the pen-drive routine must test the switch before energising the motor, since an unnecessary pulse would toggle the pen to the wrong state rather than leave it alone.
+
+\paragraph{Tests.} During tuning the clicker sometimes over-rotated and the pen did not push down fully before the switch read as triggered, requiring the pulse width to be tuned empirically to the 350\,ms figure above; differing pen pressure on a book or an exam pad, rather than a flat board, also introduced inconsistent ink, so a rigid clipboard with a single page clamped flat was adopted. One pen toggle was never timed with an independent stopwatch, only inferred from the tuning above, and the generator's 0.35\,s assumption is the largest single contributor to the predicted writing time of Section~\ref{sec:gan-timing}. Neither the DIR-to-STEP timing nor the driver's minimum STEP width is modelled, and missed steps cannot be detected without feedback, so the true positional accuracy must come from the repeatability test of Figure~\ref{fig:gan-repeat}, not from Equation~\ref{eq:gan-spm} alone.
+Simple-shape tests (repeating a line over itself, drawing a rectangle of known dimensions, and sending G-code produced by third-party software) were used during bring-up to verify G-code following, calibration and end-stop detection, and surfaced three problems resolved before the circuit above was finalised: end-stop priority clashing between calibration and run-time checks, generated text initially drawing backwards, and flex in the pen-lift mechanism skewing writing slightly along one axis.
+
+\begin{figure}[htb]
+\centering
+\fbox{\parbox[c][4.5cm]{0.75\linewidth}{\centering [PLACEHOLDER --- scanned test rectangle with measured side lengths and diagonals annotated against the commanded dimensions]}}
+\captionsetup{singlelinecheck=false,justification=justified}
+\caption{Placeholder: a simple-shape test --- a rectangle of known commanded dimensions, drawn and scanned, with the measured sides and diagonals marked beside the intended values, to show the gantry's dimensional accuracy independent of handwriting.}
+\label{fig:gan-rect}
+\end{figure}
+
+\subsubsection{G-code generation and the motion mapping}
+\label{sec:gcode}
+
+\paragraph{Theory.} A pen trajectory in millimetres (Section~\ref{sec:synthesis}) has to become a machine program before the interpreter of the sections above can execute it. The format used is G-code, the command language of plotters and numerically controlled machines standardised as ISO 6983-1~\cite{iso6983}: a list of text lines, each naming a command and its arguments. Only five commands are used: \texttt{G21} and \texttt{G90} set the units to millimetres and the coordinates to absolute, \texttt{G0} is a move with the pen up and \texttt{G1} a move with the pen down, \texttt{M3} and \texttt{M5} lower and raise the pen, \texttt{G4} pauses, and \texttt{M2} ends the program. Coordinates are \emph{absolute}, so a rounding error in one move cannot accumulate into the next, and settings such as the feed rate are \emph{modal}, staying in force until another line changes them. The format splits the motion chain in two: the generator needs to know nothing about the gantry electronics, and the interpreter needs to know nothing about handwriting, with a plain-text file between them that can be inspected and replayed without the machine present.
+
+\paragraph{Calculations.} The trajectory and the machine frame both have $X$ right and $Y$ up. For a trajectory of bounding box $(x_0,y_0,x_1,y_1)$, width $w$ and height $h$, the block is shrunk by Equation~\ref{eq:gc-map}, never enlarged, if it would leave the $200\times200$\,mm work area:
+\begin{equation}
+s=\min\Bigl(1,\ \frac{X_{\max}-X_{\mathrm o}}{w},\ \frac{Y_{\mathrm o}-Y_{\min}}{h}\Bigr),\qquad X=X_{\mathrm o}+(x-x_0)\,s,\quad Y=Y_{\mathrm o}-(y_1-y)\,s,
+\label{eq:gc-map}
+\end{equation}
+with the origin $(X_{\mathrm o},Y_{\mathrm o})=(10,180)$\,mm. Each pen lift is followed by a \emph{dwell} of 350\,ms (Section~\ref{sec:gan-pen}), so a stroke costs 0.7\,s of dwell, which is why dwell dominates the predicted job time. The generator can also write a step schedule with a time estimate, assuming each move starts and ends at rest under a trapezoidal ramp with acceleration $a=400$\,mm/s$^2$, 15\,mm/s drawing and 40\,mm/s travelling (Equation~\ref{eq:gc-trap}):
+\begin{equation}
+T(d)=\begin{cases}\dfrac{d}{v}+\dfrac{v}{a},&d\ge2d_a,\\[2mm]2\sqrt{\dfrac{d}{a}},&d<2d_a,\end{cases}\qquad d_a=\frac{v^2}{2a}.
+\label{eq:gc-trap}
+\end{equation}
+For drawing $d_a=0.28$\,mm, so a typical 0.35\,mm segment is triangular and never reaches 15\,mm/s. For the test word of Figure~\ref{fig:gc-emit}, a draw path of 83.2\,mm in 239 moves and a pen-up path of 250.3\,mm in 14 moves with 26 pen pulses, the model gives 14.1\,s drawing, 7.5\,s travel and 9.1\,s dwell, 30.7\,s in all, or 2.8\,s per character for an assumed 11 characters.
+
+\paragraph{Design.} The strokes are ordered by a greedy nearest-endpoint rule, grouped into text rows, so only order and direction change and the ink is identical; this is the pen-movement optimisation of R3. A program is a comment header, \texttt{G21}/\texttt{G90}, then one block per stroke at the 900\,mm/min draw feed, and finally pen up, parking and \texttt{M2}; Figure~\ref{fig:gc-emit} is the start of a generated program.
+
+\begin{figure}[!htbp]
+\centering
+\fontsize{8}{9.2}\selectfont
+\begin{lstlisting}[basicstyle=\ttfamily\fontsize{8}{9.2}\selectfont,frame=none]
+; start of a generated program -- author yeukita
+; steps/mm  X=80.000  Y=80.000 (3200 microsteps/rev)
+G21   ; millimetres
+G90   ; absolute
+G0 F2400                     ; travel feed, emitted once
+G0 X10.059 Y179.271          ; travel to the first stroke
+M3   ; pen DOWN (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G1 F900                      ; draw feed
+G1 X10.084 Y178.920          ; one line per vertex (0.35 mm apart)
+\end{lstlisting}
+\caption{Start of a generated program for the test word of writer yeukita (14 strokes, 239 draw moves, vertices 0.348\,mm apart on average). The trailing comments on the motion lines are annotations added here.}
+\label{fig:gc-emit}
+\end{figure}
+
+\paragraph{Tests.}
+\label{sec:gc-verify}
+The generator is the one stage whose output can be checked exactly, because both its input and its correct output are geometry. An independent second parser reads the finished G-code file back as though it were the machine, following $X$ and $Y$, starting a polyline at \texttt{M3} and closing it at \texttt{M5}. The trajectory that went in and the polylines that come back out are compared by Equation~\ref{eq:gc-verify}:
+\begin{equation}
+\mathrm{IoU}=\frac{|M_{\mathrm t}\cap M_{\mathrm g}|}{|M_{\mathrm t}\cup M_{\mathrm g}|},\qquad e_{\mathrm{mean}}=\frac{1}{J}\sum_j\min_i\lVert g_j-s_i\rVert,\qquad e_{\max}=\max_j\min_i\lVert g_j-s_i\rVert,
+\label{eq:gc-verify}
+\end{equation}
+drawn onto a common grid of 8 pixels per millimetre for the area ratio $\mathrm{IoU}$, and sub-sampled vertex-to-vertex distances for the mean and worst case. This measures only the loss between the trajectory and the file --- rounding to three decimals, stroke reordering and work-area clamping --- and says nothing about the mechanical error of Section~\ref{sec:gan-res}, which is a separate matter. The project notes quote $\mathrm{IoU}\approx0.99$ and a text-accuracy change of at most 0.3 percentage points between direct and read-back rendering, for an earlier system state (Table~\ref{tab:syn-evid} shows later pairs); $e_{\mathrm{mean}}$ and $e_{\max}$ were never logged.
+\mustdo{run the comparison for a set of generated programs and report $\mathrm{IoU}$, $e_{\mathrm{mean}}$ and $e_{\max}$; the saving produced by the stroke-ordering optimisation of R3 was not measured.}
+
+\begin{figure}[htb]
+\centering
+\fbox{\parbox[c][5cm]{0.8\linewidth}{\centering [PLACEHOLDER --- the synthesised trajectory of Figure~\ref{fig:gc-emit}'s test word overlaid with the polylines re-parsed from its G-code]}}
+\captionsetup{singlelinecheck=false,justification=justified}
+\caption{Placeholder: the G-code verification of Equation~\ref{eq:gc-verify} --- the original trajectory and the re-parsed polylines overlaid, with the measured $\mathrm{IoU}$, $e_{\mathrm{mean}}$ and $e_{\max}$ printed beside the figure, showing the generator introduces negligible geometric loss.}
+\label{fig:gc-verify-fig}
+\end{figure}
+
+\paragraph{Known faults, worth stating plainly.}
+\label{sec:gc-faults}
+The stroke rows are sorted by ascending $Y$, so a multi-line job starts with the \emph{bottom} line, not in reading order. The interpreter has one \emph{modal} feed register and no rapid mode, but the generator emits the rapid feed once at the start and the draw feed before every stroke, so pen-up travel after the first stroke runs slower than the time model assumes. Lines wrap at a width that reaches the driver's clamp boundary, which would distort the last millimetre of a full-width line.
+
+\endgroup
