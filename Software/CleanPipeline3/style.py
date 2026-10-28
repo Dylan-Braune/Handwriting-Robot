@@ -71,6 +71,35 @@ MAX_GLYPH_W_WIDE = 2.9
 #---_WIDE_CHARS: which letters get that wider allowance---
 _WIDE_CHARS = set('mwMW')
 
+#---_BAR_CHARS: the only letters that carry a crossbar over their neighbour---
+_BAR_CHARS = set('tfTF')
+
+#----------------------------------------------------------------------
+#CROSSBAR_TO_LEFT: give a t or f crossbar wholly to the letter it belongs to
+#measured on abhinav's eight pages, 4489 cut glyphs: a letter following a
+#t, T or f carried a crossbar 34 to 65 per cent of the time against a 5 per
+#cent baseline, and came out up to 0.22 x-heights wider with an extra
+#stroke.  h was the worst because 'th' is the commonest pair in English,
+#but e, o, i and u are all damaged the same way
+#
+#no boundary can fix it: he writes the bar extending to the right, so its
+#ink physically sits over the next letter's columns and a vertical cut
+#splits it in two.  the stroke has to be assigned by what it belongs to
+#rather than where it is.  False restores the old column-split behaviour
+#----------------------------------------------------------------------
+CROSSBAR_TO_LEFT = True
+
+#---BAR_MIN_W / BAR_MAX_W: a bar is short -- shorter and it is a dot,---
+#longer and it is a ligature sweep, both in x-heights
+BAR_MIN_W = 0.25
+BAR_MAX_W = 2.0
+
+#---BAR_FLATNESS: how much wider than tall a stroke must be to be a bar---
+BAR_FLATNESS = 2.5
+
+#---BAR_MIN_HEIGHT: and how far above the baseline it must sit, in x-heights---
+BAR_MIN_HEIGHT = 0.6
+
 #---_OFFS: the eight neighbours of a pixel, for following a centre line---
 _OFFS = [(-1,-1),(-1,0),(-1,1),(0,-1),(0,1),(1,-1),(1,0),(1,1)]
 
@@ -543,7 +572,62 @@ def ExtractLineGlyphs(gray,text,model):
     segsFor = {i: [] for i in range(len(charXs))}
     crossings = set()
     tracedComps = set()
+
+    #---_CellAt: which cut a column belongs to, as an index into cuts---
+    def _CellAt(x):
+        for k2,(L,R) in enumerate(bounds):
+            if L<=x<R:
+                return k2
+        return None
+
+    #---_MarkComps: note the components a path covers, so the dot recovery---
+    #below does not mistake a traced stroke for an untraced blob
+    def _MarkComps(p):
+        for pt in p:
+            px,py = int(round(pt[0])),int(round(pt[1]))
+            if 0<=py<compLab.shape[0] and 0<=px<compLab.shape[1]:
+                tracedComps.add(int(compLab[py,px]))
+
+    #---_BarOwner: the t or f whose crossbar this path is, if it is one---
+    #a bar is short, much wider than it is tall, sits well above the
+    #baseline, and starts inside a t or f cell while reaching into the next
+    def _BarOwner(p):
+        xs = [q[0] for q in p]
+        ys = [q[1] for q in p]
+        dx,dy = max(xs)-min(xs), max(ys)-min(ys)
+        if dx<BAR_MIN_W*xh or dx>BAR_MAX_W*xh:
+            return None
+        if dx<BAR_FLATNESS*max(dy,1e-6):
+            return None
+        if float(np.median([(base-y)/max(1.0,xh) for y in ys]))<BAR_MIN_HEIGHT:
+            return None
+        k2 = _CellAt(min(xs))
+        if k2 is None:
+            return None
+        if cuts[k2][1] in _BAR_CHARS:
+            #a bar starting in its own t cell and reaching into the next one:
+            #keep it whole rather than letting the column cut halve it
+            return k2 if _CellAt(max(xs))!=k2 else None
+        #a bar lying wholly inside the FOLLOWING letter's cell, because the
+        #boundary fell left of the whole bar.  it still belongs to the t, and
+        #this is the common case: it is why h barely improved when only the
+        #straddling bars were moved.  flatness is what keeps this from
+        #stealing an arch apex, which is never 2.5 times wider than it is tall
+        prev = k2-1
+        if prev>=0 and cuts[prev][1] in _BAR_CHARS:
+            return prev
+        return None
+
     for p in polysAll:
+        if CROSSBAR_TO_LEFT:
+            owner = _BarOwner(p)
+            if owner is not None:
+                #the whole bar goes to the letter it belongs to, and no
+                #crossing is recorded: a bar lying over the next letter is
+                #not the pen staying down between them
+                _MarkComps(p)
+                segsFor[cuts[owner][0]].append(list(p))
+                continue
         cur,curT = [], None
         for pt in p:
             px,py = int(round(pt[0])),int(round(pt[1]))

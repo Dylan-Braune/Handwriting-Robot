@@ -1,0 +1,729 @@
+; Handwriting-Robot G-code -- yeukita, short, best medoid letterform
+; author=yeukita strokes=35 scale=1.000
+; steps/mm  X=80.000  Y=80.000 (3200 microsteps/rev)
+; pen: one-way gear motor, M5=up M3=down, each = one 90deg pulse
+G21   ; millimetres
+G90   ; absolute
+G0 F2400
+G0 X25.000 Y153.422
+M3   ; pen DOWN (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G1 F900
+G1 X25.347 Y153.423
+G1 X25.694 Y153.423
+G1 X26.041 Y153.423
+G1 X26.388 Y153.424
+G1 X26.736 Y153.424
+G1 X27.083 Y153.424
+G1 X27.430 Y153.425
+M5   ; pen UP (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G0 X26.143 Y154.994
+M3   ; pen DOWN (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G1 F900
+G1 X26.111 Y154.635
+G1 X26.078 Y154.276
+G1 X26.041 Y153.918
+G1 X25.972 Y153.565
+G1 X25.882 Y153.216
+G1 X25.804 Y152.865
+G1 X25.749 Y152.509
+G1 X25.727 Y152.150
+G1 X25.753 Y151.792
+G1 X25.871 Y151.453
+G1 X26.077 Y151.160
+G1 X26.363 Y150.947
+G1 X26.713 Y150.867
+G1 X27.072 Y150.856
+G1 X27.432 Y150.856
+M5   ; pen UP (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G0 X30.261 Y150.574
+M3   ; pen DOWN (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G1 F900
+G1 X30.260 Y150.927
+G1 X30.260 Y151.279
+G1 X30.253 Y151.631
+G1 X30.243 Y151.983
+G1 X30.240 Y152.335
+G1 X30.254 Y152.687
+G1 X30.238 Y153.038
+G1 X30.165 Y153.382
+G1 X30.084 Y153.725
+G1 X30.042 Y154.074
+G1 X30.032 Y154.426
+G1 X30.004 Y154.776
+G1 X29.951 Y155.125
+M5   ; pen UP (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G0 X30.284 Y153.236
+M3   ; pen DOWN (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G1 F900
+G1 X30.624 Y153.344
+G1 X30.979 Y153.380
+G1 X31.336 Y153.356
+G1 X31.668 Y153.231
+G1 X31.919 Y152.981
+G1 X32.104 Y152.675
+G1 X32.241 Y152.345
+G1 X32.342 Y152.002
+G1 X32.391 Y151.648
+G1 X32.402 Y151.290
+G1 X32.392 Y150.933
+G1 X32.383 Y150.575
+M5   ; pen UP (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G0 X35.456 Y150.804
+M3   ; pen DOWN (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G1 F900
+G1 X35.103 Y150.743
+G1 X34.748 Y150.740
+G1 X34.444 Y150.906
+G1 X34.303 Y151.232
+G1 X34.268 Y151.588
+G1 X34.293 Y151.944
+G1 X34.353 Y152.297
+G1 X34.385 Y152.654
+G1 X34.396 Y153.011
+G1 X34.405 Y153.369
+M5   ; pen UP (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G0 X35.097 Y155.437
+M3   ; pen DOWN (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G1 F900
+G1 X35.576 Y155.437
+M5   ; pen UP (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G0 X39.035 Y153.287
+M3   ; pen DOWN (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G1 F900
+G1 X38.703 Y153.406
+G1 X38.372 Y153.525
+G1 X38.041 Y153.645
+G1 X37.710 Y153.764
+G1 X37.418 Y153.658
+G1 X37.148 Y153.432
+G1 X36.878 Y153.207
+G1 X36.662 Y152.980
+G1 X36.921 Y152.741
+G1 X37.179 Y152.502
+G1 X37.438 Y152.263
+G1 X37.696 Y152.024
+G1 X38.013 Y151.873
+G1 X38.335 Y151.731
+G1 X38.657 Y151.588
+G1 X38.728 Y151.338
+G1 X38.608 Y151.007
+G1 X38.488 Y150.676
+G1 X38.368 Y150.345
+G1 X38.115 Y150.231
+G1 X37.766 Y150.274
+G1 X37.416 Y150.318
+G1 X37.067 Y150.361
+G1 X36.717 Y150.404
+M5   ; pen UP (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G0 X42.554 Y148.407
+M3   ; pen DOWN (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G1 F900
+G1 X42.868 Y148.247
+G1 X43.185 Y148.091
+G1 X43.513 Y147.962
+G1 X43.858 Y147.895
+G1 X44.210 Y147.901
+G1 X44.542 Y148.015
+G1 X44.811 Y148.238
+G1 X45.011 Y148.528
+G1 X45.133 Y148.858
+G1 X45.221 Y149.200
+G1 X45.312 Y149.541
+G1 X45.396 Y149.883
+G1 X45.442 Y150.233
+G1 X45.432 Y150.585
+G1 X45.360 Y150.930
+G1 X45.285 Y151.275
+G1 X45.267 Y151.627
+G1 X45.278 Y151.979
+G1 X45.292 Y152.332
+G1 X45.275 Y152.684
+G1 X45.194 Y153.026
+G1 X44.948 Y153.266
+G1 X44.602 Y153.318
+G1 X44.253 Y153.280
+G1 X43.932 Y153.137
+G1 X43.668 Y152.905
+G1 X43.448 Y152.629
+G1 X43.257 Y152.333
+G1 X43.034 Y152.062
+G1 X42.739 Y151.871
+G1 F900
+G1 X43.160 Y151.563
+G1 X43.267 Y151.235
+G1 X43.398 Y150.918
+G1 X43.637 Y150.676
+G1 X43.962 Y150.576
+G1 X44.302 Y150.617
+G1 X44.621 Y150.746
+G1 X44.923 Y150.914
+G1 X45.231 Y151.069
+M5   ; pen UP (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G0 X48.870 Y150.483
+M3   ; pen DOWN (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G1 F900
+G1 X48.868 Y150.837
+G1 X48.845 Y151.190
+G1 X48.787 Y151.540
+G1 X48.735 Y151.890
+G1 X48.711 Y152.244
+G1 X48.709 Y152.598
+G1 X48.683 Y152.950
+G1 X48.517 Y153.254
+G1 X48.176 Y153.330
+G1 X47.830 Y153.263
+G1 X47.508 Y153.119
+G1 X47.228 Y152.903
+G1 X47.002 Y152.632
+G1 X46.850 Y152.313
+G1 X46.754 Y151.972
+G1 X46.707 Y151.621
+G1 X46.733 Y151.268
+G1 X46.796 Y150.920
+G1 X46.876 Y150.574
+G1 X47.026 Y150.258
+G1 X47.311 Y150.062
+G1 X47.661 Y150.031
+G1 X48.003 Y150.120
+G1 X48.322 Y150.274
+G1 X48.648 Y150.408
+G1 X48.997 Y150.469
+G1 X49.351 Y150.482
+G1 X48.870 Y150.483
+M5   ; pen UP (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G0 X51.967 Y150.771
+M3   ; pen DOWN (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G1 F900
+G1 X52.018 Y151.115
+G1 X52.047 Y151.462
+G1 X52.077 Y151.808
+G1 X52.100 Y152.155
+G1 X52.110 Y152.503
+G1 X52.126 Y152.850
+G1 X52.218 Y153.182
+G1 X52.426 Y153.459
+G1 X52.695 Y153.678
+G1 X53.016 Y153.804
+G1 X53.361 Y153.804
+G1 X53.666 Y153.653
+G1 X53.861 Y153.369
+G1 X53.995 Y153.048
+G1 X54.104 Y152.718
+G1 X54.164 Y152.376
+G1 X54.169 Y152.028
+G1 X54.151 Y151.681
+G1 X54.135 Y151.333
+G1 X54.150 Y150.986
+G1 X54.185 Y150.640
+M5   ; pen UP (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G0 X54.738 Y153.441
+M3   ; pen DOWN (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G1 F900
+G1 X55.085 Y153.440
+G1 X55.431 Y153.440
+G1 X55.778 Y153.440
+G1 X56.125 Y153.440
+G1 X56.472 Y153.439
+G1 X56.818 Y153.439
+G1 X57.165 Y153.439
+M5   ; pen UP (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G0 X55.882 Y155.014
+M3   ; pen DOWN (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G1 F900
+G1 X55.849 Y154.655
+G1 X55.816 Y154.296
+G1 X55.779 Y153.937
+G1 X55.709 Y153.584
+G1 X55.619 Y153.234
+G1 X55.540 Y152.882
+G1 X55.484 Y152.526
+G1 X55.462 Y152.167
+G1 X55.487 Y151.807
+G1 X55.603 Y151.467
+G1 X55.807 Y151.173
+G1 X56.093 Y150.957
+G1 X56.443 Y150.875
+G1 X56.803 Y150.863
+G1 X57.163 Y150.863
+M5   ; pen UP (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G0 X58.662 Y150.169
+M3   ; pen DOWN (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G1 F900
+G1 X58.662 Y150.525
+G1 X58.663 Y150.880
+G1 X58.664 Y151.236
+G1 X58.664 Y151.592
+G1 X58.666 Y151.947
+G1 X58.677 Y152.303
+G1 X58.772 Y152.643
+G1 X58.993 Y152.917
+G1 X59.281 Y153.125
+G1 X59.592 Y153.297
+G1 X59.924 Y153.423
+G1 X60.267 Y153.518
+M5   ; pen UP (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G0 X61.398 Y153.869
+M3   ; pen DOWN (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G1 F900
+G1 X61.362 Y153.521
+G1 X61.325 Y153.173
+G1 X61.293 Y152.825
+G1 X61.286 Y152.475
+G1 X61.313 Y152.127
+G1 X61.357 Y151.780
+G1 X61.444 Y151.442
+G1 X61.602 Y151.132
+G1 X61.903 Y150.969
+G1 X62.248 Y150.993
+G1 X62.584 Y151.092
+G1 X62.913 Y151.210
+G1 X63.244 Y151.322
+G1 X63.574 Y151.439
+M5   ; pen UP (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G0 X63.631 Y154.729
+M3   ; pen DOWN (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G1 F900
+G1 X63.611 Y154.378
+G1 X63.596 Y154.026
+G1 X63.576 Y153.675
+G1 X63.557 Y153.324
+G1 X63.541 Y152.973
+G1 X63.525 Y152.621
+G1 X63.526 Y152.270
+G1 X63.556 Y151.920
+G1 X63.611 Y151.572
+G1 X63.684 Y151.228
+G1 X63.730 Y150.880
+G1 X63.702 Y150.531
+G1 X63.633 Y150.186
+G1 X63.532 Y149.849
+G1 X63.389 Y149.528
+G1 X63.199 Y149.233
+G1 X62.954 Y148.982
+G1 X62.655 Y148.802
+G1 X62.315 Y148.713
+G1 X61.964 Y148.703
+G1 X61.614 Y148.732
+G1 X61.275 Y148.819
+G1 X60.988 Y149.016
+G1 X60.773 Y149.294
+M5   ; pen UP (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G0 X69.628 Y153.601
+M3   ; pen DOWN (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G1 F900
+G1 X69.705 Y153.260
+G1 X69.781 Y152.920
+G1 X69.857 Y152.580
+G1 X69.933 Y152.239
+G1 X70.010 Y151.899
+G1 X70.086 Y151.558
+G1 X70.162 Y151.218
+G1 X70.238 Y150.878
+G1 X70.315 Y150.537
+G1 X70.391 Y150.197
+G1 X70.590 Y150.487
+G1 X70.699 Y150.818
+G1 X70.807 Y151.150
+G1 X70.916 Y151.481
+G1 X71.024 Y151.813
+G1 X71.133 Y152.144
+G1 X71.242 Y152.476
+G1 X71.350 Y152.802
+G1 X71.455 Y152.469
+G1 X71.560 Y152.137
+G1 X71.666 Y151.804
+G1 X71.771 Y151.471
+G1 X71.876 Y151.139
+G1 X71.981 Y150.806
+G1 X72.087 Y150.474
+G1 X72.192 Y150.141
+G1 X72.366 Y150.555
+G1 X72.448 Y150.894
+G1 X72.531 Y151.233
+G1 X72.613 Y151.572
+G1 X72.695 Y151.911
+G1 X72.778 Y152.250
+G1 X72.860 Y152.589
+G1 X72.943 Y152.928
+G1 X73.025 Y153.267
+G1 X73.108 Y153.606
+M5   ; pen UP (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G0 X76.274 Y153.539
+M3   ; pen DOWN (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G1 F900
+G1 X75.930 Y153.443
+G1 X75.597 Y153.314
+G1 X75.286 Y153.141
+G1 X74.997 Y152.931
+G1 X74.777 Y152.655
+G1 X74.684 Y152.313
+G1 X74.674 Y151.956
+G1 X74.672 Y151.599
+G1 X74.672 Y151.242
+G1 X74.672 Y150.885
+G1 X74.672 Y150.528
+G1 X74.671 Y150.171
+M5   ; pen UP (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G0 X79.174 Y150.812
+M3   ; pen DOWN (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G1 F900
+G1 X78.822 Y150.751
+G1 X78.466 Y150.747
+G1 X78.161 Y150.911
+G1 X78.019 Y151.236
+G1 X77.983 Y151.592
+G1 X78.008 Y151.948
+G1 X78.068 Y152.301
+G1 X78.100 Y152.657
+G1 X78.110 Y153.014
+G1 X78.120 Y153.372
+M5   ; pen UP (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G0 X79.636 Y153.439
+M3   ; pen DOWN (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G1 F900
+G1 X79.984 Y153.438
+G1 X80.331 Y153.438
+G1 X80.679 Y153.438
+G1 X81.026 Y153.437
+G1 X81.374 Y153.437
+G1 X81.722 Y153.436
+G1 X82.069 Y153.436
+M5   ; pen UP (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G0 X83.231 Y152.083
+M3   ; pen DOWN (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G1 F900
+G1 X83.553 Y151.974
+G1 X83.890 Y151.931
+G1 X84.230 Y151.947
+G1 X84.557 Y152.033
+G1 X84.825 Y152.236
+G1 X84.956 Y152.545
+G1 X84.988 Y152.884
+M5   ; pen UP (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G0 X84.828 Y153.684
+M3   ; pen DOWN (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G1 F900
+G1 X84.488 Y153.780
+G1 X84.138 Y153.786
+G1 X83.826 Y153.631
+G1 X83.604 Y153.357
+G1 X83.435 Y153.048
+G1 X83.325 Y152.712
+G1 X83.243 Y152.368
+G1 X83.140 Y152.030
+G1 X83.037 Y151.692
+G1 X82.960 Y151.347
+G1 X82.921 Y150.996
+G1 X82.912 Y150.642
+G1 F900
+G1 X83.346 Y150.448
+G1 X83.637 Y150.280
+G1 X83.960 Y150.192
+G1 X84.295 Y150.167
+G1 X84.631 Y150.179
+G1 X84.964 Y150.224
+G1 X85.295 Y150.284
+G1 X85.628 Y150.324
+M5   ; pen UP (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G0 X86.596 Y150.396
+M3   ; pen DOWN (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G1 F900
+G1 X86.945 Y150.351
+G1 X87.294 Y150.307
+G1 X87.644 Y150.263
+G1 X87.993 Y150.218
+G1 X88.245 Y150.333
+G1 X88.366 Y150.664
+G1 X88.487 Y150.995
+G1 X88.607 Y151.326
+G1 X88.537 Y151.576
+G1 X88.216 Y151.719
+G1 X87.894 Y151.863
+G1 X87.578 Y152.014
+G1 X87.320 Y152.254
+G1 X87.062 Y152.494
+G1 X86.804 Y152.734
+G1 X86.547 Y152.974
+G1 X86.762 Y153.201
+G1 X87.033 Y153.426
+G1 X87.303 Y153.651
+G1 X87.595 Y153.757
+G1 X87.926 Y153.637
+G1 X88.257 Y153.516
+G1 X88.588 Y153.396
+G1 X88.918 Y153.276
+M5   ; pen UP (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G0 X92.246 Y153.420
+M3   ; pen DOWN (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G1 F900
+G1 X92.593 Y153.420
+G1 X92.939 Y153.420
+G1 X93.286 Y153.420
+G1 X93.633 Y153.420
+G1 X93.980 Y153.421
+G1 X94.327 Y153.421
+G1 X94.673 Y153.421
+M5   ; pen UP (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G0 X93.389 Y154.990
+M3   ; pen DOWN (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G1 F900
+G1 X93.356 Y154.632
+G1 X93.323 Y154.273
+G1 X93.286 Y153.915
+G1 X93.217 Y153.562
+G1 X93.127 Y153.214
+G1 X93.049 Y152.863
+G1 X92.993 Y152.507
+G1 X92.971 Y152.148
+G1 X92.997 Y151.789
+G1 X93.114 Y151.451
+G1 X93.320 Y151.158
+G1 X93.606 Y150.944
+G1 X93.955 Y150.863
+G1 X94.314 Y150.852
+G1 X94.674 Y150.852
+M5   ; pen UP (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G0 X96.763 Y154.799
+M3   ; pen DOWN (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G1 F900
+G1 X97.104 Y154.746
+G1 X97.437 Y154.657
+G1 X97.718 Y154.460
+G1 X97.904 Y154.172
+G1 X98.047 Y153.857
+G1 X98.151 Y153.527
+G1 X98.208 Y153.187
+G1 X98.214 Y152.842
+G1 X98.163 Y152.501
+G1 X98.032 Y152.182
+G1 X97.807 Y151.922
+G1 X97.522 Y151.729
+G1 X97.192 Y151.629
+G1 X96.849 Y151.622
+G1 X96.517 Y151.713
+G1 X96.272 Y151.951
+G1 X96.127 Y152.263
+G1 X96.049 Y152.599
+G1 X96.030 Y152.944
+G1 X96.057 Y153.288
+G1 X96.108 Y153.630
+G1 X96.176 Y153.969
+G1 X96.299 Y154.290
+G1 X96.516 Y154.557
+G1 X96.763 Y154.799
+M5   ; pen UP (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G0 X101.911 Y153.855
+M3   ; pen DOWN (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G1 F900
+G1 X101.559 Y153.904
+G1 X101.205 Y153.933
+G1 X100.852 Y153.901
+G1 X100.522 Y153.773
+G1 X100.242 Y153.558
+G1 X100.037 Y153.268
+G1 X99.910 Y152.937
+G1 X99.822 Y152.593
+G1 X99.779 Y152.240
+G1 X99.768 Y151.885
+G1 X99.768 Y151.529
+G1 X99.783 Y151.174
+G1 X99.852 Y150.827
+G1 X100.033 Y150.526
+G1 X100.344 Y150.361
+G1 X100.695 Y150.329
+G1 X101.040 Y150.408
+G1 X101.366 Y150.550
+G1 X101.706 Y150.649
+G1 X102.056 Y150.713
+G1 F900
+G1 X102.158 Y150.484
+G1 X102.098 Y150.824
+G1 X102.063 Y151.168
+G1 X102.056 Y151.513
+G1 X102.056 Y151.859
+G1 X102.056 Y152.205
+G1 X102.055 Y152.551
+G1 X102.043 Y152.896
+G1 X102.007 Y153.240
+G1 X101.976 Y153.584
+G1 X102.004 Y153.928
+G1 X102.043 Y154.272
+G1 X102.053 Y154.617
+G1 X102.055 Y154.963
+G1 X102.054 Y155.309
+G1 X102.054 Y155.654
+G1 X102.054 Y156.000
+M5   ; pen UP (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G0 X102.056 Y152.282
+M3   ; pen DOWN (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G1 F900
+G1 X102.484 Y152.282
+M5   ; pen UP (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G0 X105.682 Y150.472
+M3   ; pen DOWN (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G1 F900
+G1 X105.680 Y150.826
+G1 X105.657 Y151.179
+G1 X105.600 Y151.528
+G1 X105.548 Y151.878
+G1 X105.524 Y152.231
+G1 X105.522 Y152.584
+G1 X105.497 Y152.936
+G1 X105.332 Y153.239
+G1 X104.991 Y153.316
+G1 X104.646 Y153.249
+G1 X104.324 Y153.106
+G1 X104.044 Y152.890
+G1 X103.819 Y152.619
+G1 X103.667 Y152.301
+G1 X103.571 Y151.961
+G1 X103.524 Y151.611
+G1 X103.549 Y151.258
+G1 X103.612 Y150.910
+G1 X103.691 Y150.565
+G1 X103.842 Y150.249
+G1 X104.125 Y150.053
+G1 X104.475 Y150.022
+G1 X104.816 Y150.111
+G1 X105.135 Y150.264
+G1 X105.461 Y150.398
+G1 X105.809 Y150.459
+G1 X106.162 Y150.472
+G1 X105.682 Y150.472
+M5   ; pen UP (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G0 X106.670 Y149.281
+M3   ; pen DOWN (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G1 F900
+G1 X106.886 Y149.004
+G1 X107.172 Y148.807
+G1 X107.512 Y148.720
+G1 X107.863 Y148.692
+G1 X108.214 Y148.703
+G1 X108.553 Y148.792
+G1 X108.853 Y148.973
+G1 X109.098 Y149.223
+G1 X109.288 Y149.519
+G1 X109.430 Y149.840
+G1 X109.531 Y150.177
+G1 X109.599 Y150.522
+G1 X109.628 Y150.872
+G1 X109.580 Y151.220
+G1 X109.507 Y151.564
+G1 X109.451 Y151.911
+G1 X109.420 Y152.262
+G1 X109.419 Y152.613
+G1 X109.435 Y152.965
+G1 X109.450 Y153.316
+G1 X109.469 Y153.668
+G1 X109.487 Y154.019
+G1 X109.502 Y154.371
+G1 X109.521 Y154.722
+M5   ; pen UP (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G0 X107.288 Y153.858
+M3   ; pen DOWN (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G1 F900
+G1 X107.252 Y153.510
+G1 X107.216 Y153.162
+G1 X107.184 Y152.813
+G1 X107.178 Y152.464
+G1 X107.205 Y152.115
+G1 X107.250 Y151.768
+G1 X107.338 Y151.430
+G1 X107.497 Y151.121
+G1 X107.799 Y150.958
+G1 X108.144 Y150.984
+G1 X108.480 Y151.083
+G1 X108.809 Y151.201
+G1 X109.140 Y151.314
+G1 X109.470 Y151.431
+M5   ; pen UP (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G0 X82.067 Y150.862
+M3   ; pen DOWN (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G1 F900
+G1 X81.706 Y150.862
+G1 X81.345 Y150.874
+G1 X80.996 Y150.955
+G1 X80.709 Y151.170
+G1 X80.504 Y151.464
+G1 X80.386 Y151.804
+G1 X80.361 Y152.163
+G1 X80.384 Y152.523
+G1 X80.440 Y152.879
+G1 X80.519 Y153.231
+G1 X80.610 Y153.580
+G1 X80.680 Y153.934
+G1 X80.717 Y154.292
+G1 X80.751 Y154.652
+G1 X80.784 Y155.011
+M5   ; pen UP (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G0 X79.292 Y155.437
+M3   ; pen DOWN (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G1 F900
+G1 X78.811 Y155.437
+M5   ; pen UP (one 90deg pulse of the one-way gear motor)
+G4 P0.350   ; wait for the 90deg rotation to finish
+G0 X10.000 Y180.000   ; park
+M2

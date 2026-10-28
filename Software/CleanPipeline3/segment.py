@@ -610,6 +610,44 @@ def PaperRegionMask(g,P):
     r = int(0.4*P)
     return ~AnyWithinRadius(AnyWithinRadius(~full,r,0),r,1)   #shrink a little from the paper edge
 
+#---PEAK_MIN_PITCH_XH: a peak gap smaller than this many letter heights is---
+#not the space between two lines, it is two bands of the same line.  real
+#line spacing runs about 2.2 letter heights, so 1.5 leaves room for a
+#tightly written page while still rejecting a within-line gap
+PEAK_MIN_PITCH_XH = 1.5
+
+#---MIN_LINE_PITCH: never report a pitch below this, in half-res pixels---
+MIN_LINE_PITCH = 15
+
+#---TRUST_ALL_PEAK_GAPS: True restores the behaviour before the fix of---
+#2026-10-28, where every peak in the row profile counted as a line
+TRUST_ALL_PEAK_GAPS = False
+
+
+#----------------------------------------------------------------------
+#_LetterHeight: how tall this page's letters are, in half-res pixels
+#the median height of the ink blobs, ignoring specks and anything as tall
+#as the page.  a letter is the one thing on a page whose size does not
+#depend on knowing the line spacing first, so it is what the pitch
+#estimate is sanity checked against
+#----------------------------------------------------------------------
+def _LetterHeight(mask):
+    lab,nc = LabelComponents(mask)
+    if nc<=0:
+        return None
+    ys,xs = np.nonzero(mask)
+    pl = lab[ys,xs]
+    top,bot = np.full(nc+1,mask.shape[0]),np.zeros(nc+1,int)
+    np.minimum.at(top,pl,ys)
+    np.maximum.at(bot,pl,ys)
+    area = np.bincount(pl,minlength=nc+1)
+    hts = bot-top+1
+    sel = (area>=8)&(hts>=3)&(hts<=mask.shape[0])
+    if not sel[1:].any():
+        return None
+    return float(np.median(hts[1:][sel[1:]]))
+
+
 #----------------------------------------------------------------------
 #LinePitch: the spacing between lines of writing
 #looks at the gaps between peaks in the ink per row profile and takes
@@ -621,29 +659,34 @@ def LinePitch(mask):
     k = np.exp(-0.5*(np.arange(-12,13)/4.0)**2)   #gaussian smoothing kernel
     sm = np.convolve(prof,k/k.sum(),"same")
 
+    #how tall this page's letters are, worked out before the peaks are read
+    #rather than only as a last resort: it is what says whether a gap between
+    #two peaks is big enough to be the space between two lines
+    h = _LetterHeight(mask)
+    floor = (PEAK_MIN_PITCH_XH*h) if h else 0.0
+
     peaks = [i for i in range(1,len(sm)-1) if sm[i]>=sm[i-1] and sm[i]>sm[i+1] and sm[i]>0.06*sm.max()]
     if len(peaks)>=2:
-        return int(np.median(np.diff(sorted(peaks)))),sm   #direct gap: works for 2+ lines, irregular spacing too
+        p = int(np.median(np.diff(sorted(peaks))))
+        #a page holding ONE line still raises three peaks -- the ascenders,
+        #the x-height band and the descenders -- and the gaps between those
+        #are letter sized, not line sized.  taking them for line spacing put
+        #the pitch at 15 where it should have been 51, and every length
+        #downstream is measured in it, so the crop lost its ascenders and
+        #descenders entirely
+        if TRUST_ALL_PEAK_GAPS or p>=floor:
+            return p,sm   #direct gap: works for 2+ lines, irregular spacing too
 
     a = sm-sm.mean()
     ac = np.correlate(a,a,"full")[len(a)-1:]   #autocorrelation fallback
     seg = ac[15:min(200,len(ac)//3)]
     idx = next((i for i in range(1,len(seg)-1)
                 if seg[i]>=0.7*seg.max() and seg[i]>=seg[i-1] and seg[i]>=seg[i+1]), None)
-    if idx is not None:
+    if idx is not None and (TRUST_ALL_PEAK_GAPS or 15+idx>=floor):
         return 15+idx,sm
 
-    lab,nc = LabelComponents(mask)
-    if nc>0:
-        ys,xs = np.nonzero(mask)
-        pl = lab[ys,xs]
-        top,bot = np.full(nc+1,mask.shape[0]),np.zeros(nc+1,int)
-        np.minimum.at(top,pl,ys); np.maximum.at(bot,pl,ys)
-        area = np.bincount(pl,minlength=nc+1)
-        hts = bot-top+1
-        sel = (area>=8)&(hts>=3)&(hts<=mask.shape[0])
-        if sel[1:].any():
-            return max(15,int(round(2.2*np.median(hts[1:][sel[1:]])))),sm   #one line: go by letter size
+    if h:
+        return max(MIN_LINE_PITCH,int(round(2.2*h))),sm   #one line: go by letter size
     return 48,sm   #no usable ink: an arbitrary but harmless default
 
 #----------------------------------------------------------------------
