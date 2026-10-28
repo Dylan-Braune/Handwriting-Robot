@@ -419,7 +419,12 @@ generateBtn.addEventListener("click", async () => {
     lastJobId = res.job_id;
     await showResult(res);
     // step to the next ruling so the following job does not land on this one
-    if (res.placement) setLine(currentLine + 1, res.placement);
+    // advance past the WHOLE job: a wrapped paragraph occupies several ruled
+    // lines, and stepping on by one would write the next job over it
+    if (res.placement) {
+      const used = Math.max(1, res.placement.textLines || 1);
+      setLine(currentLine + used, res.placement);
+    }
     persist({ lastResult: res });
     refreshGantryStatus();
   } catch (e) {

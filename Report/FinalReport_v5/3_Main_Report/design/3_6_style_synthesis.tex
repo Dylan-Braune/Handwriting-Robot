@@ -32,6 +32,27 @@ With the transcript's blank-augmented form $y'$ of length $S=2U+1$ and $\ell_t(k
 \end{split}
 \label{eq:sty-viterbi}
 \end{equation}
+with a back-pointer $\psi_t(s)$ stored alongside every maximisation so the best path can be recovered once the recursion reaches $t=T$. Algorithm~\ref{alg:sty-viterbi} is this recursion stated as a procedure.
+
+\begin{algorithm}[!htbp]
+\caption{Forced alignment by Viterbi recursion (per time step $t$)}
+\label{alg:sty-viterbi}
+\begin{algorithmic}[1]
+\REQUIRE blank-augmented transcript $y'$ of length $S$; log-probabilities $\ell_t(k)$, $t=1,\ldots,T$
+\IF{$t=1$}
+    \STATE $\delta_1(1)\leftarrow\ell_1(\varnothing)$; \ $\delta_1(2)\leftarrow\ell_1(y'_2)$; \ $\delta_1(s)\leftarrow-\infty$ for $s>2$
+\ELSE
+    \FOR{$s=1$ \TO $S$}
+        \STATE candidates $\leftarrow\{\delta_{t-1}(s),\ \delta_{t-1}(s-1),\ \delta^{\mathrm{skip}}_{t-1}(s)\}$ \COMMENT{the skip term fires only where $y'$ allows it}
+        \STATE $\delta_t(s)\leftarrow\ell_t(y'_s)+\max(\text{candidates})$; \ $\psi_t(s)\leftarrow\arg\max(\text{candidates})$
+    \ENDFOR
+\ENDIF
+\IF{$t=T$}
+    \STATE follow $\psi$ back from $\arg\max_s\delta_T(s)$ to recover the single best path \COMMENT{cost $O(TS)$ in total}
+\ENDIF
+\end{algorithmic}
+\end{algorithm}
+
 Back-pointers recovered from the maximisations give the whole best path at cost $O(TS)$. A CTC network emits a character at any single step inside its true extent, so the recovered span's \emph{centre} $c_k$ is reliable but its edges are not; the provisional boundary between two characters is the midpoint $\hat x_k=\tfrac12(c_{k-1}+c_k)$, refined to the cheapest nearby column by Equation~\ref{eq:sty-cut}, using that the only place a joined letter honestly ends is a ligature, which is both \emph{thin} (little ink in its column) and \emph{low} (near the baseline):
 \begin{equation}
 \begin{aligned}
@@ -170,25 +191,35 @@ a(I)=\max\Bigl(0,1-\frac{\mathrm{Lev}(\hat y(I),y)}{|y|}\Bigr),\quad w(I)=\mathr
 \end{equation}
 the harmonic mean of recogniser accuracy and shape-classifier confidence in the target writer $a^\star$, dominated by whichever is smaller, so a candidate cannot win on one criterion while failing the other.
 
-The search has two loops (Figure~\ref{fig:syn-search}): the first draws up to $N$ candidates and keeps the best by $S$; the second, a \emph{repair} loop of at most three rounds, forced-aligns the intended text to the best image, pins the two worst-scoring characters to the anchor, re-synthesises the whole line, and accepts the result only if $S$ strictly improves, so a repair that fixes a letter but makes the line resemble another writer is rejected. $N$ is 6 as the function default, 14 for design-stage measurements, 20 as the web default and 30 in the evaluation script; the cost is entirely judge-bound, synthesising a candidate costing 11 to 16\,ms against 0.5 to 4\,s to score it, so $N$ rather than the construction itself sets the reproduction time of requirement R3.
+The search has two loops, given as Algorithm~\ref{alg:syn-search}: the first draws up to $N$ candidates and keeps the best by $S$; the second, a \emph{repair} loop of at most three rounds, forced-aligns the intended text to the best image, pins the two worst-scoring characters to the anchor, re-synthesises the whole line, and accepts the result only if $S$ strictly improves, so a repair that fixes a letter but makes the line resemble another writer is rejected. $N$ is 6 as the function default, 14 for design-stage measurements, 20 as the web default and 30 in the evaluation script; the cost is entirely judge-bound, synthesising a candidate costing 11 to 16\,ms against 0.5 to 4\,s to score it, so $N$ rather than the construction itself sets the reproduction time of requirement R3.
 
-\begin{figure}[!htbp]
-\centering
-\begin{tikzpicture}[node distance=3.2mm and 6mm]
-\node[w3io] (in) {text, profile, writer $a^\star$, seed base, $N$};
-\node[w3box,below=of in] (syn) {synthesise candidate $k$, score by Equation~\ref{eq:syn-score}};
-\node[w3dec,below=4.5mm of syn] (loop) {best reaches 0.99,\\or $k=N-1$?};
-\node[w3box,below=of loop] (align) {repair: align, pin two weakest\\characters to anchor, re-synthesise};
-\node[w3io,below=of align] (out) {best trajectory (at most 3 repair rounds)};
-\draw[w3arr] (in) -- (syn);
-\draw[w3arr] (syn) -- (loop);
-\draw[w3arr] (loop.west) -- node[w3lab,above,pos=0.3]{no} ++(-14mm,0) |- (syn.west);
-\draw[w3arr] (loop) -- node[w3lab,right]{yes} (align);
-\draw[w3arr] (align) -- (out);
-\end{tikzpicture}
-\caption{Control flow of the candidate search of \texttt{SynthesizeJointBestOf}, simplified from the full state machine; both the main loop and the repair loop use the joint score of Equation~\ref{eq:syn-score}.}
-\label{fig:syn-search}
-\end{figure}
+\begin{algorithm}[!htbp]
+\caption{\texttt{SynthesizeJointBestOf}: candidate search with joint scoring and repair}
+\label{alg:syn-search}
+\begin{algorithmic}[1]
+\REQUIRE text, style profile, target writer $a^\star$, seed base, candidate budget $N$
+\STATE $\mathrm{best}\leftarrow$ none; $\mathrm{bestScore}\leftarrow-\infty$
+\FOR{$k=0$ \TO $N-1$}
+    \STATE synthesise candidate $I_k$ from seed $\mathrm{base}+k$; compute $S(I_k)$ by Equation~\ref{eq:syn-score}
+    \IF{$S(I_k)>\mathrm{bestScore}$}
+        \STATE $\mathrm{best}\leftarrow I_k$; $\mathrm{bestScore}\leftarrow S(I_k)$
+    \ENDIF
+    \IF{$\mathrm{bestScore}\ge0.99$}
+        \STATE \textbf{break} \COMMENT{good enough; stop drawing further candidates}
+    \ENDIF
+\ENDFOR
+\FOR{$r=1$ \TO $3$}
+    \STATE \emph{repair round $r$:} forced-align the intended text to $\mathrm{best}$ (Algorithm~\ref{alg:sty-viterbi})
+    \STATE pin the two worst-scoring characters to their anchor glyph; re-synthesise the line as $I'$
+    \IF{$S(I')>\mathrm{bestScore}$}
+        \STATE $\mathrm{best}\leftarrow I'$; $\mathrm{bestScore}\leftarrow S(I')$
+    \ELSE
+        \STATE \textbf{break} \COMMENT{repair did not strictly improve $S$; reject it}
+    \ENDIF
+\ENDFOR
+\STATE \textbf{return} $\mathrm{best}$
+\end{algorithmic}
+\end{algorithm}
 
 Table~\ref{tab:syn-evid} lists the measurements that motivated the design, over six novel sentences, two seeds and ten writers. Joint best-of-$N$ at $N=14$ reached 97.5 / 95.8\,\% writer identification and 81.6 / 81.4\,\% character accuracy (direct / through G-code); on a matching comparison of identical words, synthesis costs 7.4 percentage points of character accuracy against the writers' own real handwriting (89.0\,\% vs.\ 81.6\,\%) and more than 1.5 times the word accuracy (70.5\,\% vs.\ 46.7\,\%), which locates the loss in spacing and word boundaries rather than in letterforms.
 

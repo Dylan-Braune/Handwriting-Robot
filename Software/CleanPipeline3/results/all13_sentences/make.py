@@ -76,6 +76,18 @@ def ProfileFor(writer):
                                                   "original")
 
 
+# OneDrive holds a sync lock on a file it is uploading, and a save landing in
+# that window dies with errno 22.  it clears in well under a second, so the
+# write is simply retried rather than losing a whole run on the last page
+def _Save(img, path, tries=6):
+    import time, os
+    for k in range(tries):
+        try:
+            img.save(path); return
+        except OSError:
+            if k == tries-1: raise
+            time.sleep(0.5*(k+1))
+
 def OnePage(writer, text, tag, idx):
     profPath, profTag = ProfileFor(writer)
     prof = json.load(open(profPath, encoding="utf-8"))
@@ -88,7 +100,7 @@ def OnePage(writer, text, tag, idx):
                              title="A4 page, %s, %s sentence" % (writer, tag))
     back = REP.ParseGcode(str(gpath))
     page = Sheet(back)
-    Image.fromarray(page).save(HERE/(stem+"_page.png"))
+    _Save(Image.fromarray(page), HERE/(stem+"_page.png"))
 
     lines, _dbg, _info = SEG.SegmentLines(page)
     texts, inkTot, shTot = [], None, None
@@ -108,7 +120,7 @@ def OnePage(writer, text, tag, idx):
     for ln in lines:
         b = ln["bbox"]
         dd.rectangle([b[0], b[1], b[2], b[3]], outline=(230, 30, 30), width=5)
-    ov.save(HERE/(stem+"_page_segmented.png"))
+    _Save(ov, HERE/(stem+"_page_segmented.png"))
 
     return dict(writer=writer, tag=tag, profile=profTag, chars=len(text), lines=len(lines),
                 acc=REC.CharAcc(got, text), read=got,

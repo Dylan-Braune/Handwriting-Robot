@@ -79,6 +79,30 @@ JOBS = paths.Cache/"WebJobs"
 UPLOADS.mkdir(parents=True, exist_ok=True)
 JOBS.mkdir(parents=True, exist_ok=True)
 
+#----------------------------------------------------------------------
+#INCOMING PAGES ARE TURNED A QUARTER TURN LEFT
+#the camera is mounted across the gantry, so a page photographed on the
+#bed arrives on its side.  the turn is applied ONCE, where the picture is
+#first taken in, so the copy on disk is already the right way up: the
+#browser shows that file and the segmenter reads that same file, and the
+#two cannot drift apart.  anything loaded later by image_id is therefore
+#left exactly as it is, having been turned already
+#
+#0 switches it off.  only quarter turns are meaningful here
+#----------------------------------------------------------------------
+UPLOAD_ROTATE_DEG = 90   #90 is a quarter turn anticlockwise, ie to the left
+
+
+def IngestImage(src):
+    """Open a just-arrived page and stand it the right way up."""
+    img = Image.open(src)
+    deg = int(UPLOAD_ROTATE_DEG) % 360
+    if deg:
+        #expand keeps the whole page after a quarter turn instead of
+        #cropping it back to the old frame
+        img = img.rotate(deg, expand=True)
+    return img
+
 API_KEY = os.environ.get("WEBAPP_API_KEY", "")
 PORT = int(os.environ.get("PORT", "5000"))
 
@@ -212,7 +236,7 @@ def ApiCameraCapture():
     except Exception as e:
         return jsonify({"error": "Camera failed: %s" % e}), 200
     imageId = uuid.uuid4().hex
-    Image.open(captured).convert("RGB").save(UPLOADS/("%s.jpg" % imageId))
+    IngestImage(captured).convert("RGB").save(UPLOADS/("%s.jpg" % imageId))
     return jsonify({"image_id": imageId, "image_url": "/api/images/%s" % imageId})
 
 
@@ -261,7 +285,7 @@ def ApiClassify():
     run = TIMING.Run("classify")
     with run.Step("loading", chars=0):
         if "image" in request.files and request.files["image"].filename:
-            page = Image.open(request.files["image"].stream).convert("L")
+            page = IngestImage(request.files["image"].stream).convert("L")
             imageId = uuid.uuid4().hex
             page.convert("RGB").save(UPLOADS/("%s.jpg" % imageId))
         elif request.form.get("image_id"):
@@ -373,8 +397,11 @@ def ApiGenerate():
     run = TIMING.Run("reproduce", chars=len(text), lines=1)
 
     with run.Step("synthesis"):
+        #size the letters to the ruling BEFORE laying out, so the line breaks
+        #are chosen for the size that will actually be written
         traj = SYN.SynthesizeJointBestOf(
-            judged, text, profile, nTries=nTries, mmPerXh=4.0,
+            judged, text, profile, nTries=nTries,
+            mmPerXh=REP.XhForRuling(profile, cfg, text),
             lineWidthMm=cfg.usableWidthMm,
             reader=TEXT_MODEL, authorModel=SHAPE_MODEL, authorMapping=SHAPE_MAP)
 
@@ -418,7 +445,7 @@ def ApiRetrace():
     if "image" in request.files and request.files["image"].filename:
         imageId = uuid.uuid4().hex
         srcPath = UPLOADS/("%s.jpg" % imageId)
-        Image.open(request.files["image"].stream).convert("RGB").save(srcPath)
+        IngestImage(request.files["image"].stream).convert("RGB").save(srcPath)
     elif request.form.get("image_id"):
         imageId = "".join(c for c in request.form["image_id"] if c.isalnum())
         srcPath = UPLOADS/("%s.jpg" % imageId)

@@ -331,30 +331,36 @@ JOIN_FLAT_MAX_ASPECT = 0.35
 #pen leaves at the LOW end, which is where the next letter is reached from
 JOIN_VERT_MIN_XSPAN_XH = 0.25
 
-#---JOIN_NO_ENTRY_ABOVE_XH: a letter walked upright may not be joined INTO up here---
+#----------------------------------------------------------------------
+#REFUSING A JOIN BY HOW HIGH IT WOULD ATTACH -- TRIED, AND REJECTED
 #a single-stroke upright letter has one low end and one high one, so once
-#the pen is made to LEAVE at the bottom it necessarily ARRIVES at the top.
-#there is no honest join into that end -- a real hand lifts and starts the
-#downstroke -- so the connector is refused rather than drawn as a climb
-JOIN_NO_ENTRY_ABOVE_XH = 0.70
+#the pen is made to LEAVE at the bottom it necessarily ARRIVES at the top,
+#and a connector drawn to that end is a long climb.  refusing those joins
+#is what the geometry argues for, and the stored glyphs even separate
+#cleanly on it -- entry height median b 1.42, l 1.47, t 1.30 against v 0.84,
+#w 0.75, o 0.70, none of the short letters above 1.08 at p90, so a line at
+#1.15 x-heights divides ascender tips from honest x-height entries.
+#
+#it was measured over the 26 page set anyway, and it is worse:
+#
+#              char both   writer-ID   worst page
+#  gates on       85.5%      22/26        57.8
+#  gates off      86.7%      24/26        55.6
+#
+#the loss falls on the lightly joined hands, 151 by 10.6 points and dylan
+#by 7.4.  the reason is that the high entry is not noise: these glyphs were
+#cut with their approach stroke trimmed off as if it belonged to the
+#neighbour (style._TrimLigatureTails), so the letter is missing its up-leg
+#and the connector was standing in for it.  refusing the join leaves the
+#downstroke hanging in the air.
+#
+#the real repair is at cut time -- keep or regrow the up-leg -- and it needs
+#the profiles rebuilt.  until then the gates stay off: 99.0 x-heights is
+#higher than any glyph reaches, so neither test can fire
+#----------------------------------------------------------------------
+JOIN_NO_ENTRY_ABOVE_XH = 99.0   #off; see above
 
-#----------------------------------------------------------------------
-#JOIN_MAX_ATTACH_XH: no connector attaches above the x-height band
-#a cursive connector runs along the baseline and arrives from below, so it
-#cannot honestly meet a letter above x-height.  the stored glyphs separate
-#on exactly that line, because a skeleton trace of an ascender starts at
-#the top of the ascender while a trace of a short letter cannot:
-#
-#  entry height, median over all 25 profiles
-#    b 1.42   l 1.47   t 1.30   k 0.90   i 0.88      <- ascender tops
-#    v 0.84   w 0.75   o 0.70   u 0.81   e 0.64      <- never above 1.08 at p90
-#
-#so 1.15 sits in the gap.  v, w, o, u and c keep every join they had --
-#they genuinely finish and start at x-height -- while the climb up to an
-#ascender tip is refused.  it costs 16.8 per cent of entry attachments and
-#7.7 per cent of exit attachments, and those are the implausible ones
-#----------------------------------------------------------------------
-JOIN_MAX_ATTACH_XH = 1.15
+JOIN_MAX_ATTACH_XH = 99.0   #off, same measurement as above
 
 #---CORE_SLANT_CAP_DEG: how far a fallback letter is allowed to lean---
 CORE_SLANT_CAP_DEG = 22.0   #print-anchor glyphs never shear past this
@@ -1038,7 +1044,12 @@ def SynthesizeText(text,profile,mmPerXh=4.0,seed=None,lineWidthMm=180.0,
                 nStrokes=len(strokes),glyphSources=usage,
                 slantDeg=profile.get('slantDeg',0.0),
                 connectedness=conn,lines=lineIdx+1,
-                ascender=ascender,descender=descender)
+                ascender=ascender,descender=descender,
+                #the pitch this text was laid out at, in mm.  the G-code
+                #writer rescales against it so one text line occupies one
+                #ruled line on the paper, whatever this writer's ascenders
+                #and descenders happen to measure
+                lineStepMm=lineStep)
     return Trajectory(strokes,meta)
 
 

@@ -74,6 +74,35 @@ class GantryConfig:
     #time instead of being re-fed for every word
     lineHeightMm: float = 8.4   #the ruling on the paper being written on
     lineOffsetMm: float = 0.0   #how far down from the first line to start
+    #--- sizing the writing to the ruling -------------------------------
+    #the synthesiser lays text out at a pitch of its own, (ascender -
+    #descender + 0.85) x-heights, which at the default 4 mm x-height comes
+    #to between 12 and 18 mm depending on how long the writer's ascenders
+    #are.  nothing then related that to the paper, so on an 8.4 mm ruling
+    #the writing came out too big and every line after the first landed
+    #most of a line low.
+    #
+    #what gets sized to the ruling is the X-HEIGHT, not the whole letter.
+    #ruled paper is not written to by making the ascenders and descenders
+    #fit between two rules -- they cross into the neighbouring bands, which
+    #is why a hand with long ascenders still sits on an ordinary ruling.
+    #measured on the five photographed writers' own pages, x-height over
+    #line pitch is
+    #
+    #    dylan 0.392   owen 0.403   yeukita 0.414   abhinav 0.483
+    #    thiya 0.596                              mean 0.458
+    #
+    #so 0.46 of the ruling is what these hands actually do, and on 8.4 mm
+    #that is a 3.8 mm x-height.  forcing the full ascender-to-descender
+    #extent inside the band instead gave 1.6 to 2.3 mm, about half size
+    fitToRuling: bool = True
+    rulingXhFrac: float = 0.46   #x-height as a share of the ruling
+    #a cap, not the target: synthesis stretches ascenders and descenders
+    #(StyleCalibration) past what the writer's own pages show, and a few
+    #outlier glyphs reach further still.  this stops one freak glyph
+    #driving the whole job down in size, while leaving normal overshoot
+    #into the lines above and below alone
+    rulingMaxExtent: float = 1.25   #tallest line, as a multiple of the ruling
     #--- speeds ---------------------------------------------------------
     drawFeedMmMin: float = 900.0   #pen-down feed
     travelFeedMmMin: float = 2400.0   #pen-up rapid
@@ -145,6 +174,94 @@ class GantryConfig:
 #it would otherwise run off the work area.  never enlarges, so asking
 #for small writing gets small writing
 #----------------------------------------------------------------------
+#----------------------------------------------------------------------
+#XhForRuling: the x-height to lay text out at so it fits the ruling
+#ToMachine can always shrink an oversized job onto the ruling afterwards,
+#but shrinking it afterwards is not enough on its own: the synthesiser has
+#already decided where to break lines, and it broke them for the larger
+#size, so the shrunk text uses about half the width of the paper and takes
+#twice as many lines to say the same thing.  choosing the x-height BEFORE
+#laying out puts the line breaks in the right places.
+#
+#the tallest glyph the text will actually use sets the figure, taken from
+#the stored glyphs rather than the writer's nominal ascender, which runs
+#short.  ToMachine stays as the safety net if this estimate is optimistic
+#----------------------------------------------------------------------
+def XhForRuling(profile,cfg,text=None,default=4.0,probe=True):
+    ruling = float(getattr(cfg,'lineHeightMm',8.4))
+    #the writer's own x-height, if their pages were measured when the
+    #profile was built; otherwise what the five photographed hands average
+    frac = float(profile.get('xhOverPitch',0.0) or 0.0)
+    if not 0.15<=frac<=0.90:
+        frac = float(getattr(cfg,'rulingXhFrac',0.46))
+    xh = ruling*frac
+    if not probe or not text:
+        return xh
+    #the cap is checked against what synthesis really draws, not against the
+    #stored glyph heights: StyleCalibration stretches ascenders and
+    #descenders past the figures on the profile, turning a predicted 7.6 mm
+    #line into 12.4 mm on owen's hand.  one plain layout is drawn and
+    #measured, and the x-height is brought down only if the tallest line
+    #breaks the cap.  it is never raised -- the x-height fraction is the
+    #target, and the cap exists to stop a freak glyph, not to fill the band
+    try:
+        import synthesise as SYN
+        t = SYN.SynthesizeText(text,profile,mmPerXh=xh,seed=0,
+                               lineWidthMm=getattr(cfg,'usableWidthMm',180.0))
+        got = _TallestLine(t)
+        cap = ruling*float(getattr(cfg,'rulingMaxExtent',1.60))
+        if got>cap>0:
+            xh *= cap/got
+    except Exception:
+        pass   #a probe that will not run must not stop a job being written
+    return xh
+
+
+#----------------------------------------------------------------------
+#_TallestLine: how much vertical room one line of this text really needs
+#groups the strokes onto their own text line by the pitch the synthesiser
+#laid them out at, then measures how far the ink reaches either side of
+#that line's baseline.
+#
+#the reach is taken at the 98th and 2nd percentile of the strokes, not at
+#the outright highest and lowest.  a handful of strokes come out far taller
+#than the writer ever wrote -- on owen the lowest descender reaches 1.19
+#x-heights where the 2nd percentile is 0.54 -- and letting one of those set
+#the size drove the whole job down by a third.  the robust figure matches
+#the writer's own measured proportions almost exactly: owen 2.22 x-heights
+#against the 2.19 his profile records for ascender plus descender
+#----------------------------------------------------------------------
+_EXTENT_HI_PCT = 98.0
+_EXTENT_LO_PCT = 2.0
+
+def _TallestLine(traj):
+    pitch = float(traj.meta.get('lineStepMm',0.0) or 0.0)
+    rows = {}
+    for s in traj.strokes:
+        if not s:
+            continue
+        ys = [p[1] for p in s]
+        if pitch>1e-6:
+            #the stroke belongs to the line its own ink sits nearest to
+            k = round(-(sum(ys)/len(ys))/pitch)
+            base = -k*pitch
+        else:
+            k,base = 0,0.0
+        rows.setdefault(k,[]).append((max(ys)-base,min(ys)-base))
+    if not rows:
+        return 0.0
+    worst = 0.0
+    for v in rows.values():
+        tops = np.array([t for t,_b in v],dtype=np.float64)
+        bots = np.array([b for _t,b in v],dtype=np.float64)
+        if tops.size<8:   #too few strokes for a percentile to mean anything
+            worst = max(worst,float(tops.max()-bots.min()))
+        else:
+            worst = max(worst,float(np.percentile(tops,_EXTENT_HI_PCT)
+                                   -np.percentile(bots,_EXTENT_LO_PCT)))
+    return worst
+
+
 def ToMachine(traj,cfg,fitToBounds=True,optimizeOrder=True,rowTolMm=None):
     x0,y0,x1,y1 = traj.Bounds()
     w,h = max(1e-6,x1-x0),max(1e-6,y1-y0)
@@ -162,12 +279,67 @@ def ToMachine(traj,cfg,fitToBounds=True,optimizeOrder=True,rowTolMm=None):
         availW = cfg.boundsMaxXmm-cfg.originXmm-2*mx
         availH = (cfg.originYmm-my-off)-cfg.boundsMinYmm
         scale = min(1.0,availW/w,availH/h)
+        #size the writing to the ruling rather than to whatever x-height the
+        #synthesiser happened to use.  this one may scale UP as well as down,
+        #so it replaces the natural size instead of capping it -- but it is
+        #still held inside the sheet by the width and height limits.
+        #
+        #this does NOT squeeze the letters between two rules.  the job is
+        #laid out at an x-height taken from the ruling (XhForRuling), and
+        #ascenders and descenders are left to cross into the bands above and
+        #below exactly as they do in the writer's own pages.  all that
+        #happens here is the cap: if the tallest line runs past
+        #rulingMaxExtent the whole job comes down proportionally
+        if getattr(cfg,'fitToRuling',False):
+            tall = _TallestLine(traj)
+            if tall>1e-6:
+                cap = (float(getattr(cfg,'lineHeightMm',8.4))
+                       *float(getattr(cfg,'rulingMaxExtent',1.60)))
+                scale = min(1.0,cap/tall,availW/w,availH/h)
+    #scaling the letters to fit the ruling does NOT by itself put the lines
+    #on the ruling: the gap between them comes out as the synthesiser's pitch
+    #times that scale, which lands anywhere between 7.0 and 8.7 mm depending
+    #on the writer.  the two have to be set separately -- the scale sizes the
+    #letters, and each line is then moved onto its own ruled line.
+    #
+    #each line is placed by its MEASURED centre, not by the pitch it was laid
+    #out at.  the synthesiser wanders the baseline as a real hand does
+    #(driftV in SynthesizeText) and never resets that wander at a line break,
+    #so correcting the nominal pitch alone still left the lines 8.45 to 8.51
+    #apart instead of 8.40.  measuring each line and placing it takes the
+    #drift out from between the lines while leaving it inside them
+    pitch = float(traj.meta.get('lineStepMm',0.0) or 0.0)
+    ruledPitch = float(getattr(cfg,'lineHeightMm',8.4))
+    respace = (getattr(cfg,'fitToRuling',False) and pitch>1e-6
+               and int(traj.meta.get('lines',1) or 1)>1)
+    centres = {}
+    if respace:
+        rows = {}
+        for s in traj.strokes:
+            if not s:
+                continue
+            k = round(-(sum(p[1] for p in s)/len(s))/pitch)
+            ys = [p[1] for p in s]
+            lo,hi = rows.get(k,(1e18,-1e18))
+            rows[k] = (min(lo,min(ys)),max(hi,max(ys)))
+        if rows:
+            k0 = min(rows)   #the topmost line stays where it is
+            c0 = (rows[k0][0]+rows[k0][1])*0.5
+            for k,(lo,hi) in rows.items():
+                ck = (lo+hi)*0.5
+                #put this line's centre exactly (k-k0) rulings below line k0
+                centres[k] = (c0-ck)*scale-(k-k0)*ruledPitch
     out = []
     for s in traj.strokes:
+        #the line this stroke belongs to, from where its own ink sits
+        shift = 0.0
+        if respace and s:
+            k = round(-(sum(p[1] for p in s)/len(s))/pitch)
+            shift = centres.get(k,0.0)
         #both frames have y UP (standard plotter convention): the text's
         #top row lands at originY and later rows descend from there
         q = [(cfg.originXmm+mx+(x-x0)*scale,
-              cfg.originYmm-my-off-(y1-y)*scale)
+              cfg.originYmm-my-off-(y1-y)*scale+shift)
              for (x,y) in s]
         out.append(_Decimate(q,cfg.minSegmentMm))
     if optimizeOrder:
@@ -353,6 +525,10 @@ def WriteGcode(traj,cfg,path,title='',rowTolMm=None):
                                leftXmm=round(min(xs),2),rightXmm=round(max(xs),2),
                                lineOffsetMm=round(off,2),lineHeightMm=round(lineH,3),
                                lineIndex=int(round(off/lineH)),
+                               #ruled lines this job itself occupies.  the page
+                               #has to advance by this, not by one, or a job
+                               #that wrapped is written over by the next one
+                               textLines=max(1,int(traj.meta.get('lines',1) or 1)),
                                firstLineYmm=round(firstLineY,2),
                                #how many whole ruled lines fit below the first
                                linesOnPage=int((firstLineY-cfg.boundsMinYmm)//lineH)+1,

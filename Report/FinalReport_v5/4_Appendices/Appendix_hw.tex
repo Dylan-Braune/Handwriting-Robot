@@ -164,41 +164,83 @@ Equation~\ref{eq:gan-budget} is the tightest tolerance anywhere in the hardware 
 
 Three routines of the motion program carry the behaviour that Section~\ref{sec:gantry} describes: the debounced end-stop read inside the stepping loop, the direction-agnostic calibration, and the pen toggle.
 
-\begin{figure}[!htbp]
-\centering
-\fontsize{8.5}{10.2}\selectfont
-\begin{verbatim}
-  TriggeredEndstop( ignore ):            # three reads, 6 ms apart
-      for each end-stop not in ignore:
-          if it does not read closed: continue
-          re-read it twice more, 6 ms apart
-          if it read closed every time: return that end-stop
-      return none
+\begin{algorithm}[!htbp]
+\caption{Debounced end-stop read, called before every major-axis pulse}
+\label{alg:gan-endstop}
+\begin{algorithmic}[1]
+\REQUIRE set of end-stops to ignore (already triggered on this axis)
+\FOR{each end-stop not in the ignore set}
+    \IF{it does not read closed}
+        \STATE \textbf{continue} to the next end-stop
+    \ENDIF
+    \STATE re-read it twice more, 6\,ms apart \COMMENT{three reads in total, debounce of Equation~\ref{eq:gan-latency}}
+    \IF{it read closed on all three reads}
+        \STATE \textbf{return} that end-stop as triggered
+    \ENDIF
+\ENDFOR
+\STATE \textbf{return} none triggered
+\end{algorithmic}
+\end{algorithm}
 
-  StepSegment( dx, dy, feed ):           # x taken as the major axis
-      delay <- max( (distance / feed) / majorSteps,  2 microseconds )
-      e <- majorSteps / 2
-      repeat majorSteps times:
-          if TriggeredEndstop() is not none:  stop at once
-          pulse the major-axis STEP pin ;  e <- e - minorSteps
-          if e < 0:  pulse the minor-axis STEP pin ;  e <- e + majorSteps
-          sleep( delay )
+\begin{algorithm}[!htbp]
+\caption{Interpolated segment with in-loop end-stop check}
+\label{alg:gan-step}
+\begin{algorithmic}[1]
+\REQUIRE $dx,dy$ in steps ($x$ taken as the major axis, $a_x=|dx|\ge|dy|=a_y$), feed $v_f$
+\STATE $\mathrm{delay}\leftarrow\max\bigl((\mathrm{distance}/v_f)/a_x,\ 2\,\mu\mathrm{s}\bigr)$ \COMMENT{$\tau$ of Equation~\ref{eq:gan-tau}}
+\STATE $e\leftarrow\lfloor a_x/2\rfloor$ \COMMENT{Bresenham error term of Equation~\ref{eq:gan-bres}}
+\FOR{$k=1$ \TO $a_x$}
+    \IF{Algorithm~\ref{alg:gan-endstop} returns a triggered end-stop}
+        \STATE stop the segment at once \COMMENT{latches as in Section~\ref{sec:gan-stop}}
+    \ENDIF
+    \STATE pulse the major-axis STEP pin; $e\leftarrow e-a_y$
+    \IF{$e<0$}
+        \STATE pulse the minor-axis STEP pin; $e\leftarrow e+a_x$
+    \ENDIF
+    \STATE sleep for $\mathrm{delay}$
+\ENDFOR
+\end{algorithmic}
+\end{algorithm}
 
-  Calibrate( axis ):                     # no direction is ever named
-      drive one way until EITHER switch of this axis triggers -> first
-      reverse, counting steps, until the OTHER one triggers    -> N
-      stepsPerMm <- N / measuredTravel
-      position   <- N  if the second switch was MAX  else 0
-      retract 5 mm off the switch that is still closed
+\begin{algorithm}[!htbp]
+\caption{Direction-agnostic calibration of one axis}
+\label{alg:gan-calibrate}
+\begin{algorithmic}[1]
+\STATE drive one way at 1.6\,ms per step until \emph{either} switch of this axis triggers
+\STATE reverse; count steps $N$ until the \emph{other} switch triggers
+\STATE $\kappa_{\mathrm{axis}}\leftarrow N/L$ \COMMENT{$L$ the hand-measured travel, Equation~\ref{eq:gan-cal}}
+\IF{the second switch to trigger was the maximum-side one}
+    \STATE $n_0\leftarrow N$
+\ELSE
+    \STATE $n_0\leftarrow0$
+\ENDIF
+\STATE retract 5\,mm off the switch that is still closed
+\IF{an already-triggered switch, an unexpected switch on the other axis, or 200\,000 steps pass with no trigger}
+    \STATE abort calibration; refuse all jobs until it is re-run
+\ENDIF
+\end{algorithmic}
+\end{algorithm}
 
-  SetPen( wantUp ):
-      if any end-stop is triggered: refuse
-      if the pen switch already reads wantUp: return   # motor must NOT run
-      energise the pen motor
-      until the deadline: if the pen switch reads wantUp: stop; break
-      if it reached the up state: wait 40 ms more to seat
-      de-energise the pen motor
-\end{verbatim}
-\caption{The four routines of the motion program as pseudocode. In \texttt{StepSegment}, \texttt{delay} is $\tau$ of Equation~\ref{eq:gan-tau} and \texttt{e} is the error term of Equation~\ref{eq:gan-bres}; the end-stop read before every major-axis pulse is what sets the latency of Equation~\ref{eq:gan-latency}. In \texttt{Calibrate}, \texttt{N} and the two assignments after it are the quantities of Equation~\ref{eq:gan-cal}. \texttt{SetPen} must check the switch first because the cam turns one way only, so an unnecessary pulse would toggle the pen to the wrong state rather than leave it alone.}
-\label{fig:gan-code}
-\end{figure}
+\begin{algorithm}[!htbp]
+\caption{Pen toggle}
+\label{alg:gan-pen}
+\begin{algorithmic}[1]
+\REQUIRE desired state $\mathrm{wantUp}$
+\IF{any end-stop is currently triggered}
+    \STATE refuse the request
+\ELSIF{the pen switch already reads $\mathrm{wantUp}$}
+    \STATE \textbf{return} \COMMENT{the motor must \emph{not} run; the cam turns one way only}
+\ELSE
+    \STATE energise the pen motor
+    \WHILE{before the deadline and the pen switch does not yet read $\mathrm{wantUp}$}
+        \STATE wait
+    \ENDWHILE
+    \IF{the switch now reads up}
+        \STATE wait 40\,ms more to seat the cam
+    \ENDIF
+    \STATE de-energise the pen motor
+\ENDIF
+\end{algorithmic}
+\end{algorithm}
+
+Algorithms~\ref{alg:gan-endstop}--\ref{alg:gan-pen} are the four routines of the motion program. \texttt{SetPen} must check the switch before energising the motor, for the stated reason, because the cam turns one way only, so an unnecessary pulse would toggle the pen to the wrong state rather than leave it alone.
