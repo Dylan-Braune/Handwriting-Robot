@@ -240,17 +240,47 @@ document.getElementById("uploadTriggerBtn").addEventListener("click", () => {
   document.getElementById("fileInput").click();
 });
 
+// A chosen file is shown straight from the browser, so it never passes the
+// server and the quarter turn the server applies on the way in (IngestImage,
+// UPLOAD_ROTATE_DEG) would not show here.  The same turn is made on a canvas
+// for the preview only: what is UPLOADED stays the original file, or the
+// server would turn an already turned page a second time.
+// Keep this in step with UPLOAD_ROTATE_DEG in server.py.
+const UPLOAD_ROTATE_DEG = 90;   // 90 = a quarter turn left, as the server does
+
+function rotatedPreview(file, cb) {
+  const deg = ((UPLOAD_ROTATE_DEG % 360) + 360) % 360;
+  const url = URL.createObjectURL(file);
+  if (!deg) { cb(url); return; }
+  const img = new Image();
+  img.onload = () => {
+    const quarter = deg === 90 || deg === 270;
+    const c = document.createElement("canvas");
+    c.width  = quarter ? img.height : img.width;
+    c.height = quarter ? img.width  : img.height;
+    const g = c.getContext("2d");
+    if (deg === 90)       { g.translate(0, img.width);  g.rotate(-Math.PI / 2); }
+    else if (deg === 180) { g.translate(img.width, img.height); g.rotate(Math.PI); }
+    else                  { g.translate(img.height, 0); g.rotate(Math.PI / 2); }
+    g.drawImage(img, 0, 0);
+    URL.revokeObjectURL(url);
+    cb(c.toDataURL("image/jpeg", 0.92));
+  };
+  img.onerror = () => cb(url);   // unreadable here is still the server's to judge
+  img.src = url;
+}
+
 document.getElementById("fileInput").addEventListener("change", (e) => {
   const file = e.target.files[0];
   if (!file) return;
-  capturedBlob = file;
+  capturedBlob = file;          // the ORIGINAL goes up; the server turns it
   capturedImageId = null;
-  previewImg.src = URL.createObjectURL(file);
-  previewImg.style.display = "block";
+  rotatedPreview(file, (src) => {
+    previewImg.src = src;
+    previewImg.style.display = "block";
+    persist({ capturedDataUrl: src.startsWith("data:") ? src : null });
+  });
   enableClassify();
-  const reader = new FileReader();
-  reader.onload = () => persist({ capturedDataUrl: reader.result });
-  reader.readAsDataURL(file);
 });
 
 // Retrace: the page's own ink to G-code, nothing in between. Drawing this

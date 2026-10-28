@@ -821,7 +821,12 @@ def DropArtifactPieces(mask,ratio,P,H,W):
     touchT,touchB = top<=edgeTol,bot>=H-1-edgeTol
     thinV = (bot-top+1)<=0.5*P
     letters = (area>=0.065*P*P)&~tall
-    xL = np.percentile(xmin[letters],5)
+    #where the text block starts on the left, judged from the letters alone.
+    #with nothing that looks like a letter there is no margin to estimate, and
+    #asking numpy for a percentile of an empty selection raises IndexError --
+    #which reached the web server as a 500 instead of "no handwriting found".
+    #-inf simply stops the left-of-margin test below from dropping anything
+    xL = np.percentile(xmin[letters],5) if letters.any() else -np.inf
     vbar = ((xmax-xmin+1)<=0.12*P)&((bot-top+1)>=1.2*P)   #thin and taller than any letter
     otsuT = Otsu(ratio)
     #bincount with weights sums the ratio per piece, so dividing by the
