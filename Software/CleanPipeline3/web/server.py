@@ -375,7 +375,7 @@ def ApiGenerate():
     with run.Step("synthesis"):
         traj = SYN.SynthesizeJointBestOf(
             judged, text, profile, nTries=nTries, mmPerXh=4.0,
-            lineWidthMm=cfg.boundsMaxXmm-cfg.originXmm-5,
+            lineWidthMm=cfg.usableWidthMm,
             reader=TEXT_MODEL, authorModel=SHAPE_MODEL, authorMapping=SHAPE_MAP)
 
     jobId = uuid.uuid4().hex

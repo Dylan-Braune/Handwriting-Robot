@@ -43,17 +43,30 @@ class GantryConfig:
     #--- work area ------------------------------------------------------
     boundsMinXmm: float = 0.0
     boundsMinYmm: float = 0.0
-    boundsMaxXmm: float = 200.0
-    boundsMaxYmm: float = 200.0
-    originXmm: float = 10.0   #where text starts on the bed
-    originYmm: float = 180.0
+    #zero means "use what the switches measured", which __post_init__ fills
+    #in below.  a number here is still trimmed to the measured travel, so
+    #nothing can promise more bed than the carriage can reach
+    boundsMaxXmm: float = 0.0
+    boundsMaxYmm: float = 0.0
+    #originXmm is a bed offset, NOT a margin: pageMarginXmm is the margin.
+    #it used to be 10, which was added on top of the margin and put every
+    #line a centimetre right of where the margin says it should be
+    originXmm: float = 0.0
+    #the top of the sheet, where line 1 sits.  zero means the top of the
+    #calibrated area.  it used to be a hardcoded 180, which on a bed that
+    #measures 250.3 mm put the first line 94 mm down the page
+    originYmm: float = 0.0
     #--- page margins ---------------------------------------------------
     #drawn output is photographed and read back, and the segmenter needs a
     #page to look like a page: paper around the writing, not writing to the
     #edge.  these match the writers' own sheets, measured off the
     #photographs at about 13 to 15 mm at the left and 24 mm at the top
     pageMarginXmm: float = 15.0
-    pageMarginYmm: float = 24.0
+    #1 cm from the calibrated top of the bed to the first line, which is
+    #where the ruling on the paper starts.  it was 24, measured off the
+    #writers' photographed sheets, which is the right number for a scanned
+    #page and the wrong one for placing the pen
+    pageMarginYmm: float = 10.0
     #--- which ruled line to write on -----------------------------------
     #without this every job starts at the same height and each new line is
     #drawn over the last one.  the offset moves the whole trajectory down
@@ -81,6 +94,32 @@ class GantryConfig:
     #a stroke whose own two ends are this close is finished off, so a letter
     #drawn as a ring meets itself rather than stopping just short
     closeRingMm: float = 0.6
+
+    #------------------------------------------------------------------
+    #the work area is described twice: here, which is what the g-code is
+    #planned against, and by Calibrate(), which is what the carriage can
+    #actually reach between the switches.  when this one promised more,
+    #the extra was not an error -- it was clamped onto the boundary at
+    #run time, so the end of every long line was drawn flat against the
+    #right edge.  10.8 mm were being lost that way, which is a word
+    #------------------------------------------------------------------
+    def __post_init__(self):
+        usableW = X_SWITCH_TRAVEL_MM-2*EDGE_TOLERANCE_MM
+        usableH = Y_SWITCH_TRAVEL_MM-2*EDGE_TOLERANCE_MM
+        self.boundsMaxXmm = (usableW if self.boundsMaxXmm <= 0
+                             else min(self.boundsMaxXmm, usableW))
+        self.boundsMaxYmm = (usableH if self.boundsMaxYmm <= 0
+                             else min(self.boundsMaxYmm, usableH))
+        #the sheet starts at the top of what the machine can reach, so the
+        #first line is one top margin down from there and every line after
+        #it is one ruling lower
+        if self.originYmm <= 0:
+            self.originYmm = self.boundsMaxYmm
+
+    #---usableWidthMm: what is left for writing once both margins are kept---
+    @property
+    def usableWidthMm(self):
+        return self.boundsMaxXmm-self.originXmm-2*self.pageMarginXmm
 
     @property
     def microstepsPerRev(self):
@@ -116,7 +155,11 @@ def ToMachine(traj,cfg,fitToBounds=True,optimizeOrder=True,rowTolMm=None):
     #being drawn off the bottom of the sheet
     off = max(0.0,float(getattr(cfg,'lineOffsetMm',0.0)))
     if fitToBounds:
-        availW = cfg.boundsMaxXmm-cfg.originXmm-mx
+        #the margin is subtracted TWICE: once for the left one the text
+        #starts after, once for a right one of the same width.  taking it
+        #off only once let a line run to the very edge of the travel, which
+        #is where it met the run-time clamp and lost its last word
+        availW = cfg.boundsMaxXmm-cfg.originXmm-2*mx
         availH = (cfg.originYmm-my-off)-cfg.boundsMinYmm
         scale = min(1.0,availW/w,availH/h)
     out = []

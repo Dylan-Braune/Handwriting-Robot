@@ -262,6 +262,100 @@ UNIFORM_SOFT_FRAC = 0.30   #blur radius as a fraction of strokePx
 #---JOIN_PROB_CAP: never join more often than this, even for a fully joined hand---
 JOIN_PROB_CAP = 1.0   #cap the per-pair cursive-join probability
 
+#----------------------------------------------------------------------
+#LETTER SPACING
+#a glyph's stored `advance` is the width of the CELL it was cut from, not
+#of its ink.  where the cut took in part of a neighbour the cell is far
+#too wide, and the letter that follows is pushed away from it: measured
+#over the five photographed writers the median trailing gap is 0.04 to
+#0.13 x-heights, but the tail runs to 1.38 -- wider than a letter.  that
+#is what draws a long flat connector across empty paper.
+#
+#the cure is to keep each writer's own spacing but refuse the tail of
+#their own distribution, so a gap is clamped between their 25th and 90th
+#percentile.  the lower end matters too: the old floor was ink+0.04,
+#which is nothing, and letters ran into each other
+#----------------------------------------------------------------------
+#only the TOP of the range is taken from the writer.  raising the floor as
+#well was tried and made things worse: it pushed apart letters that were
+#sitting correctly, turning "number" into "num ber" and "the" into "t he",
+#while fixing nothing the cap had not already fixed
+GAP_HI_PCT = 90
+
+#---MAX_LETTER_GAP_XH: and never more than this, whatever the writer---
+#binds only on the writers with a wide tail -- thiya sits at 0.41 and
+#dylan at 0.30, where owen and abhinav are already inside it
+MAX_LETTER_GAP_XH = 0.30
+
+#---MIN_LETTER_GAP_XH: the old floor, kept so letters cannot touch---
+MIN_LETTER_GAP_XH = 0.03
+
+#----------------------------------------------------------------------
+#MAX_JOIN_GAP_XH: how far apart two letters may be and still be joined
+#the join decision used to ask only what the letters were and how cursive
+#the hand is, never how far apart they had ended up, so a connector was
+#drawn across any distance at all.  a hand lifts the pen instead
+#----------------------------------------------------------------------
+MAX_JOIN_GAP_XH = 0.80
+
+#----------------------------------------------------------------------
+#WHERE A JOIN ATTACHES TO A LETTER
+#the connector used to run between the two ENDS of whichever stroke was
+#widest in x, in the order that stroke's points happened to be stored.
+#neither half of that is anatomy:
+#
+#  * widest in x picks a t or f CROSSBAR over its own stem, because a bar
+#    is wider than the stroke it crosses.  measured over all 25 profiles
+#    the bar wins 269 times, so the pen leaves the letter from the tip of
+#    the bar and the stem is flushed as a leftover.
+#  * strokes are oriented left-to-right at cut time (style._TrimLigature-
+#    Tails), which for a near-vertical letter is a coin flip on pixel
+#    noise: 9 per cent of stored glyphs have a body x-span under a quarter
+#    of their own height, and l leaves from its TOP in 23 of 215 cases.
+#
+#together those put a third of all exit points (33%) and getting on for
+#half of all entry points (42%) above 0.7 x-heights, up in the letter
+#rather than down on the baseline where a join belongs
+#----------------------------------------------------------------------
+#---JOIN_ANATOMY: choose the join point from the letter's shape---
+JOIN_ANATOMY = True
+
+#---JOIN_FLAT_MAX_ASPECT: below this height/width a stroke is a bar, not a body---
+#a crossbar is by definition much wider than it is tall.  such a stroke
+#may not carry the connection, whatever its x-span
+JOIN_FLAT_MAX_ASPECT = 0.35
+
+#---JOIN_VERT_MIN_XSPAN_XH: under this x-span, left-to-right ordering is noise---
+#set at the measured degeneracy threshold, so the rule touches only the
+#9 per cent of glyphs whose ordering was never meaningful.  for those the
+#pen leaves at the LOW end, which is where the next letter is reached from
+JOIN_VERT_MIN_XSPAN_XH = 0.25
+
+#---JOIN_NO_ENTRY_ABOVE_XH: a letter walked upright may not be joined INTO up here---
+#a single-stroke upright letter has one low end and one high one, so once
+#the pen is made to LEAVE at the bottom it necessarily ARRIVES at the top.
+#there is no honest join into that end -- a real hand lifts and starts the
+#downstroke -- so the connector is refused rather than drawn as a climb
+JOIN_NO_ENTRY_ABOVE_XH = 0.70
+
+#----------------------------------------------------------------------
+#JOIN_MAX_ATTACH_XH: no connector attaches above the x-height band
+#a cursive connector runs along the baseline and arrives from below, so it
+#cannot honestly meet a letter above x-height.  the stored glyphs separate
+#on exactly that line, because a skeleton trace of an ascender starts at
+#the top of the ascender while a trace of a short letter cannot:
+#
+#  entry height, median over all 25 profiles
+#    b 1.42   l 1.47   t 1.30   k 0.90   i 0.88      <- ascender tops
+#    v 0.84   w 0.75   o 0.70   u 0.81   e 0.64      <- never above 1.08 at p90
+#
+#so 1.15 sits in the gap.  v, w, o, u and c keep every join they had --
+#they genuinely finish and start at x-height -- while the climb up to an
+#ascender tip is refused.  it costs 16.8 per cent of entry attachments and
+#7.7 per cent of exit attachments, and those are the implausible ones
+#----------------------------------------------------------------------
+JOIN_MAX_ATTACH_XH = 1.15
+
 #---CORE_SLANT_CAP_DEG: how far a fallback letter is allowed to lean---
 CORE_SLANT_CAP_DEG = 22.0   #print-anchor glyphs never shear past this
 
@@ -389,6 +483,40 @@ def AutoLegibility(profile):
 #drops to the generic alphabet if even that is too rough.  a joined hand
 #gets the joined version so a substitute can still connect
 #----------------------------------------------------------------------
+#----------------------------------------------------------------------
+#_GapRange: the spacing this writer leaves after a letter, as a range
+#taken from their own stored glyphs rather than from a fixed number, so a
+#wide hand stays wide and a tight one stays tight.  cached on the profile
+#because it is asked for once per letter drawn
+#----------------------------------------------------------------------
+def _GapRange(profile):
+    r = profile.get('_gapRange')
+    if r is None:
+        gaps = []
+        for ch,vs in (profile.get('glyphs') or {}).items():
+            if len(ch)!=1 or not ch.isalpha():
+                continue
+            for g in vs:
+                gaps.append(float(g.get('advance',0.9))
+                            -float(g.get('lead',0.0))
+                            -float(g.get('width',0.9)))
+        hi = float(np.percentile(gaps,GAP_HI_PCT)) if gaps else 0.25
+        lo = MIN_LETTER_GAP_XH
+        hi = min(MAX_LETTER_GAP_XH,max(lo+0.02,hi))
+        r = (lo,hi)
+        profile['_gapRange'] = r
+    return r
+
+
+#---_Advance: how far to move on after a glyph, with the gap reined in---
+def _Advance(g,profile):
+    lead = float(g.get('lead',0.0))
+    wid = float(g.get('width',0.9))
+    lo,hi = _GapRange(profile)
+    gap = float(g.get('advance',0.9))-lead-wid
+    return lead+wid+min(max(gap,lo),hi)
+
+
 def _CoreGlyph(ch,profile):
     cursive = float(profile.get('connectedness',0.0))>=CORE_CURSIVE_CONN
     src = (profile.get('idealMedoid') if IDEAL_SOURCE=='medoid'
@@ -396,8 +524,7 @@ def _CoreGlyph(ch,profile):
     own = src.get(ch)
     if own and float(own.get('priorD',1.0))<=IDEAL_ANCHOR_MAX_PRIORD:
         strokes = [[tuple(p) for p in s] for s in own['strokes']]
-        adv = max(float(own.get('advance',0.9)),
-                  float(own.get('lead',0.0))+float(own.get('width',0.9))+0.04)
+        adv = _Advance(own,profile)
         return strokes,adv,float(own.get('lead',0.0)),cursive
     b = _BaselineGlyph(ch,profile,printOnly=not cursive)
     return None if b is None else (b[0],b[1],0.0,cursive)
@@ -422,8 +549,10 @@ def _GlyphSource(profile,ch,rng,prevExitY=None,lam=0.0,forceCore=False,
         strokes = [[(x*k,y*k) for (x,y) in s] for s in g['strokes']]
         #the variant's OWN advance, never the character median -- a wide
         #variant advanced by a narrow median would collide with the next letter
-        a = max(float(g.get('advance',0.9)),
-                float(g.get('lead',0.0))+float(g.get('width',0.9))+0.04)
+        #the writer's own advance, with the gap after the ink held inside
+        #their own usual range: the stored figure is the width of the cut
+        #cell, and a cell that swallowed part of a neighbour is far too wide
+        a = _Advance(g,profile)
         return strokes,a*k,float(g.get('lead',0.0))*k
 
         #---Pick: favour typical variants but keep varying, since a uniform choice
@@ -682,6 +811,45 @@ def _Ligature(p0,p1,xh,rng):
                     u*u*p0[1]+2*u*t*ctrl[1]+t*t*p1[1]))
     return _Resample(out,step=0.35)
 
+#----------------------------------------------------------------------
+#_BodyStroke: which stroke carries the join, and which way it is walked
+#two questions, both answered from the shape in front of it rather than
+#from the order the skeleton tracer happened to emit:
+#  which stroke -- the widest one that is not a bar.  a dot never wins on
+#    width, so dots were already safe; a crossbar did win, and is now ruled
+#    out by its own flatness
+#  which way round -- left-to-right while that means something, and the low
+#    end last once the letter is too upright for x to decide
+#the pen leaves at the end of the returned stroke, so reversing it is what
+#moves a join off the top of an l and back down to the baseline
+#----------------------------------------------------------------------
+def _BodyStroke(placed,xh,baseY=0.0):
+    spans = [max(p[0] for p in s)-min(p[0] for p in s) for s in placed]
+    highs = [max(p[1] for p in s)-min(p[1] for p in s) for s in placed]
+    if not JOIN_ANATOMY:
+        bi = int(np.argmax(spans))
+        return bi,list(placed[bi]),True,True
+    #a bar is far wider than it is tall: it crosses a letter, it is not one
+    cand = [i for i in range(len(placed))
+            if highs[i]>=JOIN_FLAT_MAX_ASPECT*max(spans[i],1e-9)]
+    if not cand:                       #every stroke is flat: nothing better to pick
+        cand = list(range(len(placed)))
+    bi = max(cand,key=lambda i: spans[i])
+    body = list(placed[bi])
+    entryOk = True
+    #too upright for x to have ordered it honestly, so order it by height
+    if spans[bi]<JOIN_VERT_MIN_XSPAN_XH*xh:
+        if body[0][1]<body[-1][1]:
+            body = body[::-1]          #y is up, so the lower end goes last
+        #and the end the pen now arrives at may be too high to join into
+        if (body[0][1]-baseY)>JOIN_NO_ENTRY_ABOVE_XH*xh:
+            entryOk = False
+    #neither end may be joined above the x-height band, whatever the letter
+    if (body[0][1]-baseY)>JOIN_MAX_ATTACH_XH*xh:
+        entryOk = False
+    exitOk = (body[-1][1]-baseY)<=JOIN_MAX_ATTACH_XH*xh
+    return bi,body,entryOk,exitOk
+
 #---_SplitWords: text into words and line breaks---
 def _SplitWords(text):
     out = []
@@ -762,6 +930,7 @@ def SynthesizeText(text,profile,mmPerXh=4.0,seed=None,lineWidthMm=180.0,
             penY = -lineIdx*lineStep
         chain = []   #current pen-down polyline
         prevExit = None
+        prevExitOk = True
         prevBodyMaxX = None
         prevSrc = None
         prevCoreCursive = False
@@ -823,17 +992,21 @@ def SynthesizeText(text,profile,mmPerXh=4.0,seed=None,lineWidthMm=180.0,
                     penX+=need
                     placed = place(penX)
 
-            #the BODY stroke (widest in x) carries the cursive connection;
-            #dots/crossbars/accents are separate pen-downs and must not
-            #become the exit point for the next letter
-            bodyI = int(np.argmax([max(p[0] for p in s)-min(p[0] for p in s)
-                                   for s in placed]))
-            body = placed[bodyI]
+            #the BODY stroke carries the cursive connection; dots, crossbars
+            #and accents are separate pen-downs and must not become the exit
+            #point for the next letter
+            bodyI,body,entryOk,exitOk = _BodyStroke(placed,xh,penY+glyphDrift*xh)
             bothOwn = not isCore and prevSrc!='core'   #both are the writer's own shapes
             bothCursiveCore = coreCursive and prevCoreCursive   #or both the cursive anchor
+            #how far the pen would have to reach to make this join.  a hand
+            #that far apart lifts instead, and drawing it leaves a long flat
+            #dash across the paper
+            joinGap = ((body[0][0]-prevExit[0])/xh) if prevExit is not None else 9e9
             joinable = (ci>0 and prevExit is not None
                         and ch.isalpha() and word[ci-1].isalpha()
                         and (bothOwn or bothCursiveCore)   #a print anchor never joins
+                        and joinGap<=MAX_JOIN_GAP_XH
+                        and entryOk and prevExitOk   #neither end up in the ascenders
                         and rng.random()<min(connEff,JOIN_PROB_CAP))   #draw per pair, not a threshold
             if joinable:
                 #the tangents come from the real geometry either side: the tail
@@ -849,6 +1022,7 @@ def SynthesizeText(text,profile,mmPerXh=4.0,seed=None,lineWidthMm=180.0,
                 flush(chain)
                 chain = list(body)
             prevExit = chain[-1]
+            prevExitOk = exitOk
             for k2,extra in enumerate(placed):
                 if k2!=bodyI:
                     flush(extra)
