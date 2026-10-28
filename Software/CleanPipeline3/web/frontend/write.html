@@ -5,6 +5,20 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Handwriting Robot — Write</title>
 <link rel="stylesheet" href="style.css" />
+<style>
+.line-ctl { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.line-ctl .line-no { color:var(--silver); font-size:0.9rem; }
+.line-ctl .line-no b { color:var(--cyan); font-size:1.1rem; }
+.line-ctl .line-h { color:var(--silver-dim); font-size:0.82rem; margin-left:auto; }
+.line-ctl .line-h input { width:68px; background:var(--bg-panel-2); color:var(--white);
+  border:1px solid var(--border); border-radius:6px; padding:5px 7px; font-family:var(--font); }
+/* the page diagram is drawn to scale from the millimetres the backend
+   reports, so what it shows is where the pen will actually go */
+.page-map { margin:12px 0 4px; }
+.page-map svg { display:block; width:100%; max-width:260px; height:auto;
+  background:var(--bg-panel-2); border:1px solid var(--border); border-radius:8px; }
+.page-map .cap { color:var(--silver-dim); font-size:0.76rem; margin-top:6px; }
+</style>
 </head>
 <body>
 <div id="topbar"></div>
@@ -43,6 +57,19 @@
       <label>Quality (candidate draws tried per line)</label>
       <input type="number" id="nTries" value="20" min="1" max="60" />
       <p class="hint">Higher = more legible &amp; distinctive, but slower (roughly linear). 20 is a good default; 30 was used for the final measured accuracy numbers on the Model &amp; Style page.</p>
+
+      <label style="margin-top:18px">Line on the page</label>
+      <div class="line-ctl">
+        <button id="linePrevBtn" class="secondary" title="Move up one ruled line">&#9650; Previous line</button>
+        <span class="line-no">line <b id="lineNo">1</b><span id="lineOfN"></span></span>
+        <button id="lineNextBtn" class="secondary" title="Move down one ruled line">&#9660; Next line</button>
+        <span class="line-h">ruling
+          <input type="number" id="lineHeightMm" value="8.4" min="2" max="30" step="0.1" /> mm</span>
+      </div>
+      <p class="hint">Each job is written one ruled line lower than the last, so a sheet fills up
+        instead of everything landing on the same spot. The diagram shows where it goes.</p>
+
+      <div class="page-map" id="pageMap"></div>
 
       <div class="btn-row">
         <button id="generateBtn">Generate G-code</button>
@@ -123,6 +150,9 @@ function persist(extra = {}) {
     writeText: document.getElementById("writeText").value,
     writeAuthor: document.getElementById("writeAuthor").value,
     nTries: document.getElementById("nTries").value,
+    line: typeof currentLine === "number" ? currentLine : 0,
+    lineHeightMm: document.getElementById("lineHeightMm").value,
+    placement: lastPlacement || null,
     lastJobId,
     lastResult: extra.lastResult !== undefined ? extra.lastResult : (persist._lastResult || null),
   });
@@ -286,6 +316,88 @@ uploadGcodeBtn.addEventListener("click", async () => {
   }
 });
 
+
+// ---------------------------------------------------------------------------
+// Which ruled line to write on.
+// Every job used to be placed at the same height, so a second one was drawn
+// on top of the first.  The backend takes a line number and offsets the whole
+// trajectory by that many rulings; this keeps the number, draws the page, and
+// steps it after each successful job so the sheet fills by itself.
+// ---------------------------------------------------------------------------
+let currentLine = 0;
+let lastPlacement = null;
+
+function lineHeightMm() {
+  return parseFloat(document.getElementById("lineHeightMm").value) || 8.4;
+}
+
+function setLine(n, placement) {
+  const max = lastPlacement ? lastPlacement.linesOnPage - 1 : 98;
+  currentLine = Math.max(0, Math.min(n, max));
+  if (placement) lastPlacement = placement;
+  document.getElementById("lineNo").textContent = currentLine + 1;
+  document.getElementById("lineOfN").textContent =
+    lastPlacement ? ` of ${lastPlacement.linesOnPage}` : "";
+  document.getElementById("linePrevBtn").disabled = currentLine <= 0;
+  document.getElementById("lineNextBtn").disabled =
+    !!lastPlacement && currentLine >= lastPlacement.linesOnPage - 1;
+  drawPageMap();
+  persist();
+}
+
+// the diagram is drawn from the millimetres the backend reported, not from
+// anything guessed in the browser: same frame as the G-code, y measured UP
+function drawPageMap() {
+  const el = document.getElementById("pageMap");
+  if (!el) return;
+  const lh = lineHeightMm();
+  const p = lastPlacement;
+  // before the first job there is no measured placement, so fall back to the
+  // bed the config describes and show the line only
+  const bedTop = p ? p.bedTopYmm : 180, bedBot = p ? p.bedBottomYmm : 0;
+  const bedL = p ? p.bedLeftXmm : 10, bedR = p ? p.bedRightXmm : 200;
+  const firstY = p ? p.firstLineYmm : 156;
+  const W = bedR - bedL, H = bedTop - bedBot;
+  const mmToY = (y) => (bedTop - y);          // svg y grows downward
+  const nLines = Math.max(1, Math.floor((firstY - bedBot) / lh) + 1);
+
+  let rules = "";
+  for (let i = 0; i < nLines; i++) {
+    const y = mmToY(firstY - i * lh);
+    const on = i === currentLine;
+    rules += `<line x1="0" y1="${y.toFixed(1)}" x2="${W}" y2="${y.toFixed(1)}"
+      stroke="${on ? "#4fd8e8" : "#2a2f36"}" stroke-width="${on ? 1.1 : 0.5}"/>`;
+  }
+  // where the last job actually landed, if it was on the line now selected
+  let band = "";
+  if (p && p.lineIndex === currentLine) {
+    const y = mmToY(p.topYmm), h = Math.max(1, p.topYmm - p.bottomYmm);
+    band = `<rect x="${(p.leftXmm - bedL).toFixed(1)}" y="${y.toFixed(1)}"
+      width="${Math.max(1, p.rightXmm - p.leftXmm).toFixed(1)}" height="${h.toFixed(1)}"
+      fill="#4fd8e8" fill-opacity="0.35" stroke="#4fd8e8" stroke-width="0.6"/>`;
+  }
+  const cap = p
+    ? `line ${currentLine + 1} of ${nLines} &middot; top ${p.topYmm.toFixed(1)} mm,
+       bottom ${p.bottomYmm.toFixed(1)} mm above the bed`
+    : `line ${currentLine + 1} &middot; generate once to see where it lands`;
+  el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">
+      <rect x="0" y="0" width="${W}" height="${H}" fill="#14171b" stroke="#2a2f36"/>
+      ${rules}${band}
+    </svg><div class="cap">${cap}</div>`;
+}
+
+document.getElementById("linePrevBtn").addEventListener("click", () => setLine(currentLine - 1));
+document.getElementById("lineNextBtn").addEventListener("click", () => setLine(currentLine + 1));
+document.getElementById("lineHeightMm").addEventListener("input", () => { drawPageMap(); persist(); });
+//the line a sheet was left on should survive a reload, or the next job
+//after one lands back on the first line and draws over something
+(function restoreLine() {
+  const s = loadPageState(PAGE_KEY) || {};
+  if (s.lineHeightMm) document.getElementById("lineHeightMm").value = s.lineHeightMm;
+  lastPlacement = s.placement || null;
+  setLine(s.line || 0);
+})();
+
 generateBtn.addEventListener("click", async () => {
   clearError("generateError");
   const text = document.getElementById("writeText").value.trim();
@@ -301,10 +413,13 @@ generateBtn.addEventListener("click", async () => {
     const res = await apiFetch("/api/generate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, author, nTries }),
+      body: JSON.stringify({ text, author, nTries,
+                             line: currentLine, lineHeightMm: lineHeightMm() }),
     });
     lastJobId = res.job_id;
     await showResult(res);
+    // step to the next ruling so the following job does not land on this one
+    if (res.placement) setLine(currentLine + 1, res.placement);
     persist({ lastResult: res });
     refreshGantryStatus();
   } catch (e) {

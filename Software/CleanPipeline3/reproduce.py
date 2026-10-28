@@ -54,6 +54,13 @@ class GantryConfig:
     #photographs at about 13 to 15 mm at the left and 24 mm at the top
     pageMarginXmm: float = 15.0
     pageMarginYmm: float = 24.0
+    #--- which ruled line to write on -----------------------------------
+    #without this every job starts at the same height and each new line is
+    #drawn over the last one.  the offset moves the whole trajectory down
+    #the page in whole ruled lines, so a sheet can be filled one line at a
+    #time instead of being re-fed for every word
+    lineHeightMm: float = 8.4   #the ruling on the paper being written on
+    lineOffsetMm: float = 0.0   #how far down from the first line to start
     #--- speeds ---------------------------------------------------------
     drawFeedMmMin: float = 900.0   #pen-down feed
     travelFeedMmMin: float = 2400.0   #pen-up rapid
@@ -104,16 +111,20 @@ def ToMachine(traj,cfg,fitToBounds=True,optimizeOrder=True,rowTolMm=None):
     w,h = max(1e-6,x1-x0),max(1e-6,y1-y0)
     scale = 1.0
     mx,my = cfg.pageMarginXmm,cfg.pageMarginYmm
+    #the line offset eats into the height still available below it, so a job
+    #placed near the foot of the page is scaled to what is left rather than
+    #being drawn off the bottom of the sheet
+    off = max(0.0,float(getattr(cfg,'lineOffsetMm',0.0)))
     if fitToBounds:
         availW = cfg.boundsMaxXmm-cfg.originXmm-mx
-        availH = (cfg.originYmm-my)-cfg.boundsMinYmm
+        availH = (cfg.originYmm-my-off)-cfg.boundsMinYmm
         scale = min(1.0,availW/w,availH/h)
     out = []
     for s in traj.strokes:
         #both frames have y UP (standard plotter convention): the text's
         #top row lands at originY and later rows descend from there
         q = [(cfg.originXmm+mx+(x-x0)*scale,
-              cfg.originYmm-my-(y1-y)*scale)
+              cfg.originYmm-my-off-(y1-y)*scale)
              for (x,y) in s]
         out.append(_Decimate(q,cfg.minSegmentMm))
     if optimizeOrder:
@@ -283,10 +294,29 @@ def WriteGcode(traj,cfg,path,title='',rowTolMm=None):
     Path(path).parent.mkdir(parents=True,exist_ok=True)
     with open(path,'w',encoding='utf-8') as f:
         f.write('\n'.join(L)+'\n')
+    #where it actually landed, so the page can be drawn rather than guessed
+    #at.  these are machine millimetres with y measured UP from the bed, the
+    #same frame the g-code is in
+    ys = [p[1] for s in strokes for p in s] or [0.0]
+    xs = [p[0] for s in strokes for p in s] or [0.0]
+    lineH = max(1e-6,float(getattr(cfg,'lineHeightMm',8.4)))
+    off = float(getattr(cfg,'lineOffsetMm',0.0))
+    firstLineY = cfg.originYmm-cfg.pageMarginYmm
     return dict(lines=len(L),strokes=len(strokes),penPulses=pen[1],
                 scale=scale,clipped=clipped,path=str(path),
                 joinedStrokes=joined,closedRings=rings,
-                joinedInkMm=round(joinedMm,2))
+                joinedInkMm=round(joinedMm,2),
+                placement=dict(topYmm=round(max(ys),2),bottomYmm=round(min(ys),2),
+                               leftXmm=round(min(xs),2),rightXmm=round(max(xs),2),
+                               lineOffsetMm=round(off,2),lineHeightMm=round(lineH,3),
+                               lineIndex=int(round(off/lineH)),
+                               firstLineYmm=round(firstLineY,2),
+                               #how many whole ruled lines fit below the first
+                               linesOnPage=int((firstLineY-cfg.boundsMinYmm)//lineH)+1,
+                               bedTopYmm=round(cfg.originYmm,2),
+                               bedBottomYmm=round(cfg.boundsMinYmm,2),
+                               bedLeftXmm=round(cfg.originXmm,2),
+                               bedRightXmm=round(cfg.boundsMaxXmm,2)))
 
 #----------------------------------------------------------------------
 #ParseGcode: read a g-code file back into strokes
@@ -416,11 +446,36 @@ CIRCLE_STEP_DELAY_S = 0.000002
 #---DEFAULT_CIRCLE_RADIUS_MM: radius for the test circle---
 DEFAULT_CIRCLE_RADIUS_MM = 8.0
 
-#---X_SWITCH_TRAVEL_MM: how far the switch moves before it trips---
-X_SWITCH_TRAVEL_MM = 204.0
+#----------------------------------------------------------------------
+#X_SWITCH_TRAVEL_MM / Y_SWITCH_TRAVEL_MM: how far the carriage moves
+#between the two switches on each axis.  Calibrate() divides the steps it
+#counted by these, so they set steps per millimetre for everything after:
+#a travel figure that is too big makes steps/mm too small, and every
+#drawn length comes out short by the same proportion
+#
+#the 100 x 100 mm test square measured 97.6 wide and 99.4 tall, which puts
+#the true travels at 204.0 x 97.6/100 = 199.2 and 262.0 x 99.4/100 = 260.3.
+#the old figures were nominal rail lengths, not measured ones
+#
+#these are worked back from ONE drawn square and should be confirmed by
+#drawing another and measuring it.  a square that still comes out wrong by
+#the same proportion means the travel is still off; one that is right in
+#length but not square is the separate mechanical fault below
+#----------------------------------------------------------------------
+X_SWITCH_TRAVEL_MM = 199.2   #was 204.0, nominal
 
 #---Y_SWITCH_TRAVEL_MM: the same for y---
-Y_SWITCH_TRAVEL_MM = 262.0
+Y_SWITCH_TRAVEL_MM = 260.3   #was 262.0, nominal
+
+#----------------------------------------------------------------------
+#SQUARENESS: the axes are not quite at right angles to each other
+#the same test square was out by about 1 degree, which is 1.75 mm of skew
+#over 100 mm.  that is mechanical -- the x rail is not perpendicular to
+#the y rail -- and no number here can correct it, because a skew is not a
+#scale.  it is recorded so the next person measuring a square knows that
+#about 1.75 mm of the error is expected and is not a calibration fault
+#----------------------------------------------------------------------
+SQUARENESS_ERROR_DEG = 1.0
 
 #---EDGE_TOLERANCE_MM: margin kept off the limits---
 EDGE_TOLERANCE_MM = 5.0        #kept clear of both switches on both axes

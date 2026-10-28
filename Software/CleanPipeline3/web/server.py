@@ -39,6 +39,7 @@ Endpoints
     POST /api/curate/<writer>         remove the marked ones, rebuild, save
     DEL  /api/curate/<writer>         throw the curated profile away
 """
+import dataclasses
 import io
 import json
 import os
@@ -109,6 +110,15 @@ INK_BY_INDEX = {v: k for k, v in INK_MAP.items()}
 print("[server] loading the shape namer from %s" % REC.SHAPE_AUTHOR_WEIGHTS.name)
 SHAPE_MODEL = REC.AuthorClassifierCNNNumpy(checkpointPath=REC.SHAPE_AUTHOR_WEIGHTS)
 SHAPE_MAP = SHAPE_MODEL.authorMapping
+
+
+#---BaseAuthor: the writer a profile belongs to, curated or not---
+#curate.py writes <writer>_curated.json beside the original, and the server
+#lists every profile it finds, so these names reach the endpoints.  the
+#writer models were trained on the plain names and know nothing of the
+#suffix, so anything asking them has to ask about the writer
+def BaseAuthor(name):
+    return name[:-8] if name.endswith("_curated") else name
 
 
 #---LoadProfiles: every style profile on disk, by writer---
@@ -344,17 +354,27 @@ def ApiGenerate():
         return jsonify({"error": "text is required"}), 400
     if author not in PROFILES:
         return jsonify({"error": "Unknown author %r" % author}), 400
-    if author not in SHAPE_MAP:
+    #a curated profile is the same hand with a tidier library, so the writer
+    #model is asked about the writer, not about the file.  without this the
+    #curated profiles appear in the author list and every one of them is
+    #refused, because the classifier's classes are the plain names
+    judged = BaseAuthor(author)
+    if judged not in SHAPE_MAP:
         return jsonify({"error": "No writer model for %r, so its output cannot be "
                                  "judged during the search" % author}), 400
 
     profile = PROFILES[author]
+    #which ruled line to write on.  without it every job lands at the same
+    #height and the second one is drawn on top of the first
     cfg = REP.GantryConfig()
+    lineH = float(data.get("lineHeightMm") or cfg.lineHeightMm)
+    lineIdx = max(0, int(data.get("line", 0)))
+    cfg = dataclasses.replace(cfg, lineHeightMm=lineH, lineOffsetMm=lineIdx*lineH)
     run = TIMING.Run("reproduce", chars=len(text), lines=1)
 
     with run.Step("synthesis"):
         traj = SYN.SynthesizeJointBestOf(
-            author, text, profile, nTries=nTries, mmPerXh=4.0,
+            judged, text, profile, nTries=nTries, mmPerXh=4.0,
             lineWidthMm=cfg.boundsMaxXmm-cfg.originXmm-5,
             reader=TEXT_MODEL, authorModel=SHAPE_MODEL, authorMapping=SHAPE_MAP)
 
@@ -375,13 +395,15 @@ def ApiGenerate():
     #the generation stages are stored with the job so that drawing it later can
     #report the whole reproduction, generation included, against one allowance
     (jobDir/"meta.json").write_text(json.dumps({"text": text, "author": author,
-                                                "nTries": nTries,
+                                                "nTries": nTries, "line": lineIdx,
+                                                "lineHeightMm": lineH,
                                                 "generateStages": run.stages}),
                                     encoding="utf-8")
     _idx, probs = REC.ClassifyImage(preview, SHAPE_MODEL)
     return JobResponse(jobId, written, preview, run, expectedText=text,
                        author=author, n_tries=nTries,
-                       writer_confidence_pct=round(100*float(probs[SHAPE_MAP[author]]), 1))
+                       placement=written.get("placement"),
+                       writer_confidence_pct=round(100*float(probs[SHAPE_MAP[judged]]), 1))
 
 
 #----------------------------------------------------------------------
