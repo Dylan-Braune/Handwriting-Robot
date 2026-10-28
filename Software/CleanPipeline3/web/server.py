@@ -80,23 +80,26 @@ UPLOADS.mkdir(parents=True, exist_ok=True)
 JOBS.mkdir(parents=True, exist_ok=True)
 
 #----------------------------------------------------------------------
-#INCOMING PAGES ARE TURNED A QUARTER TURN LEFT
-#the camera is mounted across the gantry, so a page photographed on the
-#bed arrives on its side.  the turn is applied ONCE, where the picture is
-#first taken in, so the copy on disk is already the right way up: the
-#browser shows that file and the segmenter reads that same file, and the
-#two cannot drift apart.  anything loaded later by image_id is therefore
-#left exactly as it is, having been turned already
+#A CAPTURED PAGE IS TURNED A QUARTER TURN LEFT
+#the camera is mounted across the gantry, so a page photographed on the bed
+#arrives on its side.  this applies ONLY to what the camera takes.  a file
+#the user uploads was photographed however they chose to hold their phone
+#and is already the right way up, so it is taken exactly as it is.
+#
+#the turn happens once, as the picture is saved, so the copy on disk is the
+#right way up: the browser shows that file and the segmenter reads that same
+#file, and the two cannot drift apart.  anything loaded later by image_id is
+#therefore left alone, having been turned already
 #
 #0 switches it off.  only quarter turns are meaningful here
 #----------------------------------------------------------------------
-UPLOAD_ROTATE_DEG = 90   #90 is a quarter turn anticlockwise, ie to the left
+CAPTURE_ROTATE_DEG = 90   #90 is a quarter turn anticlockwise, ie to the left
 
 
 def IngestImage(src):
-    """Open a just-arrived page and stand it the right way up."""
+    """Open a page just taken by the camera and stand it the right way up."""
     img = Image.open(src)
-    deg = int(UPLOAD_ROTATE_DEG) % 360
+    deg = int(CAPTURE_ROTATE_DEG) % 360
     if deg:
         #expand keeps the whole page after a quarter turn instead of
         #cropping it back to the old frame
@@ -285,7 +288,7 @@ def ApiClassify():
     run = TIMING.Run("classify")
     with run.Step("loading", chars=0):
         if "image" in request.files and request.files["image"].filename:
-            page = IngestImage(request.files["image"].stream).convert("L")
+            page = Image.open(request.files["image"].stream).convert("L")
             imageId = uuid.uuid4().hex
             page.convert("RGB").save(UPLOADS/("%s.jpg" % imageId))
         elif request.form.get("image_id"):
@@ -445,7 +448,7 @@ def ApiRetrace():
     if "image" in request.files and request.files["image"].filename:
         imageId = uuid.uuid4().hex
         srcPath = UPLOADS/("%s.jpg" % imageId)
-        IngestImage(request.files["image"].stream).convert("RGB").save(srcPath)
+        Image.open(request.files["image"].stream).convert("RGB").save(srcPath)
     elif request.form.get("image_id"):
         imageId = "".join(c for c in request.form["image_id"] if c.isalnum())
         srcPath = UPLOADS/("%s.jpg" % imageId)
