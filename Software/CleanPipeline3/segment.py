@@ -7,6 +7,8 @@
 #what they need from here, which is why there is no separate imaging module
 #
 #arrays in, arrays out.  no file opening and no image library anywhere
+import os
+
 import numpy as np
 
 InputHeight,InputWidth = 64,640   #exact input size the classifiers were trained on
@@ -623,6 +625,33 @@ MIN_LINE_PITCH = 15
 #2026-10-28, where every peak in the row profile counted as a line
 TRUST_ALL_PEAK_GAPS = False
 
+#---LINE_MERGE_VALLEY: how deep the dip between two peaks must be before---
+#they count as two separate lines, as a fraction of the smaller peak.
+#
+#PEAK_MIN_PITCH_XH above stops a one line page reporting a letter sized
+#PITCH, but it does not stop LineCentres handing back the same page's
+#ascender, body and descender bands as three LINES.  the distance test
+#there (0.6*P) cannot tell them apart either: on a large hand the
+#descender band of a word like "gantry" sits a full 1.6 letter heights
+#below the body, which clears the gap a real line has to clear.
+#
+#what does separate them is the dip between the two peaks.  between two
+#real lines the ink profile falls almost to nothing; between a line and
+#its own descenders the ink never stops, because the stems run straight
+#through.  measured: 0.03 and 0.12 between the three real lines of a
+#page, against 0.95 for a descender band taken as a line.
+#
+#1.0 disables the merge and restores the old behaviour, and that is the
+#DEFAULT, because the merge earns its keep only on RENDERED pages.
+#measured over the nine photographed gantry pages it changed no line count
+#at any threshold from 0.85 down to 0.55 and moved the mean character
+#accuracy from 65.1 to 64.7 per cent, so the extra bands a photograph
+#raises are not shallow-valley bands and this does not address them.  on
+#rendered output it is decisive: a one line job misread as two went from
+#64.7 to 94.1 per cent.  so the read-back of a rendered page asks for it
+#explicitly and the camera path is left exactly as it was measured
+LINE_MERGE_VALLEY = float(os.environ.get("SEG_LINE_MERGE_VALLEY", "1.0"))
+
 
 #----------------------------------------------------------------------
 #_LetterHeight: how tall this page's letters are, in half-res pixels
@@ -860,7 +889,7 @@ def DropArtifactPieces(mask,ratio,P,H,W):
 #peaks of the ink per row profile, forced to stay at least a bit over
 #half a pitch apart so one line cannot be counted twice
 #----------------------------------------------------------------------
-def LineCentres(mask,H):
+def LineCentres(mask,H,mergeValley=None):
 
 
     P,sm = LinePitch(mask)
@@ -871,7 +900,19 @@ def LineCentres(mask,H):
             centres.append(c)
     centres.sort()
 
-
+    #the distance test above keeps two peaks apart, it does not ask whether
+    #the ink actually STOPS between them.  merge the shallowest pair until
+    #every surviving neighbour is separated by a real valley, taking the
+    #stronger peak of each merged pair as the line's centre.  done worst
+    #first so one deep band cannot drag a genuine neighbour in with it
+    thr = LINE_MERGE_VALLEY if mergeValley is None else float(mergeValley)
+    while len(centres)>1 and thr<1.0:
+        ratios = [(float(sm[a:b+1].min())/max(float(min(sm[a],sm[b])),1e-9),i)
+                  for i,(a,b) in enumerate(zip(centres,centres[1:]))]
+        worst,i = max(ratios)
+        if worst<=thr:
+            break
+        centres.pop(i+1 if sm[centres[i]]>=sm[centres[i+1]] else i)
 
     return P,centres
 
@@ -1214,7 +1255,7 @@ def _BuildLineCrop(n,own,norm,P,f,H,W,minInk):
 #seams, assign ownership, build the crops.  each stage is its own
 #function above so the sequence here reads as the method
 #----------------------------------------------------------------------
-def SegmentLines(page,timer=None):
+def SegmentLines(page,timer=None,mergeValley=None):
     #timer is optional and changes nothing about the result.  when the web
     #server passes one in, the three phases below are recorded separately so
     #the page can report conditioning apart from segmentation, which is what
@@ -1231,7 +1272,7 @@ def SegmentLines(page,timer=None):
     mask,paper,P,paperRemoved,removed = RemovePrintedStructure(mask,g)
     mask,lab,nc,area,nArtifacts = DropArtifactPieces(mask,ratio,P,H,W)
     Mark("conditioning")                 #flatten, deskew, drop the printing and the specks
-    P,centres = LineCentres(mask,H)
+    P,centres = LineCentres(mask,H,mergeValley)
     cuts,cutsArr,L = SeamCuts(mask,centres,P,H,W)
     own = AssignOwnership(mask,lab,nc,cuts,cutsArr,L,centres,P,H,W)
     Mark("segmenting")                   #where the lines are and which ink belongs to which

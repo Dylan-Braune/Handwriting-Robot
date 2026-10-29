@@ -32,7 +32,7 @@ With the transcript's blank-augmented form $y'$ of length $S=2U+1$ and $\ell_t(k
 \end{split}
 \label{eq:sty-viterbi}
 \end{equation}
-with a back-pointer $\psi_t(s)$ stored alongside every maximisation so the best path can be recovered once the recursion reaches $t=T$. Algorithm~\ref{alg:sty-viterbi} is this recursion stated as a procedure.
+where $\delta_t(s)$ is the log-probability of the best path reaching position $s$ of $y'$ at step $t$, $\varnothing$ is the blank symbol and $\delta^{\mathrm{skip}}_{t-1}(s)$ is the transition that jumps a blank between two distinct characters. Equation~\ref{eq:sty-viterbi} differs from the CTC sum of Equation~\ref{eq:rec-ctcprob} in one respect only: it maximises where the loss sums, because the alignment itself is wanted here rather than the total probability of the transcription. A back-pointer $\psi_t(s)$ is stored alongside every maximisation so the best path can be recovered once the recursion reaches $t=T$. Algorithm~\ref{alg:sty-viterbi} is this recursion stated as a procedure.
 
 \begin{algorithm}[!htbp]
 \caption{Forced alignment by Viterbi recursion (per time step $t$)}
@@ -84,6 +84,8 @@ The line is binarised and thinned by the same functions as Section~\ref{sec:wid-
 x'_i(\theta)=\bigl\lfloor x_i-(y_i-\bar y)\tan\theta\bigr\rfloor,\qquad H_\theta(c)=\#\{i:x'_i(\theta)=c\},\qquad \hat\theta=-\arg\max_\theta\sum_cH_\theta(c)^2 .
 \label{eq:sty-slant}
 \end{equation}
+where $(x_i,y_i)$ are the ink coordinates, $\bar y$ the mean ink row, $x'_i(\theta)$ the column each pixel falls into after shearing by a trial angle $\theta$, $H_\theta$ the resulting column histogram and $\hat\theta$ the estimated slant. Equation~\ref{eq:sty-slant} maximises the sum of squared bin counts for the same reason as the deskew objective of Equation~\ref{eq:seg-skew}: shearing conserves the total ink, so the sum of squares is largest when vertical strokes stack into the fewest columns, which happens when the shear has cancelled the writer's slant.
+
 Each simplified point of a chain in territory $[L,R)$ is then mapped by Equation~\ref{eq:sty-norm} into a writer-independent frame, baseline 0, unit x-height, slant removed, the same normalisation goal pursued for cursive word images in the literature~\cite{vinciarelli2001}:
 \begin{equation}
 y_n=\frac{y_b-y}{x_h},\qquad x_n=\frac{x-L}{x_h}-\sigma\,y_n,\qquad\sigma=\tan\hat\theta .

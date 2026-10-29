@@ -18,6 +18,18 @@
 .page-map svg { display:block; width:100%; max-width:260px; height:auto;
   background:var(--bg-panel-2); border:1px solid var(--border); border-radius:8px; }
 .page-map .cap { color:var(--silver-dim); font-size:0.76rem; margin-top:6px; }
+/* offline mode: the calibration gate is a hardware gate, and generating
+   G-code is not a hardware job, so it can be waived */
+.offline-ctl { display:flex; align-items:center; gap:9px; margin-top:12px;
+  color:var(--silver); font-size:0.9rem; cursor:pointer; }
+.offline-ctl input { width:16px; height:16px; accent-color:var(--cyan); cursor:pointer; }
+/* the two feed rates */
+.feed-ctl { margin-top:14px; }
+.feed-ctl .feed-head { display:flex; align-items:baseline; gap:8px; }
+.feed-ctl .feed-head .val { color:var(--cyan); font-variant-numeric:tabular-nums; }
+.feed-ctl .feed-head .secs { color:var(--silver-dim); font-size:0.8rem; margin-left:auto; }
+.feed-ctl input[type=range] { width:100%; accent-color:var(--cyan); margin:4px 0 0; }
+.feed-note { color:var(--silver-dim); font-size:0.78rem; margin:6px 0 0; }
 </style>
 </head>
 <body>
@@ -41,6 +53,13 @@
     <div class="btn-row">
       <button id="calibrateBtn">📐 Calibrate</button>
     </div>
+    <label class="offline-ctl">
+      <input type="checkbox" id="offlineMode" />
+      <span>Offline mode — generate and download G-code without the gantry</span>
+    </label>
+    <p class="hint">Generation never touches the machine: the text is synthesised, rendered,
+      read back and written to a file entirely in software. Only <b>Send to gantry</b> needs
+      hardware, and offline mode disables that one button.</p>
     <div class="error-banner" id="calibrateError"></div>
   </div>
 
@@ -70,6 +89,30 @@
         instead of everything landing on the same spot. The diagram shows where it goes.</p>
 
       <div class="page-map" id="pageMap"></div>
+
+      <label style="margin-top:20px">Pen speeds</label>
+      <div class="feed-ctl">
+        <div class="feed-head">
+          <span>✍ Writing (pen down)</span>
+          <span class="val" id="drawFeedVal">900 mm/min</span>
+          <span class="secs" id="drawFeedSecs">15.0 mm/s</span>
+        </div>
+        <input type="range" id="drawFeed" min="100" max="3000" step="50" value="900" />
+      </div>
+      <p class="feed-note">Lower if tight curves come out rounded off — an <i>e</i> drawn too
+        fast overshoots its own loop. This is the one that costs accuracy.</p>
+
+      <div class="feed-ctl">
+        <div class="feed-head">
+          <span>↗ Traversal (pen up)</span>
+          <span class="val" id="travelFeedVal">2400 mm/min</span>
+          <span class="secs" id="travelFeedSecs">40.0 mm/s</span>
+        </div>
+        <input type="range" id="travelFeed" min="300" max="6000" step="100" value="2400" />
+      </div>
+      <p class="feed-note">Nothing is being drawn while the carriage crosses the page, so
+        raising this buys back the time a slower writing speed costs.</p>
+      <p class="feed-note" id="feedEstimate"></p>
 
       <div class="btn-row">
         <button id="generateBtn">Generate G-code</button>
@@ -140,6 +183,10 @@ renderTopbar("write");
 populateAuthorDropdowns();
 
 const PAGE_KEY = "write";
+//read ONCE, before anything on this page saves state: restoring the line
+//number persists as a side effect, which would overwrite the saved choice
+//with the unticked default box and stop offline mode ever turning itself on
+const SAVED_OFFLINE = (loadPageState(PAGE_KEY) || {}).offlineMode;
 const generateBtn = document.getElementById("generateBtn");
 const sendToGantryBtn = document.getElementById("sendToGantryBtn");
 const idlePlaceholder = document.getElementById("idlePlaceholder");
@@ -152,6 +199,9 @@ function persist(extra = {}) {
     nTries: document.getElementById("nTries").value,
     line: typeof currentLine === "number" ? currentLine : 0,
     lineHeightMm: document.getElementById("lineHeightMm").value,
+    drawFeed: document.getElementById("drawFeed").value,
+    travelFeed: document.getElementById("travelFeed").value,
+    offlineMode: document.getElementById("offlineMode").checked,
     placement: lastPlacement || null,
     lastJobId,
     lastResult: extra.lastResult !== undefined ? extra.lastResult : (persist._lastResult || null),
@@ -220,6 +270,9 @@ document.getElementById("nTries").addEventListener("input", () => persist());
 
 async function refreshGantryStatus() {
   const el = document.getElementById("gantryStatus");
+  //in offline mode this field is saying something else, and overwriting it
+  //with "not connected" would read as a fault rather than a choice
+  if (document.getElementById("offlineMode").checked) return;
   try {
     const res = await apiFetch("/api/gantry/status");
     el.textContent = res.connected ? "Connected" : "Not connected (running off the Odroid, or not wired up yet)";
@@ -238,9 +291,42 @@ const calibStatus = document.getElementById("calibStatus");
 const calibHint = document.getElementById("calibHint");
 const calibrateBtn = document.getElementById("calibrateBtn");
 
+const offlineModeEl = document.getElementById("offlineMode");
+
+// the last thing /api/gantry/status said, kept so that toggling offline mode
+// can re-apply the gate without another round trip
+let lastCalibrated = false, lastCalibration = null;
+
+// Offline mode waives the calibration gate.  That gate exists because DRAWING
+// needs a homed machine with measured steps-per-mm; generating a file does
+// not touch the machine at all, so refusing to generate without hardware was
+// a restriction with nothing behind it.  Sending is still blocked, because
+// that genuinely does need the gantry.
+function applyGate() {
+  const offline = offlineModeEl.checked;
+  mainGrid.classList.toggle("locked", !offline && !lastCalibrated);
+  sendToGantryBtn.disabled = offline;
+  sendToGantryBtn.title = offline
+    ? "Disabled in offline mode — download the file instead"
+    : "Run this job on the gantry";
+  const st = document.getElementById("gantryStatus");
+  if (offline) {
+    st.textContent = "Offline mode — generation only, nothing is sent";
+    st.className = "v";
+  }
+}
+
+offlineModeEl.addEventListener("change", () => {
+  applyGate();
+  if (!offlineModeEl.checked) refreshGantryStatus();
+  persist();
+});
+
 function setCalibrated(calibrated, calibration) {
-  mainGrid.classList.toggle("locked", !calibrated);
+  lastCalibrated = calibrated;
+  lastCalibration = calibration;
   calibrationPanel.classList.toggle("done", calibrated);
+  applyGate();
   if (calibrated && calibration) {
     calibStatus.textContent = "Calibrated";
     calibStatus.className = "v good";
@@ -258,10 +344,17 @@ function setCalibrated(calibrated, calibration) {
 }
 
 async function checkCalibration() {
+  // a saved choice wins; otherwise offline mode turns itself on when there is
+  // no gantry to talk to, so arriving at this page without the hardware
+  // plugged in leaves a usable page rather than a locked one
+  const saved = SAVED_OFFLINE;
   try {
     const res = await apiFetch("/api/gantry/status");
+    offlineModeEl.checked = (saved !== undefined && saved !== null)
+      ? !!saved : !res.connected;
     setCalibrated(res.calibrated, res.calibration);
   } catch (e) {
+    offlineModeEl.checked = (saved !== undefined && saved !== null) ? !!saved : true;
     setCalibrated(false, null);
   }
 }
@@ -398,6 +491,54 @@ document.getElementById("lineHeightMm").addEventListener("input", () => { drawPa
   setLine(s.line || 0);
 })();
 
+// ---------------------------------------------------------------------------
+// The two feed rates.
+// They are separate controls because they trade against each other: the
+// pen-down feed is a quality knob (a tight curve drawn too fast overshoots)
+// and the pen-up feed is pure time, since nothing is drawn while the carriage
+// is crossing the page.  Slowing the first and raising the second can leave
+// the total drawing time roughly where it was while the letters come out
+// cleaner, which is the whole point of splitting them.
+// ---------------------------------------------------------------------------
+const drawFeedEl = document.getElementById("drawFeed");
+const travelFeedEl = document.getElementById("travelFeed");
+
+function drawFeedMmMin()   { return parseFloat(drawFeedEl.value) || 900; }
+function travelFeedMmMin() { return parseFloat(travelFeedEl.value) || 2400; }
+
+function renderFeeds() {
+  const d = drawFeedMmMin(), t = travelFeedMmMin();
+  document.getElementById("drawFeedVal").textContent = `${d} mm/min`;
+  document.getElementById("travelFeedVal").textContent = `${t} mm/min`;
+  document.getElementById("drawFeedSecs").textContent = `${(d / 60).toFixed(1)} mm/s`;
+  document.getElementById("travelFeedSecs").textContent = `${(t / 60).toFixed(1)} mm/s`;
+
+  // an estimate, not a measurement: the real drawing time also carries the
+  // pen-lift dwell and the acceleration ramps, which only the machine knows.
+  // it is shown against the defaults so the slider has a visible consequence
+  const base = 83.2 / 900 + 250.3 / 2400;      // the measured test word, in minutes
+  const now  = 83.2 / d   + 250.3 / t;
+  const pct  = Math.round(100 * (now - base) / base);
+  const el = document.getElementById("feedEstimate");
+  if (Math.abs(pct) < 1) {
+    el.textContent = "About the same drawing time as the defaults (900 / 2400).";
+  } else {
+    el.textContent = `Roughly ${Math.abs(pct)}% ${pct > 0 ? "slower" : "faster"} than the ` +
+      `defaults (900 / 2400), estimated on the measured test word — ` +
+      `83.2 mm of drawing against 250.3 mm of travel.`;
+  }
+}
+
+drawFeedEl.addEventListener("input", () => { renderFeeds(); persist(); });
+travelFeedEl.addEventListener("input", () => { renderFeeds(); persist(); });
+
+(function restoreFeeds() {
+  const s = loadPageState(PAGE_KEY) || {};
+  if (s.drawFeed) drawFeedEl.value = s.drawFeed;
+  if (s.travelFeed) travelFeedEl.value = s.travelFeed;
+  renderFeeds();
+})();
+
 generateBtn.addEventListener("click", async () => {
   clearError("generateError");
   const text = document.getElementById("writeText").value.trim();
@@ -414,7 +555,9 @@ generateBtn.addEventListener("click", async () => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text, author, nTries,
-                             line: currentLine, lineHeightMm: lineHeightMm() }),
+                             line: currentLine, lineHeightMm: lineHeightMm(),
+                             drawFeedMmMin: drawFeedMmMin(),
+                             travelFeedMmMin: travelFeedMmMin() }),
     });
     lastJobId = res.job_id;
     await showResult(res);

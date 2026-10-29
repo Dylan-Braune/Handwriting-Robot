@@ -75,6 +75,44 @@ Where a figure is affected by either limitation, this is stated with the figure.
         R2 is met for writer identification on real handwriting and for recognition on correctly segmented in-distribution crops, but not demonstrated for the complete page-to-text chain.
         R1 is close but not met, R3 and R4 are not met, and R5 and both field conditions are unassessed.
 
+        \textbf{Where this system sits against published work.}
+        Table~\ref{tab:dis-compare} places the measured figures of Section~\ref{sec:results} beside the published systems surveyed in Section~\ref{sec:literature}.
+        The comparison is not like for like and is not offered as one: every published row was obtained on a public benchmark with a full research pipeline behind it, while the rows for this project were measured on thirteen writers, five of them photographed for this project, on a system that must also synthesise and draw.
+        What the table is for is to show that the recognition and writer-identification figures are of the same order as published work rather than far below it, and that the shortfall of this project is concentrated in synthesis fidelity and in time, not in classification.
+        Two differences make the recognition figure easier than the published ones: it is measured on crops known to be correctly cut, and five of the thirteen writers appear in the fine-tuning data.
+        \mustdo{fill the four published accuracy cells from the papers already cited: \cite{shi2017} and \cite{kizilirmak2023} report character and word error rates on IAM, \cite{bulacu2007} reports writer-identification accuracy on its own corpus, and \cite{kang2020} and \cite{dai2024} report their generated-text scores. Quote the exact figure, the dataset and the metric each paper uses, and state the metric in the column heading if they differ. Do not convert between CER and accuracy without saying so.}
+
+\begin{table}[!htbp]
+\centering
+\fontsize{8}{9.4}\selectfont
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{|p{3.0cm}|p{4.0cm}|p{3.0cm}|p{3.2cm}|}
+\hline
+\textbf{Work} & \textbf{Method} & \textbf{Data} & \textbf{Reported accuracy} \\
+\hline
+Shi \emph{et al.}~\cite{shi2017} & Convolutional--recurrent network, CTC output & IAM lines & \mustdo{figure} \\
+\hline
+K{\i}z{\i}l{\i}rmak \emph{et al.}~\cite{kizilirmak2023} & CNN--BiLSTM--CTC, the layer pattern this project follows & IAM lines & \mustdo{figure} \\
+\hline
+Bulacu \emph{et al.}~\cite{bulacu2007} & Edge-direction texture features, no network & Own corpus & \mustdo{figure} \\
+\hline
+Kang \emph{et al.}~\cite{kang2020} & Adversarial image synthesis & IAM & \mustdo{figure} \\
+\hline
+Dai \emph{et al.}~\cite{dai2024} & Diffusion-based synthesis, one reference image & IAM & \mustdo{figure} \\
+\hline
+\textbf{This implementation}, text recognition & CNN--BiLSTM--CTC written from first principles, no framework & 669 real line crops, 13 writers & 98.61\% character, 94.21\% word \\
+\hline
+\textbf{This implementation}, writer identification & Convolutional classifier on the recogniser's backbone, ink input & 1358 real lines, 13 writers & 99.78\% \\
+\hline
+\textbf{This implementation}, writer identification & The same architecture on stroke-normalised input, for drawn output & 13 writers & 93.67\% real, 89.7\% drawn \\
+\hline
+\textbf{This implementation}, synthesis read back & Glyph-library synthesis from the writer's own traced letters & 13 writers, identical sentences & 81.6\%, against 89.0\% for the writers' real hands \\
+\hline
+\end{tabular}
+\caption{The measured results of this project beside the published systems surveyed in Section~\ref{sec:literature}. The rows are not directly comparable: the published systems are measured on public benchmarks, this one on thirteen writers including five photographed for this project, and its recognition figure assumes correct segmentation.}
+\label{tab:dis-compare}
+\end{table}
+
 
     \subsubsection{Critical evaluation}
     \label{sec:dis-crit}
