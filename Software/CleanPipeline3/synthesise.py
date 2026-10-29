@@ -385,6 +385,43 @@ CORE_CURSIVE_CONN = 0.5
 #---JOIN_LEGIBILITY_COUPLING: how much legibility thins out joins, zero on purpose---
 JOIN_LEGIBILITY_COUPLING = 0.0
 
+#----------------------------------------------------------------------
+#JOIN_PRINT_CONN_FLOOR: below this measured connectedness, a hand prints
+#'connectedness' is read off the writer's own pages by style.py as the
+#fraction of adjacent in-word letter pairs whose centreline crosses the
+#segmentation boundary -- "the pen never lifted there".  that is the honest
+#definition for a joined hand, but for a print hand it also counts every
+#pair that merely TOUCHES, and every pair the segmenter cut a little wide.
+#neither is a ligature, and the number is inflated by them.
+#
+#it was then used directly as the per-pair probability of drawing a join,
+#so owen at 0.319 had a connector drawn between about one letter pair in
+#three.  owen prints.  the joins land in random places, which is exactly
+#what they look like on the paper.
+#
+#checked against the writers' own pages rather than guessed at:
+#
+#   dylan   0.195   prints
+#   owen    0.319   prints
+#   150     0.343   prints
+#   yeukita 0.417   prints, a few natural joins inside words
+#   384     0.500   genuinely part-joined -- insulating, warning, apparatus
+#   551     0.557   joined
+#   ... up to 151 0.968, 153 0.961, thiya 0.962, all fully cursive
+#
+#so the inflation is confined to the bottom of the range, where touching
+#and cut error swamp the real joins, and the measurement is about right
+#from 384 upwards.  a flat divisor would wreck the writers it already gets
+#right.  what fits the evidence is a dead band: under the floor the hand is
+#a print hand and draws no joins at all, and over it nothing changes.
+#
+#0.45 sits between yeukita, who prints, and 384, who does not.  it is a
+#property of the MEASUREMENT, not of any writer, so it does not need
+#retuning when a profile is rebuilt -- only if style.py's definition of
+#connR changes
+#----------------------------------------------------------------------
+JOIN_PRINT_CONN_FLOOR = 0.45
+
 #---IDEAL_ANCHOR_MAX_PRIORD: how rough the writer's own best letterform may be and still be used---
 IDEAL_ANCHOR_MAX_PRIORD = 0.30
 
@@ -896,8 +933,13 @@ def SynthesizeText(text,profile,mmPerXh=4.0,seed=None,lineWidthMm=180.0,
     conn = float(profile.get('connectedness',0.0))
     #legibility thins out the cursive joins (tangled joins are the main
     #thing that makes a connected hand unreadable) without removing them
-    connEff = conn*(1.0-JOIN_LEGIBILITY_COUPLING
-                      *float(np.clip(legibility,0.0,1.0)))
+    #a print hand draws no joins at all, rather than a few in the wrong
+    #places.  a connector that should not be there is worse than a missing
+    #one: it reads as a stray mark, and on a clean hand there is nothing
+    #else on the page for it to hide behind
+    connEff = (0.0 if conn<JOIN_PRINT_CONN_FLOOR else
+               conn*(1.0-JOIN_LEGIBILITY_COUPLING
+                        *float(np.clip(legibility,0.0,1.0))))
     wordGap = float(profile.get('wordSpaceXh',1.2))
     ascender = float(profile.get('ascender',1.7))
     descender = float(profile.get('descender',-0.6))
