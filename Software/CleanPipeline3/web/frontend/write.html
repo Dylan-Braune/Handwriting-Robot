@@ -30,6 +30,15 @@
 .feed-ctl .feed-head .secs { color:var(--silver-dim); font-size:0.8rem; margin-left:auto; }
 .feed-ctl input[type=range] { width:100%; accent-color:var(--cyan); margin:4px 0 0; }
 .feed-note { color:var(--silver-dim); font-size:0.78rem; margin:6px 0 0; }
+.budget { margin-top:14px; border:1px solid var(--line, #2a3340); border-radius:6px; padding:10px 12px; }
+.budget-head { color:var(--silver-dim); font-size:0.78rem; margin-bottom:8px; }
+.budget-row { display:grid; grid-template-columns:84px 64px 44px 1fr; gap:8px;
+              align-items:baseline; font-size:0.84rem; padding:3px 0;
+              font-variant-numeric:tabular-nums; }
+.budget-row span:nth-child(2) { color:var(--cyan); text-align:right; }
+.budget-row span:nth-child(3) { color:var(--silver-dim); text-align:right; }
+.budget-sub { color:var(--silver-dim); font-size:0.76rem; }
+.budget-total { border-top:1px solid var(--line, #2a3340); margin-top:6px; padding-top:6px; }
 </style>
 </head>
 <body>
@@ -112,7 +121,31 @@
       </div>
       <p class="feed-note">Nothing is being drawn while the carriage crosses the page, so
         raising this buys back the time a slower writing speed costs.</p>
+
+      <label style="margin-top:20px">Pen dwell</label>
+      <div class="feed-ctl">
+        <div class="feed-head">
+          <span>⬆ Wait after pen UP</span>
+          <span class="val" id="penUpDwellVal">350 ms</span>
+        </div>
+        <input type="range" id="penUpDwell" min="0" max="600" step="10" value="350" />
+      </div>
+      <p class="feed-note">Dead time before the carriage is allowed to move away. The lift
+        only has to clear the paper, so this is the safer of the two to cut.</p>
+
+      <div class="feed-ctl">
+        <div class="feed-head">
+          <span>⬇ Wait after pen DOWN</span>
+          <span class="val" id="penDownDwellVal">350 ms</span>
+        </div>
+        <input type="range" id="penDownDwell" min="0" max="600" step="10" value="350" />
+      </div>
+      <p class="feed-note">Dead time before drawing starts. Cut this too far and the first
+        millimetre of each stroke is drawn while the nib is still seating — it shows up as
+        faint stroke starts, not as an obvious failure.</p>
+
       <p class="feed-note" id="feedEstimate"></p>
+      <div class="budget" id="jobBudget" hidden></div>
 
       <div class="btn-row">
         <button id="generateBtn">Generate G-code</button>
@@ -201,6 +234,8 @@ function persist(extra = {}) {
     lineHeightMm: document.getElementById("lineHeightMm").value,
     drawFeed: document.getElementById("drawFeed").value,
     travelFeed: document.getElementById("travelFeed").value,
+    penUpDwell: document.getElementById("penUpDwell").value,
+    penDownDwell: document.getElementById("penDownDwell").value,
     offlineMode: document.getElementById("offlineMode").checked,
     placement: lastPlacement || null,
     lastJobId,
@@ -502,40 +537,92 @@ document.getElementById("lineHeightMm").addEventListener("input", () => { drawPa
 // ---------------------------------------------------------------------------
 const drawFeedEl = document.getElementById("drawFeed");
 const travelFeedEl = document.getElementById("travelFeed");
+const penUpDwellEl = document.getElementById("penUpDwell");
+const penDownDwellEl = document.getElementById("penDownDwell");
 
 function drawFeedMmMin()   { return parseFloat(drawFeedEl.value) || 900; }
 function travelFeedMmMin() { return parseFloat(travelFeedEl.value) || 2400; }
+function penUpDwellMs()    { const v = parseFloat(penUpDwellEl.value);   return isNaN(v) ? 350 : v; }
+function penDownDwellMs()  { const v = parseFloat(penDownDwellEl.value); return isNaN(v) ? 350 : v; }
+
+// The last generated job's measured geometry, so the sliders can be judged
+// against THIS page rather than against a fixed test word.  Until something
+// has been generated there is nothing to measure, so the test word stands in.
+let lastBudget = null;
+const TEST_WORD = { drawMm: 83.2, travelMm: 250.3, penPulses: 0 };
+
+function budgetSeconds(b, d, t, up, down) {
+  return b.drawMm * 60 / d
+       + b.travelMm * 60 / t
+       + (b.penPulses || 0) * (up + down) / 2000;
+}
 
 function renderFeeds() {
   const d = drawFeedMmMin(), t = travelFeedMmMin();
+  const up = penUpDwellMs(), down = penDownDwellMs();
   document.getElementById("drawFeedVal").textContent = `${d} mm/min`;
   document.getElementById("travelFeedVal").textContent = `${t} mm/min`;
   document.getElementById("drawFeedSecs").textContent = `${(d / 60).toFixed(1)} mm/s`;
   document.getElementById("travelFeedSecs").textContent = `${(t / 60).toFixed(1)} mm/s`;
+  document.getElementById("penUpDwellVal").textContent = up === 0 ? "none" : `${up} ms`;
+  document.getElementById("penDownDwellVal").textContent = down === 0 ? "none" : `${down} ms`;
 
-  // an estimate, not a measurement: the real drawing time also carries the
-  // pen-lift dwell and the acceleration ramps, which only the machine knows.
-  // it is shown against the defaults so the slider has a visible consequence
-  const base = 83.2 / 900 + 250.3 / 2400;      // the measured test word, in minutes
-  const now  = 83.2 / d   + 250.3 / t;
+  // acceleration is ignored, so every figure here is a FLOOR on the real time:
+  // a short segment never reaches its commanded feed.  the comparison against
+  // the defaults is still honest, because the same floor applies to both
+  const b = lastBudget || TEST_WORD;
+  const base = budgetSeconds(b, 900, 2400, 350, 350);
+  const now  = budgetSeconds(b, d, t, up, down);
   const pct  = Math.round(100 * (now - base) / base);
+  const src  = lastBudget ? "the job you just generated" : "the measured test word";
   const el = document.getElementById("feedEstimate");
   if (Math.abs(pct) < 1) {
-    el.textContent = "About the same drawing time as the defaults (900 / 2400).";
+    el.textContent = `About the same as the defaults (900 / 2400 / 350 / 350) on ${src}.`;
   } else {
     el.textContent = `Roughly ${Math.abs(pct)}% ${pct > 0 ? "slower" : "faster"} than the ` +
-      `defaults (900 / 2400), estimated on the measured test word — ` +
-      `83.2 mm of drawing against 250.3 mm of travel.`;
+      `defaults (900 / 2400 / 350 / 350), on ${src} — ` +
+      `${b.drawMm} mm drawn, ${b.travelMm} mm travelled` +
+      (b.penPulses ? `, ${b.penPulses} pen pulses.` : ".");
   }
+  renderBudget();
 }
 
-drawFeedEl.addEventListener("input", () => { renderFeeds(); persist(); });
-travelFeedEl.addEventListener("input", () => { renderFeeds(); persist(); });
+// the breakdown of where a job's time actually goes, so a tweak can be aimed
+// at the biggest of the three rather than guessed at
+function renderBudget() {
+  const el = document.getElementById("jobBudget");
+  if (!lastBudget) { el.hidden = true; return; }
+  const d = drawFeedMmMin(), t = travelFeedMmMin();
+  const up = penUpDwellMs(), down = penDownDwellMs();
+  const draw = lastBudget.drawMm * 60 / d;
+  const trav = lastBudget.travelMm * 60 / t;
+  const dwell = (lastBudget.penPulses || 0) * (up + down) / 2000;
+  const total = draw + trav + dwell;
+  const row = (name, s, extra) =>
+    `<div class="budget-row"><span>${name}</span>` +
+    `<span>${s.toFixed(1)} s</span>` +
+    `<span>${total > 0 ? Math.round(100 * s / total) : 0}%</span>` +
+    `<span class="budget-sub">${extra}</span></div>`;
+  el.innerHTML =
+    `<div class="budget-head">Where this job's time goes (floor, ignores acceleration)</div>` +
+    row("Writing", draw, `${lastBudget.drawMm} mm at ${d} mm/min`) +
+    row("Traversal", trav, `${lastBudget.travelMm} mm at ${t} mm/min`) +
+    row("Pen dwell", dwell, `${lastBudget.penPulses} pulses at ${up}/${down} ms`) +
+    `<div class="budget-row budget-total"><span>Total</span>` +
+    `<span>${total.toFixed(1)} s</span><span></span><span></span></div>`;
+  el.hidden = false;
+}
+
+for (const el of [drawFeedEl, travelFeedEl, penUpDwellEl, penDownDwellEl]) {
+  el.addEventListener("input", () => { renderFeeds(); persist(); });
+}
 
 (function restoreFeeds() {
   const s = loadPageState(PAGE_KEY) || {};
   if (s.drawFeed) drawFeedEl.value = s.drawFeed;
   if (s.travelFeed) travelFeedEl.value = s.travelFeed;
+  if (s.penUpDwell !== undefined && s.penUpDwell !== null) penUpDwellEl.value = s.penUpDwell;
+  if (s.penDownDwell !== undefined && s.penDownDwell !== null) penDownDwellEl.value = s.penDownDwell;
   renderFeeds();
 })();
 
@@ -557,9 +644,14 @@ generateBtn.addEventListener("click", async () => {
       body: JSON.stringify({ text, author, nTries,
                              line: currentLine, lineHeightMm: lineHeightMm(),
                              drawFeedMmMin: drawFeedMmMin(),
-                             travelFeedMmMin: travelFeedMmMin() }),
+                             travelFeedMmMin: travelFeedMmMin(),
+                             penUpDwellMs: penUpDwellMs(),
+                             penDownDwellMs: penDownDwellMs() }),
     });
     lastJobId = res.job_id;
+    //measured off the job that was actually written, so from here on the
+    //sliders are judged against this page instead of the stand-in test word
+    if (res.budget) { lastBudget = res.budget; renderFeeds(); }
     await showResult(res);
     // step to the next ruling so the following job does not land on this one
     // advance past the WHOLE job: a wrapped paragraph occupies several ruled

@@ -109,8 +109,12 @@ class GantryConfig:
     accelMmS2: float = 400.0   #trapezoidal accel limit
     minSegmentMm: float = 0.12   #collapse shorter moves
     #--- pen actuator (one-way gear motor, 90 deg per toggle) -----------
-    penPulseMs: float = 260.0   #time for one 90-degree rotation
-    penSettleMs: float = 90.0   #dwell after a toggle
+    #the two dwells are separate because they are not the same job.  lifting
+    #only has to clear the paper, so it can be cut hard; dropping has to let
+    #the nib seat before the first millimetre is drawn, and cutting that one
+    #too far shows up as faint stroke starts rather than as an obvious fault
+    penUpDwellMs: float = 350.0   #wait after a lift pulse
+    penDownDwellMs: float = 350.0   #wait after a drop pulse, before drawing
     penUpCode: str = 'M5'   #firmware maps these to the pulse
     penDownCode: str = 'M3'
     penStartsUp: bool = True   #assumed state at power-on
@@ -447,10 +451,12 @@ def SetPenLines(state,cfg,wantUp):
     state[1]+= 1
     code = cfg.penUpCode if wantUp else cfg.penDownCode
     #dwell = one 90 degree turn of the cam plus settling, in seconds
-    dwell = (cfg.penPulseMs+cfg.penSettleMs)/1000.0
-    return [f"{code}   ; pen {'UP' if wantUp else 'DOWN'} "
-            f"(one 90deg pulse of the one-way gear motor)",
-            f"G4 P{dwell:.3f}   ; wait for the 90deg rotation to finish"]
+    dwell = (cfg.penUpDwellMs if wantUp else cfg.penDownDwellMs)/1000.0
+    out = [f"{code}   ; pen {'UP' if wantUp else 'DOWN'} "
+           f"(one 90deg pulse of the one-way gear motor)"]
+    if dwell>0:   #a zero dwell is a valid setting: emit no wait at all
+        out.append(f"G4 P{dwell:.3f}   ; wait for the 90deg rotation to finish")
+    return out
 
 #----------------------------------------------------------------------
 #WriteGcode: a pen path in, a g-code file out
@@ -479,6 +485,9 @@ def WriteGcode(traj,cfg,path,title='',rowTolMm=None):
     here = None        #where the pen actually is, in millimetres
     joined = rings = 0
     joinedMm = 0.0
+    #distance is split by pen state so the page can report what a feed change
+    #actually buys, instead of estimating off one fixed test word
+    drawMm = travelMm = 0.0
     for s in strokes:
         if len(s)<2:
             continue
@@ -495,16 +504,30 @@ def WriteGcode(traj,cfg,path,title='',rowTolMm=None):
             L.append(f"G1 F{cfg.drawFeedMmMin:.0f}")
             joined += 1
             joinedMm += math.dist(here,s[0])
+            drawMm += math.dist(here,s[0])
         else:
             L+=SetPenLines(pen,cfg,True)
-            L.append(f"G0 X{s[0][0]:.3f} Y{s[0][1]:.3f}")
+            #F is modal and shared between G0 and G1, so the travel feed set
+            #in the header is overwritten by the first G1 drawing feed and
+            #never comes back.  every travel after stroke one was crossing
+            #the page at the DRAWING speed until this was restated here
+            L.append(f"G0 F{cfg.travelFeedMmMin:.0f} "
+                     f"X{s[0][0]:.3f} Y{s[0][1]:.3f}")
+            if here is not None:
+                travelMm += math.dist(here,s[0])
             L+=SetPenLines(pen,cfg,False)
             L.append(f"G1 F{cfg.drawFeedMmMin:.0f}")
+        prev = s[0]
         for (x,y) in s[1:]:
             L.append(f"G1 X{x:.3f} Y{y:.3f}")
+            drawMm += math.dist(prev,(x,y))
+            prev = (x,y)
         here = s[-1]
     L+=SetPenLines(pen,cfg,True)
-    L.append(f"G0 X{cfg.originXmm:.3f} Y{cfg.originYmm:.3f}   ; park")
+    L.append(f"G0 F{cfg.travelFeedMmMin:.0f} "
+             f"X{cfg.originXmm:.3f} Y{cfg.originYmm:.3f}   ; park")
+    if here is not None:
+        travelMm += math.dist(here,(cfg.originXmm,cfg.originYmm))
     L.append('M2')
     Path(path).parent.mkdir(parents=True,exist_ok=True)
     with open(path,'w',encoding='utf-8') as f:
@@ -517,10 +540,22 @@ def WriteGcode(traj,cfg,path,title='',rowTolMm=None):
     lineH = max(1e-6,float(getattr(cfg,'lineHeightMm',8.4)))
     off = float(getattr(cfg,'lineOffsetMm',0.0))
     firstLineY = cfg.originYmm-cfg.pageMarginYmm
+    #a budget for the job, split into the three things a setting can change.
+    #this ignores acceleration, so it is a floor on the real time, not a
+    #prediction of it -- short segments never reach their commanded feed
+    drawS = 60.0*drawMm/max(1.0,cfg.drawFeedMmMin)
+    travelS = 60.0*travelMm/max(1.0,cfg.travelFeedMmMin)
+    #pen[1] counts toggles but not which way, so the dwell is counted as the
+    #mean of the two: lifts and drops alternate, so over a page they are equal
+    dwellS = pen[1]*(cfg.penUpDwellMs+cfg.penDownDwellMs)/2000.0
     return dict(lines=len(L),strokes=len(strokes),penPulses=pen[1],
                 scale=scale,clipped=clipped,path=str(path),
                 joinedStrokes=joined,closedRings=rings,
                 joinedInkMm=round(joinedMm,2),
+                drawMm=round(drawMm,1),travelMm=round(travelMm,1),
+                drawSeconds=round(drawS,1),travelSeconds=round(travelS,1),
+                dwellSeconds=round(dwellS,1),
+                estimatedSeconds=round(drawS+travelS+dwellS,1),
                 placement=dict(topYmm=round(max(ys),2),bottomYmm=round(min(ys),2),
                                leftXmm=round(min(xs),2),rightXmm=round(max(xs),2),
                                lineOffsetMm=round(off,2),lineHeightMm=round(lineH,3),

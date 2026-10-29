@@ -507,8 +507,15 @@ def ApiGenerate():
     #accept at the bottom and to a rate the belts hold at the top
     drawFeed = _Clamp(data.get("drawFeedMmMin"), cfg.drawFeedMmMin, 60.0, 3000.0)
     travelFeed = _Clamp(data.get("travelFeedMmMin"), cfg.travelFeedMmMin, 60.0, 6000.0)
+    #the two pen dwells are tunable from the page because the only way to find
+    #the real throw time is to cut them until the pen starts missing, and that
+    #has to be done against the machine rather than guessed at.  zero is a
+    #legal setting: it emits no G4 at all
+    penUpDwell = _Clamp(data.get("penUpDwellMs"), cfg.penUpDwellMs, 0.0, 1000.0)
+    penDownDwell = _Clamp(data.get("penDownDwellMs"), cfg.penDownDwellMs, 0.0, 1000.0)
     cfg = dataclasses.replace(cfg, lineHeightMm=lineH, lineOffsetMm=lineIdx*lineH,
-                              drawFeedMmMin=drawFeed, travelFeedMmMin=travelFeed)
+                              drawFeedMmMin=drawFeed, travelFeedMmMin=travelFeed,
+                              penUpDwellMs=penUpDwell, penDownDwellMs=penDownDwell)
     run = TIMING.Run("reproduce", chars=len(text), lines=1)
 
     with run.Step("synthesis"):
@@ -541,6 +548,8 @@ def ApiGenerate():
                                                 "lineHeightMm": lineH,
                                                 "drawFeedMmMin": drawFeed,
                                                 "travelFeedMmMin": travelFeed,
+                                                "penUpDwellMs": penUpDwell,
+                                                "penDownDwellMs": penDownDwell,
                                                 "generateStages": run.stages}),
                                     encoding="utf-8")
     _idx, probs = REC.ClassifyImage(preview, SHAPE_MODEL)
@@ -548,6 +557,16 @@ def ApiGenerate():
                        pxPerMm=18.0, author=author, n_tries=nTries,
                        placement=written.get("placement"),
                        draw_feed_mm_min=drawFeed, travel_feed_mm_min=travelFeed,
+                       pen_up_dwell_ms=penUpDwell, pen_down_dwell_ms=penDownDwell,
+                       #measured off the job that was just written, so a tweak
+                       #can be judged from the page without running the gantry
+                       budget=dict(drawMm=written.get("drawMm"),
+                                   travelMm=written.get("travelMm"),
+                                   penPulses=written.get("penPulses"),
+                                   drawSeconds=written.get("drawSeconds"),
+                                   travelSeconds=written.get("travelSeconds"),
+                                   dwellSeconds=written.get("dwellSeconds"),
+                                   estimatedSeconds=written.get("estimatedSeconds")),
                        writer_confidence_pct=round(100*float(probs[SHAPE_MAP[judged]]), 1))
 
 
