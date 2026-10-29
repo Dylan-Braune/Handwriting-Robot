@@ -94,6 +94,16 @@
         <span class="line-h">ruling
           <input type="number" id="lineHeightMm" value="8.4" min="2" max="30" step="0.1" /> mm</span>
       </div>
+      <label class="offline-ctl">
+        <input type="checkbox" id="ignoreRuling" checked />
+        <span>Ignore the ruling when spacing the lines &mdash; draw them at the pitch the
+          preview shows, so ascenders and descenders never meet</span>
+      </label>
+      <p class="hint">On the ruling the lines are pushed to 8.4 mm apart, which is closer
+        than the letters were laid out for, so neighbouring ascenders and descenders
+        occasionally touch. Ink that touches is one shape to the segmenter: it cuts the two
+        lines as one and classifies the wrong picture. The ruling still sizes the letters
+        either way &mdash; only the spacing changes.</p>
       <p class="hint">Each job is written one ruled line lower than the last, so a sheet fills up
         instead of everything landing on the same spot. The diagram shows where it goes.</p>
 
@@ -193,7 +203,13 @@
         <div class="btn-row">
           <a id="downloadLink" download="job.gcode"><button class="secondary">⬇ Download job.gcode</button></a>
           <button id="sendToGantryBtn">🖊 Send to gantry</button>
+          <button id="stopBtn" class="danger"
+                  title="Stop the job, lift the pen, return to the corner">&#9632; STOP</button>
         </div>
+        <p class="hint">Stop abandons the rest of the G-code, lifts the pen and drives back
+          to the corner, in that order &mdash; the pen comes up before the carriage moves so
+          the trip home does not draw across the page. It can be pressed while a job is
+          running. Whatever was being drawn is left unfinished, so do not measure it.</p>
         <div class="stat-row" style="margin-top:10px">
           <span class="k">Gantry</span>
           <span class="v" id="gantryStatus">—</span>
@@ -232,6 +248,7 @@ function persist(extra = {}) {
     nTries: document.getElementById("nTries").value,
     line: typeof currentLine === "number" ? currentLine : 0,
     lineHeightMm: document.getElementById("lineHeightMm").value,
+    ignoreRuling: document.getElementById("ignoreRuling").checked,
     drawFeed: document.getElementById("drawFeed").value,
     travelFeed: document.getElementById("travelFeed").value,
     penUpDwell: document.getElementById("penUpDwell").value,
@@ -459,6 +476,16 @@ function lineHeightMm() {
   return parseFloat(document.getElementById("lineHeightMm").value) || 8.4;
 }
 
+function ignoreRuling() { return document.getElementById("ignoreRuling").checked; }
+
+// the diagram has to step by the pitch the job was really drawn at.  drawing
+// 8.4 mm rules under a job spaced at 11.75 is the lie that hid the collisions
+function mapPitchMm() {
+  if (lastPlacement && lastPlacement.ignoredRuling && lastPlacement.drawnPitchMm > 0)
+    return lastPlacement.drawnPitchMm;
+  return lineHeightMm();
+}
+
 function setLine(n, placement) {
   const max = lastPlacement ? lastPlacement.linesOnPage - 1 : 98;
   currentLine = Math.max(0, Math.min(n, max));
@@ -478,7 +505,7 @@ function setLine(n, placement) {
 function drawPageMap() {
   const el = document.getElementById("pageMap");
   if (!el) return;
-  const lh = lineHeightMm();
+  const lh = mapPitchMm();
   const p = lastPlacement;
   // before the first job there is no measured placement, so fall back to the
   // bed the config describes and show the line only
@@ -517,11 +544,14 @@ function drawPageMap() {
 document.getElementById("linePrevBtn").addEventListener("click", () => setLine(currentLine - 1));
 document.getElementById("lineNextBtn").addEventListener("click", () => setLine(currentLine + 1));
 document.getElementById("lineHeightMm").addEventListener("input", () => { drawPageMap(); persist(); });
+document.getElementById("ignoreRuling").addEventListener("change", () => { drawPageMap(); persist(); });
 //the line a sheet was left on should survive a reload, or the next job
 //after one lands back on the first line and draws over something
 (function restoreLine() {
   const s = loadPageState(PAGE_KEY) || {};
   if (s.lineHeightMm) document.getElementById("lineHeightMm").value = s.lineHeightMm;
+  if (s.ignoreRuling !== undefined && s.ignoreRuling !== null)
+    document.getElementById("ignoreRuling").checked = !!s.ignoreRuling;
   lastPlacement = s.placement || null;
   setLine(s.line || 0);
 })();
@@ -646,7 +676,8 @@ generateBtn.addEventListener("click", async () => {
                              drawFeedMmMin: drawFeedMmMin(),
                              travelFeedMmMin: travelFeedMmMin(),
                              penUpDwellMs: penUpDwellMs(),
-                             penDownDwellMs: penDownDwellMs() }),
+                             penDownDwellMs: penDownDwellMs(),
+                             ignoreRuling: ignoreRuling() }),
     });
     lastJobId = res.job_id;
     //measured off the job that was actually written, so from here on the
@@ -657,7 +688,14 @@ generateBtn.addEventListener("click", async () => {
     // advance past the WHOLE job: a wrapped paragraph occupies several ruled
     // lines, and stepping on by one would write the next job over it
     if (res.placement) {
-      const used = Math.max(1, res.placement.textLines || 1);
+      // a text line no longer occupies one ruling: with the ruling ignored the
+      // lines are drawn at the laid-out pitch, which is 10 to 13 mm rather than
+      // 8.4, so advancing by the text-line count would write the next job over
+      // the tail of this one.  the page is still fed in whole rulings, so the
+      // count is converted through the pitch the job was really drawn at
+      const lines = Math.max(1, res.placement.textLines || 1);
+      const pitch = res.placement.drawnPitchMm || lineHeightMm();
+      const used = Math.max(lines, Math.ceil(lines * pitch / lineHeightMm()));
       setLine(currentLine + used, res.placement);
     }
     persist({ lastResult: res });
@@ -667,6 +705,32 @@ generateBtn.addEventListener("click", async () => {
   } finally {
     generateBtn.disabled = false;
     generateBtn.innerHTML = "Generate G-code";
+  }
+});
+
+// deliberately not disabled while a job runs, not gated on there being a job,
+// and not gated on calibration: someone pressing this wants the motors to stop
+// now, whatever state the page believes the machine is in
+const stopBtn = document.getElementById("stopBtn");
+stopBtn.addEventListener("click", async () => {
+  clearError("gantryError");
+  stopBtn.disabled = true;
+  stopBtn.innerHTML = '<span class="spinner"></span> Stopping...';
+  try {
+    const res = await apiFetch("/api/gantry/stop", { method: "POST" });
+    const el = document.getElementById("gantryStatus");
+    el.textContent = res.message;
+    el.className = "v" + (res.stopped && res.pen_up && res.parked ? " good" : " bad");
+    // a stop that could not be completed leaves the machine latched, and that
+    // is worth saying loudly rather than reporting as a clean stop
+    if (!res.stopped || res.latched || !res.pen_up || !res.parked) {
+      showError("gantryError", res.message || "Stop failed.");
+    }
+  } catch (e) {
+    showError("gantryError", e.message);
+  } finally {
+    stopBtn.disabled = false;
+    stopBtn.innerHTML = "&#9632; STOP";
   }
 });
 

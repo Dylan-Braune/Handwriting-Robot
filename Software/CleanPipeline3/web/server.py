@@ -513,7 +513,13 @@ def ApiGenerate():
     #legal setting: it emits no G4 at all
     penUpDwell = _Clamp(data.get("penUpDwellMs"), cfg.penUpDwellMs, 0.0, 1000.0)
     penDownDwell = _Clamp(data.get("penDownDwellMs"), cfg.penDownDwellMs, 0.0, 1000.0)
+    #a page that will be photographed and read back wants the laid-out
+    #pitch, not the ruling: on the ruling the ascenders and descenders of
+    #neighbouring lines meet, and ink that touches is cut as one line
+    ignore = data.get("ignoreRuling")
+    ignore = cfg.ignoreRuling if ignore is None else bool(ignore)
     cfg = dataclasses.replace(cfg, lineHeightMm=lineH, lineOffsetMm=lineIdx*lineH,
+                              ignoreRuling=ignore,
                               drawFeedMmMin=drawFeed, travelFeedMmMin=travelFeed,
                               penUpDwellMs=penUpDwell, penDownDwellMs=penDownDwell)
     run = TIMING.Run("reproduce", chars=len(text), lines=1)
@@ -546,6 +552,7 @@ def ApiGenerate():
     (jobDir/"meta.json").write_text(json.dumps({"text": text, "author": author,
                                                 "nTries": nTries, "line": lineIdx,
                                                 "lineHeightMm": lineH,
+                                                "ignoreRuling": ignore,
                                                 "drawFeedMmMin": drawFeed,
                                                 "travelFeedMmMin": travelFeed,
                                                 "penUpDwellMs": penUpDwell,
@@ -558,6 +565,7 @@ def ApiGenerate():
                        placement=written.get("placement"),
                        draw_feed_mm_min=drawFeed, travel_feed_mm_min=travelFeed,
                        pen_up_dwell_ms=penUpDwell, pen_down_dwell_ms=penDownDwell,
+                       ignore_ruling=ignore,
                        #measured off the job that was just written, so a tweak
                        #can be judged from the page without running the gantry
                        budget=dict(drawMm=written.get("drawMm"),
@@ -692,6 +700,32 @@ def ApiGantryCalibrate():
     return jsonify({"calibrated": True, "calibration": result, "timing": Remember(run)})
 
 
+#----------------------------------------------------------------------
+#the stop has to be reachable while a job is drawing, which it is because
+#the server runs threaded: the drawing request is still blocked inside
+#RunGcodeFile on its own thread while this one is served.  on a
+#single-threaded server this request would queue behind the very job it is
+#meant to interrupt and arrive only after it had finished
+#----------------------------------------------------------------------
+@app.route("/api/gantry/stop", methods=["POST"])
+def ApiGantryStop():
+    try:
+        result = REP.EmergencyStop()
+    except REP.GantryNotConnectedError as e:
+        return jsonify({"stopped": False, "gantry_connected": False,
+                        "message": "Gantry not connected: %s" % e})
+    except RuntimeError as e:
+        return jsonify({"stopped": False, "gantry_connected": True,
+                        "message": "Stop failed: %s" % e})
+    bits = ["pen up" if result["pen_up"] else "PEN DID NOT LIFT"]
+    bits.append("parked at the corner" if result["parked"] else "not parked")
+    msg = "Stopped -- " + ", ".join(bits) + "."
+    if result.get("detail"):
+        msg += " " + result["detail"][0].upper() + result["detail"][1:] + "."
+    result.update({"gantry_connected": True, "message": msg})
+    return jsonify(result)
+
+
 @app.route("/api/write/<jobId>", methods=["POST"])
 def ApiWriteGcode(jobId):
     safe = "".join(c for c in jobId if c.isalnum())
@@ -721,6 +755,13 @@ def ApiWriteGcode(jobId):
         return jsonify({"sent": False, "gantry_connected": True, "calibrated": False,
                         "message": "Calibration required: %s" % e})
 
+    #a job the stop button interrupted did not finish, and reporting it as
+    #sent would put an accuracy figure against a half-drawn page
+    if result.get("aborted"):
+        return jsonify({"sent": False, "gantry_connected": True, "aborted": True,
+                        "message": "Job stopped before it finished. The page is "
+                                   "incomplete -- do not measure it.",
+                        "timing": Remember(run)})
     if result.get("estopped"):
         return jsonify({"sent": False, "gantry_connected": True,
                         "message": "Job aborted by end-stop %r mid-run. Clear it on the "

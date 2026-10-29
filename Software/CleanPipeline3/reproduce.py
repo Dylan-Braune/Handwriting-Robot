@@ -74,6 +74,32 @@ class GantryConfig:
     #time instead of being re-fed for every word
     lineHeightMm: float = 8.4   #the ruling on the paper being written on
     lineOffsetMm: float = 0.0   #how far down from the first line to start
+    #--- whether the ruling places the lines at all ----------------------
+    #the synthesiser lays the text out at a pitch of its own -- ascender
+    #minus descender plus 0.85 x-heights -- which already carries 0.85
+    #x-heights of clear paper between one line's descenders and the next
+    #line's ascenders.  that is the layout the preview renders, and it is
+    #why the preview never shows letters touching.
+    #
+    #putting the lines back on the 8.4 mm ruling squeezes that pitch down:
+    #on owen it goes from 11.75 mm to 8.40, and the 3.35 mm of ink that no
+    #longer fits ends up in the neighbouring band.  a human reader copes
+    #with that, as real ruled handwriting does the same thing, but the
+    #segmenter does not: two lines whose ink touches are one connected
+    #shape, so they are cut as a single line and the classifier is then
+    #shown the wrong picture.
+    #
+    #with this set the ruling is used only to SIZE the letters, through
+    #XhForRuling, and the lines are set at the pitch they were laid out at.
+    #the writing is the same size as before and the page is taller.
+    #
+    #the respacing itself is still done, just against the laid-out pitch
+    #rather than against the ruling.  it is what takes the synthesiser's
+    #baseline wander (driftV) out from between the lines, and leaving the
+    #wander in costs most of the clearance the laid-out pitch is supposed
+    #to give: on owen the tightest boundary comes out at 0.38 mm with the
+    #drift left in and 4.11 mm with it taken out
+    ignoreRuling: bool = True   #leave the lines at the laid-out pitch
     #--- sizing the writing to the ruling -------------------------------
     #the synthesiser lays text out at a pitch of its own, (ascender -
     #descender + 0.85) x-heights, which at the default 4 mm x-height comes
@@ -294,7 +320,11 @@ def ToMachine(traj,cfg,fitToBounds=True,optimizeOrder=True,rowTolMm=None):
         #below exactly as they do in the writer's own pages.  all that
         #happens here is the cap: if the tallest line runs past
         #rulingMaxExtent the whole job comes down proportionally
-        if getattr(cfg,'fitToRuling',False):
+        #the extent cap exists to hold a line inside its ruled band.  with
+        #the ruling ignored there is no band to hold it inside, and capping
+        #would only shrink letters that have room -- the page height limit
+        #above is what keeps the job on the sheet
+        if getattr(cfg,'fitToRuling',False) and not getattr(cfg,'ignoreRuling',False):
             tall = _TallestLine(traj)
             if tall>1e-6:
                 cap = (float(getattr(cfg,'lineHeightMm',8.4))
@@ -313,9 +343,11 @@ def ToMachine(traj,cfg,fitToBounds=True,optimizeOrder=True,rowTolMm=None):
     #apart instead of 8.40.  measuring each line and placing it takes the
     #drift out from between the lines while leaving it inside them
     pitch = float(traj.meta.get('lineStepMm',0.0) or 0.0)
-    ruledPitch = float(getattr(cfg,'lineHeightMm',8.4))
-    respace = (getattr(cfg,'fitToRuling',False) and pitch>1e-6
-               and int(traj.meta.get('lines',1) or 1)>1)
+    ruledPitch = (pitch*scale if getattr(cfg,'ignoreRuling',False)
+                  else float(getattr(cfg,'lineHeightMm',8.4)))
+    respace = (pitch>1e-6 and int(traj.meta.get('lines',1) or 1)>1
+               and (getattr(cfg,'ignoreRuling',False)
+                    or getattr(cfg,'fitToRuling',False)))
     centres = {}
     if respace:
         rows = {}
@@ -560,6 +592,15 @@ def WriteGcode(traj,cfg,path,title='',rowTolMm=None):
                                leftXmm=round(min(xs),2),rightXmm=round(max(xs),2),
                                lineOffsetMm=round(off,2),lineHeightMm=round(lineH,3),
                                lineIndex=int(round(off/lineH)),
+                               #the pitch the lines were really drawn at.  with
+                               #the ruling ignored it is the laid-out pitch
+                               #times the scale, and reporting 8.4 would be a
+                               #lie -- showing ruled lines the job never used
+                               #is what hid the touching letters to begin with
+                               ignoredRuling=bool(getattr(cfg,'ignoreRuling',False)),
+                               drawnPitchMm=round(
+                                   float(traj.meta.get('lineStepMm',0.0) or 0.0)*scale
+                                   if getattr(cfg,'ignoreRuling',False) else lineH,2),
                                #ruled lines this job itself occupies.  the page
                                #has to advance by this, not by one, or a job
                                #that wrapped is written over by the next one
@@ -818,6 +859,29 @@ estopped = False
 #---TrippedSwitch: which switch caused it---
 TrippedSwitch = None
 
+#----------------------------------------------------------------------
+#abortEvent: set when a stop is asked for from outside the stepping loop
+#an end-stop stops the machine from the inside: the stepping loops call
+#TriggeredEndstop themselves and bail out.  a stop asked for from the web
+#page arrives on a DIFFERENT thread and cannot interrupt anything directly,
+#so it sets this instead, and every loop that pulses a motor checks it
+#between steps.  threading.Event rather than a plain bool because two
+#threads read and write it
+#----------------------------------------------------------------------
+abortEvent = threading.Event()
+
+#----------------------------------------------------------------------
+#_jobActive: set while RunGcodeFile owns the motors
+#the parking move after a stop must not begin until the drawing thread has
+#let go.  without this the two threads pulse the same step pins at once,
+#and the step counters -- which are the only record of where the head is --
+#stop matching the machine
+#----------------------------------------------------------------------
+_jobActive = threading.Event()
+
+#---lastJobAborted: whether the last g-code run was stopped early---
+lastJobAborted = False
+
 
 
 #======================================================================
@@ -956,6 +1020,78 @@ def _TriggerEmergencyStop(hit):
     print("Retracted. Clear with 'r' once safe to resume.")
 
 
+#---RequestAbort / AbortRequested: ask a running job to stop---
+def RequestAbort():
+    abortEvent.set()
+
+def AbortRequested():
+    return abortEvent.is_set()
+
+
+#----------------------------------------------------------------------
+#EmergencyStop: stop the running job, lift the pen, park at the corner
+#the three things have to happen in that order.  stopping first means the
+#drawing thread is not still issuing moves; lifting the pen before the
+#carriage travels means the trip to the corner does not draw a line across
+#the finished work; parking last leaves the machine where the next job
+#expects to find it.
+#
+#the corner is the one a finished job parks at -- GantryConfig's origin --
+#so there is a single definition of where the machine rests rather than a
+#second one that could drift away from it.
+#
+#the stop does NOT latch unless the drawing thread fails to let go.  a
+#latched stop would have to be cleared before every retry, and this button
+#exists to be used repeatedly while tuning feeds and dwells.  a stop that
+#could not be completed is a different matter and does stay latched, since
+#at that point what the machine is doing is not known
+#----------------------------------------------------------------------
+def EmergencyStop(waitS=3.0,park=True):
+    Connect()
+    abortEvent.set()
+    #give whoever is drawing a chance to see the flag and return
+    deadline = time.time()+waitS
+    while _jobActive.is_set() and time.time()<deadline:
+        time.sleep(0.005)
+    stillRunning = _jobActive.is_set()
+
+    #the step pins are left low whatever else happens below
+    req.set_value(STEP1_PIN,Value.INACTIVE)
+    req.set_value(STEP2_PIN,Value.INACTIVE)
+
+    #force, because the pen must come off the paper even in a fault
+    penUp = SetPen(True,force=True)
+    parked,detail = False,""
+    if stillRunning:
+        #the flag is deliberately LEFT SET.  the job is still inside a move,
+        #and clearing it now would let it carry on from where it stopped
+        detail = ("the drawing thread did not let go within %.1f s, so the "
+                  "stop is still latched and the corner move was skipped"%waitS)
+    else:
+        abortEvent.clear()   #cleared before the park move, or it self-aborts
+        if not park:
+            detail = "parking not asked for"
+        elif not Calibration["done"]:
+            detail = ("not calibrated, so there is no known corner to drive "
+                      "to -- the pen is up and the motors are idle")
+        elif TriggeredEndstop() is not None:
+            #TrippedSwitch is only set by the end-stop handler, so it reads
+            #None for a switch that was already down when the stop arrived
+            detail = ("end-stop %s is tripped, so the corner move was skipped "
+                      "-- clear it, then re-home"%TriggeredEndstop())
+        else:
+            cfg = GantryConfig()
+            _GcodeLinearMove(cfg.originXmm,cfg.originYmm,cfg.travelFeedMmMin)
+            parked = True
+    print("[stop] pen %s, %s%s"%("up" if penUp else "UP FAILED",
+                                 "parked at the corner" if parked else "not parked",
+                                 " -- "+detail if detail else ""))
+    return {"stopped": True,"pen_up": bool(penUp),"parked": parked,
+            "still_running": stillRunning,"latched": stillRunning,
+            "detail": detail,"estopped": estopped,
+            "tripped_switch": TrippedSwitch}
+
+
 
 #======================================================================
 #MOVING
@@ -983,7 +1119,10 @@ def BresenhamMove(dx,dy,stepDelayS=CIRCLE_STEP_DELAY_S):
     if ax>=ay:   #x is the major axis
         err = ax//2
         for _ in range(ax):
-            if TriggeredEndstop() is not None:
+            #checked per step, not per move: a travel across the page is tens
+            #of thousands of steps, and a stop that only took effect at the
+            #end of the current move would not be a stop
+            if abortEvent.is_set() or TriggeredEndstop() is not None:
                 return
             pulse(STEP1_PIN)
             CurrentXSteps+=sx
@@ -995,7 +1134,7 @@ def BresenhamMove(dx,dy,stepDelayS=CIRCLE_STEP_DELAY_S):
     else:   #y is the major axis -- mirror image of the branch above
         err = ay//2
         for _ in range(ay):
-            if TriggeredEndstop() is not None:
+            if abortEvent.is_set() or TriggeredEndstop() is not None:
                 return
             pulse(STEP2_PIN)
             CurrentYSteps+=sy
@@ -1014,9 +1153,15 @@ def PenIsUp():
 #pulses the one way motor and watches the switch, giving up with an error
 #if the pen never reports the state asked for
 #----------------------------------------------------------------------
-def SetPen(targetUp,timeoutS=3.0):
-    if TriggeredEndstop() is not None:
-        print(f"Refusing pen move -- end-stop {TrippedSwitch} still tripped.")
+def SetPen(targetUp,timeoutS=3.0,force=False):
+    #normally a tripped switch blocks the pen too: the machine is in a fault
+    #and nothing should be driven until it is cleared.  an emergency stop is
+    #the exception, and passes force.  the pen actuator shares nothing with
+    #the axis motors, and leaving the nib on the paper while the fault is
+    #sorted out bleeds ink into the page -- the one thing a stop is for
+    hit = TriggeredEndstop()
+    if hit is not None and not force:
+        print(f"Refusing pen move -- end-stop {hit} still tripped.")
         return False
     if PenIsUp()==targetUp:
         return True   #already there -- the toggle motor must not run
@@ -1025,7 +1170,7 @@ def SetPen(targetUp,timeoutS=3.0):
     deadline = time.time()+timeoutS
     reached = False
     while time.time()<deadline:
-        if TriggeredEndstop() is not None:
+        if not force and TriggeredEndstop() is not None:
             break
         if PenIsUp()==targetUp:
             reached = True
@@ -1178,7 +1323,7 @@ def _GcodeArcMove(x0Mm,y0Mm,x1Mm,y1Mm,iMm,jMm,clockwise,feedMmMin):
     angleSpan = endAngle-startAngle
     nSegments = max(4,int(abs(angleSpan)*radius/0.4))   #~0.4mm per chord
     for k in range(1,nSegments+1):
-        if TriggeredEndstop() is not None:
+        if abortEvent.is_set() or TriggeredEndstop() is not None:
             return
         a = startAngle+angleSpan*(k/nSegments)
         _GcodeLinearMove(cx+radius*math.cos(a),cy+radius*math.sin(a),feedMmMin)
@@ -1189,6 +1334,8 @@ def _GcodeArcMove(x0Mm,y0Mm,x1Mm,y1Mm,iMm,jMm,clockwise,feedMmMin):
 #stopping immediately if a limit switch trips
 #----------------------------------------------------------------------
 def RunGcodeFile(path):
+    global lastJobAborted
+    lastJobAborted = False
     if not Calibration["done"]:
         raise NotCalibratedError("Run calibration ('calibrate') before running a G-code file.")
     try:
@@ -1204,7 +1351,25 @@ def RunGcodeFile(path):
     curYMm = CurrentYSteps/STEPS_PER_MM
     print(f"Running G-code: {path} ({len(lines)} lines)")
 
+    #_jobActive tells a stop arriving on another thread whether the motors
+    #are still being driven, so it knows when it is safe to park.  cleared in
+    #a finally, because every way out of this loop has to clear it
+    _jobActive.set()
+    try:
+        _RunGcodeLines(path,lines,absMode,feedMmMin,curXMm,curYMm)
+    finally:
+        _jobActive.clear()
+
+
+#---_RunGcodeLines: the body of the loop, split out so RunGcodeFile can
+#clear _jobActive in a finally however the loop ends---
+def _RunGcodeLines(path,lines,absMode,feedMmMin,curXMm,curYMm):
+    global lastJobAborted
     for lineno,raw in enumerate(lines,1):
+        if abortEvent.is_set():
+            lastJobAborted = True
+            print(f"G-code job STOPPED at line {lineno} -- stop requested.")
+            return
         hit = TriggeredEndstop()
         if hit is not None:
             _TriggerEmergencyStop(hit)
@@ -1239,7 +1404,7 @@ def RunGcodeFile(path):
         elif cmd=="G4":
             deadline = time.time()+p.get("P",0.0)
             while time.time()<deadline:
-                if TriggeredEndstop() is not None:
+                if abortEvent.is_set() or TriggeredEndstop() is not None:
                     break
                 time.sleep(0.005)
 
@@ -1269,7 +1434,8 @@ def RunGcodeFile(path):
 def WriteGcodeFile(path):
     Connect()
     RunGcodeFile(path)
-    return {"estopped": estopped,"tripped_switch": TrippedSwitch}
+    return {"estopped": estopped,"tripped_switch": TrippedSwitch,
+            "aborted": lastJobAborted}
 
 #---InputListener: the keyboard control loop for manual testing---
 def InputListener():
