@@ -55,6 +55,57 @@ The two namers are **not** interchangeable. A drawn line has one pen width
 everywhere, so the ink namer has nothing to go on; the shape namer is trained
 on stroke-normalised crops and is the one that scores synthesis candidates.
 
+## Which way up the page is
+
+`StandUp` in `server.py` settles the orientation from the page itself, on both
+the upload and the camera path, so the two cannot disagree. It used to be only
+`CAPTURE_ROTATE_DEG`, applied to camera captures alone, because an upload was
+assumed to be a phone photo and already upright. The gantry webcam writes no
+EXIF orientation tag, so the *same photograph* gave:
+
+| path | before | after |
+|---|---|---|
+| camera button | dylan, 78.4% | dylan, 94.1% |
+| upload of that saved file | **owen, 28.7%** | dylan, 94.1% |
+
+The quarter turn is decided by `segment.LineAxisScore`, which counts the
+fraction of rows that are nearly empty: the white bands between lines only
+exist on the correct axis.
+
+The turn has to be *earned* by `AXIS_TURN_MARGIN`, because leaving a page alone
+is the safe answer. A plain "is sideways better" test turned `Abhinav05.jpg`,
+an upright page of 30 tightly spaced lines, on 0.167 against 0.164 — its gaps
+are narrow because it is dense, so the axes nearly tie and noise decides. It
+then segmented into 16 slices across the writing and was named wrongly. Over 30
+dataset pages and 3 webcam pages the ratio `s90/s0` is at most **1.02** on a
+page that should not turn and at least **1.85** on one that should, so the
+threshold sits at 1.35.
+
+Autocorrelation of the row profile was tried instead of counting gaps, on the
+theory that line spacing is regular whatever the density. It is worse: 6 of
+those 33 pages wrong against 1.
+
+Which *end* is up cannot be seen from row structure at all, because a page and
+the same page upside down have the same one, so it is settled by reading
+`ORIENT_PROBE_LINES` lines both ways and keeping whichever the reader is more
+confident of.
+
+## Naming the writer, and the per-line report
+
+Every line votes, weighted by how much ink it carries, and `/api/classify`
+returns a `lines` array with each line's writer, confidence, reading confidence
+and character accuracy. The browser shows it as a table and offers it as
+`/api/reports/<image_id>.csv` or `.json`.
+
+Per-line character accuracy needs the expected text entered **one written line
+per line**. A pasted paragraph gives the page figure only; the column is left
+empty rather than guessed at.
+
+Two figures are reported for the writer, and they answer different questions:
+`author_confidence_pct` is one pooled posterior over the whole page, and
+`author_line_agreement_pct` is how many lines would have named that writer on
+their own with no pooling at all.
+
 In CleanPipeline2 the reader's candidate list had the scratch checkpoint first,
 which reads about a quarter of the characters correctly. That order is
 corrected here: joint, then hf, then personal, then scratch.
@@ -136,3 +187,11 @@ machine and writes its weights as `.npz` in the layout `recognise.py` reads.
 - `accelMmS2` in `reproduce.py` is declared and never read; there is no
   acceleration limiting, which is the likeliest source of lost steps on a fast
   travel move.
+- Naming every line instead of six, and probing the orientation, cost time.
+  Measured on the same 16-line page, camera path: **17.9 s before, 24.1 s
+  after** (reading 6.3 s to 8.1 s, naming 1.6 s to 5.0 s). Still inside the
+  30 s page allowance, but the per-character allowance in `timing.py`
+  (2 s + 0.025 s/char) was already exceeded before this change and is now
+  exceeded by more. Naming is the bigger half and is the price of the per-line
+  table; if it has to come back, sample the *vote* but keep reporting every
+  line, and never with `linspace`, which always picks the last crop.

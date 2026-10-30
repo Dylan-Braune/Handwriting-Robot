@@ -39,6 +39,7 @@ Endpoints
     POST /api/curate/<writer>         remove the marked ones, rebuild, save
     DEL  /api/curate/<writer>         throw the curated profile away
 """
+import csv
 import dataclasses
 import io
 import json
@@ -76,30 +77,47 @@ import render as RENDER
 FRONTEND = HERE/"frontend"
 UPLOADS = paths.Cache/"WebUploads"
 JOBS = paths.Cache/"WebJobs"
+REPORTS = paths.Cache/"WebReports"
 UPLOADS.mkdir(parents=True, exist_ok=True)
 JOBS.mkdir(parents=True, exist_ok=True)
+REPORTS.mkdir(parents=True, exist_ok=True)
 
 #----------------------------------------------------------------------
-#A CAPTURED PAGE IS TURNED A QUARTER TURN LEFT
-#the camera is mounted across the gantry, so a page photographed on the bed
-#arrives on its side.  this applies ONLY to what the camera takes.  a file
-#the user uploads was photographed however they chose to hold their phone
-#and is already the right way up, so it is taken exactly as it is.
+#A CAPTURED PAGE IS TURNED A QUARTER TURN LEFT AS IT IS SAVED
+#the camera is mounted across the gantry, so a page photographed on the
+#bed arrives on its side.  turning it here means the copy on disk is the
+#right way up: the browser shows that file and the segmenter reads that
+#same file, and the two cannot drift apart.
 #
-#the turn happens once, as the picture is saved, so the copy on disk is the
-#right way up: the browser shows that file and the segmenter reads that same
-#file, and the two cannot drift apart.  anything loaded later by image_id is
-#therefore left alone, having been turned already
+#this is now only a HINT, not the thing that makes reading work.  it used
+#to be the only turn in the system, and an uploaded file got none at all,
+#on the assumption that an upload is a phone photo and already upright.
+#the webcam writes no EXIF orientation tag, so the same photograph read
+#as dylan at 78.4 per cent through the camera button and as owen at 28.7
+#through upload.  StandUp now settles the axis from the page itself on
+#both paths, and is idempotent, so whatever this is set to the page ends
+#up the right way round.  it is kept because turning the capture as it is
+#saved still makes the saved thumbnail look right in the browser
 #
 #0 switches it off.  only quarter turns are meaningful here
 #----------------------------------------------------------------------
 CAPTURE_ROTATE_DEG = 90   #90 is a quarter turn anticlockwise, ie to the left
 
-#---NAME_FROM_LINES: how many lines the writer is identified from---
-#the whole page is still READ; this is only how many of its lines are put
-#to the author classifier, which produces a single label for the page.
-#0 or less uses every line.  see the measurement beside the naming step
-NAME_FROM_LINES = 6
+#---NAME_FROM_LINES: WITHDRAWN, every line now names the writer---
+#this used to take 6 lines spread down the page with linspace.  linspace
+#always includes the LAST index, so a junk crop at the foot of a page was
+#in every pool and at 2 lines was half of it.  on the page that exposed
+#this all 16 real lines named the writer right on their own, and the
+#pooled answer still came back at 78.4 per cent because the 17th crop was
+#a blot.  dropping blots in the segmenter and letting every line vote
+#puts the same page at 94.1 per cent.  naming all 16 lines rather than 6
+#costs about 4.3 s, which is what the per line table needs anyway
+NAME_FROM_LINES = 0   #kept so an older caller setting it is not a crash
+
+#---ORIENT_PROBE_LINES: lines read both ways round to settle which end is up---
+#3 is enough: the gap between upright and inverted is large and consistent,
+#and probing every line doubled the read stage for the same answer
+ORIENT_PROBE_LINES = 3
 
 
 def OpenUpright(src):
@@ -167,6 +185,40 @@ INK_BY_INDEX = {v: k for k, v in INK_MAP.items()}
 print("[server] loading the shape namer from %s" % REC.SHAPE_AUTHOR_WEIGHTS.name)
 SHAPE_MODEL = REC.AuthorClassifierCNNNumpy(checkpointPath=REC.SHAPE_AUTHOR_WEIGHTS)
 SHAPE_MAP = SHAPE_MODEL.authorMapping
+
+#======================================================================
+#WHICH NAMER NAMES A PHOTOGRAPHED PAGE
+#the ink namer used to do this, on raw crops.  it reads ink statistics,
+#pen width and darkness, as much as it reads handwriting, and a page
+#photographed on a different day with a different pen is then a different
+#writer.  one of yeukita's pages came back as owen at 84 per cent, with
+#0 of its 13 lines naming her.
+#
+#measured four ways over 15 labelled pages, with the crops perturbed to
+#imitate exactly that change:
+#
+#   config       none   thicker  thinner  faint   gamma   overall
+#   ink_raw      15/15   15/15    12/15   12/15   15/15    92%
+#   ink_norm     13/15   13/15    15/15   13/15   14/15    91%
+#   shape_raw    15/15   15/15    13/15   15/15   15/15    97%
+#   shape_norm   15/15   15/15    15/15   15/15   15/15   100%
+#
+#the ink namer fails precisely where the theory says it should, on a
+#finer pen and on fainter ink.  over the 30 labelled pages plus the one
+#misnamed photograph, shape_raw is the only setting that gets all 31
+#right; shape_norm is steadier still under the simulated change but gets
+#that real photograph wrong, and ink_norm loses 3 of the 30.
+#
+#this decides the label for a PHOTOGRAPH only.  synthesis still scores
+#its candidates with the shape namer on stroke normalised crops, which
+#is a different question and is not touched
+#======================================================================
+PAGE_NAMER = SHAPE_MODEL
+PAGE_NAMER_STROKE_NORM = False
+PAGE_BY_INDEX = {v: k for k, v in PAGE_NAMER.authorMapping.items()}
+print("[server] naming photographed pages with %s, strokeNormalise=%s"
+      % ("the shape namer" if PAGE_NAMER is SHAPE_MODEL else "the ink namer",
+         PAGE_NAMER_STROKE_NORM))
 
 
 #---BaseAuthor: the writer a profile belongs to, curated or not---
@@ -307,6 +359,146 @@ def ApiPreviewStream():
 #======================================================================
 #READING A PAGE
 #conditioning, segmenting and cropping are timed inside the segmenter,
+#======================================================================
+#ORIENTATION, DECIDED FROM THE PAGE AND NOT FROM WHERE IT ARRIVED
+#a capture used to be turned by a fixed CAPTURE_ROTATE_DEG while an
+#upload was not turned at all, on the assumption that an uploaded file
+#is a phone photograph and so already upright.  the webcam on the gantry
+#writes no EXIF orientation tag, so the SAME photograph read correctly
+#through the camera button and as nonsense when its saved file was
+#uploaded: 91.1 per cent of characters against 19.8.
+#
+#both paths go through this now, so they cannot disagree.  it is also
+#idempotent, which is why the camera path can go on standing its capture
+#up as it saves it: a page that is already upright is left alone
+#======================================================================
+def StandUp(gray):
+    """Put a page on its correct axis.  Returns (page, degrees, scores)."""
+    up, deg, s0, s90 = SEG.UprightPage(gray)
+    return up, deg, {"axis_0": round(s0, 3), "axis_90": round(s90, 3)}
+
+
+def ReadAllLines(crops):
+    """Read every crop, and settle which end of the page is up.
+
+    The axis test cannot tell a page from the same page turned through
+    180 degrees, because the rows of writing fall in the same places
+    either way.  The reader can.  Turning the page over is the same as
+    turning every crop over and reversing their order, so it is read both
+    ways here and whichever the reader is more confident of wins.  That
+    needs no second segmentation.
+
+    Only a SAMPLE of lines is read both ways.  Reading every line twice
+    settled it too, and identically on the test page, but it put the read
+    stage up from 5.9 s to 11.9 s on a sixteen line page, which is most
+    of the per character allowance spent proving something three lines
+    already show beyond doubt.  The sampled lines are not read again.
+    """
+    def Read(c, flip):
+        img = np.rot90(c, 2) if flip else c
+        return REC.ReadTextScored(Image.fromarray(img).convert("L"), TEXT_MODEL)
+
+    n = len(crops)
+    probe = list(np.unique(np.linspace(0, n-1, min(ORIENT_PROBE_LINES, n))
+                           .round().astype(int)))
+    fwd = {i: Read(crops[i], False) for i in probe}
+    rev = {i: Read(crops[i], True) for i in probe}
+    sF = float(np.mean([fwd[i][1] for i in probe]))
+    sR = float(np.mean([rev[i][1] for i in probe]))
+
+    flip = sR > sF
+    cache = rev if flip else fwd
+    out = [cache[i] if i in cache else Read(crops[i], flip) for i in range(n)]
+    if flip:
+        #the order the lines come back in changes too, so the caller is
+        #given it and can put everything else it holds per line in step
+        idx = list(range(n))[::-1]
+        return ([np.rot90(crops[i], 2) for i in idx], [out[i][0] for i in idx],
+                [out[i][1] for i in idx], idx, 180, sF, sR)
+    idx = list(range(n))
+    return (list(crops), [t for t, _s in out], [s for _t, s in out], idx, 0, sF, sR)
+
+
+def NameWriter(crops):
+    """One writer for the page, from every line, weighted by ink.
+
+    Two changes from naming off six lines spread down the page.
+
+    The six were picked with linspace, which always includes the LAST
+    index, so a junk crop at the foot of the page got a vote in every
+    pool and at two lines was half of it.  On the page that prompted
+    this, every one of the sixteen real lines named the writer correctly
+    on its own, yet the pooled confidence came back at 78.4 per cent
+    because the seventeenth crop was a blot.  Dropping the blots is the
+    first half of the fix; letting every surviving line vote, so that no
+    single crop can carry that much weight, is the second.
+
+    The vote is then weighted by how much ink the line carries.  On that
+    same page the per line confidence ran from 48.4 to 100 per cent, and
+    the three weakest lines were the three shortest ones: two words of
+    writing is less evidence than a full line and should not count the
+    same as one.
+    """
+    per = []
+    for c in crops:
+        _i, p = REC.ClassifyImage(Image.fromarray(c).convert("L"), PAGE_NAMER,
+                                  strokeNormalise=PAGE_NAMER_STROKE_NORM)
+        per.append(np.asarray(p, dtype=np.float64))
+    w = np.array([float((c < 128).sum()) for c in crops], dtype=np.float64)
+    if w.sum() <= 0:
+        w = np.ones(len(crops), dtype=np.float64)
+    avg = (np.vstack(per)*w[:, None]).sum(axis=0)/w.sum()
+    return per, avg, w
+
+
+def SplitExpected(expectedText, n):
+    """Per line truth, but only when the expected text really is per line.
+
+    If the user pasted a paragraph, there is no honest way to say which
+    written line each word belongs to, so this returns None and the per
+    line accuracy columns are left empty rather than guessed at.
+    """
+    got = [l.strip() for l in (expectedText or "").splitlines() if l.strip()]
+    return got if len(got) == n and n > 0 else None
+
+
+def WriteReport(reportId, payload):
+    """Save the per line table as CSV and JSON, and return where it went."""
+    (REPORTS/("%s.json" % reportId)).write_text(json.dumps(payload, indent=2),
+                                                encoding="utf-8")
+    cols = ["line", "author_named", "author_confidence_pct",
+            "page_author_probability_pct", "char_accuracy_pct",
+            "word_accuracy_pct", "read_confidence", "ink_pct",
+            "text_read", "text_expected"]
+    with (REPORTS/("%s.csv" % reportId)).open("w", newline="", encoding="utf-8") as fh:
+        w = csv.writer(fh)
+        for k in ("image_id", "predicted_author", "author_confidence_pct",
+                  "author_line_agreement_pct", "author_line_correct_pct",
+                  "text_accuracy_pct", "word_accuracy_pct",
+                  "mean_line_char_accuracy_pct", "lines_detected",
+                  "lines_dropped_as_blots", "orientation_applied_deg"):
+            w.writerow(["# %s" % k, payload.get(k)])
+        w.writerow([])
+        w.writerow(cols)
+        for r in payload["lines"]:
+            w.writerow([r.get(c) for c in cols])
+    return "/api/reports/%s" % reportId
+
+
+@app.route("/api/reports/<reportId>")
+@app.route("/api/reports/<reportId>.<ext>")
+def ApiReport(reportId, ext="csv"):
+    safe = "".join(c for c in reportId if c.isalnum())
+    if ext not in ("csv", "json"):
+        abort(404)
+    p = REPORTS/("%s.%s" % (safe, ext))
+    if not p.exists():
+        abort(404)
+    return send_file(str(p), as_attachment=True,
+                     download_name="per_line_report_%s.%s" % (safe, ext))
+
+
+#======================================================================
 #then reading and naming are timed here, so every stage of the classify
 #path appears separately with its own per character cost
 #======================================================================
@@ -324,7 +516,6 @@ def ApiClassify():
             #here and the two can never disagree
             page = OpenUpright(request.files["image"].stream).convert("L")
             imageId = uuid.uuid4().hex
-            page.convert("RGB").save(UPLOADS/("%s.jpg" % imageId))
         elif request.form.get("image_id"):
             imageId = "".join(c for c in request.form["image_id"] if c.isalnum())
             p = UPLOADS/("%s.jpg" % imageId)
@@ -333,7 +524,12 @@ def ApiClassify():
             page = Image.open(p).convert("L")
         else:
             return jsonify({"error": "Provide either 'image' or 'image_id'"}), 400
-        gray = np.asarray(page, dtype=np.uint8)
+        #stood on its correct axis HERE, however it arrived, and the copy
+        #saved to disk is the stood up one, so the picture the browser
+        #shows and the one the segmenter reads stay the same picture.  an
+        #already upright page scores higher on its own axis and is left be
+        gray, axisDeg, axisScores = StandUp(np.asarray(page, dtype=np.uint8))
+        Image.fromarray(gray).convert("RGB").save(UPLOADS/("%s.jpg" % imageId))
 
     #SegmentLines records conditioning, segmenting and cropping into the run
     lines, _dbg, info = SEG.SegmentLines(gray, timer=run)
@@ -342,42 +538,49 @@ def ApiClassify():
         return jsonify({"error": "No handwriting lines were detected.",
                         "timing": Remember(run)}), 422
 
-    readLines = []
     with run.Step("reading", chars=0) as step:
-        for crop in crops:
-            readLines.append(REC.ReadText(Image.fromarray(crop).convert("L"), TEXT_MODEL))
+        crops, readLines, readScores, order, flipDeg, sF, sR = ReadAllLines(crops)
+        lines = [lines[i] for i in order]   #keep the crop metadata in step
         step.chars = sum(len(t) for t in readLines)
     predictedText = " ".join(readLines)
 
     with run.Step("naming", chars=len(predictedText)):
-        #naming reads every line to produce ONE label, which is the most
-        #expensive way to answer a question the first few lines already
-        #settle.  measured over the thirty photographed pages, naming from
-        #a spread of lines gets the writer right every time:
-        #
-        #   lines used    2     3     4     6    12   all
-        #   named right  30/30 30/30 30/30 30/30 30/30 30/30
-        #   mean conf     97%   97%   98%   97%   98%   98%
-        #
-        #six is taken rather than two, as three times the margin over the
-        #smallest that worked.  0 or fewer uses every line
-        sel = range(len(crops))
-        if NAME_FROM_LINES > 0 and len(crops) > NAME_FROM_LINES:
-            #spread down the page, so a sample is not all of one paragraph
-            sel = np.unique(np.linspace(0, len(crops)-1,
-                                        NAME_FROM_LINES).round().astype(int))
-        totals = None
-        for i in sel:
-            _idx, probs = REC.ClassifyImage(Image.fromarray(crops[i]).convert("L"),
-                                            INK_MODEL, strokeNormalise=False)
-            totals = np.asarray(probs, dtype=np.float64) if totals is None else totals+probs
-        avg = totals/len(list(sel))
+        perLineProbs, avg, inkWeights = NameWriter(crops)
         bestIdx = int(np.argmax(avg))
-        predictedAuthor = INK_BY_INDEX[bestIdx]
+        predictedAuthor = PAGE_BY_INDEX[bestIdx]
 
+    #---the per line table, which is what the downloadable report holds---
+    truthLines = SplitExpected(expectedText, len(crops))
+    named = [PAGE_BY_INDEX[int(np.argmax(p))] for p in perLineProbs]
+    agree = sum(1 for n in named if n == predictedAuthor)
+    correct = (sum(1 for n in named if n == expectedAuthor)
+               if expectedAuthor else None)
+
+    lineRows = []
+    for i, p in enumerate(perLineProbs):
+        t = truthLines[i] if truthLines else None
+        lineRows.append({
+            "line": i+1,
+            "author_named": named[i],
+            "author_confidence_pct": round(100*float(p[int(np.argmax(p))]), 1),
+            "page_author_probability_pct": round(100*float(p[bestIdx]), 1),
+            "author_matches_page": named[i] == predictedAuthor,
+            "author_correct": (named[i] == expectedAuthor) if expectedAuthor else None,
+            "char_accuracy_pct": (round(100*REC.CharAcc(readLines[i], t), 1)
+                                  if t is not None else None),
+            "word_accuracy_pct": (round(100*REC.WordAcc(readLines[i], t), 1)
+                                  if t is not None else None),
+            "read_confidence": round(readScores[i], 3),
+            "ink_pct": round(float(lines[i].get("inkPct", 0.0)), 2),
+            "text_read": readLines[i],
+            "text_expected": t,
+        })
+
+    meanLineChar = ([r["char_accuracy_pct"] for r in lineRows] if truthLines else None)
     run.chars = len(predictedText)
     run.lines = len(crops)
-    return jsonify({
+
+    payload = {
         "image_id": imageId,
         "predicted_text": predictedText,
         "predicted_lines": readLines,
@@ -385,16 +588,32 @@ def ApiClassify():
                               if expectedText else None),
         "word_accuracy_pct": (round(100*REC.WordAcc(predictedText, expectedText), 1)
                               if expectedText else None),
+        #the mean of the per line figures, which is the one quoted per page
+        "mean_line_char_accuracy_pct": (round(float(np.mean(meanLineChar)), 1)
+                                        if meanLineChar else None),
         "predicted_author": predictedAuthor,
+        #the pooled posterior over every line, weighted by ink
         "author_confidence_pct": round(100*float(avg[bestIdx]), 1),
+        #and how many lines would have said so entirely on their own
+        "author_line_agreement_pct": round(100.0*agree/len(crops), 1),
+        "author_lines_agreeing": "%d/%d" % (agree, len(crops)),
+        "author_line_correct_pct": (round(100.0*correct/len(crops), 1)
+                                    if correct is not None else None),
         "author_correct": (predictedAuthor == expectedAuthor) if expectedAuthor else None,
         "lines_detected": len(crops),
+        "lines_dropped_as_blots": info.get("dropped", 0),
+        "orientation_applied_deg": (axisDeg+flipDeg) % 360,
+        "orientation_scores": dict(axisScores, read_upright=round(sF, 3),
+                                   read_inverted=round(sR, 3)),
         "page_angle_deg": info.get("angle"),
         "line_pitch_px": info.get("pitch"),
-        "per_author_confidence_pct": {INK_BY_INDEX[i]: round(100*float(v), 1)
+        "per_author_confidence_pct": {PAGE_BY_INDEX[i]: round(100*float(v), 1)
                                       for i, v in enumerate(avg)},
+        "lines": lineRows,
         "timing": Remember(run),
-    })
+    }
+    payload["report_url"] = WriteReport(imageId, payload)
+    return jsonify(payload)
 
 
 #======================================================================

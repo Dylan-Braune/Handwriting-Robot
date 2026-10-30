@@ -1250,6 +1250,116 @@ def _BuildLineCrop(n,own,norm,P,f,H,W,minInk):
                 bbox=(X0,Y0,X1,Y1))
 
 #----------------------------------------------------------------------
+#LineAxisScore: how strongly the ink is organised into horizontal rows
+#a page the right way up has rows that are either full of writing or
+#empty between the lines, so the row ink totals swing hard.  the same
+#page on its side has every row cutting ACROSS all the lines at once, so
+#the totals are nearly flat.  the ratio of the spread to the mean
+#therefore separates the two axes without needing a threshold, and it is
+#cheap because it runs on a sixteenth of the pixels
+#----------------------------------------------------------------------
+def _SheetCrop(g):
+    #the dark surround beyond the paper has to go before the rows are
+    #counted.  it is a big rectangular block of its own, and left in it
+    #swamps the gaps between the lines, which is the signal here
+    bright = g>0.60*np.percentile(g,95)
+    lab,n = LabelComponents(bright)
+    if n==0:
+        return g
+    i = np.bincount(lab.ravel())[1:].argmax()+1   #the sheet is the biggest bright blob
+    yy,xx = np.nonzero(lab==i)
+    return g[yy.min():yy.max()+1,xx.min():xx.max()+1]
+
+
+def LineAxisScore(page):
+    #InkMask, not a flat threshold: a photograph is unevenly lit, and the
+    #ratio against the local mean ignores the lighting.
+    #
+    #the measure is the fraction of rows that are nearly empty.  the SPREAD
+    #of the row totals was tried first and is too weak: on the camera page
+    #it scored 1.299 upright against 1.294 sideways, a tie it got wrong.
+    #counting gaps instead separates the two cleanly, because the white
+    #bands between lines only exist on the correct axis.  over the camera
+    #page and 15 dataset pages the right axis scored 0.26 to 0.65 and the
+    #wrong one 0.08 to 0.30, the narrowest margin being 1.9x
+    g = np.asarray(page)[::4,::4].astype(np.float64)
+    g = _SheetCrop(g)
+    if g.size<100 or min(g.shape)<8:
+        return 0.0
+    mask,_ratio = InkMask(g)
+    rows = mask.sum(axis=1).astype(np.float64)
+    m = rows.mean()
+    return float((rows<0.35*m).mean()) if m>0 else 0.0
+
+
+#---AXIS_TURN_MARGIN: how much better sideways has to look before turning---
+#leaving a page alone is the safe answer, so the turn has to be EARNED.
+#a straight s90>s0 test turned Abhinav05, an upright page of 30 tightly
+#spaced lines, on 0.167 against 0.164: its gaps are narrow because it is
+#dense, so the two axes nearly tie and the noise decides.  it then
+#segmented into 16 slices across the writing and was named wrongly.
+#
+#measured over 30 dataset pages and 3 webcam pages, the ratio s90/s0 was
+#at most 1.02 on a page that should not turn and at least 1.85 on one
+#that should.  1.35 sits between the two with about a third of headroom
+#either way
+AXIS_TURN_MARGIN = 1.35
+
+
+#----------------------------------------------------------------------
+#UprightPage: stand a photographed page on the correct axis
+#this settles the quarter turn only, not which end is up: a page and the
+#same page upside down have identical row structure.  the caller resolves
+#that afterwards with the reader, which is the only thing that can tell
+#writing from writing turned through 180 degrees
+#----------------------------------------------------------------------
+def UprightPage(page):
+    a = np.asarray(page)
+    s0 = LineAxisScore(a)
+    s90 = LineAxisScore(np.rot90(a))     #anticlockwise, same sense as PIL
+    if s90>AXIS_TURN_MARGIN*max(s0,1e-9):
+        return np.ascontiguousarray(np.rot90(a)),90,s0,s90
+    return a,0,s0,s90
+
+
+#----------------------------------------------------------------------
+#DropSolidCrops: throw away a crop that is a blot, not writing
+#the crop builder already drops anything with too LITTLE ink.  nothing
+#dropped anything with too much, and that is the other way a crop goes
+#wrong: a shadow, the dark edge of the page, the desk behind it or a
+#finger in frame survives as a solid block.  it costs more than a junk
+#line of text, because the author namer still returns a confident vote
+#from it and the page average is then pulled towards a writer who had
+#nothing to do with the page.
+#
+#handwriting is thin strokes on white paper, so a real line crop is only
+#ever a few per cent ink.  measured over the 668 line crops of the 30
+#labelled pages of the five photographed writers: page medians ran 4.30
+#to 9.13 per cent, the densest real line anywhere was 12.37 per cent, and
+#the largest any line reached above its own page median was 2.18x.  the
+#blot that prompted this was 37.5 per cent, 7.2x its median.
+#
+#both tests have to fire, and each alone would already separate those two
+#populations, so a dense but genuine line is not thrown away on a page
+#whose other lines happen to be short.  on all 668 of those crops this
+#drops nothing, so it cannot change a page that was already working.
+#----------------------------------------------------------------------
+def DropSolidCrops(lines,maxAbsPct=15.0,maxMedianRatio=3.0):
+    if not lines:
+        return lines
+    ink = [float((np.asarray(l['image'])<128).mean()*100.0) for l in lines]
+    med = float(np.median(ink))
+    kept = []
+    for l,v in zip(lines,ink):
+        l['inkPct'] = v
+        if med>0 and v>maxAbsPct and v>maxMedianRatio*med:
+            continue                     #a block of dark, not a line of writing
+        l['order'] = len(kept)
+        kept.append(l)
+    return kept if kept else lines       #never hand back nothing at all
+
+
+#----------------------------------------------------------------------
 #SegmentLines: the whole job, one call
 #deskew, remove the printing, drop artefacts, find the centres, cut the
 #seams, assign ownership, build the crops.  each stage is its own
@@ -1292,6 +1402,9 @@ def SegmentLines(page,timer=None,mergeValley=None):
             continue
         crop['order'] = len(lines)
         lines.append(crop)
+    nBuilt = len(lines)
+    lines = DropSolidCrops(lines)        #and the ones that are a blot, not writing
+    nDropped = nBuilt-len(lines)
     Mark("cropping")                     #cut each line out of the full resolution page
 
     if timer is not None:
@@ -1303,4 +1416,4 @@ def SegmentLines(page,timer=None,mergeValley=None):
         angle=float(best),pitch=int(P),
         paperCoverage=round(float(paper.mean()),3),
         inkOutsidePaper=paperRemoved,removedStraightPixels=removed,
-        artifactPieces=nArtifacts,nLines=len(lines))
+        artifactPieces=nArtifacts,nLines=len(lines),dropped=nDropped)

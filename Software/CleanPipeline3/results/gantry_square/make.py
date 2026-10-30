@@ -6,11 +6,19 @@ else the error is the machine's, not the software's.
 
     python make.py [--usable-w 201.2] [--usable-h 260.0] [--size 100]
 """
-import argparse, sys
+import argparse, math, sys
 from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent.parent))
 import reproduce as REP
+
+
+def _Diagonals(size, skewDeg):
+    """The two diagonals of a square of this side whose axes are skewDeg off
+    square.  Equal at zero skew; the gap is what a caliper can actually see."""
+    c = math.cos(math.radians(90.0-skewDeg))
+    return (math.sqrt(2*size*size-2*size*size*c),
+            math.sqrt(2*size*size+2*size*size*c))
 
 
 def Square(usableW, usableH, size, out, feedDraw=None, feedTravel=None):
@@ -40,9 +48,20 @@ def Square(usableW, usableH, size, out, feedDraw=None, feedTravel=None):
     L.append(";   margin right           %.1f mm" % (usableW-x1))
     L.append(";   margin bottom          %.1f mm" % y0)
     L.append(";   margin top             %.1f mm" % (usableH-y1))
-    L.append("; steps/mm X=%.3f Y=%.3f, so one step is %.4f mm"
-             % (cfg.stepsPerMmX,cfg.stepsPerMmY,1.0/cfg.stepsPerMmX))
-    L.append("; a side of %.1f mm is %.0f steps" % (size,size*cfg.stepsPerMmX))
+    #NOT the steps/mm that will be used: Calibrate() recomputes it by homing,
+    #as counted steps / X_SWITCH_TRAVEL_MM.  this is the planning default only
+    L.append("; planning default steps/mm X=%.3f Y=%.3f (homing overrides this)"
+             % (cfg.stepsPerMmX,cfg.stepsPerMmY))
+    L.append("; travel constants in force: X=%.1f Y=%.1f mm"
+             % (REP.X_SWITCH_TRAVEL_MM,REP.Y_SWITCH_TRAVEL_MM))
+    dShort, dLong = _Diagonals(size, REP.SQUARENESS_ERROR_DEG)
+    L.append(";   both diagonals should be %.2f mm.  they are the ONLY way to"
+             % ((2*size**2)**0.5))
+    L.append(";   see the %.1f deg axis skew, which leaves all four sides"
+             % REP.SQUARENESS_ERROR_DEG)
+    L.append(";   equal but splits the diagonals to %.2f and %.2f mm,"
+             % (dShort,dLong))
+    L.append(";   a difference of %.2f mm" % (dLong-dShort))
     L.append("G21   ; millimetres")
     L.append("G90   ; absolute")
     pen = REP.NewPenState(cfg)
@@ -54,7 +73,12 @@ def Square(usableW, usableH, size, out, feedDraw=None, feedTravel=None):
     for (x,y) in corners[1:]:
         L.append("G1 X%.3f Y%.3f" % (x,y))
     L += REP.SetPenLines(pen,cfg,True)
-    L.append("G0 X%.3f Y%.3f   ; park" % (cfg.originXmm,cfg.originYmm))
+    #GantryConfig parks at originYmm, which defaults to the TOP of usable
+    #travel.  driving hard onto the limit at the end of every run risks
+    #tripping Y_MAX and firing the emergency stop, so stand 10 mm off it
+    parkX, parkY = 10.0, usableH-10.0
+    L.append("G0 X%.3f Y%.3f   ; park, kept 10 mm clear of the limits"
+             % (parkX,parkY))
     L.append("M2")
     Path(out).write_text("\n".join(L)+"\n", encoding="utf-8")
     return dict(corners=corners[:4], size=size,
@@ -65,8 +89,12 @@ def Square(usableW, usableH, size, out, feedDraw=None, feedTravel=None):
 
 def Main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--usable-w", type=float, default=201.2, dest="w")
-    ap.add_argument("--usable-h", type=float, default=260.0, dest="h")
+    #default to what the machine will actually believe at run time, so the
+    #header and the margins cannot go stale against reproduce.py again
+    ap.add_argument("--usable-w", type=float, dest="w",
+                    default=REP.X_SWITCH_TRAVEL_MM-2*REP.EDGE_TOLERANCE_MM)
+    ap.add_argument("--usable-h", type=float, dest="h",
+                    default=REP.Y_SWITCH_TRAVEL_MM-2*REP.EDGE_TOLERANCE_MM)
     ap.add_argument("--size", type=float, default=100.0)
     ap.add_argument("-o","--out", default=str(HERE/"square_100mm.gcode"))
     a = ap.parse_args()

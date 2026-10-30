@@ -428,11 +428,22 @@ class PaperCRNNNumpy:
         logits = Linear(seq,sd["text_head.weight"],sd["text_head.bias"])
         return LogSoftmax(logits,axis=2)
 
-#---ReadText: crop in, string out, the whole reader in one call---
-def ReadText(image,model):
+#----------------------------------------------------------------------
+#ReadTextScored: the same read, and how sure the reader was of it
+#the score is the mean of the best column log probability.  a page the
+#right way up reads with a far higher score than the same page upside
+#down, which is what decides orientation, and it doubles as the per line
+#reading confidence shown beside the accuracy in the report
+#----------------------------------------------------------------------
+def ReadTextScored(image,model):
     t = TensorFromResized(ResizeLineImageFixed(image))
     logProbs = model.forward(t)
-    return DecodeCtc(logProbs)[0]
+    best = np.max(logProbs[:,0,:],axis=1)
+    return DecodeCtc(logProbs)[0],float(np.mean(best))
+
+#---ReadText: crop in, string out, the whole reader in one call---
+def ReadText(image,model):
+    return ReadTextScored(image,model)[0]
 
 #----------------------------------------------------------------------
 #Levenshtein: how many edits turn one string into another

@@ -62,7 +62,7 @@ Equation~\ref{eq:rec-macs} is the reason the convolutions and not the recurrent 
 Section~\ref{sec:textrec} states that the CTC loss sums over all alignments and that the sum is evaluated by dynamic programming rather than enumerated.
 This sub-subsection gives that dynamic programme, because it is the one part of the training mathematics that was implemented from the defining equations rather than taken from a library.
 
-The number of paths is exponential in $T$, so the sum is evaluated by the forward--backward dynamic programme of Graves \emph{et al.}~\cite{graves2006} on the blank-augmented label $y'$ of length $S=2U+1$.
+The number of paths is exponential in $T$, so the sum is evaluated by the forward--backward dynamic programme of Graves \emph{et al.}~\cite[p.~372]{graves2006} on the blank-augmented label $y'$ of length $S=2U+1$.
 The forward variable $\alpha_t(s)$ is the total probability of consistent prefixes of length $t$ ending at position $s$ and obeys
 \begin{equation}
 \alpha_t(s)=\Bigl[\alpha_{t-1}(s)+\alpha_{t-1}(s-1)+\mathbb 1[\,y'_s\ne\varnothing\wedge y'_s\ne y'_{s-2}\,]\,\alpha_{t-1}(s-2)\Bigr]\,y_t^{\,y'_s},\label{eq:rec-alpha}
@@ -209,7 +209,7 @@ Characters outside the set are removed from every label, lines that become empty
 Section~\ref{sec:textrec} states that every backward pass was written for this project and verified numerically.
 This sub-subsection gives those gradients, the two places where the implementation rather than the algebra is the risk, and the full result of the check.
 
-With $\mathrm dA$ denoting $\partial\mathcal L/\partial A$, the gradients are the convolution's (Figure~\ref{fig:rec-convpseudo}), batch normalisation's~\cite{ioffe2015}, the rectifier's~\cite{nair2010}, dropout's~\cite{srivastava2014} and the max-pool routing's, Equation~\ref{eq:rec-relubw}, the adaptive pools', Equation~\ref{eq:rec-adaptbw}, the linear layer's, Equation~\ref{eq:rec-linbw}, the bidirectional LSTM's~\cite{hochreiter1997} and the two losses', Equation~\ref{eq:rec-ctcocc} for CTC~\cite{graves2006} and Equation~\ref{eq:wid-cebw} for cross-entropy.
+With $\mathrm dA$ denoting $\partial\mathcal L/\partial A$, the gradients are the convolution's (Figure~\ref{fig:rec-convpseudo}), batch normalisation's~\cite[Alg.~1]{ioffe2015}, the rectifier's~\cite[p.~807]{nair2010}, dropout's~\cite[p.~1930]{srivastava2014} and the max-pool routing's, Equation~\ref{eq:rec-relubw}, the adaptive pools', Equation~\ref{eq:rec-adaptbw}, the linear layer's, Equation~\ref{eq:rec-linbw}, the bidirectional LSTM's~\cite{hochreiter1997} and the two losses', Equation~\ref{eq:rec-ctcocc} for CTC~\cite[p.~372]{graves2006} and Equation~\ref{eq:wid-cebw} for cross-entropy.
 \begin{align}
 \mathrm dx&=\mathrm dY\odot\mathbb 1[x>0]\ \ \text{(rectifier)},\qquad
 \mathrm dx=\mathrm dY\odot M,\quad M_k=\frac{\mathbb 1[\xi_k\ge p]}{1-p}\ \ \text{(dropout)},\label{eq:rec-relubw}\\

@@ -748,19 +748,28 @@ DEFAULT_CIRCLE_RADIUS_MM = 8.0
 #a travel figure that is too big makes steps/mm too small, and every
 #drawn length comes out short by the same proportion
 #
-#the 100 x 100 mm test square measured 97.6 wide and 99.4 tall, which puts
-#the true travels at 204.0 x 97.6/100 = 199.2 and 262.0 x 99.4/100 = 260.3.
-#the old figures were nominal rail lengths, not measured ones
+#measured twice, with results/gantry_square/square_100mm.gcode:
 #
-#these are worked back from ONE drawn square and should be confirmed by
-#drawing another and measuring it.  a square that still comes out wrong by
-#the same proportion means the travel is still off; one that is right in
-#length but not square is the separate mechanical fault below
+#  pass  travel used     square drawn         true travel = used x drawn/100
+#  1     204.0 x 262.0   97.6 x 99.4  (-2.4%, -0.6%)   199.2 x 260.3
+#  2     199.2 x 260.3   100.69 x 100.37 (+0.69%, +0.37%)  200.6 x 261.3
+#
+#pass 1 overshot: it was a single measurement of a square that was 2.4% out,
+#and correcting the whole of that error went too far.  pass 2 is a much
+#smaller correction off a much smaller error, so it should be the last one.
+#the two sides of each pair agreed to 0.06 mm (x) and 0.10 mm (y), so the
+#0.32 mm difference BETWEEN the axes is real and they are corrected apart
+#
+#draw it once more and measure.  within +/-0.1 mm on a 100 mm side is as
+#good as this can be read off ink with calipers, and means stop.  a square
+#still wrong by the same proportion means the travel is still off; one that
+#is right in length but not square is the separate mechanical fault below,
+#and only the DIAGONALS can see that -- the side lengths cannot
 #----------------------------------------------------------------------
-X_SWITCH_TRAVEL_MM = 199.2   #was 204.0, nominal
+X_SWITCH_TRAVEL_MM = 200.6   #was 204.0 nominal, then 199.2
 
 #---Y_SWITCH_TRAVEL_MM: the same for y---
-Y_SWITCH_TRAVEL_MM = 260.3   #was 262.0, nominal
+Y_SWITCH_TRAVEL_MM = 261.3   #was 262.0 nominal, then 260.3
 
 #----------------------------------------------------------------------
 #SQUARENESS: the axes are not quite at right angles to each other

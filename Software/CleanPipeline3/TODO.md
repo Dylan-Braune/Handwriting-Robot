@@ -69,10 +69,15 @@ above x-height. Also needs a profile rebuild, so do it with item 3.
 - the join-anatomy change is +2 pages of writer-ID (22/26 -> 24/26) on **one
   seed**, and -0.4 points of character accuracy. A 5-seed repeat would say
   whether the writer-ID gain is real before it goes in the report.
-- `NAME_FROM_LINES = 6` was measured on 30 pages, 5 writers, ink model only,
-  all of which it was already 96-99% confident on. It says nothing about the
-  shape model on synthesised output, where confidence runs 37-78%. Do not
-  sample there without measuring separately.
+- ~~`NAME_FROM_LINES = 6`~~ **withdrawn.** It was measured on 30 pages the ink
+  model was already 96-99% confident on, so it never saw the case that breaks
+  it: the six were picked with `linspace`, which always includes the LAST
+  index, so a junk crop at the foot of a page sat in every pool and at two
+  lines was half of it. On the camera page of 2026-10-30 all 16 real lines
+  named dylan on their own and the pooled answer was still 78.4%, because the
+  17th crop was a blot. Every line votes now, weighted by ink.
+  The caution still stands for the **shape** model on synthesised output,
+  where confidence runs 37-78%: do not sample there without measuring.
 
 ### 6. Geometry is unmeasured for accuracy
 None of today's ruling work has been through an accuracy run. `make.py`

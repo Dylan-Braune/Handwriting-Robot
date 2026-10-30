@@ -45,7 +45,7 @@ Where a figure is affected by either limitation, this is stated with the figure.
         The proposal asks for 85\% stylistic correlation; what was measured is writer-identification accuracy, a different question, because a synthesis could be identifiable as the right writer while still differing visibly from that writer's hand.
         Worse, the writer-identification figures on synthesised text (80.1\% in the official run, 89.7\% in the coverage run) come from a classifier that also selects the candidates, so a best-of-$N$ search necessarily raises the score it is judged by, and only the figures computed outside the search can be trusted.
         The nine-feature geometric correlation gave 0.714 against the 0.85 target, so the style term of R1 is not met on that measure, the shortfall being in descender extent, the ascender-to-descender ratio and word spacing rather than in slant or ascender extent.
-        The overlay test gave an AUC~\cite{fawcett2006} of about 0.71, against 0.5 for an output carrying no writer information, which indicates real but limited fidelity.
+        The overlay test gave an AUC~\cite[p.~868]{fawcett2006} of about 0.71, against 0.5 for an output carrying no writer information, which indicates real but limited fidelity.
         A human panel or an independent classifier is required before the 85\% stylistic target can be claimed, and this was not carried out.
 
         \textbf{The synthesis is recognised as the correct writer much better than the system draws that writer.}
@@ -80,7 +80,7 @@ Where a figure is affected by either limitation, this is stated with the figure.
         The comparison is not like for like and is not offered as one: every published row was obtained on a public benchmark with a full research pipeline behind it, while the rows for this project were measured on thirteen writers, five of them photographed for this project, on a system that must also synthesise and draw.
         What the table is for is to show that the recognition and writer-identification figures are of the same order as published work rather than far below it, and that the shortfall of this project is concentrated in synthesis fidelity and in time, not in classification.
         Two differences make the recognition figure easier than the published ones: it is measured on crops known to be correctly cut, and five of the thirteen writers appear in the fine-tuning data.
-        \mustdo{fill the four published accuracy cells from the papers already cited: \cite{shi2017} and \cite{kizilirmak2023} report character and word error rates on IAM, \cite{bulacu2007} reports writer-identification accuracy on its own corpus, and \cite{kang2020} and \cite{dai2024} report their generated-text scores. Quote the exact figure, the dataset and the metric each paper uses, and state the metric in the column heading if they differ. Do not convert between CER and accuracy without saying so.}
+        The published cells are quoted from each paper at the page given, and the metrics are not the same one: the two recognition rows are accuracies on handwritten lines, while the two synthesis rows are Fr\'echet inception distances, a distance between image distributions for which lower is better and for which no accuracy equivalent exists. They are therefore comparable down a column only within a pair. \mustdo{the Bulacu and Schomaker writer-identification figure is still missing: the IEEE copy could not be obtained, so no number has been entered rather than a guessed one.}
 
 \begin{table}[!htbp]
 \centering
@@ -88,17 +88,17 @@ Where a figure is affected by either limitation, this is stated with the figure.
 \setlength{\tabcolsep}{4pt}
 \begin{tabular}{|p{3.0cm}|p{4.0cm}|p{3.0cm}|p{3.2cm}|}
 \hline
-\textbf{Work} & \textbf{Method} & \textbf{Data} & \textbf{Reported accuracy} \\
+\textbf{Work} & \textbf{Method} & \textbf{Data} & \textbf{Reported figure, with its metric} \\
 \hline
-Shi \emph{et al.}~\cite{shi2017} & Convolutional--recurrent network, CTC output & IAM lines & \mustdo{figure} \\
+Graves \emph{et al.}~\cite[p.~855]{graves2009} & Bidirectional recurrent network, CTC output & IAM lines, offline & 74.1\,\% word, 81.8\,\% character accuracy \\
 \hline
-K{\i}z{\i}l{\i}rmak \emph{et al.}~\cite{kizilirmak2023} & CNN--BiLSTM--CTC, the layer pattern this project follows & IAM lines & \mustdo{figure} \\
+K{\i}z{\i}l{\i}rmak \emph{et al.}~\cite[p.~1]{kizilirmak2023} & CNN--BiLSTM--CTC, the layer pattern this project follows & IAM lines & 3.59\,\% CER, 9.44\,\% WER (that is 96.41\,\% character accuracy) \\
 \hline
-Bulacu \emph{et al.}~\cite{bulacu2007} & Edge-direction texture features, no network & Own corpus & \mustdo{figure} \\
+Bulacu \emph{et al.}~\cite{bulacu2007} & Edge-direction texture features, no network & Own corpus & \mustdo{figure not obtained} \\
 \hline
-Kang \emph{et al.}~\cite{kang2020} & Adversarial image synthesis & IAM & \mustdo{figure} \\
+Kang \emph{et al.}~\cite[Tab.~1]{kang2020} & Adversarial image synthesis & IAM & FID 120.1 (seen styles) to 130.7 (unseen, out-of-vocabulary); real data scores 90.4 \\
 \hline
-Dai \emph{et al.}~\cite{dai2024} & Diffusion-based synthesis, one reference image & IAM & \mustdo{figure} \\
+Dai \emph{et al.}~\cite[Tab.~3]{dai2024} & Diffusion-based synthesis, one reference image & IAM, unseen styles, out-of-vocabulary & FID 102.8 \\
 \hline
 \textbf{This implementation}, text recognition & CNN--BiLSTM--CTC written from first principles, no framework & 669 real line crops, 13 writers & 98.61\% character, 94.21\% word \\
 \hline

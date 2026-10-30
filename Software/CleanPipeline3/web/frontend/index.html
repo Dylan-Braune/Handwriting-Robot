@@ -35,7 +35,7 @@
       <div class="error-banner" id="imageError"></div>
 
       <label style="margin-top:20px">Expected paragraph text</label>
-      <textarea id="expectedText" placeholder="Type or paste the text this page is supposed to contain..."></textarea>
+      <textarea id="expectedText" placeholder="Type or paste the text this page is supposed to contain. Put each written line on its own line to get per-line character accuracy as well as the page figure."></textarea>
 
       <label>Expected author</label>
       <select data-author-select id="expectedAuthor"></select>
@@ -72,6 +72,28 @@
           <span class="v" id="rAuthorConf">—</span>
         </div>
         <div class="pct-bar"><div id="rAuthorConfBar" style="width:0%"></div></div>
+
+        <div class="stat-row" title="How many of the page's lines name this writer on their own, with no pooling at all">
+          <span class="k">Lines naming this writer</span>
+          <span class="v" id="rAuthorAgree">—</span>
+        </div>
+        <div class="pct-bar"><div id="rAuthorAgreeBar" style="width:0%"></div></div>
+
+        <div class="stat-row">
+          <span class="k">Page turned by</span>
+          <span class="v" id="rOrient">—</span>
+        </div>
+        <div class="stat-row" title="Crops that were a shadow or a page edge rather than writing, and so were not read or voted with">
+          <span class="k">Blots discarded</span>
+          <span class="v" id="rDropped">—</span>
+        </div>
+
+        <label style="margin-top:16px">Per line</label>
+        <table class="timing-table" id="rLineTable"></table>
+        <div class="btn-row">
+          <a id="dlCsvLink" download><button class="secondary">⬇ Per-line report (CSV)</button></a>
+          <a id="dlJsonLink" download><button class="secondary">⬇ Per-line report (JSON)</button></a>
+        </div>
 
         <label style="margin-top:16px">Recognized text</label>
         <pre class="code" id="rText"></pre>
@@ -133,6 +155,48 @@ function showResult(res) {
 
   document.getElementById("rAuthorConf").textContent = res.author_confidence_pct + "%";
   document.getElementById("rAuthorConfBar").style.width = res.author_confidence_pct + "%";
+
+  // The pooled confidence and the line agreement answer two different
+  // questions.  The pooled figure is one posterior over the whole page;
+  // the agreement is how many lines would have named this writer with no
+  // pooling at all, which is the honest "n out of n" for the report.
+  const agree = res.author_line_agreement_pct;
+  document.getElementById("rAuthorAgree").textContent =
+    (res.author_lines_agreeing || "—") + (agree == null ? "" : "  (" + agree + "%)");
+  document.getElementById("rAuthorAgreeBar").style.width = (agree || 0) + "%";
+
+  const deg = res.orientation_applied_deg;
+  document.getElementById("rOrient").textContent =
+    deg ? deg + "°  (detected from the page)" : "nothing — already upright";
+  document.getElementById("rDropped").textContent = res.lines_dropped_as_blots ?? "—";
+
+  renderLineTable(res.lines);
+  const url = res.report_url ? absoluteUrl(res.report_url) : null;
+  document.getElementById("dlCsvLink").href = url ? url + ".csv" : "#";
+  document.getElementById("dlJsonLink").href = url ? url + ".json" : "#";
+}
+
+// One row per written line: who it names on its own, how sure it was, and
+// how much of it was read correctly.  The character column stays empty
+// unless the expected text was given one line per line, because there is
+// no honest way to split a pasted paragraph across the written lines.
+function renderLineTable(lines) {
+  const t = document.getElementById("rLineTable");
+  if (!lines || !lines.length) { t.innerHTML = ""; return; }
+  const hasChar = lines.some(r => r.char_accuracy_pct !== null && r.char_accuracy_pct !== undefined);
+  let h = "<tr><th>#</th><th>Writer</th><th class='num'>Conf.</th>"
+        + (hasChar ? "<th class='num'>Char</th>" : "") + "<th>Text read</th></tr>";
+  for (const r of lines) {
+    const bad = r.author_matches_page === false;
+    h += "<tr>"
+       + "<td class='num'>" + r.line + "</td>"
+       + "<td" + (bad ? " class='bad'" : "") + ">" + r.author_named + "</td>"
+       + "<td class='num'>" + r.author_confidence_pct + "%</td>"
+       + (hasChar ? "<td class='num'>" + (r.char_accuracy_pct == null ? "—" : r.char_accuracy_pct + "%") + "</td>" : "")
+       + "<td>" + (r.text_read || "").replace(/[<&]/g, c => c === "<" ? "&lt;" : "&amp;") + "</td>"
+       + "</tr>";
+  }
+  t.innerHTML = h;
 }
 
 function resetPage() {
@@ -240,9 +304,13 @@ document.getElementById("uploadTriggerBtn").addEventListener("click", () => {
   document.getElementById("fileInput").click();
 });
 
-// An uploaded file is shown and sent exactly as chosen.  Only the camera's
-// own pictures are turned (CAPTURE_ROTATE_DEG in server.py), because only
-// the camera is mounted across the gantry; a phone photo is already upright.
+// An uploaded file is shown and sent exactly as chosen, and the SERVER
+// decides which way up it is.  This used to assume a phone photo was
+// already upright and leave it alone, which was wrong for a file saved
+// from the gantry camera: the same picture that read correctly through
+// the camera button came back as owen at 28.7% when its file was
+// uploaded, because nothing turned it.  The server now stands every page
+// up from the page itself, so both ways in behave identically.
 document.getElementById("fileInput").addEventListener("change", (e) => {
   const file = e.target.files[0];
   if (!file) return;
