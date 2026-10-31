@@ -1330,11 +1330,15 @@ class AuthorLabeledView:
     #is trained on normalised crops and cannot read pen pressure, the INK
     #namer is trained on the crops as photographed and can.  it defaults to
     #True, which is what every existing caller got before the switch existed
-    def __init__(self,base: IAMLineDatasetRaw,indices,isTrain,strokeNorm=True):
+    def __init__(self,base: IAMLineDatasetRaw,indices,isTrain,strokeNorm=True,
+                 penWidth=None):
         self.base = base
         self.indices = indices
         self.isTrain = isTrain
         self.strokeNorm = strokeNorm
+        #None keeps recognise.PenWidthXh, which is what every caller got
+        #before the width could be chosen
+        self.penWidth = penWidth
 
     def __len__(self):
         return len(self.indices)
@@ -1343,7 +1347,9 @@ class AuthorLabeledView:
         item = self.base.samples[self.indices[i]]
         gray = DecodeCrop(item["imageBytes"])
         if self.strokeNorm:
-            normImg = StrokeNormalize(np.array(gray))
+            normImg = (StrokeNormalize(np.array(gray),penWidthXh=self.penWidth)
+                       if self.penWidth is not None else
+                       StrokeNormalize(np.array(gray)))
             if normImg is not None:
                 gray = normImg   #falls back to the raw crop only if stroke-normalize
                                   #found no usable ink (empty/near-blank line)
@@ -2028,7 +2034,7 @@ def ValidateAuthorModel(valSet,params,batchSize,rng):
 #ink based and shape based checkpoints come from
 #----------------------------------------------------------------------
 def TrainAuthorModel(numEpochs,batchSize,lr,seed,resume=False,warmStart=None,
-                     writers=None,strokeNorm=True):
+                     writers=None,strokeNorm=True,penWidth=None):
     #writers restricts the set the namer is trained on.  it is passed in rather
     #than read from paths.py because that list is also what the web server, the
     #reproducer and the style profiles go by: narrowing it there to train one
@@ -2054,13 +2060,18 @@ def TrainAuthorModel(numEpochs,batchSize,lr,seed,resume=False,warmStart=None,
     base.author_folders = sorted(wanted)
     base.author_to_idx = {a:i for i,a in enumerate(base.author_folders)}
     print(f"[Authors] {len(base.author_folders)}: {base.author_folders}")
-    print(f"[Crops] {'stroke-normalised (SHAPE namer)' if strokeNorm else 'as photographed (INK namer)'}")
+    import recognise as _REC
+    print(f"[Crops] {'stroke-normalised (SHAPE namer)' if strokeNorm else 'as photographed (INK namer)'}"
+          + (f" at {penWidth:.2f} x-heights" if strokeNorm and penWidth is not None
+             else (f" at the default {_REC.PenWidthXh:.2f} x-heights" if strokeNorm else "")))
 
     trainIdx,valIdx = base.HoldoutSplitIndices()
     if not valIdx:
         raise RuntimeError("No holdout lines found.")
-    trainSet = AuthorLabeledView(base,trainIdx,isTrain=True,strokeNorm=strokeNorm)
-    valSet = AuthorLabeledView(base,valIdx,isTrain=False,strokeNorm=strokeNorm)
+    trainSet = AuthorLabeledView(base,trainIdx,isTrain=True,strokeNorm=strokeNorm,
+                                 penWidth=penWidth)
+    valSet = AuthorLabeledView(base,valIdx,isTrain=False,strokeNorm=strokeNorm,
+                               penWidth=penWidth)
     print(f"[Split] Train lines: {len(trainIdx)} | Held-out val lines: {len(valIdx)}")
 
     numAuthors = len(base.author_folders)
@@ -2075,8 +2086,11 @@ def TrainAuthorModel(numEpochs,batchSize,lr,seed,resume=False,warmStart=None,
     #the name carries what the model IS, so an 11 writer ink namer cannot
     #silently overwrite the 13 writer shape namer that was there before
     kind = "shape" if strokeNorm else "ink"
-    stem = ("author_classifier_10new_scratch" if strokeNorm and len(wanted)==13
-            else "author_%s_%dw_scratch" % (kind,len(wanted)))
+    stem = ("author_classifier_10new_scratch"
+            if strokeNorm and len(wanted)==13 and penWidth is None
+            else "author_%s_%dw%s_scratch"
+                 % (kind,len(wanted),
+                    "" if penWidth is None else "_pw%03d" % round(penWidth*1000)))
     outPath = WEIGHTS_DIR/(stem+"_weights.npz")
     ckptPath = WEIGHTS_DIR/(stem+"_checkpoint.npz")
     logPath = WEIGHTS_DIR/(stem+"_log.txt")
@@ -2167,6 +2181,12 @@ def Main():
                          "384 552 588 abhinav dylan owen thiya yeukita.  "
                          "paths.py is left alone, so the server and the "
                          "reproducer still see every writer")
+    ap.add_argument("--pen-width",dest="penWidth",type=float,default=None,
+                    help="author task only: the pen width the stroke "
+                         "normaliser redraws at, in x-heights.  the default "
+                         "is recognise.PenWidthXh.  only kernels 3,5,7,9 are "
+                         "reachable, so values at or below 0.06 all give the "
+                         "same thinnest pen.  ignored with --ink")
     ap.add_argument("--ink",action="store_true",
                     help="author task only: train on the crops as photographed "
                          "instead of stroke-normalising them first, which is "
@@ -2198,7 +2218,8 @@ def Main():
     else:
         TrainAuthorModel(args.epochs,args.batch,args.lr,args.seed,
                          resume=args.resume,warmStart=warm,
-                         writers=args.writers,strokeNorm=not args.ink)
+                         writers=args.writers,strokeNorm=not args.ink,
+                         penWidth=args.penWidth)
 
 
 if __name__ == "__main__":
