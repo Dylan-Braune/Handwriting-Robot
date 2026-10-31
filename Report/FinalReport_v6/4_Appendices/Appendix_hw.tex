@@ -1,0 +1,246 @@
+%%
+%%  Department of Electrical, Electronic and Computer Engineering.
+%%  EPR400/2 Final Report - supporting detail of the hardware design.
+%%
+%%  Section 3.3 gives the circuit, the component choices, the resolution and
+%%  the faults found.  This file holds the detail: the pin assignment, the
+%%  three interface-circuit derivations that fix the component values, the
+%%  expanded stepper-and-belt dynamics behind the torque requirement, the
+%%  interpolation and calibration arithmetic, and pseudocode of the motion
+%%  program.  No code is reproduced.
+%%
+
+\subsection{Supporting detail of the hardware design}
+\label{sec:app-hw}
+
+Section~\ref{sec:gantry} gives the complete circuit with every component value on it, the resolution the transmission yields and the two design faults found during bring-up.
+This appendix carries the derivations behind those values: the pin assignment, the three interface-circuit calculations that size the bulk capacitor, the pull-downs and the pen-motor switching stage, the stepper-and-belt dynamics that the torque requirement rests on, the interpolation and calibration arithmetic, and pseudocode of the motion program.
+Every number quoted in Section~\ref{sec:gantry} that was calculated rather than measured is derived here.
+
+\subsubsection{Pin assignment}
+
+Twelve lines on one chip carry the whole interface, and all twelve are requested in a single call so that a second instance of the program cannot claim them during a job.
+
+\begin{table}[!htbp]
+\centering
+\fontsize{8}{9.2}\selectfont
+\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.0}
+\begin{tabularx}{\linewidth}{|p{3.4cm}|X|p{3.6cm}|}
+\hline
+\textbf{Function} & \textbf{Offset / header pin} & \textbf{Direction, initial level} \\
+\hline
+X motor DIR, STEP & 64/7, 68/11 & output, high / low \\
+Y motor DIR, STEP & 81/12, 69/13 & output, high / low \\
+X\_MIN, X\_MAX, Y\_MIN, Y\_MAX & 72/15, 65/16, 66/18, 67/22 & input \\
+Pen switch, pen motor & 70/33, 71/35 & input; output, low \\
+\hline
+\end{tabularx}
+\caption{Pin assignment on \texttt{/dev/gpiochip0}; all twelve are requested in one call, so a second instance cannot claim them during a job. Header numbers are unchecked against the board pinout.}
+\label{tab:gan-pins}
+\end{table}
+
+\subsubsection{Stepper and belt dynamics behind the torque requirement}
+\label{sec:app-hw-torque}
+
+Section~\ref{sec:gantry} states that the torque margin of this design cannot be stated, because neither the carriage mass nor the friction force was measured.
+This sub-subsection sets out the calculation that those two measurements would complete, so that what is missing is a pair of numbers rather than a method.
+
+A belt axis converts motor torque to carriage force through the pulley pitch radius alone, there being no gear reduction, so with $r$ from Equation~\ref{eq:gan-radius} the force available at the carriage is $F=T/r$ and the torque the motor must supply is
+\begin{equation}
+T=r\,\bigl(m_{\mathrm{eff}}\,a+F_f\bigr)+J_{\mathrm{rot}}\,\frac{a}{r},
+\label{eq:app-torque-full}
+\end{equation}
+which is Equation~\ref{eq:gan-torque} with the rotational inertia of the pulleys, the cross-shaft and the rotor added.
+The second term of Equation~\ref{eq:app-torque-full} is not negligible for this machine: the lower axis turns a cross-shaft with a pulley at each end, so its rotating inertia is carried at the same acceleration as the carriage, and referring it to the carriage gives an equivalent mass $J_{\mathrm{rot}}/r^2$.
+With $r=6.37$\,mm the division by $r^2$ is a multiplication by about $2.5\times10^{4}$\,m$^{-2}$, so even a small rotor inertia contributes an equivalent mass of the same order as the carriage itself; a design that ignored it would understate the torque required.
+The effective mass of the lower axis is therefore
+\begin{equation}
+m_{\mathrm{eff}}=m_{\mathrm{carriage}}+m_{\mathrm{upper\ axis}}+m_{\mathrm{pen}}+\frac{J_{\mathrm{rot}}}{r^{2}},
+\label{eq:app-meff}
+\end{equation}
+the upper axis riding on the lower one, which is the asymmetry noted in Section~\ref{sec:gantry}: the two axes do not have the same load, so a torque margin established on the upper axis does not transfer to the lower one.
+
+The torque a stepper can actually deliver falls with step rate, because the winding inductance limits how fast current is established.
+For a winding of inductance $L$ and resistance $R$ driven from a rail $V$, the current reaches its regulated value with time constant $L/R$ but is forced by the chopper at a rate $V/L$, so the fraction of rated current reached within one step interval $\tau$ of Equation~\ref{eq:gan-tau} falls as $\tau$ shortens, and with it the available torque:
+\begin{equation}
+\frac{T(\tau)}{T_{\mathrm{hold}}}\approx 1-\exp\!\left(-\frac{V\,\tau}{L\,I_{\mathrm{coil}}}\right),
+\label{eq:app-pullout}
+\end{equation}
+which is why the 24\,V rail was chosen over a 12\,V one for the same motor, as Section~\ref{sec:gantry} states: at fixed $\tau$, doubling $V$ in Equation~\ref{eq:app-pullout} moves the knee of the torque--speed curve to roughly twice the step rate.
+Equation~\ref{eq:app-pullout} is an approximation that ignores back-electromotive force and the chopper's own regulation, and it is given here to show the shape of the dependence rather than to predict a value; the manufacturer's pull-out torque curve is the quantity a design should check against, and it was not obtained.
+A pass would require the torque of Equation~\ref{eq:app-torque-full}, evaluated with the measured mass of Equation~\ref{eq:app-meff} and the measured friction force at the 400\,mm/s$^2$ of Equation~\ref{eq:gc-trap}, to lie below the pull-out torque at both of the step rates the interpreter uses, 1200 and 3200 steps per second, with margin.
+Because the coil current is deliberately derated to about 1\,A per phase for thermal reasons (Section~\ref{sec:gantry}), the holding torque available is itself below the datasheet figure in roughly the same proportion, and that derating must be applied before the margin is taken.
+This is also the reason the design carries no acceleration ramp: a ramp is sized from the torque margin, and with no margin established there is no basis on which to choose one.
+
+\subsubsection{The three interface-circuit derivations}
+
+Three component values in Figure~\ref{fig:gan-sch} follow from calculation rather than from a datasheet recommendation, and each is derived here.
+
+\emph{Bulk capacitor.}
+The chopper draws current in bursts that the supply leads cannot follow, so a capacitor sits at the drivers; the rail sag over one 1.68\,A burst of 10\,\textmu s is
+\begin{equation}
+\Delta V=\frac{I\,\Delta t}{C}=\frac{1.68\cdot10\times10^{-6}}{100\times10^{-6}}=0.17\ \mathrm{V},
+\label{eq:gan-bulk}
+\end{equation}
+which is small against 24\,V and clear of the driver's undervoltage threshold~\cite{a4988ds}.
+Three gaps remain in this part of the design: one capacitor is shared where one belongs at each driver, no ceramic logic-supply capacitor is documented, and the supply current was never budgeted.
+\mustdo{budget four phases at the derated coil current plus pen motor, board and camera against the supply rating, and confirm whether each driver has its own bulk and logic capacitor.}
+
+\emph{Coil current and its derating.}
+The datasheet relation~\cite[p.~9]{a4988ds} between the trimmer reference, the carrier's two sense resistors and the regulated current gives
+\begin{equation}
+I_{\mathrm{coil}}=\frac{V_{\mathrm{ref}}}{8\,R_S}\quad\Longrightarrow\quad V_{\mathrm{ref}}=8\,R_S\,I_{\mathrm{coil}}=8\cdot0.1\cdot1.68=1.34\ \mathrm{V}
+\label{eq:gan-current}
+\end{equation}
+for the 1.68\,A rating~\cite{stepperds} and the 0.1\,$\Omega$ resistors usually fitted.
+That rating is deliberately not used.
+Each driver dissipates about $2I_{\mathrm{coil}}^2R_{DS(\mathrm{on})}$, which has only the small carrier board to leave through, so an unheatsinked carrier is held near 1\,A per phase and $V_{\mathrm{ref}}$ of Equation~\ref{eq:gan-current} is derated from 1.34\,V to about 0.8\,V, trading holding torque for a driver that will not shut down thermally in the middle of a page.
+\mustdo{confirm the sense resistor fitted (0.05, 0.068 and 0.1\,$\Omega$ are all sold) and the measured reference voltage, give the coil current Equation~\ref{eq:gan-current} then returns as a fraction of 1.68\,A, and say whether the drivers have heatsinks.}
+
+\emph{Switch pull-downs.}
+With one switch closed, and with all four end-stops closed, the pull-down current is
+\begin{equation}
+I_{\mathrm{pull}}=\frac{V_{DD}}{R}=\frac{3.3}{10\,000}=0.33\ \mathrm{mA},\qquad 4I_{\mathrm{pull}}=1.3\ \mathrm{mA},
+\label{eq:gan-pull}
+\end{equation}
+negligible on this board.
+The 10\,k$\Omega$ of Equation~\ref{eq:gan-pull} is bounded in both directions: a smaller value wastes current, and a larger one lets pin leakage lift the open-switch voltage, so $R\le V_{IL}/I_{\mathrm{leak}}$~\cite{odroidn2ds}.
+Its RC time constant is microseconds against the 6\,ms re-read of Section~\ref{sec:gantry}, so the debounce belongs in the program and not in the network.
+\mustdo{take $V_{IL}$ and the input leakage from the ODROID~N2+ documentation~\cite{odroidn2ds} and state the upper bound they put on the pull-down.}
+\mustdo{give the board revision and date of that document; the bibliography entry has neither.}
+\mustdo{confirm each switch is wired to 3.3\,V, not 5\,V, and give the header pin that rail comes from; Figure~\ref{fig:gan-sch} infers it from program comments.}
+
+\emph{Pen-motor switching stage.}
+A header pin cannot supply the pen motor's current, so the motor is switched by a bipolar transistor in the common-emitter configuration.
+With the pin at 3.3\,V and $V_{BE(\mathrm{sat})}$ taken as 0.7\,V~\cite{bc337ds}, the base current through the 1\,k$\Omega$ resistor is
+\begin{equation}
+I_B=\frac{V_{\mathrm{pin}}-V_{BE(\mathrm{sat})}}{R_B}=\frac{3.3-0.7}{1000}=2.6\ \mathrm{mA},
+\label{eq:gan-base}
+\end{equation}
+and with $h_{FE(\min)}=250$ for the $-40$ gain group~\cite{bc337ds} and an overdrive factor $k_{od}$ of three to five for hard saturation, the switchable collector current is
+\begin{equation}
+I_{C(\max)}=\frac{h_{FE(\min)}\,I_B}{k_{od}}=\frac{250\cdot2.6\ \mathrm{mA}}{k_{od}}=\frac{650\ \mathrm{mA}}{k_{od}},
+\label{eq:gan-ic}
+\end{equation}
+which is 217\,mA at $k_{od}=3$ and 130\,mA at $k_{od}=5$.
+Equation~\ref{eq:gan-ic} is comfortable for a motor drawing up to about 200\,mA, and the saturated dissipation $P=V_{CE(\mathrm{sat})}I_C\approx0.7\cdot0.2=0.14$\,W is well inside the unheatsinked TO-92 package~\cite{bc337ds}.
+The overdrive factor is the design decision here: dividing by $k_{od}$ rather than using the full $h_{FE}I_B$ keeps the transistor in hard saturation at the minimum gain of the group, so the collector--emitter drop stays at $V_{CE(\mathrm{sat})}$ and the dissipation stays at the figure above even for the worst-case device.
+\mustdo{give the manufacturer (onsemi and Nexperia both supply this part), part number and datasheet revision of the transistor fitted, and check the gain group, $V_{BE(\mathrm{sat})}$, $V_{CE(\mathrm{sat})}$ and TO-92 dissipation against it.}
+\mustdo{measure the pen motor's free-running and stall current against Equation~\ref{eq:gan-ic}; above about 200\,mA the stage is not hard saturated and $R_B$ must be reduced.}
+
+\subsubsection{Interpolation and calibration arithmetic}
+
+Stepping the two axes independently would draw an L-shaped path, so the program interpolates with Bresenham's integer line algorithm~\cite[p.~28]{bresenham1965}: an error term $e$ is carried along the major axis of $a_x=|\Delta x|$ and $a_y=|\Delta y|$ steps, the major axis is pulsed every iteration and the minor axis whenever $e$ would go negative.
+Keeping $e$ in $[0,a_x)$ gives the minor-axis count after $k$ major steps as
+\begin{equation}
+m_k=\Bigl\lceil\frac{k\,a_y-\lfloor a_x/2\rfloor}{a_x}\Bigr\rceil,
+\label{eq:gan-bres}
+\end{equation}
+which is within one step of the ideal $k\,a_y/a_x$, about 6\,\textmu m, using integer arithmetic only.
+Equation~\ref{eq:gan-bres} is the reason no floating-point division appears in the inner loop: the deviation from the true line is bounded by construction rather than by rounding behaviour.
+
+Calibration replaces the assumed resolution of Equation~\ref{eq:gan-spm} with each axis's measured value, and it is written so that it never needs to know which direction leads to which switch.
+It drives one way until \emph{either} switch of that axis triggers, reverses, and counts the steps $N$ to the \emph{other}.
+With the hand-measured travel $L$, the resolution, the initial step counter and the position in millimetres are
+\begin{equation}
+\kappa_{\mathrm{axis}}=\frac{N}{L},\qquad n_0=N\ \text{if the second switch was MAX else }0,\qquad x_{\mathrm{mm}}=\frac{n}{\kappa}-5,
+\label{eq:gan-cal}
+\end{equation}
+so the zero of Equation~\ref{eq:gan-cal} lies 5\,mm inside the minimum switch, the usable area is $194\times252$\,mm, and each axis retracts 5\,mm off its last switch.
+An already triggered switch, an unexpected switch of the other axis, or 200\,000 steps without a trigger aborts calibration, after which jobs are refused.
+The two traverses need $(204+262)/7.8\approx60$\,s, derived and not measured.
+The result is deliberately not stored between sessions, since a bump between sessions would silently invalidate it.
+
+An error $\delta L$ in the hand-measured travel scales every commanded position by $x\,\delta L/L$, so to keep that scale error below half of the 0.5\,mm allowed by R5 over the 194\,mm of usable X travel,
+\begin{equation}
+\delta L\le\frac{0.25\ \mathrm{mm}}{194\ \mathrm{mm}}\,L=\frac{0.25}{194}\cdot204\ \mathrm{mm}=0.26\ \mathrm{mm}\quad(0.13\ \%),
+\label{eq:gan-budget}
+\end{equation}
+and switch-trigger repeatability adds directly to the zero error on top of that.
+Equation~\ref{eq:gan-budget} is the tightest tolerance anywhere in the hardware design, and it falls on a measurement taken with a hand-held rule.
+\mustdo{state the method and uncertainty of the $L_X$ and $L_Y$ measurement, which Equation~\ref{eq:gan-budget} requires better than 0.26\,mm.}
+
+\subsubsection{Pseudocode of the motion program}
+
+Three routines of the motion program carry the behaviour that Section~\ref{sec:gantry} describes: the debounced end-stop read inside the stepping loop, the direction-agnostic calibration, and the pen toggle.
+
+\begin{algorithm}[!htbp]
+\caption{Debounced end-stop read, called before every major-axis pulse}
+\label{alg:gan-endstop}
+\begin{algorithmic}[1]
+\REQUIRE set of end-stops to ignore (already triggered on this axis)
+\FOR{each end-stop not in the ignore set}
+    \IF{it does not read closed}
+        \STATE \textbf{continue} to the next end-stop
+    \ENDIF
+    \STATE re-read it twice more, 6\,ms apart \COMMENT{three reads in total, debounce of Equation~\ref{eq:gan-latency}}
+    \IF{it read closed on all three reads}
+        \STATE \textbf{return} that end-stop as triggered
+    \ENDIF
+\ENDFOR
+\STATE \textbf{return} none triggered
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}[!htbp]
+\caption{Interpolated segment with in-loop end-stop check}
+\label{alg:gan-step}
+\begin{algorithmic}[1]
+\REQUIRE $dx,dy$ in steps ($x$ taken as the major axis, $a_x=|dx|\ge|dy|=a_y$), feed $v_f$
+\STATE $\mathrm{delay}\leftarrow\max\bigl((\mathrm{distance}/v_f)/a_x,\ 2\,\mu\mathrm{s}\bigr)$ \COMMENT{$\tau$ of Equation~\ref{eq:gan-tau}}
+\STATE $e\leftarrow\lfloor a_x/2\rfloor$ \COMMENT{Bresenham error term of Equation~\ref{eq:gan-bres}}
+\FOR{$k=1$ \TO $a_x$}
+    \IF{Algorithm~\ref{alg:gan-endstop} returns a triggered end-stop}
+        \STATE stop the segment at once \COMMENT{latches as in Section~\ref{sec:gan-stop}}
+    \ENDIF
+    \STATE pulse the major-axis STEP pin; $e\leftarrow e-a_y$
+    \IF{$e<0$}
+        \STATE pulse the minor-axis STEP pin; $e\leftarrow e+a_x$
+    \ENDIF
+    \STATE sleep for $\mathrm{delay}$
+\ENDFOR
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}[!htbp]
+\caption{Direction-agnostic calibration of one axis}
+\label{alg:gan-calibrate}
+\begin{algorithmic}[1]
+\STATE drive one way at 1.6\,ms per step until \emph{either} switch of this axis triggers
+\STATE reverse; count steps $N$ until the \emph{other} switch triggers
+\STATE $\kappa_{\mathrm{axis}}\leftarrow N/L$ \COMMENT{$L$ the hand-measured travel, Equation~\ref{eq:gan-cal}}
+\IF{the second switch to trigger was the maximum-side one}
+    \STATE $n_0\leftarrow N$
+\ELSE
+    \STATE $n_0\leftarrow0$
+\ENDIF
+\STATE retract 5\,mm off the switch that is still closed
+\IF{an already-triggered switch, an unexpected switch on the other axis, or 200\,000 steps pass with no trigger}
+    \STATE abort calibration; refuse all jobs until it is re-run
+\ENDIF
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}[!htbp]
+\caption{Pen toggle}
+\label{alg:gan-pen}
+\begin{algorithmic}[1]
+\REQUIRE desired state $\mathrm{wantUp}$
+\IF{any end-stop is currently triggered}
+    \STATE refuse the request
+\ELSIF{the pen switch already reads $\mathrm{wantUp}$}
+    \STATE \textbf{return} \COMMENT{the motor must \emph{not} run; the cam turns one way only}
+\ELSE
+    \STATE energise the pen motor
+    \WHILE{before the deadline and the pen switch does not yet read $\mathrm{wantUp}$}
+        \STATE wait
+    \ENDWHILE
+    \IF{the switch now reads up}
+        \STATE wait 40\,ms more to seat the cam
+    \ENDIF
+    \STATE de-energise the pen motor
+\ENDIF
+\end{algorithmic}
+\end{algorithm}
+
+Algorithms~\ref{alg:gan-endstop}--\ref{alg:gan-pen} are the four routines of the motion program. \texttt{SetPen} must check the switch before energising the motor, for the stated reason, because the cam turns one way only, so an unnecessary pulse would toggle the pen to the wrong state rather than leave it alone.

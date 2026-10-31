@@ -1,0 +1,227 @@
+%%
+%%  Department of Electrical, Electronic and Computer Engineering.
+%%  EPR400/2 Final Report - supporting detail of the segmentation block.
+%%
+%%  Section 3.4 gives the six stages, the equations that define each one and
+%%  the measured limitations.  This file holds the detail: the full constant
+%%  table, the eight artefact-discard predicates, the six pixel-ownership
+%%  correction rules and pseudocode of the four routines that carry the
+%%  arithmetic.  Every threshold here is a multiple of the measured line pitch,
+%%  which is the point of the table.  No code is reproduced; the routines are
+%%  given as pseudocode.
+%%
+
+\subsection{Supporting detail of the page conditioning and segmentation block}
+\label{sec:app-seg}
+
+Section~\ref{sec:segmentation} describes the six stages of the segmentation block and the equations that define each of them.
+This appendix carries the three tables of constants and rules that the stage descriptions refer to, together with pseudocode of the four routines in which the arithmetic actually happens.
+It is here rather than in Section~\ref{sec:segmentation} because it enumerates thresholds rather than explaining the design: the design decision is that almost every threshold is a multiple of the measured line pitch $P$, and these tables are the evidence that it is.
+
+\subsubsection{Constants of the minor operations}
+
+Table~\ref{tab:seg-const} collects every constant of the minor operations of all six stages with the reason for each, so that the stage descriptions of Section~\ref{sec:segmentation} can keep to the operations themselves.
+Only four entries are not expressed in units of the pitch, and those four are identified in the caption.
+
+\begin{table}[!htbp]
+\centering
+\fontsize{8}{9.4}\selectfont
+\setlength{\tabcolsep}{3.5pt}
+\renewcommand{\arraystretch}{1.05}
+\begin{tabularx}{\linewidth}{|c|p{5.1cm}|X|}
+\hline
+\textbf{St.} & \textbf{Quantity and value} & \textbf{Reason} \\
+\hline
+2 & Otsu histogram over $[0,1.2]$, 256 bins & paper sits at $\rho\approx1$ and nothing above 1.2 carries ink information, so a highlight cannot drag the cut \\
+\hline
+2 & solid-area veto $\mathrm{BoxMean}_4(\mathrm{ink})>0.999$, cleared over $7\times7$ & no pen stroke fills a $9\times9$ window; the fringe goes with the blob, and 0.999 absorbs integral-image rounding \\
+\hline
+3 & 17 angles, $-4.0^\circ$ to $+4.0^\circ$ in $0.5^\circ$ & one sweep, no refinement, over a sixteenth of the photograph's area \\
+\hline
+3 & rotation fill 0 for the candidate masks, 255 for the page & outside the sheet must add no ink to the profile; corners brought in must be white paper \\
+\hline
+4 & paper region: block-average by $s=4$, blur $\max(1,\lfloor0.15P/s\rfloor)$, dark below $0.45\times$ median & a ratio and not a grey level, so it survives a change of exposure \\
+\hline
+4 & whole frame accepted as paper below $0.2\,\%$ dark cells; sheet eroded $\lfloor0.4P\rfloor$ per axis & correct for a photograph filled by the sheet; the erosion keeps the sheet's darkened rim out of the ink mask \\
+\hline
+4 & piece closing $\max(1,\lfloor0.1P\rfloor)$ & bridges the pen lifts inside a word, so a word is one piece \\
+\hline
+5 & centre separation $0.6P$ & more than half a pitch, so two genuine lines can never be merged \\
+\hline
+6 & seam closing $\max(2,\lfloor0.07P\rfloor)$ & fills only the gap beside a letter stem; a dilation would make a blob the cut would trace \\
+\hline
+6 & outer boundaries $\lfloor0.75P\rfloor$ beyond the first and last centre & covers the first line's ascenders and the last line's descenders \\
+\hline
+6 & band emitted above $\max(60,\,0.12\,\mathrm{median}_n N_n)$ owned pixels and $\max(6,\,0.2P)$ rows & keeps a short line carrying an eighth of the typical ink; the absolute 60 catches a tiny-median page \\
+\hline
+6 & vertical gap trimmed only if it removes more than $0.8P$ & spares the ordinary gap between a line's body and its own ascenders \\
+\hline
+6 & crop padding $\lfloor0.15P\rfloor$ per side, halo $\lfloor0.20P\rfloor$ per axis, local recovery radius $\max(3,\min(20,\mathrm{round}(h_{\mathrm{crop}}/8)))$ & the halo anchors recovery to ink the line already owns; the local radius judges a pale line against its own contrast \\
+\hline
+6 & stretch of Equation~\ref{eq:seg-stretch}: $b$ the 40th percentile under the mask, $w$ the 75th of the crop & the 40th percentile is the typical ink darkness, so one dark speck cannot flatten the line \\
+\hline
+\end{tabularx}
+\caption{Constants of the minor operations of each stage of the segmentation block, with the reason for each. Every entry in units of the measured pitch $P$ scales with the page; the four that do not are the Otsu range, the $0.2\,\%$ and $0.45$ paper-region tests and the floor of 60 ink pixels. The constants of the core operations appear in the equations of Section~\ref{sec:segmentation} itself.}
+\label{tab:seg-const}
+\end{table}
+
+\subsubsection{The eight artefact-discard predicates}
+
+Stage~4 judges each closed piece of ink as a whole and discards it if any one of eight predicates holds.
+Table~\ref{tab:seg-artifact} states them with the nuisance each is meant to catch, for a piece of area $A$, height $h$ and width $w$, with $e=\max(3,\lfloor0.5P\rfloor)$ counting as touching the frame, $x_L$ the fifth percentile of the left edges of the letter-like pieces ($A\ge0.065P^2$, $h\le2.2P$) and faintness defined as $\bar\rho_c>0.85\,t^*$, relative to the page's own threshold so that one constant serves pencil and fibre tip.
+
+\begin{table}[h]
+\centering
+\fontsize{8.5}{10.2}\selectfont
+\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\linewidth}{|p{3.3cm}|X|}
+\hline
+\textbf{Discard condition} & \textbf{What it is meant to catch} \\
+\hline
+$x_{\min}\le e$ & A piece touching the left frame edge: the facing page, or the desk. \\
+\hline
+$x_{\max}\ge W-1-e$, $w\le0.5P$ & A narrow sliver at the right edge; a real line there is wider. \\
+\hline
+$y_{\min}\le e$ or $y_{\max}\ge H-1-e$, $h\le0.5P$, $w\le0.5P$ & A small fleck at the top or bottom frame edge. \\
+\hline
+$h>2.2P$, $w\le0.5P$ & A tall thin streak over two line spacings: a binder edge or a fold. \\
+\hline
+$w\le0.12P$, $h\ge1.2P$ & A bar thinner and taller than any letter. \\
+\hline
+$\mathrm{faint}$, $w\le0.2P$, $h\ge0.6P$ & A printed margin rule or a crease. \\
+\hline
+$(y_{\min}\le e$ or $y_{\max}\ge H-1-e)$, $h\le1.2P$, $A/(hw)<0.15$, $\mathrm{faint}$, $w>P$ & An edge shadow or fold: wide, faint, at an edge, too sparse inside its own box to be writing. \\
+\hline
+$x_{\max}<x_L-1.2P$ & A hole punch, a staple shadow or a page number in the gutter. \\
+\hline
+\end{tabularx}
+\caption{The eight discard predicates applied to each closed piece of ink in stage~4; the background label is exempt from all of them. The first row is the most aggressive rule in the module: any piece whose leftmost ink lies within $e$ of the left frame edge is discarded whatever its size or darkness, which removes the facing page of an open book but also costs the first letters of a page photographed with no left margin.}
+\label{tab:seg-artifact}
+\end{table}
+
+\subsubsection{The six pixel-ownership correction rules}
+
+By default an ink pixel belongs to the band it lies in, and stage~6 then applies six correction rules on top of that default, each of which may move a piece to an adjacent band or drop it but never further.
+Table~\ref{tab:seg-own} states them.
+They rest on each band's share of a piece's ink, with $0.15$ counting as a genuine presence, and on the \emph{major} band, defined as the topmost band reaching the piece, since a piece spanning two lines is the upper one's descender.
+
+\begin{table}[h]
+\centering
+\fontsize{8.5}{10.2}\selectfont
+\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\linewidth}{|p{0.7cm}|p{3.6cm}|X|}
+\hline
+\textbf{Rule} & \textbf{Applies to} & \textbf{Action, and the reason for it} \\
+\hline
+1 & A remnant in a band adjacent to the major band: under $0.12P^2$ there, under $0.35$ of the piece's ink, no wider than $0.55P$ & Returned to the major band. The width test separates a cut-off tail, which is narrow, from a genuine short word, which is wide. \\
+\hline
+2 & A piece under $0.06P^2$; a \emph{speck} is under $0.01P^2$ & Dropped if no \emph{big} piece ($\ge0.05P^2$) of its own line lies within $6P$ horizontally, else moved one band towards the body it belongs to, asymmetrically ($0.5P$ below, $0.7P$ above), because a mark below a line is usually its own comma or descender while one well above it is more often an accent of the line above. A speck out of band drops rather than moves. \\
+\hline
+3 & A piece of $0.06P^2$ to $0.15P^2$ & Given to whichever of the three nearest bands has its body closest in $y$. \\
+\hline
+4 & A \emph{dot}: area under $0.1P^2$, extent at most $0.45P$, aspect ratio under 2.2 so that a short dash does not qualify & Followed downwards up to $\lfloor0.4P\rfloor$ rows to the first \emph{stem} ($\ge0.03P^2$) and moved to that stem's band only if that band's body also lies $0.25P$ to $0.7P$ below it, where an $i$ dot sits relative to its own x-height band. Together the two conditions are much stronger than either alone, since the scan can meet the wrong stem on a crowded page and the band test can accept a mark belonging to no stem. \\
+\hline
+5 & The same search on the raw, unclosed labelling, for pieces of at least $0.015P^2$ & Catches a dot the stage-4 closing has welded to a descender of the line above. A ring-footed stroke the same welding makes --- a blob of width $0.2P$ to $0.45P$, aspect ratio $0.6$ to $1.6$ --- also follows the stem below, but only if it encloses a hole, since a dot ring does and a hook does not. Neither rule reassigns a whole word ($\ge0.2P^2$). \\
+\hline
+6 & A fragment of at least $0.006P^2$ with no ink within $0.28P$ of its own band's centre & Offered to the line whose ink it touches, or failing that to the nearer neighbouring centre if the fragment sits within $0.2P$ of it. Fragments placed by rule~5 are locked, since a dot deliberately lifted into a band would otherwise be pushed straight back. \\
+\hline
+\end{tabularx}
+\caption{The pixel-ownership correction rules of stage~6. The size ladder they share runs $0.006P^2$, $0.01P^2$, $0.015P^2$, $0.03P^2$, $0.05P^2$, $0.065P^2$, $0.1P^2$, $0.12P^2$ and $0.2P^2$, every entry a multiple of the measured pitch squared, so no rule is tied to a pixel count.}
+\label{tab:seg-own}
+\end{table}
+
+\subsubsection{Pseudocode of the four routines that carry the arithmetic}
+
+Four routines account for almost all of the block's arithmetic, and each is given here as pseudocode.
+The first shows why the three array primitives of Section~\ref{sec:segmentation} cost the same whatever the window radius: each is two cumulative sums and a slice difference, so none contains a loop over pixels.
+
+\begin{figure}[h]
+\centering
+\fontsize{8.5}{10.2}\selectfont
+\begin{verbatim}
+  BoxMean( image, radius r ):            # mean over a (2r+1)x(2r+1) window
+      pad the image by r, replicating the edge
+      integral <- cumulative sum down, then cumulative sum across
+      return ( four corner look-ups into integral ) / (2r+1)^2
+
+  AnyWithinRadius( mask, radius r, axis ):          # one-axis dilation
+      c <- cumulative sum of the mask along the axis
+      return ( c[ i+2r+1 ] - c[ i ] ) > 0     for every position i
+
+  LongRunMask( mask, length n, axis ):   # pixels on a run of n or more
+      c   <- cumulative sum of the mask along the axis
+      hit <- ( c[ i+n ] - c[ i ] ) = n        # a run of n starts at i
+      ch  <- cumulative sum of hit
+      return ( ch[ high ] - ch[ low ] ) > 0   # some such run covers i
+\end{verbatim}
+\caption{The three array primitives of the segmentation block as pseudocode. \texttt{BoxMean} is Equation~\ref{eq:seg-sat}, \texttt{AnyWithinRadius} is Equation~\ref{eq:seg-dilate} and \texttt{LongRunMask} is Equation~\ref{eq:seg-runmask}. Because each is built on a cumulative sum, a window of any size costs four look-ups, which is what makes the 40-pixel illumination blur of stage~2 affordable.}
+\label{fig:seg-primspseudo}
+\end{figure}
+
+Stage~2 is four array statements and holds no tunable grey level, which is the result of dividing the illumination out before thresholding rather than after.
+
+\begin{figure}[h]
+\centering
+\fontsize{8.5}{10.2}\selectfont
+\begin{verbatim}
+  OtsuThreshold( values ):
+      histogram <- 256 bins of the values clipped to [0, 1.2]
+      w, m      <- cumulative class weight and cumulative class mean
+      variance  <- ( total mean . w  -  m )^2 / ( w . (1 - w) )
+      return the bin centre maximising variance
+
+  InkMask( grey ):
+      r     <- max( 8, min( 40, round( image height / 41 ) ) )
+      ratio <- grey / max( BoxMean( grey, r ), 1 )      # divide, not subtract
+      mask  <- ratio < OtsuThreshold( ratio )
+      solid <- BoxMean( mask, 4 ) > 0.999    # a 9x9 window wholly ink
+      return mask AND NOT ( dilate solid by 3 ),  ratio
+\end{verbatim}
+\caption{Lighting normalisation and the ink mask as pseudocode. The array \texttt{ratio} is $\rho$ of Equation~\ref{eq:seg-flat} and \texttt{OtsuThreshold} is the cumulative form of Equation~\ref{eq:seg-otsu} evaluated for all 256 bins at once. The threshold 0.999 rather than 1 absorbs floating-point error in the integral image; no pen stroke fills a $9\times9$ window, so a window that is wholly ink is a shadow or a binder and is removed with its fringe.}
+\label{fig:seg-inkpseudo}
+\end{figure}
+
+Stage~5 returns the scale unit and the line positions from one pass over the mask, and falls back three times rather than failing.
+
+\begin{figure}[h]
+\centering
+\fontsize{8.5}{10.2}\selectfont
+\begin{verbatim}
+  profile  <- ink pixels per row, over the central 5% to 97% of the width
+  smoothed <- profile convolved with a 25-tap Gaussian, sigma = 4 rows
+  peaks    <- interior rows with  smoothed[i] >= smoothed[i-1]
+                            and  smoothed[i] >  smoothed[i+1]
+                            and  smoothed[i] >  0.06 . max( smoothed )
+
+  if at least two peaks:   return median gap between consecutive peaks
+  else: autocorrelate the mean-removed profile; take the first lag in
+        15 .. min(200, length/3) reaching 0.7 of the segment maximum
+  else: P <- max( 15, round( 2.2 . median letter height ) )
+  else: P <- 48 rows
+\end{verbatim}
+\caption{The pitch measurement as pseudocode. The peak test is Equation~\ref{eq:seg-centres} and the median gap is the pitch $P$ of Equation~\ref{eq:seg-pitch}. The smoothed profile is returned as well and the caller reuses it for the line centres, so the scale unit and the line positions come out of one pass over the mask. The autocorrelation is a fallback only because it can lock onto a multiple of the true spacing.}
+\label{fig:seg-pitchpseudo}
+\end{figure}
+
+Stage~6's seam is an exact minimisation, because a path cost is a sum over columns and every admissible predecessor is considered.
+
+\begin{figure}[h]
+\centering
+\fontsize{8.5}{10.2}\selectfont
+\begin{verbatim}
+  for each pair of consecutive line centres c0, c1:
+      cost <- 4.0 . closedInk  +  0.012 . ( (row - midline) / halfGap )^2
+      seam <- LeastCostSeam( cost, step = 7 )
+
+  LeastCostSeam( cost, step s ):           # one row index per column
+      acc[ :, 1 ] <- cost[ :, 1 ]
+      for x = 2 .. W:
+          for each displacement d in -s .. +s:
+              candidate[d] <- acc[ row+d, x-1 ] + 0.02 . |d|
+          acc[ :, x ]  <- cost[ :, x ] + min over d of candidate[d]
+          back[ :, x ] <- the d that achieved the minimum
+      backtrack from the cheapest entry of the last column
+\end{verbatim}
+\caption{The least-ink seam as pseudocode. The cost field is Equation~\ref{eq:seg-cost2} and the loop over columns is the recursion of Equation~\ref{eq:seg-seam}. All rows of a column are evaluated at once as $2s+1$ shifted candidate arrays, so only the displacements and the backtrack are loops. At a weight of $4.0$ against a maximum of $0.012$, crossing one ink pixel costs over three hundred times more than sitting a half-gap from the midline, so the midline term only breaks ties over the gaps between words.}
+\label{fig:seg-seampseudo}
+\end{figure}

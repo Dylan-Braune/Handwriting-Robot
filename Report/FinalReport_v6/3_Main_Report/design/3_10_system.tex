@@ -1,0 +1,170 @@
+\subsection{Software design and system integration}
+\label{sec:system}
+
+% Compact display spacing for this subsection only; restored at the end of the file.
+\begingroup
+\setlength{\abovedisplayskip}{4pt}\setlength{\belowdisplayskip}{4pt}
+\setlength{\abovedisplayshortskip}{2pt}\setlength{\belowdisplayshortskip}{2pt}
+
+This subsection describes how the blocks of Sections~\ref{sec:gantry} to~\ref{sec:later} form one application on the single-board computer, which runs a web server exposing them to a browser. All are Python programs written for this project; only the camera interface, the pin interface and the transport of web requests come from libraries, with the one exception below.
+
+\subsubsection{Process flow and start-up}
+
+Figure~\ref{fig:sys-flow} is the process flow of the two run-time modes. At start-up the application loads the thirteen profiles and the three networks, each a from-scratch array-arithmetic evaluation of trained weights (Sections~\ref{sec:textrec} and~\ref{sec:writerid}); the reproduction chain then calls the synthesiser once with both judges passed in and refuses to send unless calibration has succeeded in this session. Training is a third mode, the writers being pre-built files from offline programs. \mustdo{the board's address and connection to the laptop, the operating system and Python version, how the server is started, and the memory the loaded models use.}
+
+\begin{figure}[!htbp]
+\centering
+\begin{tikzpicture}[x=1cm,y=1cm]
+\tikzset{p/.style={w3box,text width=2.2cm,minimum height=1.0cm,font=\scriptsize},
+         s/.style={w3store,text width=2.2cm,minimum height=0.85cm,font=\scriptsize},
+         i/.style={w3io,text width=2.2cm,minimum height=0.85cm,font=\scriptsize}}
+\node[p] (a1) at (0,0) {Read page: capture or upload};
+\node[p] (a2) at (3,0) {Condition, segment lines};
+\node[p] (a3) at (6,0) {Recogniser and ink classifier};
+\node[p] (a4) at (9,0) {Mean writer probabilities};
+\node[p] (a5) at (12,0) {Text, writer, confidence};
+\node[p] (b1) at (0,-1.9) {Write page: text, writer, $N$};
+\node[p] (b2) at (3,-1.9) {Best-of-$N$ synthesis};
+\node[p] (b3) at (6,-1.9) {G-code and preview};
+\node[p] (b4) at (9,-1.9) {Read-back by recogniser};
+\node[p] (b5) at (12,-1.9) {Send to calibrated gantry};
+\node[s] (prof) at (3,-3.25) {Thirteen style profiles (JSON)};
+\node[i] (gan) at (12,-3.25) {Gantry, pen, switches};
+\begin{scope}[on background layer]
+\node[w3group,fit=(a1)(a5)(b1)(b5),inner sep=7pt] (srv) {};
+\end{scope}
+\node[font=\scriptsize\bfseries,anchor=south west] at (srv.north west) {One application on the ODROID N2+};
+\foreach \u/\v in {a1/a2,a2/a3,a3/a4,a4/a5,b1/b2,b2/b3,b3/b4,b4/b5} \draw[w3arr] (\u) -- (\v);
+\draw[w3arr] (prof) -- (b2);
+\draw[w3arr] (b5) -- (gan);
+\end{tikzpicture}
+\caption{Process flow of the two run-time modes: classification above, reproduction below, the writer the upper chain identifies being what the lower chain is given. The profile builder of Section~\ref{sec:styleprofile} is offline and appears in neither.}
+\label{fig:sys-flow}
+\end{figure}
+
+\paragraph{The inference path is library-free; the sample-crop warm-up is not.}
+A recorded cold-boot import closure confirms that \texttt{torch}, \texttt{scipy}, \texttt{cv2} and \texttt{tensorflow} are reached by none of the three networks and none of the classification, synthesis, G-code and motion paths: every weight comes from a plain array archive and every layer is evaluated by the project's own array arithmetic. One path breaks that. The start-up warm-up, given as pseudocode in Figure~\ref{fig:sys-code-warm}, calls \texttt{WRH.SampleCrops} for every writer, and on a cache miss that helper imports \texttt{BuildStyleProfile}, \texttt{TrainAuthor} and \texttt{TrainText}; \texttt{WebRenderHelpers.py} prepends \texttt{Software/CNN} and its \texttt{AuthorReproductionStuff} to \texttt{sys.path}, so those names resolve to the \emph{retired} tree, whose \texttt{TrainText.py} and \texttt{TrainAuthor.py} import \texttt{torch}, \texttt{torchvision}, \texttt{pytesseract} and \texttt{scipy} at module level. \texttt{WebCache} as delivered has no glyph grid or crops for owen and thiya and none for abhinav, so the miss, and the import, happen on \emph{every} start. \mustdo{port the two sample-crop helpers into \texttt{CleanPipeline}, or pre-populate \texttt{WebCache} for owen, thiya and abhinav, so that no import reaches \texttt{Software/CNN}; then repeat the cold-boot closure on the board.}
+
+
+\paragraph{Known inconsistency: the stored accuracy figures.}
+One route computes nothing: it returns figures hard-coded in \texttt{Server.py}, several no longer agreeing with Section~\ref{sec:results} --- the ink-based classifier at 100.0\,\%, the stroke-normalised one at 96.7\,\% on real ink and 99.2\,\% on synthesised output, the recogniser at 89.4\,\% on real ink, and the pipeline at 99.2\,\% writer identification with 85.8\,\% and 84.1\,\% character accuracy direct and through G-code. The code is stale here, not the report, and the page displaying those figures contradicts the Results chapter. \mustdo{update the hard-coded accuracy block of \texttt{/api/model\_info} to the final figures of Section~\ref{sec:results}, or have the route read them from the evaluation output.}
+
+\subsubsection{Timing chains of the two modes}
+
+Requirement R4 limits the classification of $x$ characters by Equation~\ref{eq:sys-cls},
+\begin{equation}
+T_{\mathrm{cls}}=T_{\mathrm{cap}}+T_{\mathrm{seg}}+\sum_{\mathrm{lines}}\bigl(T_{\mathrm{text}}+T_{\mathrm{wid}}\bigr)\le2\ \mathrm{s}+0.025\,x\ \mathrm{s},
+\label{eq:sys-cls}
+\end{equation}
+leaving both network passes 25\,ms per character, and R3 limits reproduction by Equation~\ref{eq:sys-rep},
+\begin{equation}
+T_{\mathrm{rep}}=T_{\mathrm{synth}}+T_{\mathrm{gcode}}+T_{\mathrm{motion}}\le4\,x\ \mathrm{s},\qquad T_{\mathrm{synth}}\approx N\,C,
+\label{eq:sys-rep}
+\end{equation}
+with $C$ the cost of one candidate (Equation~\ref{eq:syn-cost}), $T_{\mathrm{gcode}}$ in milliseconds and $T_{\mathrm{motion}}$ the job time of Section~\ref{sec:gan-timing}; the calibration is excluded and $T_{\mathrm{synth}}$ included, the stricter reading of the proposal.
+A budget is only a design once it is apportioned, and Table~\ref{tab:app-budget} gives the allowance this design assigned to each stage of Equations~\ref{eq:sys-cls} and~\ref{eq:sys-rep} against the figure later measured for it.
+
+Requirements R3 and R4 bound the \emph{total} time of a job, and Equations~\ref{eq:sys-cls} and~\ref{eq:sys-rep} decompose each total into the stages that spend it.
+A budget is only useful once it is apportioned, and Table~\ref{tab:app-budget} states the allowance this design assigned to each stage, together with the laptop figure measured for it.
+The apportionment was made at design time from the structure of the chain, not fitted to the measurements: the recognition and classification terms were given the whole per-character allowance of R4 because they are the only terms that grow with $x$, leaving the fixed 2\,s for capture, conditioning and segmentation; and in R3 the physical writing was given three quarters of the per-character allowance, since it is the one term that cannot be made faster by a faster computer.
+
+\begin{table}[!htbp]
+\centering
+\fontsize{8}{9.6}\selectfont
+\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\linewidth}{|p{3.0cm}|p{2.9cm}|X|}
+\hline
+\textbf{Stage} & \textbf{Design-stage allowance} & \textbf{Measured on the laptop, and the verdict} \\
+\hline
+R4: capture, conditioning and segmentation & the whole fixed 2\,s, being independent of $x$ & 24.8 to 69.1\,s per page, 12 to 35 times the allowance: the term that fails R4, and it fails by an order of magnitude rather than marginally \\
+\hline
+R4: recognition and writer classification & the whole 25\,ms per character, being the only terms growing with $x$ & 8.86\,ms per character for recognition and 4.6 to 10.3\,ms for classification, so about half the allowance together: met with margin \\
+\hline
+R3: synthesis & 1\,s per character, a quarter of the allowance & 0.4 to 0.7\,s per character at $N=1$, rising to 1.8 to 3.4\,s at $N=30$: met only at small $N$, which is why $N$ is the parameter that decides whether R3 can be met at all \\
+\hline
+R3: G-code generation & negligible by design, the generator doing no search & 0.006 to 0.014\,s per sentence: met by three orders of magnitude \\
+\hline
+R3: physical writing & 3\,s per character, three quarters of the allowance, being the irreducible term & 2.7 to 4.0\,s per character from the generator's model, no stopwatch reading: cannot be declared met, and the upper end of the model already exceeds the allowance \\
+\hline
+\end{tabularx}
+\caption{Apportionment of the budgets of Equations~\ref{eq:sys-cls} and~\ref{eq:sys-rep} across the stages, with the laptop figures of Section~\ref{sec:results} against each. No stage was timed on the single-board computer, so every verdict here is provisional on hardware that is faster than the target. The two stages that fail are the two that were never redesigned after first being written: page segmentation and the physical writing.}
+\label{tab:app-budget}
+\end{table}
+
+Read against Table~\ref{tab:app-budget}, the failure of R4 is localised rather than general: four of the five stages are inside their allowance, two of them by a wide margin, and the whole shortfall sits in page segmentation.
+That is also the one stage for which a remedy was demonstrated but not deployed, the two routines reimplemented in C99 having reduced the retired segmenter by 25 to 32\,\% end to end (Section~\ref{sec:segmentation}); a saving of that size would not by itself close a factor of twelve, so the conclusion the apportionment supports is that segmentation needs a different algorithm or a different language, not a faster implementation of the same one.
+
+The emitting loop is short, and its one subtlety is the pen state: because the lift is a one-way toggle motor, a pulse emitted where none is needed inverts the pen for the remainder of the job, so the pen command is emitted only on a change of state.
+
+\begin{figure}[!htbp]
+\centering
+\fontsize{8.5}{10.2}\selectfont
+\begin{verbatim}
+  emit the comment header, G21 (millimetres) and G90 (absolute)
+  emit the travel feed once
+
+  for each stroke of at least two points:
+      SetPen( up )                  # emits M5 and a dwell ONLY on a change
+      rapid move to the first point of the stroke
+      SetPen( down )                # emits M3 and a dwell ONLY on a change
+      emit the draw feed
+      for every remaining point of the stroke:
+          emit a linear move to that point, three decimals
+
+  SetPen( up ) ;  move to the park position ;  emit M2
+\end{verbatim}
+\caption{The emitting loop of the G-code generator as pseudocode. \texttt{SetPen} returns nothing at all when the pen is already in the wanted state, which is what keeps the one-way toggle motor of Section~\ref{sec:gan-pen} in step with the program's model of it; the dwell it emits on a change is the $260+90$\,ms of Table~\ref{tab:gc-config}. Fault~2 of Section~\ref{sec:gc-faults} is visible here: the draw feed is emitted before every stroke but the travel feed only once, so every travel after the first runs at the draw feed.}
+\label{fig:gc-emitpseudo}
+\end{figure}
+
+The start-up warm-up is the one path in the application that can reach a machine-learning library, as Section~\ref{sec:system} records.
+
+\begin{figure}[!htbp]
+\centering
+\fontsize{8.5}{10.2}\selectfont
+\begin{verbatim}
+  Prewarm( ):                  # a background thread, not the inference path
+      for each writer, in order:
+          try:
+              build or fetch the cached glyph grid for that writer
+              build or fetch two cached sample crops for that writer
+          except any error:
+              warn and continue              # a failure must not stop start-up
+          mark that writer's cache as warm
+
+  start Prewarm in a background thread at start-up
+  any route needing a cached file answers "still preparing" until it is marked
+\end{verbatim}
+\caption{The start-up warm-up as pseudocode. The two cache-building calls are the ones that, on a miss, reach into the retired source tree and import a machine-learning library; because three writers have no cached files as delivered, that miss happens on every start, which is the defect Section~\ref{sec:system} records. Running it on a background thread is what keeps the delay off the first request, and marking each writer separately is what lets the routes that do not need a cache answer immediately.}
+\label{fig:sys-code-warm}
+\end{figure}
+
+The apportionment follows from the structure of the chain rather than from the measurements: the two network terms were given the whole per-character allowance of R4, being the only terms that grow with $x$, which leaves the fixed two seconds for capture, conditioning and segmentation; and in R3 the physical writing was given three quarters of the per-character allowance, being the one term that no faster computer can reduce.
+Read against that apportionment, four of the five stages are inside their allowance and the whole R4 shortfall sits in page segmentation, at twelve to thirty-five times what it was allowed.
+Table~\ref{tab:sys-timing} lists the stages, and \emph{no stage was timed on the single-board computer}: a 56-character sentence allows 224\,s, while the search alone took 23 to 137\,s at $N=14$ on the laptop and the motion model gives 2.4 to 2.8\,s per character, so R3 and R4 are not claimed to be met. \mustdo{the timings of the stages on the single-board computer, listed in Table~\ref{tab:sys-timing}.}
+
+\begin{table}[!htbp]
+\centering
+\fontsize{8}{9.3}\selectfont
+\setlength{\tabcolsep}{3.5pt}\renewcommand{\arraystretch}{1.02}
+\begin{tabularx}{\linewidth}{|p{3.2cm}|X|}
+\hline
+\textbf{Stage} & \textbf{Known information and value to be supplied} \\
+\hline
+Capture, conditioning and segmentation & Framing by the user, five discarded frames without preview; whole page on the board. \mustdo{time from pressing capture to the stored image.} \mustdo{conditioning and segmentation time per page on the board.} \\
+\hline
+Recognition and writer classification & Two passes of about $4\times10^9$ multiply--accumulate operations per line. \mustdo{time per line on the board and the total for the R4 test paragraph.} \\
+\hline
+Synthesis, G-code and preview & Synthesis time is returned in the server response (laptop values in Table~\ref{tab:syn-cost}); the generator and preview are milliseconds, not measured. \mustdo{synthesis time on the board for the $N$ used in the demonstration.} \\
+\hline
+Gantry motion & Model 2.4 to 2.8\,s per character (Section~\ref{sec:gan-timing}). \mustdo{stopwatch time of a sentence of known length, from send to the final pen lift.} \\
+\hline
+\end{tabularx}
+\caption{Stages of the timing chains of the two modes and the measurements still missing.}
+\label{tab:sys-timing}
+\end{table}
+
+Complete code has been submitted separately on the AMS.
+\mustdo{confirm which archive and revision was submitted on the AMS.}
+
+\endgroup

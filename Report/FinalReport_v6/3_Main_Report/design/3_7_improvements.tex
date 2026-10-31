@@ -1,0 +1,244 @@
+%% v6: this subsection carried no equation, table, figure or algorithm in v5 --
+%% five pages of prose for the most consequential design changes in the
+%% project.  Each reconsideration now states what was measured before, what
+%% was measured after, and the criterion that decided it, in a table.
+\subsection{Design reconsiderations}
+\label{sec:later}
+
+The subsections above describe each subsystem as delivered, but five of those designs are not what was built first: each replaced an earlier version once the complete chain existed and the output could be measured end to end, which is the point at which faults invisible inside a single subsystem became apparent. They are collected here, separately from the component descriptions above, because each is a change of \emph{approach} rather than a correction of code, and because the reason for each lies outside the subsystem it altered.
+
+Table~\ref{tab:later-summary} is the map of this subsection: one row per reconsideration, the measurement that forced it, and the measurement that justifies the replacement. A change appears here only if both measurements exist; the one change with no clean before-and-after pair is marked as such rather than claimed.
+
+\begin{table}[!htbp]
+\centering
+\fontsize{8}{9.6}\selectfont
+\setlength{\tabcolsep}{3.5pt}
+\renewcommand{\arraystretch}{1.05}
+\begin{tabularx}{\linewidth}{|p{2.5cm}|X|p{2.5cm}|p{2.5cm}|}
+\hline
+\textbf{Reconsideration} & \textbf{What forced it} & \textbf{Before} & \textbf{After} \\
+\hline
+Shape classifier beside the ink one (Section~\ref{sec:later-strokenorm}) &
+The ink classifier cannot judge constant-width plotter output, so it could not score a synthesis candidate. &
+28\,\% writer identification on synthesised output &
+89.7\,\% at best-of-8 through G-code \\
+\hline
+End-to-end training (Section~\ref{sec:later-endtoend}) &
+Fitting 1.4\,\% of the model on features extracted once, with no augmentation re-sampled between epochs. &
+83.36\,\% over 1358 real lines &
+\textbf{93.67\,\%} over the same lines \\
+\hline
+Joint candidate score (Section~\ref{sec:later-joint}) &
+The most legible of $N$ random draws has no reason also to be the most characteristic. &
+legibility only; writer identification fell for some writers &
+harmonic mean of both, Equation~\ref{eq:syn-score} \\
+\hline
+Line-level style calibration (Section~\ref{sec:later-cal}) &
+Glyphs are placed one at a time, so line-level slant and reach drift from the writer's own. &
+writer 150 ascenders $+7\,\%$; writer 551 slant $+9^\circ$ &
+\emph{no clean pair measured} --- see the marker in that section \\
+\hline
+Shape namer for photographed pages (Section~\ref{sec:later-pagenamer}) &
+The ink namer keys on ink statistics, which do not survive a change of pen or lighting. &
+30/30 dataset pages but \textbf{0/1} on a page photographed with a different pen &
+\textbf{31/31}, at a cost in pooled confidence \\
+\hline
+\end{tabularx}
+\caption{The five design reconsiderations, each with the measurement that forced it and the measurement that justifies the replacement. Every figure in this table is repeated with its conditions in the subsection named in the first column.}
+\label{tab:later-summary}
+\end{table}
+
+\subsubsection{A second writer classifier, judging shape instead of ink}
+\label{sec:later-strokenorm}
+
+The first writer classifier was trained on grey-scale crops and read real held-out lines at 99.78\,\% over 1358 lines, which satisfied requirement R2 on photographed pages. Measured on \emph{synthesised} output, however, the same classifier identified the intended writer in only about 28\,\% of trials. The cause is a property of the machine rather than of the network: the gantry draws every stroke with one pen at one width and one pressure, whereas real handwriting carries a thickness and an ink density that a convolutional network exploits readily when the training lines are few. A classifier that leans on those cues therefore predicts neither what the machine can draw nor how a reader recognises a hand, which is by geometry.
+
+Table~\ref{tab:later-twonamers} sets the two classifiers against each other on both kinds of input, which is the comparison that justifies keeping both.
+
+\begin{table}[!htbp]
+\centering
+\fontsize{8.5}{10.2}\selectfont
+\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\linewidth}{|p{3.4cm}|c|c|X|}
+\hline
+\textbf{Input} & \textbf{Ink classifier} & \textbf{Shape classifier} & \textbf{Why the gap} \\
+\hline
+1358 real photographed lines & \textbf{99.78\,\%} & 93.67\,\% & Real ink carries a width and density cue the ink classifier may legitimately use. \\
+\hline
+Synthesised output through G-code & 28\,\% (39 lines) & \textbf{89.7\,\%} at best-of-8 & The plotter draws one width everywhere, so the ink cue is absent and the ink classifier has nothing left to read. \\
+\hline
+\end{tabularx}
+\caption{Why two writer classifiers are kept rather than one. Chance level for thirteen writers is 7.7\,\%, so the ink classifier on synthesised output is close to four times chance and far below the 95\,\% of R2. The shape classifier's figure on synthesised output is not independent, since the same classifier family selects the candidates it then judges (Section~\ref{sec:syn-limits}).}
+\label{tab:later-twonamers}
+\end{table}
+
+The response was to train a second classifier of the same architecture on stroke-normalised crops, in which the ink is thinned to a centre line and redrawn at a constant width proportional to the letter height, so thickness is removed by construction (Algorithm~\ref{alg:wid-snorm}). This is the reconsideration that matters most for requirement R1: style can be judged, and reproduced, on geometry alone once pen pressure and width are taken out of the comparison. Neither classifier replaced the other, so the writer-identification block carries two sets of weights rather than one, at the cost of double the training and storage for a capability the first classifier could not provide at all.
+
+\begin{figure}[htb]
+\centering
+\figmaybe{later-ink-vs-shape.png}{width=0.85\linewidth}{Two panels on the same synthesised line: the raw render as the ink classifier sees it, and the stroke-normalised version as the shape classifier sees it, with the posterior over the thirteen writers plotted beneath each. The point to show is that the ink classifier's posterior is near-flat on constant-width output while the shape classifier's is peaked on the intended writer.}
+\caption{The same synthesised line as each classifier sees it, with the posterior over the thirteen writers beneath. Constant-width plotter output removes the cue the ink classifier depends on.}
+\label{fig:later-ink-vs-shape}
+\end{figure}
+
+\subsubsection{End-to-end training in place of a frozen backbone}
+\label{sec:later-endtoend}
+
+The shape classifier was first trained by fitting only the 13\,645 parameters of its head on feature vectors extracted once from a frozen backbone. That recipe is a training fault: because the features were extracted once, no augmentation was re-sampled between epochs and every line contributed the same four fixed vectors for all 500 epochs. The parameter budget of Table~\ref{tab:wid-layers} is what makes it consequential, and it is worth stating as a ratio,
+\begin{equation}
+\frac{\theta_{\mathrm{fitted}}}{\theta_{\mathrm{total}}}=\frac{13\,645}{966\,445}=1.41\,\%,
+\label{eq:later-frozenratio}
+\end{equation}
+so Equation~\ref{eq:later-frozenratio} says the superseded recipe fitted one part in seventy of the model, on features a backbone trained for a \emph{different task} had produced. Training all 966\,445 parameters end to end instead raised the same measurement from 83.36\,\% to 93.67\,\% on the same 1358 real lines, a gain of 10.31 percentage points, and removed a failure in which 118 of one writer's 148 lines had been assigned to a single neighbour.
+
+Every figure quoted for the shape classifier elsewhere in this report is from the end-to-end model; the frozen-head figures describe the superseded one, and are kept here only as the evidence for why the change was made.
+
+\begin{figure}[htb]
+\centering
+\figmaybe{later-frozen-vs-e2e.png}{width=0.85\linewidth}{Two confusion matrices side by side over the same 1358 real lines: the frozen-head shape classifier at 83.36\,\% and the end-to-end one at 93.67\,\%. The cell to annotate is the one holding 118 of Owen's 148 lines in the left matrix, which the right matrix does not have.}
+\caption{Confusion matrices of the shape classifier before and after end-to-end training, over the same 1358 real lines. The systematic collapse of one writer into a single neighbour is the defect Equation~\ref{eq:later-frozenratio} explains.}
+\label{fig:later-frozen-vs-e2e}
+\end{figure}
+
+\subsubsection{Selecting a candidate on both criteria instead of legibility alone}
+\label{sec:later-joint}
+
+The candidate search first kept whichever of the $N$ draws the text recogniser read most accurately. That raised legibility and, for some writers, lowered writer identification, because the most legible of several random draws has no reason also to be the most characteristic. The score was therefore changed to the harmonic mean of the recogniser's character accuracy $a$ and the shape classifier's confidence $w$ in the intended writer, Equation~\ref{eq:syn-score}. The harmonic mean rather than the arithmetic one is the whole design decision, and the reason is visible in the limit,
+\begin{equation}
+\lim_{w\to0}\frac{2aw}{a+w}=0,\qquad\text{whereas}\qquad\lim_{w\to0}\frac{a+w}{2}=\frac a2,
+\label{eq:later-harmonic}
+\end{equation}
+so by Equation~\ref{eq:later-harmonic} a candidate that is perfectly legible but in the wrong hand scores zero under the harmonic mean and still scores one half under the arithmetic one. The score is dominated by whichever criterion is weaker, which is exactly the behaviour wanted: a candidate cannot win on one criterion while failing the other.
+
+The repair loop was changed for the same reason, accepting a repaired line only when the joint score improves, so a repair that fixes a letter but makes the line resemble another writer is rejected rather than taken. The evidence for both changes is Table~\ref{tab:syn-evid}.
+
+\subsubsection{Line-level style calibration}
+\label{sec:later-cal}
+
+Glyphs are stored and placed one instance at a time, so a line assembled from them does not automatically reproduce the writer's line-level slant and ascender reach. The calibration of Section~\ref{sec:syn-glyph} was added to correct that drift, measuring a rendered probe with the same functions that measured the writer's real pages and returning a shear and reach correction. The drift it corrects was itself measured before the change, and Table~\ref{tab:later-drift} states it.
+
+\begin{table}[!htbp]
+\centering
+\fontsize{8.5}{10.2}\selectfont
+\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\linewidth}{|p{2.2cm}|p{3.0cm}|p{2.6cm}|X|}
+\hline
+\textbf{Writer} & \textbf{Quantity} & \textbf{Drift before calibration} & \textbf{After calibration} \\
+\hline
+150 & Ascender reach, against the writer's own real lines & about $+7\,\%$ too tall & \mustdo{measure} \\
+\hline
+551 & Line slant, against the writer's own real lines & about $+9^\circ$ too steep & \mustdo{measure} \\
+\hline
+all 13 & Writer identification, calibration off versus on & \mustdo{measure} & \mustdo{measure} \\
+\hline
+all 13 & Character accuracy, calibration off versus on & \mustdo{measure} & \mustdo{measure} \\
+\hline
+\end{tabularx}
+\caption{The line-level drift the style calibration corrects. Unlike the other four reconsiderations this one has no clean before-and-after pair: the two drift figures were measured, but the effect of switching the calibration off and on over the same sentences and seeds was not.}
+\label{tab:later-drift}
+\end{table}
+
+Unlike the other reconsiderations, this one's benefit therefore rests on the probe agreeing with the stored reference rather than on a judge's score, and Section~\ref{sec:syn-limits} records that this agreement is partly self-fulfilling, since it is measured by the same estimator on both sides.
+\mustdo{fill Table~\ref{tab:later-drift}: measure writer identification and character accuracy with the calibration of Section~\ref{sec:syn-glyph} disabled and enabled, over the same sentences and seeds as the other rows of Table~\ref{tab:syn-evid}, so that this change carries the same kind of evidence as the other four.}
+
+\subsubsection{Naming a photographed page by shape rather than by ink}
+\label{sec:later-pagenamer}
+
+The division of labour set out in Section~\ref{sec:later-strokenorm} --- ink classifier for real pages, shape classifier for synthesised output --- held until a page was photographed with a different pen under different light. On that page the ink classifier named the wrong writer with 84\,\% pooled confidence and \emph{not one} of its thirteen lines named the true writer, while the same page's writer was correct on all thirty of the dataset pages. A single wrong page is not evidence of a systematic fault, so the failure mode was reproduced deliberately: each of 15 labelled pages was perturbed in five ways chosen to imitate a change of pen, ink and camera response, and all four classifier configurations were scored on all 75 resulting pages.
+
+\begin{table}[!htbp]
+\centering
+\fontsize{8.5}{10.2}\selectfont
+\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\linewidth}{|p{2.5cm}|c|c|c|c|c|X|}
+\hline
+\textbf{Configuration} & \textbf{none} & \textbf{thicker pen} & \textbf{thinner pen} & \textbf{faint ink} & \textbf{gamma} & \textbf{overall} \\
+\hline
+Ink namer, raw crops (as first deployed) & 15/15 & 15/15 & \textbf{12/15} & \textbf{12/15} & 15/15 & 69/75 (92\,\%) \\
+\hline
+Ink namer, stroke-normalised & 15/15 & 14/15 & 13/15 & 14/15 & 12/15 & 68/75 (91\,\%) \\
+\hline
+Shape namer, raw crops (deployed) & 15/15 & 15/15 & 13/15 & 15/15 & 15/15 & \textbf{73/75 (97\,\%)} \\
+\hline
+Shape namer, stroke-normalised & 15/15 & 15/15 & 15/15 & 15/15 & 15/15 & 75/75 (100\,\%) \\
+\hline
+\end{tabularx}
+\caption{Writer identification under a simulated change of pen, ink and camera response, over 15 labelled pages in five conditions each. The ink namer loses three pages to a thinner pen and three to faint ink --- exactly the two perturbations that attack an ink statistic --- while leaving a thicker pen and a gamma shift untouched. This is the mechanism behind the single real failure, reproduced 75 times.}
+\label{tab:later-robust}
+\end{table}
+
+Table~\ref{tab:later-robust} identifies the mechanism: the ink namer is unharmed by a \emph{thicker} pen and by a camera gamma shift, and loses exactly on the two perturbations that thin or lighten the ink. That is the signature of a classifier reading an ink statistic rather than a letter shape, and it is the same mechanism Section~\ref{sec:later-strokenorm} found on plotter output, appearing this time on a real photograph.
+
+The configuration actually deployed was then chosen over every page whose writer is known, Table~\ref{tab:later-namersweep}.
+
+\begin{table}[!htbp]
+\centering
+\fontsize{8.5}{10.2}\selectfont
+\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\linewidth}{|p{3.6cm}|c|c|c|X|}
+\hline
+\textbf{Configuration} & \textbf{30 dataset pages} & \textbf{out-of-domain page} & \textbf{mean pooled confidence} & \textbf{Verdict} \\
+\hline
+Ink namer, raw (first deployed) & 30/30 & \textbf{0/1} & 99.3\,\% & Confident and wrong off-domain. \\
+\hline
+Shape namer, raw (deployed) & 30/30 & \textbf{1/1} & 92.7\,\% & Chosen: correct everywhere, at a cost in confidence. \\
+\hline
+Ink raw $+$ shape raw & 30/30 & \textbf{0/1} & --- & Fails: the ink namer is too confident when wrong to be outvoted by one dissenter. \\
+\hline
+Ink normalised $+$ shape raw & 30/30 & 1/1 & --- & Also perfect, but needs two forward passes per line. \\
+\hline
+\end{tabularx}
+\caption{Choosing the page namer over every page whose writer is known. The third row is the instructive one: averaging a confident wrong classifier with a correct one does not repair it, which is why the change is a replacement rather than an ensemble.}
+\label{tab:later-namersweep}
+\end{table}
+
+The change is one constant in the server and needs no retraining and no new data. Its cost is stated rather than hidden: over the 30 labelled pages the mean pooled confidence falls from 99.3\,\% to 92.7\,\% and the mean per-line agreement from 99.7\,\% to 96.0\,\%, while the per-line character accuracy is unchanged at 98.5\,\%. The old figure was partly false confidence --- it is the same number that named the wrong writer at 84\,\%.
+
+One caveat belongs with this result and is not resolved by the 75 synthetic trials: the decisive real-world evidence is a \emph{single} photograph. The perturbations are a model of a pen-and-lighting change, not a sample of one, and the configuration that was perfect under them (shape namer on stroke-normalised crops, 75/75) is \emph{not} the one that was correct on the real page, which shows the model does not capture the whole shift.
+\mustdo{photograph three or four further pages of known writers with a pen and lighting deliberately unlike the training photographs, and re-run Table~\ref{tab:later-namersweep} over them, so that the out-of-domain column rests on more than one page.}
+
+\begin{figure}[htb]
+\centering
+\figmaybe{later-namer-perturbations.png}{width=0.85\linewidth}{One line crop shown in all five conditions of Table~\ref{tab:later-robust} --- unaltered, thicker pen, thinner pen, faint ink, gamma shift --- with the two namers' posteriors for the true writer plotted beneath each. The point to show is that the ink namer's posterior collapses on the thinner-pen and faint-ink panels while the shape namer's does not.}
+\caption{One line crop under the five perturbations of Table~\ref{tab:later-robust}, with each namer's posterior for the true writer beneath. The ink namer fails exactly where the ink statistic is attacked.}
+\label{fig:later-perturb}
+\end{figure}
+
+\subsubsection{A reconsideration not yet carried out: detecting the need for an anchor automatically}
+\label{sec:later-anchor}
+
+One further change was identified during the glyph-library investigation but has not been implemented in the delivered system, and is recorded here as a design reconsideration still \emph{open} rather than as a completed change, since the distinction between what was changed and what is merely proposed matters to how this subsection should be read.
+
+The anchor-substitution mechanism of Section~\ref{sec:syn-glyph} is driven entirely by the per-glyph prior distance of Equation~\ref{eq:sty-prior} and the single tuned parameter $\lambda$, applied uniformly within a writer. An examination of the glyph cutting and the cross-writer prior distribution for the most strongly joined personal writer showed that her low connectedness-adjusted legibility is not a scattered collection of individually poor letters but a structural property of her hand: her forced-alignment cuts fall through genuine strokes far more often than for a lightly joined writer, because her connectedness statistic of $c=0.962$ (Table~\ref{tab:sty-writers}) leaves almost no low, thin ligature for Equation~\ref{eq:sty-cut} to find.
+
+The reconsideration this suggests is to replace the hand-tuned $\lambda$ by a decision taken from the writer's \emph{own} statistics, forcing anchor substitution on by default when
+\begin{equation}
+c>c^{*}\qquad\text{or}\qquad \mathbb{E}\bigl[\mathrm{priorD}\bigr]>d^{*},
+\label{eq:later-anchortrigger}
+\end{equation}
+where $c$ is the profile's connectedness, $\mathrm{priorD}$ the per-glyph prior distance of Equation~\ref{eq:sty-prior}, and $c^{*}$ and $d^{*}$ two thresholds to be fitted across the thirteen writers. Equation~\ref{eq:later-anchortrigger} is a proposal and not a result: neither threshold has been fitted, and the evidence for the direction is one writer, Table~\ref{tab:later-anchor}.
+
+\begin{table}[!htbp]
+\centering
+\fontsize{8.5}{10.2}\selectfont
+\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\linewidth}{|p{3.4cm}|p{3.0cm}|p{3.0cm}|X|}
+\hline
+\textbf{Measurement} & \textbf{Tuned $\lambda$} & \textbf{Anchors forced on} & \textbf{Reading} \\
+\hline
+Shape classifier confidence in her identity & 63--77\,\% & \textbf{94\,\%} & The direction is worth pursuing. \\
+\hline
+Character accuracy & baseline & modest further gain \mustdo{quote the two figures} & Consistent, but not quantified here. \\
+\hline
+Word accuracy & poor & \textbf{poor regardless of glyph source} & Points to a second, separate limitation in the joining geometry that this change would not fix. \\
+\hline
+All other twelve writers & --- & \mustdo{not measured} & Equation~\ref{eq:later-anchortrigger} cannot be fitted from one writer. \\
+\hline
+\end{tabularx}
+\caption{The substitution experiment on the most strongly joined writer's own held-out sentences. The last row is why this remains a proposal: a trigger with two thresholds cannot be fitted on a single data point.}
+\label{tab:later-anchor}
+\end{table}
+
+\mustdo{implement and measure the connectedness-triggered default of Equation~\ref{eq:later-anchortrigger} across all thirteen writers, not only the one case it was explored on, and fit $c^{*}$ and $d^{*}$ from that sweep.}
+
+\mustdo{confirm that these six are the complete set of reconsiderations made or identified during the project, and add any others that belong here --- for example a change to the segmentation thresholds, to the number of writers, or to the requirement allocation --- each with what was measured before and after.}

@@ -1,0 +1,162 @@
+%%
+%%  Department of Electrical, Electronic and Computer Engineering.
+%%  EPR400/2 Final Report - metric definitions of the qualification tests.
+%%
+%%  Every accuracy, distance and agreement measure quoted in Section 4 is
+%%  defined here in full.  Section 4 names each measure, states the reading it
+%%  uses and quotes the value; this appendix gives the defining equation, the
+%%  routine that implements it and the reason the reading matters.  Nothing
+%%  here is a result: no value measured on the system appears in this file.
+%%
+
+\subsection{Metric definitions of the qualification tests}
+\label{sec:app-met}
+
+The qualification tests of Section~\ref{sec:res-qtp} quote accuracies, correlations and distances whose definitions are not interchangeable: three different averages of character accuracy over a set of lines differ by several points on the same data, and the word accuracy reported throughout is a recall rather than one minus the word error rate.
+This appendix defines each measure once, names the routine that computes it, and states where an alternative reading would change the number.
+Section~\ref{sec:res-qtp} refers to this appendix in place of repeating the mathematics beside each result.
+
+\subsubsection{Confidence intervals and resampling}
+
+Proportions are reported with a 95\% Wilson score interval~\cite{wilson1927},
+\begin{equation}
+\label{eq:res-wilson}
+\hat p_{\pm}=\frac{\hat p+\dfrac{z^2}{2n}\pm z\sqrt{\dfrac{\hat p(1-\hat p)}{n}+\dfrac{z^2}{4n^2}}}{1+\dfrac{z^2}{n}},\qquad \hat p=\frac{k}{n},
+\end{equation}
+where $k$ is the number of successes in $n$ trials and $z=1.96$.
+Equation~\ref{eq:res-wilson} is used in preference to the normal approximation because it stays valid near 0\% and 100\%, where the system's per-writer rates lie.
+Characters of one page are not independent, so accuracies use a page-level percentile bootstrap with 2000 resamples~\cite[p.~3]{efron1979} rather than a closed-form interval, and a requirement is declared met only if the lower confidence bound exceeds the target.
+
+\subsubsection{Character accuracy and its three averages}
+
+Character accuracy of one line uses the Levenshtein distance~\cite[pp.~707--708]{levenshtein1966} $d_L(h,r)$ between hypothesis $h$ and reference $r$, the minimum number of insertions, deletions and substitutions, evaluated by the dynamic-programming recursion of Wagner and Fischer~\cite{wagner1974},
+\begin{equation}
+\label{eq:res-cacc}
+A_{\mathrm{c}}(h,r)=\max\left(0,\;1-\frac{d_L(h,r)}{\lvert r\rvert}\right),
+\end{equation}
+where $\lvert r\rvert$ is the reference length.
+Equation~\ref{eq:res-cacc} is implemented as \texttt{Classify.CharAcc}, which floors the value at zero so that a hypothesis longer than the reference cannot score negatively.
+
+A set of lines can be summarised in three different ways, and they do not agree, so each is named explicitly:
+\begin{equation}
+\label{eq:res-cacc-avg}
+\bar A_{\mathrm{c}}^{\,\mathrm{line}}=\frac{1}{L}\sum_{\ell=1}^{L}A_{\mathrm{c}}(h_\ell,r_\ell),\qquad
+\bar A_{\mathrm{c}}^{\,\mathrm{micro}}=1-\frac{\sum_\ell d_L(h_\ell,r_\ell)}{\sum_\ell\lvert r_\ell\rvert},\qquad
+\bar A_{\mathrm{c}}^{\,\mathrm{writer}}=\frac{1}{W}\sum_{w=1}^{W}\bar A_{\mathrm{c}}^{\,\mathrm{line}}(w),
+\end{equation}
+the unweighted mean over lines, the character-weighted micro-average over all lines pooled, and the unweighted mean over the $W$ writers of their own line means.
+The micro-average of Equation~\ref{eq:res-cacc-avg} is what ``summed over all sentences'' would mean, but the character-accuracy figures quoted for qualification test~1 are the \emph{mean over writers}, $\bar A_{\mathrm{c}}^{\,\mathrm{writer}}$, recorded as \texttt{char\_acc\_mean\_over\_writers}.
+The distinction is not cosmetic: for the held-out judge on the 123 real lines the two readings differ by 4.7 points, 86.6\% over writers against 81.9\% over lines.
+Figures quoted for qualification test~2 are instead the unweighted mean over line crops, $\bar A_{\mathrm{c}}^{\,\mathrm{line}}$, because \texttt{verify\_text\_accuracy.py} accumulates one \texttt{CharAcc} per crop and divides by the crop count, so a two-word crop weighs as much as a twenty-word one.
+
+\subsubsection{Word accuracy is a recall, not one minus the word error rate}
+
+Word accuracy, which Section~\ref{sec:res-qtp} quotes six times, is \texttt{Classify.WordAcc} and is \emph{not} $1-\mathrm{WER}$:
+\begin{equation}
+\label{eq:res-wacc}
+A_{\mathrm{w}}^{\,\mathrm{word}}=\frac{\mathrm{LCS}(\mathrm{words}(h),\mathrm{words}(r))}{\lvert\mathrm{words}(r)\rvert},
+\end{equation}
+the length of the longest common subsequence of the two word sequences, compared case-insensitively, divided by the number of reference words.
+Equation~\ref{eq:res-wacc} is therefore an order-preserving \emph{recall} over words: it counts how many of the intended words were recovered in the right order and imposes no penalty for inserted or spurious words, whereas $1-\mathrm{WER}$ charges insertions, deletions and substitutions alike and can go negative.
+A reader who assumes $1-\mathrm{WER}$ will read every word figure in Section~\ref{sec:res-qtp} as stricter than it is.
+
+\subsubsection{Writer accuracy is reported per line, not per page}
+
+Writer identification admits a per-line and a per-page reading,
+\begin{equation}
+\label{eq:res-wacc-writer}
+A_{\mathrm{w}}^{\,\mathrm{line}}=\frac{1}{L}\sum_{\ell=1}^{L}\mathbf{1}\!\left[\hat w_\ell=w_\ell\right],\qquad
+A_{\mathrm{w}}^{\,\mathrm{page}}=\frac{1}{P}\sum_{p=1}^{P}\mathbf{1}\!\left[\arg\max_w \tfrac{1}{L_p}\textstyle\sum_{\ell\in p}P(w\mid\ell)=w_p\right],
+\end{equation}
+the fraction of lines assigned to the correct writer, and the fraction of pages whose mean per-line writer probability peaks at the correct writer.
+The proposal's wording implies the page form of Equation~\ref{eq:res-wacc-writer}, but $A_{\mathrm{w}}^{\,\mathrm{page}}$ was never evaluated: every value reported in Section~\ref{sec:res-qtp}, including the 99.78\% and 93.67\% over 1358 lines, is the per-line form $A_{\mathrm{w}}^{\,\mathrm{line}}$.
+Because lines of one page share a writer, the page form would be the stronger claim and the smaller sample.
+\mustdo{evaluate $A_{\mathrm{w}}^{\,\mathrm{page}}$ of Equation~\ref{eq:res-wacc-writer} by pooling the stored per-line probabilities of \texttt{stage4\_predictions\_ink.json} and \texttt{stage4\_predictions\_shape.json} by page.}
+
+\subsubsection{Decoding}
+
+All text figures in the report were produced by greedy connectionist temporal classification decoding --- argmax per time step, collapse repeats, drop the blank, as implemented in \texttt{Classify.DecodeCtc} --- with \textbf{no beam search, no language model and no lexicon} anywhere in the deployed pipeline.
+That matters next to the 94.21\% word accuracy of qualification test~2: the figure is what an unaided per-frame argmax recovers, so it is not inflated by a decoder that could snap a near-miss onto a dictionary word; equally, nothing corrects a single-character slip that destroys a word.
+All random choices use recorded seeds.
+
+\subsubsection{Inter-rater agreement of the panel that was not convened}
+
+Inter-rater agreement of the blind human panel of qualification test~1 was to be quantified with Fleiss' kappa~\cite{fleiss1971},
+\begin{equation}
+\label{eq:res-kappa}
+\kappa=\frac{\bar P-\bar P_e}{1-\bar P_e},
+\end{equation}
+where $\bar P$ is the mean observed pairwise agreement and $\bar P_e$ the agreement expected by chance.
+As the panel was never convened, Equation~\ref{eq:res-kappa} was never evaluated and is given here only to define the sub-test that was not run; the worksheet prepared for it is Table~\ref{tab:res-panel}.
+
+\subsubsection{Style correlation on geometric features}
+
+Each feature is $z$-scored, $z_{wf}=(v_{wf}-\mu_f)/\sigma_f$, using the mean and standard deviation over the ten real writers, and the stylistic correlation reported for sub-test~(b) of qualification test~1 is the Pearson product-moment correlation coefficient~\cite{pearson1896},
+\begin{equation}
+\label{eq:res-pearson}
+\rho=\frac{\sum_{i}(a_i-\bar a)(b_i-\bar b)}{\sqrt{\sum_i(a_i-\bar a)^2}\sqrt{\sum_i(b_i-\bar b)^2}},
+\end{equation}
+where $a_i$ and $b_i$ are the real and synthesised $z$-scored entries pooled over writers and features (70 pairs for the seven-feature set the protocol prescribes, listed in Table~\ref{tab:res-features}).
+Besides the pooled value of Equation~\ref{eq:res-pearson}, a per-writer value (7 pairs) and a nearest-centroid retrieval in $z$-space with its $10\times10$ confusion matrix are also computed.
+The correlation actually measured used the nine geometric features of Table~\ref{tab:res-r1} rather than the seven of Table~\ref{tab:res-features}.
+\mustdo{confirm the Pearson reference: the product-moment correlation coefficient is introduced in the 1896 paper ``Regression, heredity, and panmixia'' (Philosophical Transactions of the Royal Society A, vol.~187), whereas the sourcing audit suggested vol.~186 (1895), which is the skew-variation paper. Verify the volume, year and page range against the original and correct the bibliography entry.}
+
+\subsubsection{Overlay distances in the pixel domain}
+
+Both images entering the overlay test are normalised in the same way before any distance is taken, so that the comparison measures shape rather than size or placement; Figure~\ref{fig:res-overlay} sets out that procedure.
+
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}[
+  resbox/.style={draw,rounded corners=2pt,fill=gray!12,align=center,font=\footnotesize,minimum height=7mm,inner sep=3pt},
+  resdark/.style={draw,rounded corners=2pt,fill=gray!30,align=center,font=\footnotesize,minimum height=7mm,inner sep=3pt},
+  resarr/.style={-{Stealth[length=2.2mm]},thick}]
+\node[resbox,text width=2.9cm] (real) at (0,0.9) {Genuine sentence image (held-out form, writer $w$)};
+\node[resbox,text width=2.9cm] (syn) at (0,-0.9) {Synthesised image of the same text in style $w$ (or $w'$)};
+\node[resbox,text width=2.7cm] (n1) at (4.1,0.9) {Crop to ink, scale to $x_{\mathrm{h}}$, align centroid};
+\node[resbox,text width=2.7cm] (n2) at (4.1,-0.9) {Crop to ink, scale to $x_{\mathrm{h}}$, align centroid};
+\node[resdark,text width=2.4cm] (d) at (8.0,0) {Skeleton point sets $A$, $B$: $d_{\mathrm{ch}}$, $d_{\mathrm{MH}}$};
+\node[resbox,text width=2.3cm] (out) at (11.4,0) {Matched vs mismatched: AUC, rank-1};
+\draw[resarr] (real)--(n1); \draw[resarr] (syn)--(n2);
+\draw[resarr] (n1.east)--(d.north west); \draw[resarr] (n2.east)--(d.south west);
+\draw[resarr] (d)--(out);
+\end{tikzpicture}
+\caption{Overlay test of qualification test 1: both images are normalised in the same way and matched writer pairs are compared with mismatched pairs.}
+\label{fig:res-overlay}
+\end{figure}
+
+The skeleton point sets $A$ and $B$ that this procedure produces are compared with
+\begin{equation}
+\label{eq:res-chamfer}
+d_{\mathrm{ch}}(A,B)=\frac{1}{2}\left[\frac{1}{\lvert A\rvert}\sum_{a\in A}\min_{b\in B}\lVert a-b\rVert+\frac{1}{\lvert B\rvert}\sum_{b\in B}\min_{a\in A}\lVert a-b\rVert\right],
+\end{equation}
+\begin{equation}
+\label{eq:res-mhd}
+d_{\mathrm{MH}}(A,B)=\max\left[\frac{1}{\lvert A\rvert}\sum_{a\in A}\min_{b\in B}\lVert a-b\rVert,\;\frac{1}{\lvert B\rvert}\sum_{b\in B}\min_{a\in A}\lVert a-b\rVert\right],
+\end{equation}
+\begin{equation}
+\label{eq:res-auc}
+\mathrm{AUC}=\Pr\left[d_{\mathrm{matched}}<d_{\mathrm{mismatched}}\right]+\tfrac{1}{2}\Pr\left[d_{\mathrm{matched}}=d_{\mathrm{mismatched}}\right],
+\end{equation}
+where $\lVert\cdot\rVert$ is the Euclidean norm and distances are in units of the x-height $x_{\mathrm{h}}$.
+Equation~\ref{eq:res-chamfer} is the mean of the two directed mean nearest-neighbour distances, which symmetrises the one-directional chamfer matching distance of Barrow \emph{et al.}~\cite[pp.~659--660]{barrow1977}; Equation~\ref{eq:res-mhd} is their maximum, which is less sensitive to outliers than the classical Hausdorff distance~\cite{dubuisson1994}; and Equation~\ref{eq:res-auc} is the area under the receiver operating characteristic curve~\cite[p.~868]{fawcett2006}, 0.5 for a distance carrying no writer information and 1.0 for perfect separation.
+
+
+The protocol sized this sub-test at 8 writers and 5 sentences, which gives 40 matched and $40\times9=360$ mismatched pairs; the run actually made used ten writers and three sentences each, which is the 30 matched and 300 mismatched pairs reported in Section~\ref{sec:res-qtp1}.
+The features of Table~\ref{tab:res-features} are computed by one deterministic extractor with identical thresholds on every image, after cropping to the ink and binarising with the same rule.
+
+\subsubsection{Positional error and its uncertainty budget}
+
+The absolute error of a drawn cross and the uncertainty of its measurement, prescribed for qualification test~5 and never evaluated, are
+\begin{equation}
+\label{eq:res-r5}
+e_i=\lVert\mathbf{p}_i-\mathbf{p}_i^{\mathrm{cmd}}\rVert,
+\end{equation}
+\begin{equation}
+\label{eq:res-unc}
+u=\sqrt{u_{\mathrm{scan}}^2+u_{\mathrm{ref}}^2+u_{\mathrm{id}}^2},
+\end{equation}
+where $\mathbf{p}_i$ is the measured and $\mathbf{p}_i^{\mathrm{cmd}}$ the commanded centre of cross $i$, referenced to the machine origin 5~mm inside the minimum end-stops.
+In Equation~\ref{eq:res-unc}, $u_{\mathrm{scan}}$ is the scanner scale error obtained by scanning the verified ruler, $u_{\mathrm{ref}}$ the registration of the sheet against the machine origin and $u_{\mathrm{id}}$ the error of locating a cross centre, taken as half a pixel; the three standard uncertainties are combined in quadrature and the expanded uncertainty is $2u$, following the Guide to the Expression of Uncertainty in Measurement~\cite[Clause~5]{jcgm2008}.
+Mean, maximum and 95th percentile of the error of Equation~\ref{eq:res-r5} were to be reported together with the uncertainty of Equation~\ref{eq:res-unc}, on the sheet reproduced blank as Table~\ref{tab:res-sheet}.
+Because no mark was ever drawn, neither equation was evaluated.

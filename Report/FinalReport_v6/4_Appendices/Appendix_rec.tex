@@ -1,0 +1,300 @@
+%%
+%%  Department of Electrical, Electronic and Computer Engineering.
+%%  EPR400/2 Final Report - supporting detail of the text recogniser.
+%%
+%%  Section 3.5 states the architecture, the training recipe and the measured
+%%  accuracy, which is everything needed to judge the subsystem.  This file
+%%  holds the detail that proves those statements: the layer-by-layer parameter
+%%  budget, the CTC forward-backward recursion, the hand-derived backward
+%%  passes with the numerical check that validates them, the data-set leakage
+%%  assessment, and pseudocode of the five routines that carry the arithmetic.
+%%  No code is reproduced; every routine is given as pseudocode.
+%%
+
+\subsection{Supporting detail of the text recogniser}
+\label{sec:app-rec}
+
+Section~\ref{sec:textrec} describes the recogniser, its training and its accuracy.
+This appendix carries the material behind those statements: the parameter budget layer by layer, the dynamic programme that evaluates the connectionist temporal classification (CTC) loss, the backward passes written for this project together with the numerical check that validates them, the leakage assessment of each data set, and pseudocode of the five routines that do the arithmetic.
+It adds no result and changes no figure; it exists so that each claim of Section~\ref{sec:textrec} can be checked rather than taken on trust.
+
+\subsubsection{Parameter budget of the network}
+
+Table~\ref{tab:rec-layers} resolves the 3.36 million parameters quoted in Section~\ref{sec:textrec} into the layer that holds each one, which shows where the capacity of the network actually sits.
+
+\begin{table}[h]
+\centering
+\fontsize{8.5}{10.2}\selectfont
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{|l|l|r|}
+\hline
+\textbf{Layer} & \textbf{Output shape} & \textbf{Trainable parameters} \\
+\hline
+Input & $1\times64\times640$ & 0 \\
+Conv 3$\times$3 (1$\to$32) and (32$\to$32), BN, ReLU & $32\times64\times640$ & 9\,696 \\
+Max-pool 2$\times$2 & $32\times32\times320$ & 0 \\
+Conv 3$\times$3 (32$\to$64) and 3$\times$ (64$\to$64), BN, ReLU & $64\times32\times320$ & 129\,792 \\
+Max-pool 2$\times$2 & $64\times16\times160$ & 0 \\
+Conv 3$\times$3 (64$\to$128) and 5$\times$ (128$\to$128), BN, ReLU & $128\times16\times160$ & 813\,312 \\
+Height max-pool & $128\times1\times160$ & 0 \\
+BiLSTM layer 1 (128$\to$256, 2 directions) & $160\times512$ & 790\,528 \\
+BiLSTM layer 2 (512$\to$256, 2 directions) & $160\times512$ & 1\,576\,960 \\
+Linear (512$\to$75) and log-softmax & $160\times75$ & 38\,475 \\
+\hline
+\textbf{Total} & & \textbf{3\,358\,763} \\
+\hline
+\end{tabular}
+\caption{Layer shapes and trainable parameters of the text recogniser (batch dimension omitted). A convolution with batch normalisation holds $C_{\mathrm{out}}(9C_{\mathrm{in}}+1)+2C_{\mathrm{out}}$ parameters and one LSTM direction $4n(I+n)+8n$ with $n=256$, which is where every entry comes from. Of the total the LSTM layers hold 70.5\,\%, stage~3 24.2\,\%, stage~2 3.9\,\%, the output layer 1.1\,\% and stage~1 0.3\,\%. Batch normalisation also stores 2\,176 non-trainable running statistics, so a checkpoint holds $3\,358\,763+2\,176=3\,360\,939$ numbers, 13.4\,MB as 32-bit floating point.}
+\label{tab:rec-layers}
+\end{table}
+
+The arithmetic cost follows from the same shapes.
+Summing the multiply--accumulates of every convolution, of the two recurrent layers over all $T$ steps and of the output projection gives
+\begin{equation}
+N_{\mathrm{MAC}}=\sum_\ell 9\,C_{\mathrm{in},\ell}C_{\mathrm{out},\ell}H_\ell W_\ell+2T\,[4n(128+n)+4n(512+n)]+T\cdot512\cdot75\approx4.17\times10^9
+\label{eq:rec-macs}
+\end{equation}
+per line, of which $3.79\times10^9$ are convolutional.
+Equation~\ref{eq:rec-macs} is the reason the convolutions and not the recurrent layers dominate the measured inference time, even though Table~\ref{tab:rec-layers} shows the recurrent layers holding 70.5\,\% of the parameters: a convolutional filter is applied at every one of tens of thousands of positions, whereas a recurrent weight is used once per time step.
+
+\subsubsection{The CTC forward--backward recursion}
+
+Section~\ref{sec:textrec} states that the CTC loss sums over all alignments and that the sum is evaluated by dynamic programming rather than enumerated.
+This sub-subsection gives that dynamic programme, because it is the one part of the training mathematics that was implemented from the defining equations rather than taken from a library.
+
+The number of paths is exponential in $T$, so the sum is evaluated by the forward--backward dynamic programme of Graves \emph{et al.}~\cite[p.~372]{graves2006} on the blank-augmented label $y'$ of length $S=2U+1$.
+The forward variable $\alpha_t(s)$ is the total probability of consistent prefixes of length $t$ ending at position $s$ and obeys
+\begin{equation}
+\alpha_t(s)=\Bigl[\alpha_{t-1}(s)+\alpha_{t-1}(s-1)+\mathbb 1[\,y'_s\ne\varnothing\wedge y'_s\ne y'_{s-2}\,]\,\alpha_{t-1}(s-2)\Bigr]\,y_t^{\,y'_s},\label{eq:rec-alpha}
+\end{equation}
+whose three terms are the only transitions into $s$ --- stay, advance, or skip a blank --- the skip being forbidden when $y'_s$ is blank or equals $y'_{s-2}$, which is what allows a genuine double letter to survive the merge.
+Carried to the last step, Equation~\ref{eq:rec-alpha} gives $p(y\mid x)=\alpha_T(S)+\alpha_T(S-1)$ at $O(TS)$ cost.
+The backward variable $\beta_t(s)$ is its mirror image and excludes the emission at step $t$, so that the product $\alpha_t(s)\beta_t(s)$ counts that emission exactly once; the occupancy and the closed-form gradient with respect to the pre-softmax scores are then
+\begin{equation}
+\gamma_t(s)=\frac{\alpha_t(s)\,\beta_t(s)}{p(y\mid x)},\qquad \mathrm{occ}_t^{\,k}=\sum_{s:\,y'_s=k}\gamma_t(s),\qquad \frac{\partial\mathcal L}{\partial\ell_t^{k}}=y_t^k-\mathrm{occ}_t^{\,k}.\label{eq:rec-ctcocc}
+\end{equation}
+Equation~\ref{eq:rec-ctcocc} is what makes CTC cheap to train: the gradient is the difference between what the network predicted and what the alignment lattice expects, so no explicit differentiation of the recursion is needed.
+
+Both recursions run in the logarithmic domain, because a product of up to 160 probabilities underflows 64-bit arithmetic.
+Additions therefore become
+\begin{equation}
+\mathrm{LSE}(a,b)=m+\ln\bigl(e^{a-m}+e^{b-m}\bigr),\qquad m=\max(a,b),\qquad \mathrm{LSE}(-\infty,-\infty)=-\infty,\label{eq:rec-lse}
+\end{equation}
+with a forbidden transition carried as $-\infty$; the last case of Equation~\ref{eq:rec-lse} must be special-cased, since the general expression would evaluate $\infty-\infty$.
+Figure~\ref{fig:rec-ctcpseudo} gives the recursion and the gradient as pseudocode.
+
+\begin{figure}[h]
+\centering
+\fontsize{8.5}{10.2}\selectfont
+\begin{verbatim}
+  input:  log-probabilities lp[t,k] for T steps and 75 symbols
+          label y of length U
+  build:  y' <- blank, y[1], blank, y[2], ... , y[U], blank      (S = 2U+1)
+
+  logAlpha[1,.] <- -infinity everywhere except the first two positions
+  for t = 2 .. T:
+      for every position s of y' simultaneously:
+          stay      <- logAlpha[t-1, s]
+          advance   <- logAlpha[t-1, s-1]
+          skip      <- logAlpha[t-1, s-2]
+          if y'[s] is blank or y'[s] = y'[s-2]:  skip <- -infinity
+          logAlpha[t,s] <- LSE(stay, advance, skip) + lp[t, y'[s]]
+
+  logBeta  <- the same recursion run backwards from t = T
+  logP     <- LSE( logAlpha[T,S], logAlpha[T,S-1] )
+
+  gamma    <- exp( logAlpha + logBeta - logP )
+  occ[t,k] <- sum of gamma[t,s] over the positions s with y'[s] = k
+  gradient <- probabilities - occ
+\end{verbatim}
+\caption{The CTC forward recursion and the loss gradient as pseudocode. The three shifted reads are the three transitions of Equation~\ref{eq:rec-alpha}, which the implementation evaluates for all $S$ positions at once rather than in a loop over $s$; \texttt{logP} is $\ln p(y\mid x)$ and the last two lines are the occupancy and gradient of Equation~\ref{eq:rec-ctcocc}. The backward recursion differs only in direction and in excluding the emission at the current step.}
+\label{fig:rec-ctcpseudo}
+\end{figure}
+
+Three conventions of the implementation matter for the losses quoted in Section~\ref{sec:textrec}.
+Each line contributes its whole negative log-likelihood and the loss routine divides only by the batch size, so a quoted loss is a mean \emph{per line} and not per character; a long line therefore counts for more than a short one, and the figure cannot be compared with a per-character loss from elsewhere.
+Lines with no valid path are given zero loss, and every line uses the full $T=160$ steps including the padding.
+
+\subsubsection{Pseudocode of the routines that carry the arithmetic}
+
+Four routines account for essentially all of the training time and all of the places where an error would be silent, so each is given here as pseudocode: the recurrent step, the convolution and its gradient, the training loop, and the greedy decoder.
+
+A recurrent layer is evaluated one step at a time, and the four gates are read as four blocks of rows out of a single matrix product rather than computed separately, which halves the number of products per step.
+
+\begin{figure}[h]
+\centering
+\fontsize{8.5}{10.2}\selectfont
+\begin{verbatim}
+  for t = 1 .. T:
+      gates <- W_input . x[t] + W_recurrent . h[t-1] + biases     (4n rows)
+      i, f  <- sigmoid( rows 1..n ),   sigmoid( rows n+1..2n )
+      g     <- tanh( rows 2n+1..3n )
+      o     <- sigmoid( rows 3n+1..4n )
+      c[t]  <- f * c[t-1] + i * g
+      h[t]  <- o * tanh( c[t] )
+      cache[t] <- ( x[t], h[t-1], c[t-1], i, f, g, o, tanh(c[t]) )
+\end{verbatim}
+\caption{One direction of one LSTM layer as pseudocode, where $n=256$ is the hidden width and \texttt{*} is element-wise multiplication. A step costs one matrix product for the input and one for the recurrent state. The tuple written to \texttt{cache} is exactly what the backward pass needs, so no activation is recomputed when the gradient is propagated back through time; the bidirectional layer runs the same procedure on the reversed sequence and concatenates the two results.}
+\label{fig:rec-lstmpseudo}
+\end{figure}
+
+The convolution is evaluated as a matrix product on rearranged patches, which is the im2col form of Equation~\ref{eq:rec-im2col}.
+Its backward pass is the place where a defect is most easily hidden, for the reason given in the next sub-subsection.
+
+\begin{figure}[h]
+\centering
+\fontsize{8.5}{10.2}\selectfont
+\begin{verbatim}
+  forward:
+      cols <- every 3x3 patch of the zero-padded input, as a column
+      out  <- reshape( W . cols ) + bias                     (one product)
+
+  backward, given dOut:
+      dW    <- dOut . cols^T , summed over the batch
+      dBias <- dOut , summed over batch, height and width
+      dCols <- W^T . dOut
+      dInput <- zeros
+      for i = 1..3, for j = 1..3:                   # col2im MUST accumulate
+          dInput[ :, :, i..i+H, j..j+W ] += dCols[ :, :, i, j, :, : ]
+\end{verbatim}
+\caption{Forward and backward pass of the two-dimensional convolution as pseudocode. The forward line is Equation~\ref{eq:rec-im2col}; \texttt{dW}, \texttt{dBias} and \texttt{dCols} are its three gradients, and the double loop is the col2im scatter-add. The batch dimension is carried by one broadcast matrix product rather than a loop over samples, which was measured to be about 35\,\% faster for a realistic training batch.}
+\label{fig:rec-convpseudo}
+\end{figure}
+
+The training loop shows where an image problem becomes a sequence problem, which is the single structural decision of the architecture.
+
+\begin{figure}[h]
+\centering
+\fontsize{8.5}{10.2}\selectfont
+\begin{verbatim}
+  for each shuffled mini-batch of line images and target strings:
+      logits, cache <- Forward( images )
+      loss, dLogits <- CtcLoss( logits, targets )
+      gradients     <- Backward( dLogits, cache )
+      Optimiser.Step( gradients )
+
+  inside Forward:
+      features <- convolutional backbone            (B, 128, 16, 160)
+      pooled   <- maximum over the height axis      (B, 128,  1, 160)
+      sequence <- move the width axis to the front  (160, B, 128)
+                  # <- the width of the feature map becomes the CTC time axis
+      sequence <- two stacked bidirectional LSTM layers
+      logits   <- linear projection to 75 classes, then log-softmax
+\end{verbatim}
+\caption{One training step and the forward pass it calls, as pseudocode. Every routine named here is one written for this project; nothing in the loop comes from a machine-learning framework. The commented line is the step that turns an image problem into a sequence problem: after it, one time step is a four-pixel-wide column of the original line.}
+\label{fig:rec-trainpseudo}
+\end{figure}
+
+At inference the decoder implements the collapse map $\mathcal B$ directly.
+The 74 symbols are the 26 lower-case and 26 upper-case letters, the ten digits and twelve symbols (space and \texttt{.\,,\,;\,:\,'\,"\,!\,?\,(\,)\,-}), with index 0 reserved for the CTC blank, which is why the output layer has 75 classes.
+Characters outside the set are removed from every label, lines that become empty are dropped, and lines over 120 characters, which indicate two merged lines, are dropped.
+
+\begin{figure}[h]
+\centering
+\fontsize{8.5}{10.2}\selectfont
+\begin{verbatim}
+  best <- argmax over the 75 symbols at each of the 160 time steps
+  previous <- none ;  text <- empty
+  for each token in best:
+      if token is not the blank and token differs from previous:
+          append the symbol of token to text
+      previous <- token
+\end{verbatim}
+\caption{The greedy decoder as pseudocode, which is the map $\mathcal B$ of Equation~\ref{eq:rec-greedy}: a symbol is kept only when it is neither the blank nor a repeat of the previous step. There is no lexicon, language model or beam search.}
+\label{fig:rec-decodepseudo}
+\end{figure}
+
+\subsubsection{The backward passes and their verification}
+
+Section~\ref{sec:textrec} states that every backward pass was written for this project and verified numerically.
+This sub-subsection gives those gradients, the two places where the implementation rather than the algebra is the risk, and the full result of the check.
+
+With $\mathrm dA$ denoting $\partial\mathcal L/\partial A$, the gradients are the convolution's (Figure~\ref{fig:rec-convpseudo}), batch normalisation's~\cite[Alg.~1]{ioffe2015}, the rectifier's~\cite[p.~807]{nair2010}, dropout's~\cite[p.~1930]{srivastava2014} and the max-pool routing's, Equation~\ref{eq:rec-relubw}, the adaptive pools', Equation~\ref{eq:rec-adaptbw}, the linear layer's, Equation~\ref{eq:rec-linbw}, the bidirectional LSTM's~\cite{hochreiter1997} and the two losses', Equation~\ref{eq:rec-ctcocc} for CTC~\cite[p.~372]{graves2006} and Equation~\ref{eq:wid-cebw} for cross-entropy.
+\begin{align}
+\mathrm dx&=\mathrm dY\odot\mathbb 1[x>0]\ \ \text{(rectifier)},\qquad
+\mathrm dx=\mathrm dY\odot M,\quad M_k=\frac{\mathbb 1[\xi_k\ge p]}{1-p}\ \ \text{(dropout)},\label{eq:rec-relubw}\\
+\mathrm dF[n,c,i,t]&=\mathbb 1\bigl[\,i=r^{\star}(n,c,t)\,\bigr]\,\mathrm dz_t[n,c],\qquad
+\mathrm dm[n,c,t]=\frac{1}{T}\,\mathrm df[n,c],\label{eq:rec-adaptbw}\\
+\mathrm dW&=\mathrm dY^{\top}X,\qquad \mathrm db=\sum_{m=1}^{M}\mathrm dY[m,\,\cdot\,],\qquad \mathrm dX=\mathrm dY\,W.\label{eq:rec-linbw}
+\end{align}
+In Equation~\ref{eq:rec-adaptbw} $r^{\star}$ is the winning row cached by the height maximum, so a feature that is never the column maximum receives nothing, and batch normalisation's input gradient couples all $N=BHW$ elements of a channel.
+Each of these is an exact derivative of a forward equation of Section~\ref{sec:textrec}, which makes the check that follows a check of the algebra rather than a measurement of an error.
+
+Two of them need care in the implementation rather than in the algebra, and both would fail silently.
+The col2im step must accumulate, because for a $3\times3$ kernel one input pixel appears in up to nine columns, so it is nine slice additions into a zero array; a reshape alone would keep one contribution in nine and is the likeliest place for a convolution backward pass to be quietly wrong.
+In the bidirectional layer the backward direction runs on the reversed sequence, so its recursion must be driven by the reversed incoming gradient and its returned input gradient reversed back; omitting either yields a gradient wrong only in time ordering, which a falling loss curve would hide.
+
+No automatic differentiation tool checks these backward passes, so each was verified against a central-difference estimate,
+\begin{align}
+\frac{\partial\mathcal L}{\partial\theta_i}&\approx\frac{\mathcal L(\theta+\varepsilon e_i)-\mathcal L(\theta-\varepsilon e_i)}{2\varepsilon},\qquad\varepsilon=10^{-5},\label{eq:rec-gradcheck}\\
+&\frac{\max_i\lvert g_i^{\mathrm{a}}-g_i^{\mathrm{n}}\rvert}{\max\bigl(1,\ \max_i\lvert g_i^{\mathrm{a}}\rvert+\max_i\lvert g_i^{\mathrm{n}}\rvert\bigr)}<10^{-6},\label{eq:rec-gradtol}
+\end{align}
+a configuration being accepted when the relative difference of Equation~\ref{eq:rec-gradtol} stays below $10^{-6}$ for the analytic gradient $g^{\mathrm a}$ against the numerical one $g^{\mathrm n}$ of Equation~\ref{eq:rec-gradcheck}.
+A configuration is one pair of layer variant and tensor, and the scalar loss is $\mathcal L=\sum_j o_jR_j$ for fixed random $R$, so that $\partial\mathcal L/\partial o=R$ exactly.
+Of the 78 configurations, 77 passed, with relative differences between $4.9\times10^{-12}$ and $1.4\times10^{-10}$, four to six orders of magnitude inside the tolerance.
+All arithmetic is in double precision and up to 40 random elements of each tensor are probed, 2044 in total; on the stricter per-element measure the worst case over all 2044 is $2.0\times10^{-7}$, on a recurrent LSTM weight whose gradient is itself near zero, where the central difference has no significant digits left.
+Max-pooling and the rectifier were given inputs from a permuted linear spacing, so that no element lies within $\varepsilon$ of the kink; dropout was checked with the mask fixed; batch normalisation was checked in its training form, so the folded inference map is not relied upon; and the check runs against the batched form the trainer uses.
+
+The one configuration that failed is a genuine defect, reported here rather than removed.
+The CTC loss does not survive an empty label sequence: for $U=0$ the blank-interleaved target has $S=1$ entry, but two of the shifted arrays carrying the recursion are built with two entries regardless of $S$, so the routine writes a two-element array into a one-element row and raises a shape error instead of returning the loss.
+Those arrays implement the $s-1$ and $s-2$ terms of Equation~\ref{eq:rec-alpha}, so the fault is confined to the lattice indexing and touches neither the transition rule nor the gradient of Equation~\ref{eq:rec-ctcocc}; a single-character target and a repeated-character target, which exercises the forbidden skip, both pass.
+Its practical effect is small, because a line with no transcription never reaches the trainer, but the function is not safe against one and the fault is listed in Section~\ref{sec:discussion}.
+The check also confirmed that with no possible alignment, $2U+1>T$, the loss is infinite with undefined gradients, so such samples must be removed before training.
+
+\subsubsection{Data sets and their leakage assessment}
+
+Every accuracy of Section~\ref{sec:textrec} belongs to one of four data sets, each with a different split rule and a different reason why its figure may be optimistic.
+Table~\ref{tab:rec-data} states the rule and the leakage it leaves, so that no figure in the report is read as more general than its data set allows.
+
+\begin{table}[h]
+\centering
+\fontsize{8.5}{10.2}\selectfont
+\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\linewidth}{|p{2.8cm}|p{3.1cm}|X|}
+\hline
+\textbf{Data set} & \textbf{Split rule} & \textbf{Caveat on the validation figure} \\
+\hline
+Lines segmented by this project's own block from scanned database pages, labels generated by alignment (first stage only) &
+The last labelled page of every writer is held out. &
+Same writers in training and hold-out, so the figure is writer-dependent, and the labels are project-generated and noisy. \\
+\hline
+Public line-level IAM transcription set: 6\,482 training, 976 validation, 2\,915 test lines (6\,481, 976, 2\,915 after label cleaning) &
+Official training, validation and test partitions. &
+The validation set drives learning-rate decay and checkpoint choice, so its accuracy is mildly optimistic; the test set is used for no decision. The partitions are believed, but not verified, to be writer-independent, and the warm start may have seen some of the same forms. \\
+\hline
+13 photographed pages of the two personal writers (8 and 5 pages), 355 transcription lines of which one is a diagram marker. \mustdo{confirm which personal set the deployed recogniser was fine-tuned on --- this row's two writers, 13 pages and 355 lines, or the five writers, 30 pages and 669 lines that Section~\ref{sec:results} reports on --- and correct this row and the one below to match; the saved checkpoints do not say.} &
+Per page, 15\,\% of the lines (at least one) drawn at random with a fixed seed; about 52 validation lines in total. &
+Validation lines come from the same pages, pen, paper, lighting and vocabulary as the training lines, so the figure measures same writer, same notebook, new lines, and is optimistic. It also takes part in checkpoint selection. \\
+\hline
+Ten-author hold-out (eight database writers, two personal) &
+Evaluation set only. &
+The held-out database lines may have been seen in the line-level training data and their labels are project-generated, so this is not a writer-independent measure. \\
+\hline
+\end{tabularx}
+\caption{Data sets of the text recogniser and their leakage assessment. No figure in the report is measured on a split that is both writer-independent and labelled by hand; the public test partition is the closest, and it is the only set used for no decision.}
+\label{tab:rec-data}
+\end{table}
+
+The labels of the database pages were generated by aligning the printed prompt words with the detected ink word runs by dynamic programming.
+An earlier proportional labelling assigned wrong text to lines, and correcting the evaluation labels alone raised the measured ten-author hold-out accuracy from 42.7\,\% to 89.4\,\%, which establishes that label quality, not the network, had limited the earlier measurements; that is the reason the recogniser was later trained on a public line-level set with clean labels~\cite{mamun2024}.
+
+Training images only are augmented after the resize with at most one of four geometric transformations, filled with white: a horizontal shear with $k\sim U(-0.6,0.6)$, a rotation in $U(-2.5^\circ,2.5^\circ)$, an elastic distortion with displacement fields smoothed at $\sigma\in\{3,4\}$ and scaled by $\alpha\in\{15,20\}$, and a perspective distortion moving each corner by up to $d\,W/2$ and $d\,H/2$ with $d\sim U(0.03,0.08)$.
+Each is enabled independently with probability 0.5 and one of the enabled ones is then chosen uniformly, so that $P(\text{no augmentation})=1/16=6.25\,\%$.
+No colour, contrast, noise or blur augmentation and no synthetic pre-training data are used.
+
+\subsubsection{Edit distance as the accuracy measure}
+
+The character accuracies of Section~\ref{sec:textrec} are one minus a micro-averaged character error rate, and the error rate is built on the Levenshtein edit distance computed by the dynamic programme
+\begin{equation}
+D[i][j]=\min\bigl(D[i-1][j]+1,\;D[i][j-1]+1,\;D[i-1][j-1]+\mathbb 1[a_i\ne b_j]\bigr),\label{eq:rec-lev}
+\end{equation}
+with $d_{\mathrm{lev}}(a,b)=D[\,\lvert a\rvert\,][\,\lvert b\rvert\,]$, $D[i][0]=i$ and $D[0][j]=j$.
+The three branches of Equation~\ref{eq:rec-lev} are a deletion, an insertion and a match or substitution, so the distance is the smallest number of single-character edits between the two strings.
+The error rate and the word measure are then
+\begin{equation}
+\mathrm{CER}=\frac{\sum_nd_{\mathrm{lev}}(\hat y_n,y_n)}{\sum_n|y_n|},\qquad
+\mathrm{WordAcc}=\frac{\mathrm{LCS}(\text{reference words},\text{predicted words})}{\#\text{reference words}},\label{eq:rec-cer}
+\end{equation}
+so the character error rate of Equation~\ref{eq:rec-cer} is the total edit distance over the total reference length, and the measure is case-sensitive.
+The word measure of Equation~\ref{eq:rec-cer} is a longest-common-subsequence recall and not $1-\mathrm{WER}$, as Appendix~\ref{sec:app-met} sets out at length.
+Section~\ref{sec:results} averages instead the floored per-line accuracy $\max(0,1-d_{\mathrm{lev}}/|y|)$ after lower-casing, so the subsystem figures of Section~\ref{sec:textrec} and the qualification figures of Section~\ref{sec:results} are not computed identically and should not be differenced.

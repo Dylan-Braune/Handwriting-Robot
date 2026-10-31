@@ -1,0 +1,101 @@
+%%
+%%  Department of Electrical, Electronic and Computer Engineering.
+%%  EPR400/2 Final Report - supporting detail of the writer classifiers.
+%%
+%%  Section 3.6 gives the two classifiers, why both are needed, the stroke
+%%  normalisation and the measured accuracies.  This file holds the parameter
+%%  budget, the optimiser equations and pseudocode of the forward pass and of
+%%  the stroke normalisation.  No code is reproduced.
+%%
+
+\subsection{Supporting detail of the writer classifiers}
+\label{sec:app-wid}
+
+Section~\ref{sec:writerid} describes the two writer classifiers, the reason a second one was needed and the accuracies measured for each.
+This appendix carries the parameter budget of the head against the shared backbone, the optimiser the two trainers use, and pseudocode of the deployed forward pass and of the stroke normalisation on which the shape classifier depends.
+
+\subsubsection{Parameter budget}
+
+Both classifiers reuse the recogniser's convolutional backbone and replace its recurrent stack and output head with two pools and two fully connected layers, so almost all of the capacity is shared rather than new.
+
+\begin{table}[!htbp]
+\centering
+\fontsize{8}{9.6}\selectfont
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{|l|l|r|}
+\hline
+\textbf{Block} & \textbf{Output shape} & \textbf{Trainable parameters} \\
+\hline
+Convolutional backbone, 12 layers as Table~\ref{tab:rec-layers} & $128\times16\times160$ & 952\,800 \\
+Height max-pool, width mean-pool (Eq.~\ref{eq:wid-pool}) & 128 & 0 \\
+FC 128$\to$96, ReLU, dropout 0.2 (Eq.~\ref{eq:wid-head}) & 96 & 12\,384 \\
+FC 96$\to$13 & 13 & 1\,261 \\
+\hline
+\textbf{Total} (head 13\,645) & & \textbf{966\,445} \\
+\hline
+\end{tabular}
+\caption{What the writer classifiers add to the recogniser's backbone, FC denoting a fully connected layer. Every backbone shape and parameter count is that of Table~\ref{tab:rec-layers}, the recurrent stack and the CTC head being replaced by the two pools and the two layers above; the shapes are identical but none of the 84 backbone tensors hold the same values. Batch normalisation adds 2\,176 non-trainable running statistics, so the network holds 968\,621 numbers. A forward pass needs about $3.79\times10^9$ multiply--accumulate operations and the parameters occupy about 3.9\,MB as 32-bit floating-point numbers.}
+\label{tab:wid-layers}
+\end{table}
+
+The ratio in Table~\ref{tab:wid-layers} is what makes the training fault of Section~\ref{sec:writerid} consequential: fitting the head alone fits 13\,645 of 966\,445 parameters, that is 1.4\,\% of the model, on features that a backbone trained for a different task produced.
+
+\subsubsection{The optimiser}
+
+Both trainers use AdamW, the decoupled-decay form~\cite[Alg.~2]{loshchilov2019} of Adam~\cite[Alg.~1]{kingma2015}, with cosine annealing of the learning rate.
+The moment estimates and their bias corrections are
+\begin{align}
+m_s&=\beta_1m_{s-1}+(1-\beta_1)g_s,\qquad \hat m=\frac{m_s}{1-\beta_1^{\,s}},\nonumber\\
+v_s&=\beta_2v_{s-1}+(1-\beta_2)g_s^2,\qquad \hat v=\frac{v_s}{1-\beta_2^{\,s}},\label{eq:wid-adamwmom}
+\end{align}
+and the parameter update with its schedule is
+\begin{equation}
+\theta\leftarrow\theta-\eta\Bigl(\frac{\hat m}{\sqrt{\hat v}+\epsilon}+\lambda_{\mathrm d}\theta\Bigr),\qquad\eta_t=\frac{\eta_0}{2}\Bigl(1+\cos\frac{\pi t}{T_{\max}}\Bigr),\label{eq:wid-adamw}
+\end{equation}
+with $g_s$ the gradient at step $s$, $m_s$ and $v_s$ the running means of the gradient and of its square, $\hat m$ and $\hat v$ their bias-corrected forms, $\beta_1=0.9$, $\beta_2=0.999$, $\epsilon=10^{-8}$, decay $\lambda_{\mathrm d}=10^{-4}$ and the rate falling from $\eta_0$ to zero over $T_{\max}$ epochs.
+The bias correction of Equation~\ref{eq:wid-adamwmom} matters most in the first few dozen steps, where $m_s$ and $v_s$ are still dominated by their zero initial values and an uncorrected update would be far too small; the decoupled decay of Equation~\ref{eq:wid-adamw} is what distinguishes AdamW from Adam with an L2 penalty, since adding the penalty to $g_s$ instead would let the adaptive denominator scale it differently for every parameter.
+The ink classifier ran at $\eta_0=10^{-3}$ for 20 epochs on batches of 16 images with the gradient-norm clip at 5.
+The superseded frozen-head run used $\eta_0=3\times10^{-3}$, 500 epochs, batches of 64 feature vectors, no clipping and only the head parameters on 3\,680 stored vectors, and is the configuration that reached 83.36\,\%.
+
+\subsubsection{Pseudocode of the forward pass and the stroke normalisation}
+
+The deployed forward pass is the same code the trainer runs for validation, which is why no separate inference implementation had to be verified.
+
+\begin{figure}[!htbp]
+\centering
+\fontsize{8.5}{10.2}\selectfont
+\begin{verbatim}
+  Classify( batch of line images ):
+      x <- convolutional stage 1, then 2x2 max-pool
+      x <- convolutional stage 2, then 2x2 max-pool
+      x <- convolutional stage 3                       (B, 128, 16, 160)
+      x <- maximum over the height axis                (B, 128, 160)
+      f <- mean over the width axis                    (B, 128)
+      h <- ReLU( linear( f ) )                         (B, 96)
+      # the dropout layer between the two linear layers is inactive here
+      return linear( h )                               (B, 13) raw scores
+\end{verbatim}
+\caption{Deployed forward pass of both writer classifiers as pseudocode. The two pools are Equation~\ref{eq:wid-pool} and the two linear layers Equation~\ref{eq:wid-head}; the recurrent layers of the recogniser are absent, because writer identity does not depend on the letter sequence. Taking a maximum over height and a mean over width makes the feature a position-independent bag of local stroke patterns. The weights come from a plain array archive written by the trainer, with no third-party model format parsed.}
+\label{fig:wid-forward}
+\end{figure}
+
+Stroke normalisation is the transform that makes the shape classifier possible, since it removes the thickness cue by construction rather than by augmentation.
+
+\begin{figure}[!htbp]
+\centering
+\fontsize{8.5}{10.2}\selectfont
+\begin{verbatim}
+  StrokeNormalize( grey crop, penWidthXh = 0.14 ):
+      ink  <- Otsu binarisation, ruled lines removed, hairlines closed,
+              components under 6 pixels dropped
+      band <- first to last row whose ink count reaches 0.45 of the maximum
+      xh   <- height of that band
+      if xh < 4:  xh <- max( 8, crop height / 3 )        # fallback
+      w    <- round( penWidthXh . xh ),  clipped to [2, 9]
+      k    <- w made odd
+      return Dilate( Skeletonize( ink ), k )
+      # a sample with no ink left is dropped rather than classified
+\end{verbatim}
+\caption{Stroke normalisation as pseudocode. The band is the core band of Equation~\ref{eq:wid-xh}, the dense band of the lower-case bodies; \texttt{Skeletonize} is the Zhang--Suen thinning~\cite{zhang1984} and \texttt{Dilate} the re-inking at the constant width. Because the width is a fixed fraction of the measured x-height, the result is independent of scan resolution: an x-height of 20 pixels gives a three-pixel pen whatever the camera.}
+\label{fig:wid-snorm}
+\end{figure}
