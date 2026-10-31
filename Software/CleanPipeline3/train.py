@@ -618,8 +618,19 @@ def EncodeCrop(arr):
     return zlib.compress(buf.getvalue(),6)   #6 is the usual size/speed middle
 
 #---DecodeCrop: and unpack it again---
+#the cache holds crops in TWO formats.  IAMLineDatasetRaw stores the raw PNG
+#bytes it got from LineImageCache, while AddPersonalSamples stores what
+#EncodeCrop wrote, which is a zlib compressed .npy.  this read only the second
+#of those, so every IAM crop raised
+#    zlib.error: Error -3 while decompressing data: incorrect header check
+#and the namer could not be trained on database writers at all.  it now reads
+#whichever of the two it is handed
 def DecodeCrop(raw):
-    return np.load(io.BytesIO(zlib.decompress(raw)),allow_pickle=False)
+    try:
+        return np.load(io.BytesIO(zlib.decompress(raw)),allow_pickle=False)
+    except zlib.error:
+        from PIL import Image as _Image
+        return np.asarray(_Image.open(io.BytesIO(raw)).convert("L"),dtype=np.uint8)
 
 #---ReadLabelLines: read a page's typed transcript---
 def ReadLabelLines(imgPath,labelPath=None):
@@ -1314,10 +1325,16 @@ def TextCollateFn(batch):
 
 #---AuthorLabeledView: the same crops labelled by writer instead of by text---
 class AuthorLabeledView:
-    def __init__(self,base: IAMLineDatasetRaw,indices,isTrain):
+    #strokeNorm redraws every crop at one constant pen width before the
+    #network sees it, which is what separates the two namers: the SHAPE namer
+    #is trained on normalised crops and cannot read pen pressure, the INK
+    #namer is trained on the crops as photographed and can.  it defaults to
+    #True, which is what every existing caller got before the switch existed
+    def __init__(self,base: IAMLineDatasetRaw,indices,isTrain,strokeNorm=True):
         self.base = base
         self.indices = indices
         self.isTrain = isTrain
+        self.strokeNorm = strokeNorm
 
     def __len__(self):
         return len(self.indices)
@@ -1325,10 +1342,11 @@ class AuthorLabeledView:
     def __getitem__(self,i):
         item = self.base.samples[self.indices[i]]
         gray = DecodeCrop(item["imageBytes"])
-        normImg = StrokeNormalize(np.array(gray))
-        if normImg is not None:
-            gray = normImg   #falls back to the raw crop only if stroke-normalize
-                              #found no usable ink (empty/near-blank line)
+        if self.strokeNorm:
+            normImg = StrokeNormalize(np.array(gray))
+            if normImg is not None:
+                gray = normImg   #falls back to the raw crop only if stroke-normalize
+                                  #found no usable ink (empty/near-blank line)
         pilImg = ResizeLineImageFixed(gray)
         if self.isTrain:
             pilImg = AugmentLineImage(pilImg)
@@ -2009,22 +2027,40 @@ def ValidateAuthorModel(valSet,params,batchSize,rng):
 #on raw grey crops and once on stroke normalised ones, which is where the
 #ink based and shape based checkpoints come from
 #----------------------------------------------------------------------
-def TrainAuthorModel(numEpochs,batchSize,lr,seed,resume=False,warmStart=None):
+def TrainAuthorModel(numEpochs,batchSize,lr,seed,resume=False,warmStart=None,
+                     writers=None,strokeNorm=True):
+    #writers restricts the set the namer is trained on.  it is passed in rather
+    #than read from paths.py because that list is also what the web server, the
+    #reproducer and the style profiles go by: narrowing it there to train one
+    #model would quietly narrow the running robot too
+    wanted = list(writers) if writers else list(paths.DatabaseWriters+paths.PersonalWriters)
+    unknown = [w for w in wanted if w not in paths.DatabaseWriters+paths.PersonalWriters]
+    if unknown:
+        raise SystemExit("unknown writer(s): %s\nknown: %s"
+                         % (", ".join(unknown),
+                            ", ".join(paths.DatabaseWriters+paths.PersonalWriters)))
+    wantedDb = [w for w in paths.DatabaseWriters if w in wanted]
+
     base = IAMLineDatasetRaw(rootDir=str(DEFAULT_AUTHOR_DATA_DIR),cacheDir=str(DEFAULT_AUTHOR_CACHE_DIR))
     before = len(base.samples)
-    base.samples = [s for s in base.samples if s["page_key"].split("/")[0] in paths.DatabaseWriters]
-    print(f"[Filter] kept {len(base.samples)}/{before} IAM samples for {paths.DatabaseWriters}")
+    base.samples = [s for s in base.samples if s["page_key"].split("/")[0] in wantedDb]
+    print(f"[Filter] kept {len(base.samples)}/{before} IAM samples for {wantedDb}")
 
     AddPersonalSamples(base)
-    base.author_folders = sorted(paths.DatabaseWriters+paths.PersonalWriters)
+    #AddPersonalSamples adds every photographed writer, so the ones left out
+    #are dropped here, BEFORE the split, or a dropped writer could still land
+    #in validation and be scored against a class the model does not have
+    base.samples = [s for s in base.samples if s["page_key"].split("/")[0] in wanted]
+    base.author_folders = sorted(wanted)
     base.author_to_idx = {a:i for i,a in enumerate(base.author_folders)}
     print(f"[Authors] {len(base.author_folders)}: {base.author_folders}")
+    print(f"[Crops] {'stroke-normalised (SHAPE namer)' if strokeNorm else 'as photographed (INK namer)'}")
 
     trainIdx,valIdx = base.HoldoutSplitIndices()
     if not valIdx:
         raise RuntimeError("No holdout lines found.")
-    trainSet = AuthorLabeledView(base,trainIdx,isTrain=True)
-    valSet = AuthorLabeledView(base,valIdx,isTrain=False)
+    trainSet = AuthorLabeledView(base,trainIdx,isTrain=True,strokeNorm=strokeNorm)
+    valSet = AuthorLabeledView(base,valIdx,isTrain=False,strokeNorm=strokeNorm)
     print(f"[Split] Train lines: {len(trainIdx)} | Held-out val lines: {len(valIdx)}")
 
     numAuthors = len(base.author_folders)
@@ -2036,9 +2072,15 @@ def TrainAuthorModel(numEpochs,batchSize,lr,seed,resume=False,warmStart=None):
     rngBatch = np.random.default_rng(seed)
     rngDropout = np.random.default_rng(seed+1)
     bestAcc = 0.0
-    outPath = WEIGHTS_DIR/"author_classifier_10new_scratch_weights.npz"
-    ckptPath = WEIGHTS_DIR/"author_classifier_10new_scratch_checkpoint.npz"
-    logPath = WEIGHTS_DIR/"author_classifier_10new_scratch_log.txt"
+    #the name carries what the model IS, so an 11 writer ink namer cannot
+    #silently overwrite the 13 writer shape namer that was there before
+    kind = "shape" if strokeNorm else "ink"
+    stem = ("author_classifier_10new_scratch" if strokeNorm and len(wanted)==13
+            else "author_%s_%dw_scratch" % (kind,len(wanted)))
+    outPath = WEIGHTS_DIR/(stem+"_weights.npz")
+    ckptPath = WEIGHTS_DIR/(stem+"_checkpoint.npz")
+    logPath = WEIGHTS_DIR/(stem+"_log.txt")
+    print(f"[Output] {outPath.name}")
 
     startEpoch = 1
     if warmStart:
@@ -2119,6 +2161,16 @@ def Main():
                     help="joint only: share of every batch drawn from photographed lines")
     ap.add_argument("--pages",type=int,default=None,help="limit how many pages are cut up")
     ap.add_argument("--data",default=None,help="override where the pages or crops live")
+    ap.add_argument("--writers",nargs="+",default=None,
+                    help="author task only: train on this subset of writers "
+                         "instead of all thirteen, e.g. --writers 150 152 153 "
+                         "384 552 588 abhinav dylan owen thiya yeukita.  "
+                         "paths.py is left alone, so the server and the "
+                         "reproducer still see every writer")
+    ap.add_argument("--ink",action="store_true",
+                    help="author task only: train on the crops as photographed "
+                         "instead of stroke-normalising them first, which is "
+                         "what makes an INK namer rather than a SHAPE one")
     ap.add_argument("--resume",action="store_true",
                     help="continue from this module's own checkpoint")
     ap.add_argument("--warm-start",dest="warmStart",default=None,
@@ -2145,7 +2197,8 @@ def Main():
                        personalFraction=args.personalFraction)
     else:
         TrainAuthorModel(args.epochs,args.batch,args.lr,args.seed,
-                         resume=args.resume,warmStart=warm)
+                         resume=args.resume,warmStart=warm,
+                         writers=args.writers,strokeNorm=not args.ink)
 
 
 if __name__ == "__main__":
