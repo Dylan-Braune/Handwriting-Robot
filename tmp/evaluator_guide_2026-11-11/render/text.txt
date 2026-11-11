@@ -1,0 +1,679 @@
+Handwriting Robot Live System Evaluation Guide
+Code controls and expected effects for classification and reproduction
+11 November 2026
+This guide identifies changes an evaluator could reasonably ask to see in the running handwriting robot system. The
+aim is to predict the effect of a change, demonstrate the relevant stage, and explain the observation. It covers
+classification, segmentation, handwriting synthesis, profile selection, layout and physical execution using existing
+trained models. Training changes are outside the live comparison.
+The central question is whether changing one assumption produces the effect expected from the algorithm. For
+every control, identify where it acts, what should change, what remains comparable, which later stage can override
+it, and what observation would contradict the prediction.
+
+
+How to use this guide
+Geometry changes are usually the most predictable: larger spacing separates words and more shear increases slant.
+Recognition changes involve trade-offs: a stricter threshold may remove noise and faint strokes together, so
+accuracy need not change monotonically. Physical execution changes can affect time, ink deposition and mechanical
+tracking while the digital preview remains identical.
+The identifiers and defaults below refer to the inspected Software/CleanPipeline3 implementation and its web
+server. Some controls are existing request fields, some require changing an argument or constant at its active call
+site, and some require a small logic edit. An evaluator request is not evidence that a coefficient has an established
+optimum. Expected effects are algorithmic predictions, not new measured results.
+For a controlled comparison, keep the source photograph or text, writer, checkpoint, preprocessing, size and seed
+fixed except for the selected change. Display the intermediate result nearest that change before interpreting the
+final score. A fixed seed improves reproducibility, but a changed branch can consume random values differently and
+alter subsequent choices.
+
+
+Twelve comparisons to prioritise
+1. Disable and enable joins while retaining the same writer profile.
+2. Compare upright and slanted writing.
+3. Compare small and large writing and explain automatic fitting.
+4. Compare narrow and wide word spacing.
+5. Compare zero jitter with increased jitter.
+6. Compare personal variants with stronger anchoring.
+7. Compare one candidate with multiple candidates and repair off with repair on.
+8. Compare the ink and shape writer models with preparation stated.
+9. Compare raw and stroke-normalised writer classification.
+10. Change a segmentation threshold or seam setting and show the intermediate crops.
+11. Compare slower and faster pen-down feed on the same generated geometry.
+12. Disable and enable physical endpoint joining and compare pen lifts and added connectors.
+For each comparison, state the expected effect before generating or classifying the result. Record whether the
+outcome matches the prediction. Use a temporary profile copy for profile experiments and restore the baseline
+afterwards.
+
+
+Connectedness and cursive joining
+Connectedness is not a smooth universal cursive slider. Several gates act before a connector is produced. A profile
+may change from 0.1 to 0.3 without any synthesis joins appearing. Crossing 0.5 can change fallback letterforms as
+well as connector eligibility.
+
+                                                                                                     Handwriting Robot | 1
+ Control or change            Evaluator question              Expected effect and qualifications
+
+                                                              Automatic inter-letter joins remain suppressed below
+ profile['connectedness']     Why does increasing
+                                                              JOIN_PRINT_CONN_FLOOR. Changing 0.1 to 0.3 may therefore show
+ within 0 to 0.44             connectedness show no joins
+                                                              no joining difference.
+
+ Cross
+                                                              Eligible pairs become candidates for joining. Distance, source
+ JOIN_PRINT_CONN_FLOOR =      When does joining begin
+                                                              compatibility, letter type and attachment geometry must still pass.
+ 0.45
+
+ Cross CORE_CURSIVE_CONN      Why did the letter shapes       Generic fallback selection can switch towards cursive forms. This
+ = 0.5                        change too                      changes more than the number of connectors.
+
+ Increase connectedness       Can you make this hand more     More eligible joins are likely. Even connectedness of 1 does not
+ above the gates              connected                       force every adjacent character to connect.
+
+                                                              Zero suppresses probabilistic synthesis joins while retaining the
+                              Show only the contribution of
+ JOIN_PROB_CAP = 0 versus 1                                   profile's print or cursive classification. This is a cleaner isolation than
+                              added joins
+                                                              crossing the profile thresholds.
+
+                                                              Reducing it rejects longer horizontal reaches between letters.
+                              Stop long unnatural
+ MAX_JOIN_GAP_XH                                              Increasing it permits more distant eligible attachments. Other gates
+                              connections
+                                                              still apply.
+
+
+Use the same text, writer and seed with joining capped at zero and then enabled. Compare different profile
+connectedness values separately. This distinguishes adding connectors from changing fallback style. Source S1
+identifies the synthesis implementation.
+
+
+Reproduction geometry and variation
+These controls change the generated handwriting or layout without neural-network training. They are strong
+candidates for live explanation because their geometric intent can be inspected directly.
+
+ Control                      Evaluator question              Expected effect and qualifications
+
+                                                              Increasing magnitude increases horizontal shear with height, moving
+                              Make the writer upright and
+ profile['slantDeg']                                          tall strokes more than baseline points. Slant caps and style
+                              then more slanted
+                                                              calibration can limit or modify the result.
+
+                                                              Larger physical x-height enlarges glyphs and advances, generally
+                              Write the same text at two
+ mmPerXh                                                      increases path length and causes earlier wrapping. Ruling and
+                              sizes
+                                                              bounds fitting can override the apparent requested size.
+
+                              Fit the paragraph into a        Narrower width causes more line breaks. It does not simply squeeze
+ lineWidthMm
+                              narrower area                   every glyph horizontally.
+
+                              Separate the words more         Larger values increase word gaps and can cause additional wrapping.
+ profile['wordSpaceXh']
+                              clearly                         They change layout rather than the captured character shapes.
+
+                                                              These constrain the gap used in advancing between stored glyphs.
+ MIN_LETTER_GAP_XH and        Make the writing tighter or
+                                                              Tightening can increase collisions; loosening can fragment the
+ MAX_LETTER_GAP_XH            looser
+                                                              appearance of words and increase width.
+
+                                                              Increasing it pushes overlapping glyph extents farther apart.
+ COLLISION_MIN_GAP_XH =       What prevents overlapping
+                                                              Reducing it permits closer placement. The guard uses geometric
+ 0.05                         letters
+                                                              extents rather than semantic understanding of letters.
+
+
+
+
+                                                                                                                   Handwriting Robot | 2
+ Control                            Evaluator question              Expected effect and qualifications
+
+                                    Make the writing mechanical     Increasing it increases positional, angular and scale perturbations
+ jitter
+                                    or variable                     and baseline drift. It does not control only one kind of variation.
+
+                                    Change position variation       Increasing it increases glyph displacement without directly changing
+ Position jitter multiplier 0.022
+                                    alone                           the rotation and scale multipliers.
+
+                                                                    Increasing it increases local angular variation, distinct from the
+ Rotation jitter multiplier 2.2     Vary individual letter angles
+                                                                    writer's overall slant.
+
+                                    Vary individual character       Increasing it increases local size variation, potentially changing
+ Scale jitter multiplier 0.05
+                                    sizes                           clearance and appearance.
+
+                                                                    Higher persistence retains drift velocity longer and produces more
+                                    Make the baseline wander
+ Drift persistence 0.85                                             correlated movement. It acts on velocity, not simply on baseline
+                                    gradually
+                                                                    position.
+
+ Drift bound plus or minus          Keep the writing near its       Smaller bounds restrict wander. Larger bounds permit greater
+ 0.25 x-heights                     baseline                        vertical displacement and can reduce clearance between lines.
+
+                                                                    Increasing the addition in (ascender - descender + clearance) times
+                                    Increase separation between
+ Line clearance addition 0.85                                       x-height increases synthesis pitch. Later ruling placement can alter
+                                    lines
+                                                                    final spacing.
+
+                                                                    Fixes pseudorandom choices for the same inputs and execution
+                                    Repeat exactly the same
+ seed                                                               path. Changing it changes variants and perturbations. Branch
+                                    generation
+                                                                    changes can still alter random-number consumption.
+
+                                                                    Disabling it removes the automatic shear and extent correction. The
+                                    Show the uncorrected
+ USE_STYLE_CALIBRATION                                              visible effect depends on the writer's stored reference
+                                    extracted style
+                                                                    measurements and cache state.
+
+
+Measured profile style is not always the final visible style. Calibration, clamping, fallback selection and machine
+placement can all modify it. An unchanged output does not establish that a parameter is irrelevant until those later
+stages have been checked. See sources S1 and S2.
+
+
+Glyph selection and automatic repair
+These comparisons explain whether the system is reusing captured handwriting, substituting representative shapes
+or optimising candidates for the existing classifiers.
+
+ Control or change                  Evaluator question              Expected effect and qualifications
+
+                                                                    Higher anchoring strength generally favours cleaner representative
+ legibility or                      Prefer personal variants and
+                                                                    or fallback forms. It can reduce personal variation and changes the
+ profile['legibilityLambda']        then readable fallbacks
+                                                                    permitted slant. It is not a universal vertex interpolation.
+
+                                                                    Moving the thresholds changes how median prior distance maps to
+ _AUTO_LAM_GOOD = 0.24              Why does this profile use
+                                                                    automatic anchoring. An explicit stored legibilityLambda can bypass
+ and _AUTO_LAM_BAD = 0.32           many anchors
+                                                                    the automatic calculation.
+
+                                                                    Selects the preferred stored representative, medoid or prototype,
+                                    Use a real representative
+ IDEAL_SOURCE                                                       where available. Missing or rejected representatives still trigger
+                                    instead of a prototype
+                                                                    fallback.
+
+ IDEAL_ANCHOR_MAX_PRIOR             Accept more of the writer's     Increasing the limit permits less typical representatives. Decreasing
+ D = 0.30                           own shapes                      it can cause more generic fallback use.
+
+
+
+
+                                                                                                                       Handwriting Robot | 3
+ Control or change               Evaluator question              Expected effect and qualifications
+
+ Variant pool for one            Use only one version of the     Reducing the pool makes the character more repetitive. The
+ character                       letter a                        retained glyph's quality matters more than the count alone.
+
+ Remove one character from a     What happens when this          Exercises missing-character fallback. The output may remain
+ temporary profile               letter was never captured       readable while becoming less specific to that writer.
+
+                                                                 Applies stronger anchoring at selected text positions. Neighbouring
+ perCharLam                      Repair one ambiguous letter
+                                                                 joins and spacing can change too.
+
+                                                                 More trials provide more candidate opportunities and cost more
+                                 Generate quickly and then
+ nTries                                                          inference time. The internal best score cannot worsen if the original
+                                 search more
+                                                                 candidate set is retained, but physical quality need not improve.
+
+                                 What does automatic repair      Disabling it reveals the best initial candidate. Enabling it permits
+ repair False or True
+                                 contribute                      targeted regeneration accepted by the full joint score.
+
+                                 Allow more correction           Increases the repair budget without guaranteeing improvement or a
+ repairRounds
+                                 attempts                        global optimum.
+
+                                 Repair one weak position or     Larger values modify more positions per trial, potentially improving
+ repairWorstK
+                                 several                         readability while changing more personal geometry.
+
+                                                                 Requires a small scoring-logic edit. A weighted or alternative
+                                 Prioritise text over writer
+ Joint score weighting or form                                   combination can select different candidates from the same pool
+                                 identity
+                                                                 without changing trained weights.
+
+
+The current joint objective is the harmonic mean of character score and requested-writer probability. A comparison
+of text-only selection, writer-only selection and joint selection is meaningful if the candidate pool is held fixed.
+Changing both the candidate pool and scoring rule obscures the cause of a different winner. Sources S1 and S3
+locate the relevant logic.
+
+
+Live classification with existing models
+Preprocessing, model selection and decision logic are the useful live controls. Recognition accuracy need not change
+monotonically when one is adjusted. A confident prediction can still be wrong, and confidence is not geometric
+agreement.
+
+ Control or small edit           Evaluator question              Expected effect and qualifications
+
+                                                                 Changes which saved checkpoint judges photographed lines. Labels
+                                 Compare the ink and shape
+ PAGE_NAMER                                                      and confidence can change without retraining. Use that model's
+                                 classifiers
+                                                                 corresponding class mapping.
+
+                                                                 Enabling normalisation removes much of the original stroke-width
+ PAGE_NAMER_STROKE_NOR           Does identity depend on pen
+                                                                 information. It can improve robustness or discard useful cues,
+ M                               thickness
+                                                                 depending on the checkpoint and image.
+
+                                                                 Larger widths thicken the reconstructed image and can close gaps.
+ StrokeNormalize penWidthXh      Classify the same skeleton at
+                                                                 Smaller widths can lose small details after resizing. Changes occur in
+ argument                        different widths
+                                                                 discrete kernel-size steps.
+
+                                                                 Changes the existing reader and potentially its transcript and
+                                 Compare saved text
+ Text checkpoint selection                                       confidence. The model object must actually be reloaded; a filename
+                                 recognition models
+                                                                 edit alone is insufficient.
+
+
+
+
+                                                                                                                    Handwriting Robot | 4
+ Control or small edit         Evaluator question             Expected effect and qualifications
+
+                                                              Equal weighting increases short lines' influence. Ink weighting
+ Ink weighted versus equal     Why should a long line count
+                                                              increases dense or long lines' influence. The page result can change
+ line pooling                  more
+                                                              while every line prediction stays unchanged.
+
+                                                              Excluding a crop changes the evidence and pooled probabilities.
+ Lines included in the page
+                               What if a crop is poor         Keep the excluded crop visible rather than presenting removal as an
+ vote
+                                                              unexplained accuracy gain.
+
+ Pooling ink threshold         What counts as evidence for    Raising the threshold counts more grey pixels as ink and can change
+ currently below 128           weighting                      relative line weights. It does not itself alter the classifier input pixels.
+
+ Whole line versus a shorter   How much handwriting is        Less content generally supplies less evidence, but confidence is not
+ crop                          needed                         guaranteed to fall smoothly. Keep crop preparation consistent.
+
+                                                              Can reveal recognition sensitivity without retraining. Stronger
+ Explicit blur contrast or     What happens with a poor       transformations may erase strokes, close gaps or change
+ brightness transformation     photograph                     background estimates. These are explicit input edits rather than
+                                                              existing universal request sliders.
+
+                                                              Requires decision-logic addition. Reject below a threshold instead of
+                               Can the system say it does     always naming the maximum-softmax class. Raising the threshold
+ Confidence based abstention
+                               not know                       increases abstention without improving the probabilities
+                                                              themselves.
+
+
+The inspected server uses SHAPE_MODEL with stroke normalisation disabled for photographed-page identification.
+Synthesis has a separate shape-based judging path. Changing one path does not automatically change the other.
+Model objects are loaded during server startup. See S4, S5 and S6.
+
+
+Page segmentation before classification
+Segmentation can change the whole classification result before the network sees a crop. Show the mask, centres,
+seam overlay, line count and final crops. Predict the intermediate effect first, such as retaining more foreground or
+producing fewer centres, before predicting a change in final accuracy.
+
+ Control                       Evaluator question             Expected effect and qualifications
+
+                                                              Smaller windows follow local illumination more closely but can
+ Background estimation         Handle a stronger local
+                                                              follow ink itself. Larger windows preserve broader structures but
+ window radius                 shadow
+                                                              miss rapid lighting changes.
+
+                                                              A higher ratio threshold generally retains more foreground,
+ Ink ratio threshold
+                               Retain faint handwriting       including noise. A lower threshold can erase faint strokes. Requires a
+ adjustment
+                                                              local decision edit rather than a currently exposed request field.
+
+                                                              For darkness between zero and one, reducing the exponent
+                               Make the crop darker or
+ Darkness exponent 0.55                                       strengthens intermediate darkness. Increasing it weakens darkness.
+                               lighter
+                                                              The exponent acts on darkness, not directly on brightness.
+
+                               Why did the page rotate by     Lowering the margin accepts weaker quarter-turn evidence. Raising
+ AXIS_TURN_MARGIN = 1.35
+                               ninety degrees                 it makes turning more conservative.
+
+                                                              A wider search handles greater global tilt at extra work, but may
+ Deskew range minus four to
+                               Read a more tilted page        admit other objective maxima. It does not fix perspective or curved
+ plus four degrees
+                                                              baselines.
+
+
+
+
+                                                                                                                    Handwriting Robot | 5
+ Control                        Evaluator question              Expected effect and qualifications
+
+                                                                Smaller increments provide finer angular search and more
+ Deskew increment 0.5           Straighten the page more
+                                                                computation. They do not guarantee a better estimate on an
+ degrees                        precisely
+                                                                ambiguous page.
+
+ Peak floor 0.06 times                                          Lowering it admits weaker peaks and possible false lines. Raising it
+                                Recover a faint line
+ maximum                                                        can drop faint genuine lines.
+
+                                                                Lowering it allows closer centres but can split one line's ascender,
+ Centre separation 0.6P         Separate two close lines        body and descender bands. Raising it can merge nearby true lines. P
+                                                                is estimated line pitch.
+
+ mergeValley or                 Stop splitting one line into    Lowering the threshold makes shallow-valley merging more
+ LINE_MERGE_VALLEY              several                         aggressive. At 1.0, this merging loop is effectively disabled.
+
+                                Avoid mistaking letter height   Raising the pitch floor rejects more letter-sized peak gaps, but can
+ PEAK_MIN_PITCH_XH
+                                for line spacing                reject genuinely tight line spacing.
+
+                                                                Smaller limits remove shorter straight structures and may remove
+                                Remove ruling while keeping
+ Run limits 1.25P and 1.4P                                      genuine underlines or strokes. Larger limits retain more printed
+                                handwriting
+                                                                marks.
+
+                                Make the cut avoid ink more     Increasing it gives closed-mask ink a stronger penalty relative to
+ Seam ink penalty 4.0
+                                strongly                        other costs. The path may make longer detours.
+
+                                Keep boundaries near the        Increasing it resists detours. Reducing it allows low-ink routes
+ Seam midpoint weight 0.012
+                                middle                          farther from the midpoint.
+
+                                                                Increasing it penalises vertical movement more. Reducing it permits
+ Seam movement penalty 0.02     Make the boundary smoother
+                                                                locally jagged routes.
+
+                                                                Increasing it permits steeper row changes between columns.
+                                Bend around a narrow tall
+ Caller seam step allowance 7                                   Reducing it limits how quickly the seam can react. The called
+                                stroke
+                                                                function's default is not necessarily the active caller value.
+
+                                Stop cuts threading through     Larger closing seals more gaps but can join neighbouring structures.
+ Closing radius near 0.07P
+                                tiny stroke gaps                Smaller closing preserves narrow passages.
+
+                                                                Raising it recognises fewer overlaps as substantial. Lowering it lets
+ Ownership substantial          Why was a fragment assigned
+                                                                smaller overlaps affect reference ownership. This is not simply a
+ overlap fraction 0.15          to this line
+                                                                more-correction slider.
+
+                                Keep short lines or             Lowering it retains smaller candidates and more artefacts. Raising it
+ Minimum crop ink
+                                punctuation                     can discard genuine short lines.
+
+                                                                Lowering limits makes rejection more aggressive. Raising them
+ Solid crop limits 15 percent   Why was a dark block
+                                                                retains denser crops. Both conditions must pass; an all-rejected
+ and three times median         rejected
+                                                                fallback returns the original candidates.
+
+
+Equal line counts do not establish correct ink ownership. A change can recover a missing line while corrupting
+another. Inspect the content of each crop and retain failed cases when interpreting recognition. Sources S7, S8 and
+S9 identify the implementation.
+
+
+Machine placement and physical execution
+These controls act at different points from synthesis. Distinguish a generated path, its final machine placement, a
+preview image and the physical ink. A new generated job is needed for settings stored in G-code; changing a
+constant does not rewrite a saved job.
+
+
+                                                                                                                  Handwriting Robot | 6
+ Control                     Evaluator question              Expected effect and qualifications
+
+                             Draw the same path more         Changes pen-down command feed. Digital geometry should remain
+ drawFeedMmMin
+                             slowly                          the same; physical time, ink deposition and tracking can change.
+
+                             Spend less time between         Changes pen-up feed. It should preserve intended drawn geometry,
+ travelFeedMmMin
+                             strokes                         but carriage dynamics still matter.
+
+                                                             Shorter dwell reduces waiting and can produce weak or missing
+ penDownDwellMs              Start before the pen settles
+                                                             stroke starts. It does not directly command contact pressure.
+
+                                                             Shorter dwell reduces waiting but can produce travel marks if
+ penUpDwellMs                Travel sooner after lifting
+                                                             clearance has not been achieved.
+
+                                                             Increasing it keeps the pen down over more short endpoint gaps,
+ joinStrokesMm = 0.6         Avoid unnecessary pen lifts     reducing toggles and adding connectors. This is separate from
+                                                             synthesis connectedness.
+
+                             Close an almost complete        Increasing it closes more near-loops. Excessive values can add
+ closeRingMm = 0.6
+                             loop                            unwanted closing strokes.
+
+                                                             Increasing it removes more short moves through decimation and
+                             Reduce tiny movement
+ minSegmentMm = 0.12                                         can lose detail. It is not the extraction-stage Douglas Peucker
+                             commands
+                                                             tolerance.
+
+                                                             Can reorder or reverse strokes while retaining much of the visible
+ Stroke order optimisation   Reduce pen-up travel            geometry. It changes execution order and potentially joins and
+                                                             physical ink effects.
+
+ pageMarginXmm and           Move writing away from an       Changes placement and usable space. A narrower usable width can
+ pageMarginYmm               edge                            also change wrapping.
+
+                             Put the next result below the   Moves the job vertically. It is a placement change rather than a
+ line or lineOffsetMm
+                             previous one                    writer-style change.
+
+ lineHeightMm and                                            Changes ruling-based sizing. Line height can affect both letter size
+                             Fit a different paper ruling
+ rulingXhFrac                                                and placement.
+
+                             Compare natural clearance       Changes line placement. Tighter ruling can bring adjacent ascenders
+ ignoreRuling
+                             with ruled spacing              and descenders together.
+
+                             What happens when text          Automatic fitting can shrink the output and mask an earlier size
+ Bounds fitting behaviour
+                             does not fit                    increase. Inspect the reported placement and scale.
+
+                             Why run the cam after the       Alters extra motor run after confirmed pen-up. It is distinct from the
+ PEN_UP_OVERRUN_S
+                             switch changes                  generated G-code settling dwell.
+
+
+The server already accepts several request settings, including feed rates, dwells, line placement, ruling behaviour
+and trial count. Other controls require changing a configuration field or active call site. A command feed is not a
+guarantee of exact measured speed; software pulse generation and hardware behaviour still affect execution.
+Sources S10 and S11 locate this path.
+
+
+Profile extraction controls that require regeneration
+These change reproduction only after rebuilding and reloading the affected profile. They do not require neural-
+network training, but regeneration may be too slow for a short comparison. Editing these constants while continuing
+to use an existing profile will usually demonstrate nothing.
+
+
+
+                                                                                                               Handwriting Robot | 7
+ Extraction control                         Expected effect after regeneration
+
+ SimplifyPolyline tolerance 0.6 source      Larger tolerance retains fewer vertices and can remove fine curvature. Smaller tolerance
+ pixels                                     retains more raster detail and noise.
+
+                                            Larger angles permit sharper chain reconnections. Smaller angles leave more separate
+ Junction continuation angle 75 degrees
+                                            strokes.
+
+                                            Changes estimated baseline and x-height, affecting many downstream normalised
+ Body band threshold 45 percent
+                                            measurements.
+
+ Cut cost height weight 1.15                Increasing it favours cuts through lower connectors more strongly.
+
+                                            Increasing it prevents narrow cells but can force boundaries away from the best local
+ Minimum cell width 0.08 times x-height
+                                            gap.
+
+                                            Larger limits admit broad valid forms and more multi-letter bad cuts. Smaller limits can
+ Glyph width limits 2.1 and 2.9 x-heights
+                                            reject genuine wide glyphs. Both numbers are width limits.
+
+                                            Larger pools preserve more variety and potentially poor variants. Smaller pools increase
+ MAX_VARIANTS_PER_CHAR
+                                            repetition.
+
+ Prior and consensus filtering strength     Stricter filtering can improve consistency while discarding valid personal variation.
+
+ Smoothing step and passes                  More smoothing can remove jitter and flatten distinctive corners or small features.
+
+
+Use source S12 for the extraction path. Changing extraction also changes the measurements feeding later heuristics,
+so existing connectedness or anchoring thresholds may no longer have the same empirical meaning.
+
+
+Settings that are not useful ordinary live controls
+Training learning rate, batch size, dropout probability, epochs and optimiser do not change ordinary inference from
+fixed saved weights. A change to a training constant is not a live classification comparison.
+CNN channel counts, LSTM hidden size and alphabet order are tied to checkpoint shapes and label semantics. They
+are not compatible ordinary tuning parameters. Input height and width alter preparation, but also change the input
+distribution and frame geometry; they are poor first choices for an interpretable live adjustment.
+The inspected GantryConfig declares accelMmS2, but the inspected motion path does not consume that field. Do
+not promise an acceleration demonstration by changing it alone. SQUARENESS_ERROR_DEG is likewise declared
+without being applied as a motion correction.
+Changing letterAdvance alone may have little effect on normal stored glyphs because they use their own width, lead
+and advance through _Advance. The summary table can matter more for fallback cases.
+Render pen width changes a raster preview or judging input. It does not change the physical nib width or contact
+force. Steps per millimetre, microstepping and measured switch travel encode calibration or hardware
+configuration; arbitrary edits can change scale without constituting a valid calibration.
+
+
+Reloads caches and later stages
+The server loads PROFILES, the text model and writer models into memory. Editing JSON or a checkpoint path on
+disk does not necessarily update those objects. Know whether the active code path needs a reload, restart, cache
+invalidation or new generated job.
+
+ Dependency                       What can go wrong             What to establish before interpreting a comparison
+
+
+
+
+                                                                                                                   Handwriting Robot | 8
+ Dependency                    What can go wrong               What to establish before interpreting a comparison
+
+                               A JSON edit has no immediate
+ PROFILES in server memory                                     The active in-memory profile is the intended temporary version.
+                               effect
+
+                               A checkpoint filename
+                                                               The actual model object and its class mapping have been replaced
+ Loaded model objects          changes while the old weights
+                                                               consistently.
+                               remain loaded
+
+                               An edited profile reuses an     The cache key uses author and rendering scale, not every profile
+ _STYLE_CAL cache
+                               older correction                value. Recompute the affected correction where required.
+
+                               New spacing limits or glyph
+ Profile _gapRange cache                                       The cached gap range has been recalculated for the comparison.
+                               metadata appear ineffective
+
+                               Changing a module variable
+                                                               The active call passes the intended value, or the function has been
+ Function default arguments    does not change a bound
+                                                               redefined through an appropriate reload.
+                               default
+
+                               New settings do not affect a
+ Existing G-code job                                           A new job was generated with the changed settings.
+                               saved job
+
+                               Automatic selection
+                                                               The direct comparison uses one candidate and repair disabled
+ Candidate search and repair   compensates for a deliberate
+                                                               before full-system search is restored.
+                               change
+
+ Shared pseudorandom           A branch change alters          The seed is fixed, while recognising that this does not guarantee
+ generator                     subsequent random choices       every later glyph choice remains identical.
+
+                               An explicit size or pitch       Final machine placement and scale are inspected as well as synthesis
+ Ruling and bounds fitting
+                               change is rescaled later        output.
+
+
+For direct explanation, start with one candidate, repair disabled and a fixed seed. Then restore the automatic search
+to show how the complete system responds. A clear result includes both the local effect and any compensating
+downstream effect. Sources S2, S3, S4 and S13 locate these dependencies.
+
+
+Questions to answer for every requested change
+13. Where in the pipeline does this value act, and what are its units?
+14. Is it an existing request field, a call argument, a constant, a small logic edit or a profile-regeneration setting?
+15. What should increase, decrease or remain unchanged?
+16. Which guard, cap, cache or later stage can override the change?
+17. What intermediate image, path, crop, label or timing would make the effect visible?
+18. Does the comparison keep the model, input, seed and unrelated settings consistent?
+19. Does a higher internal score represent independent evidence of a better physical result?
+20. What observation would show that the initial prediction was wrong?
+21. How is the original baseline restored?
+An unchanged final output can be informative: it may reveal a disabled branch, cached value, eligibility gate,
+quantised kernel, inactive configuration field or downstream compensation. Explain that mechanism rather than
+repeatedly changing coefficients without checking the active path.
+
+
+Code reference index
+Paths are relative to the Handwriting Robot repository root. Line numbers refer to the inspected code and can move
+after edits. These references support the implementation-specific controls; the expected effects are explanations of
+that code rather than a record of new demo tests.
+
+
+                                                                                                                Handwriting Robot | 9
+S1 Software/CleanPipeline3/synthesise.py line 916 SynthesizeText, placement, connectedness gates, variation and layout.
+S2 Software/CleanPipeline3/synthesise.py line 707 USE_STYLE_CALIBRATION, _STYLE_CAL and StyleCalibration.
+S3 Software/CleanPipeline3/synthesise.py line 1324 SynthesizeJointBestOf and accepted repair.
+S4 Software/CleanPipeline3/web/server.py line 178 Loaded models, page writer settings and profile loading near line 234.
+S5 Software/CleanPipeline3/web/server.py line 420 NameWriter and ink-weighted page probabilities.
+S6 Software/CleanPipeline3/recognise.py line 283 StrokeNormalize; ClassifyImage near line 525.
+S7 Software/CleanPipeline3/segment.py line 587 InkMask and background ratio; Deskew near line 778.
+S8 Software/CleanPipeline3/segment.py line 892 LineCentres, valley merging and SeamCuts.
+S9 Software/CleanPipeline3/segment.py line 1347 DropSolidCrops; SegmentLines near line 1368.
+S10 Software/CleanPipeline3/web/server.py line 695 ApiGenerate, request settings, sizing and job generation.
+S11 Software/CleanPipeline3/reproduce.py line 499 WriteGcode, loop closure and endpoint joins; configuration near line 37.
+S12 Software/CleanPipeline3/style.py line 476 ExtractLineGlyphs; SimplifyPolyline near line 393 and profile construction near line
+1072.
+S13 Software/CleanPipeline3/synthesise.py line 535 _GapRange and profile spacing cache.
+
+The expanded code theory manual provides the longer derivations and coefficient evidence discussion. Its source is
+Software/CleanPipeline2/testing/results/CodeTheory/main.pdf, with a delivery copy in
+output/Code_Theory_Expanded_2026-11-10.
+
+
+
+
+                                                                                                                 Handwriting Robot | 10
+
