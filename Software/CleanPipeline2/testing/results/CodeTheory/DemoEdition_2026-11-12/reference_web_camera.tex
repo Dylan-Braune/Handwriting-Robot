@@ -1,0 +1,247 @@
+\chapter{Camera acquisition}\label{module:web-camera}
+\Q{Evidence}{Current implementation boundary}
+\path{Software/DemoCode/web/camera.py}. Exact file hashes are in the accompanying source manifest. Names, declarations and source locations below come from the captured source, not a runtime import.
+\Q{Purpose}{Input-to-output reading flow}
+Acquire a still image or preview frame under a shared camera lock, then pass captured pixels to the page-processing stage. Preview lifecycle and still capture share the device.
+
+
+\Q{Evidence}{Selected current module settings}
+These are declarations or expressions, not recovered environment values. Source comments do not establish a measured optimum. Larger glyph coordinate tables are designed data in the bundled source.
+\begin{lstlisting}[style=plain]
+SCRIPT_DIR = Path(__file__).resolve().parent
+CAPTURE_DIR = paths.Cache / 'CameraCaptures'
+CAMERA_INDEX = int(os.environ.get('CAMERA_INDEX', '1'))
+WARMUP_FRAMES = 5
+\end{lstlisting}
+\section*{Stage: Camera capture and image orientation}
+\section{Method background: Camera capture and image orientation}\label{method:camera}
+\Q{Purpose}{The role in this system}
+Acquire a frame and put its pixel orientation in agreement with the browser and segmenter.
+
+
+\Q{Justification}{The reason for this construction}
+An existing preview handle avoids competing camera opens; warm-up frames allow acquisition to settle. EXIF transpose applies metadata to pixels rather than assuming the viewer appearance equals array orientation.
+
+
+\Q{Alternatives}{What changes if another method is used}
+Direct V4L2 access offers lower-level controls; a CSI camera uses a different acquisition stack. Reading one immediate frame may capture an unsettled exposure/focus state.
+
+
+\Q{Library}{Implementation speed and accuracy}
+OpenCV VideoCapture and Pillow ImageOps.exif\_transpose are already used. Their presence concerns acquisition/decoding and orientation, not a claim that OpenCV implements the custom segmentation. Sensor claims need actual negotiated settings. \cite{opencvcamera,pillowops}.
+
+
+\section{\_GetLock}\label{fn:web-camera:-GetLock}
+\begin{lstlisting}[style=sig]
+def _GetLock()
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/camera.py} line 39. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:camera}.
+
+
+\Q{Purpose}{What this contributes}
+Acquire a frame and put its pixel orientation in agreement with the browser and segmenter.
+
+
+\Q{Method}{Current implementation}
+Acquire a frame and put its pixel orientation in agreement with the browser and segmenter. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def _GetLock():
+    global _previewLock
+    if _previewLock is None:
+        import threading
+        _previewLock = threading.Lock()
+    return _previewLock
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+An existing preview handle avoids competing camera opens; warm-up frames allow acquisition to settle. EXIF transpose applies metadata to pixels rather than assuming the viewer appearance equals array orientation. \cite{opencvcamera,pillowops}.
+
+
+\section{PreviewStart}\label{fn:web-camera:PreviewStart}
+\begin{lstlisting}[style=sig]
+def PreviewStart(index=None)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/camera.py} line 52. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:camera}.
+
+
+\Q{Purpose}{What this contributes}
+Opens (and keeps open) the camera for live preview streaming. Safe to call repeatedly -- a no-op if already open. Kept separate from CaptureImage() so a short-lived capture doesn't leave the sensor powered on between uses -- the camera only runs while someone's actually watching the live feed to frame the shot and let autofocus settle.
+
+
+\Q{Method}{Current implementation}
+Acquire a frame and put its pixel orientation in agreement with the browser and segmenter. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def PreviewStart(index=None):
+    import cv2
+    global _previewCap
+    with _GetLock():
+        if _previewCap is not None:
+            return
+        idx = CAMERA_INDEX if index is None else index
+        cap = cv2.VideoCapture(idx)
+        if not cap.isOpened():
+            cap.release()
+            raise RuntimeError(f"Could not open camera at index {idx} for preview.")
+        _previewCap = cap
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+An existing preview handle avoids competing camera opens; warm-up frames allow acquisition to settle. EXIF transpose applies metadata to pixels rather than assuming the viewer appearance equals array orientation. \cite{opencvcamera,pillowops}.
+
+
+\section{PreviewStop}\label{fn:web-camera:PreviewStop}
+\begin{lstlisting}[style=sig]
+def PreviewStop()
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/camera.py} line 68. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:camera}.
+
+
+\Q{Purpose}{What this contributes}
+Releases the preview camera handle. Always call this once you're done framing the shot -- see the module comment's note on heat.
+
+
+\Q{Method}{Current implementation}
+Acquire a frame and put its pixel orientation in agreement with the browser and segmenter. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def PreviewStop():
+    global _previewCap
+    with _GetLock():
+        if _previewCap is not None:
+            _previewCap.release()
+            _previewCap = None
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+An existing preview handle avoids competing camera opens; warm-up frames allow acquisition to settle. EXIF transpose applies metadata to pixels rather than assuming the viewer appearance equals array orientation. \cite{opencvcamera,pillowops}.
+
+
+\section{PreviewActive}\label{fn:web-camera:PreviewActive}
+\begin{lstlisting}[style=sig]
+def PreviewActive()
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/camera.py} line 76. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:camera}.
+
+
+\Q{Purpose}{What this contributes}
+Acquire a frame and put its pixel orientation in agreement with the browser and segmenter.
+
+
+\Q{Method}{Current implementation}
+Acquire a frame and put its pixel orientation in agreement with the browser and segmenter. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def PreviewActive():
+    return _previewCap is not None
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+An existing preview handle avoids competing camera opens; warm-up frames allow acquisition to settle. EXIF transpose applies metadata to pixels rather than assuming the viewer appearance equals array orientation. \cite{opencvcamera,pillowops}.
+
+
+\section{PreviewFrameJpeg}\label{fn:web-camera:PreviewFrameJpeg}
+\begin{lstlisting}[style=sig]
+def PreviewFrameJpeg()
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/camera.py} line 83. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:camera}.
+
+
+\Q{Purpose}{What this contributes}
+Grabs one frame from the already-open preview camera and returns JPEG-encoded bytes, for an MJPEG-style streaming endpoint. Raises RuntimeError if PreviewStart() hasn't been called.
+
+
+\Q{Method}{Current implementation}
+Acquire a frame and put its pixel orientation in agreement with the browser and segmenter. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def PreviewFrameJpeg():
+    import cv2
+    with _GetLock():
+        if _previewCap is None:
+            raise RuntimeError("Preview not started -- call preview_start() first.")
+        ok,frame = _previewCap.read()
+    if not ok:
+        raise RuntimeError("Failed to read a preview frame.")
+    ok,buf = cv2.imencode(".jpg",frame)
+    if not ok:
+        raise RuntimeError("Failed to JPEG-encode preview frame.")
+    return buf.tobytes()
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+An existing preview handle avoids competing camera opens; warm-up frames allow acquisition to settle. EXIF transpose applies metadata to pixels rather than assuming the viewer appearance equals array orientation. \cite{opencvcamera,pillowops}.
+
+
+\section{CaptureImage}\label{fn:web-camera:CaptureImage}
+\begin{lstlisting}[style=sig]
+def CaptureImage(timeout=10, index=None)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/camera.py} line 105. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:camera}.
+
+
+\Q{Purpose}{What this contributes}
+Captures one still image, returns its Path. Raises RuntimeError if no camera could be opened/read -- callers (Server.py) should catch this and report it as a clean error, not a crash. if a live preview is currently open (PreviewStart()), this grabs the frame from THAT handle instead of opening a second one -- most webcams only allow one process/handle to hold the device at a time, and this is also the intended flow: watch the live preview until autofocus settles on the page, then capture "the good image" from what's already showing.
+
+
+\Q{Method}{Current implementation}
+Acquire a frame and put its pixel orientation in agreement with the browser and segmenter. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def CaptureImage(timeout=10,index=None):
+    import cv2
+
+    with _GetLock():
+        if _previewCap is not None:
+            ok,frame = _previewCap.read()
+            if not ok:
+                raise RuntimeError("Failed to read a frame from the open preview.")
+            outPath = CAPTURE_DIR/f"capture_{int(time.time()*1000)}.jpg"
+            cv2.imwrite(str(outPath),frame)
+            return outPath
+
+    idx = CAMERA_INDEX if index is None else index
+    cap = cv2.VideoCapture(idx)
+    if not cap.isOpened():
+        cap.release()
+        raise RuntimeError(
+            f"Could not open camera at index {idx}. Is it plugged in, and "
+            "not already in use by another program (close any other app "
+            "using the webcam, e.g. a video call)?"
+        )
+
+    deadline = time.time()+timeout
+    frame = None
+    try:
+        for _ in range(WARMUP_FRAMES):
+            if time.time()>deadline:
+                break
+            ok,frame = cap.read()
+            if not ok:
+                frame = None
+    finally:
+        cap.release()
+
+    if frame is None:
+        raise RuntimeError(
+            f"Camera at index {idx} opened but produced no readable frame "
+            "within the timeout."
+        )
+
+    outPath = CAPTURE_DIR/f"capture_{int(time.time()*1000)}.jpg"
+    cv2.imwrite(str(outPath),frame)
+    if not outPath.exists():
+        raise RuntimeError(f"cv2.imwrite reported no error but wrote no file: {outPath}")
+    return outPath
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+An existing preview handle avoids competing camera opens; warm-up frames allow acquisition to settle. EXIF transpose applies metadata to pixels rather than assuming the viewer appearance equals array orientation. \cite{opencvcamera,pillowops}.
+

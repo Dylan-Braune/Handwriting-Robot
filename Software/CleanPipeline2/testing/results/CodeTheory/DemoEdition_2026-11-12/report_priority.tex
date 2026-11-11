@@ -1,0 +1,407 @@
+\chapter{Start with the report}
+\label{ch:report-first}
+The report is the priority map for this edition. The reference is the unsuffixed
+\path{23539195_BrauneDR_FINALREPORT.pdf} in Downloads (Prism creation date
+3 November 2026, 108 PDF pages). Its 35 numbered equations, named algorithms,
+literature comparisons and appendix calculations are indexed below. The current
+implementation reference is the captured \path{Software/DemoCode} tree. A formula
+describing the report's experiment is not automatically a statement about every
+current request. Historical results remain historical; the deployed ODROID's
+files, environment and model arrays were not inspected or executed.
+
+\Q{Purpose}{Read the report methods before the helper catalogue}
+Read the report equation cards here, the longer explanation at the start of
+each corresponding module chapter, and its method-family comparison in
+Chapter~\ref{ch:methods}. The detailed function sections then connect this theory
+to current names and signatures. Small file/path helpers receive shorter notes.
+Training is included because its losses, gradients and validation appear in the
+report, while being clearly outside the live inference path.
+
+\Q{Evidence}{What a reason and a source establish}
+A published method citation establishes a definition or method origin.
+\textbf{Derived} arithmetic follows from stated assumptions; it does not measure
+those assumptions. \textbf{Implementation evidence} is the captured source.
+\textbf{Reported observation} is a supplied record that was not repeated here.
+\textbf{Design rationale} below explains an engineering trade-off; unless a
+record is identified it is not an invented account of why a historical choice
+was made. Exact heuristic coefficients have no fabricated literature optimum.
+
+\section{Report equations one through eleven}
+\ReportEq{1}{Belt travel and pitch radius}
+{$\ell_{\rm rev}=N_tp=40\,\mathrm{mm/rev}$ and
+$r=\ell_{\rm rev}/(2\pi)=6.366\,\mathrm{mm}$.}
+{Translate motor rotation to belt motion and establish the moment arm for torque.
+The current configuration uses 20 teeth, 2 mm pitch and 40 mm per revolution.
+The pitch radius is not necessarily the pulley outer radius.}
+{GantryConfig and its steps-per-mm properties. Geometry derived from the stated
+transmission; motor/driver relations are conditional on actual hardware.}
+{a4988datasheet,code2026}
+\ReportEq{2}{Linear speed to motor speed}
+{$n=v/\ell_{\rm rev}$, so $4000/40=100$ revolutions per minute.}
+{Compare a proposed traverse rate with a speed-dependent motor curve. Millimetres
+per minute divided by millimetres per revolution yields revolutions per minute.
+It is a design calculation, not a measured maximum feed.}
+{Mechanical sizing and \_GcodeLinearMove feed interpretation.}
+{code2026,openstaxrotation}
+\ReportEq{3}{Torque curve interpolation}
+{$T(n)=T_1+(n-n_1)(T_2-T_1)/(n_2-n_1)$.}
+{Estimate between two verified curve samples. The report's $(60,7)$ and
+$(120,21)$ RPM/N\,cm points give 16.33 N\,cm at 100 RPM, but its curve citation
+is literally left as SOURCE. The arithmetic is reproducible; the points and
+their operating conditions remain unauthenticated.}
+{Report hardware justification, not a torque lookup in the current controller.}
+{finalreport2026,openstaxrotation}
+\ReportEq{4}{Steady opposing load}
+{$T=r\mu mg=0.0002373\,\mathrm{N\,m}=0.02373\,\mathrm{N\,cm}$ under the report inputs.}
+{Estimate one steady-friction term. The assumed $\mu=0.004$ is not an observed
+assembly coefficient. Acceleration, pen drag, belt forces and rotary inertia
+are omitted, so this cannot establish the available dynamic margin.}
+{Report mechanical sizing; the fuller load discussion is in the motion chapter.}
+{openstaxrotation,finalreport2026}
+\ReportEq{5}{Command lattice and rounding}
+{$K=200(16)/40=80\,\mathrm{steps/mm}$ and $\Delta=1/K=0.0125$ mm.}
+{Relate integer pulse targets to millimetres. Nearest rounding gives at most
+$\Delta/2$ per axis and $\sqrt2\Delta/2$ endpoint distance for equal axes.
+These are quantisation bounds, not loaded microstep accuracy or measured
+reproduction precision.}
+{GantryConfig, Calibrate and \_GcodeLinearMove.}
+{a4988datasheet,code2026}
+\ReportEq{6}{Driver current limit}
+{$I_{\rm trip,max}=V_{\rm REF}/(8R_S)$; with $R_S=0.1\,\Omega$ and 1.68 A,
+$V_{\rm REF}=1.344$ V.}
+{Set a conditional electrical current limit. Eight is the driver's internal
+sense scaling, not the microstep setting. Installed sense resistance, actual
+reference voltage and thermal conditions must be established separately.}
+{Hardware setting, not a software-assigned phase current.}
+{a4988datasheet,pololu4988}
+\ReportEq{7}{Minimum base resistance}
+{$R_{B,\min}=(V_{\rm GPIO}-V_{BE})/I_{\rm GPIO,max}=650\,\Omega$ for the stated assumptions.}
+{Limit GPIO base current. This is a minimum resistance, not a maximum. The
+report's 4 mA GPIO capability lacks a resolved specific source, and 0.7 V is
+an approximation; neither is certified by the arithmetic.}
+{Pen transistor circuit and PEN\_MOTOR\_PIN output.}
+{rohmnpn,bc337data,finalreport2026}
+\ReportEq{8}{Base current and saturation check}
+{$I_B=(3.3-0.7)/1000=2.6$ mA.}
+{Check the selected resistor against the stated GPIO budget and transistor
+drive. A forced gain of ten corresponds to 26 mA, below the listed 30 mA
+motor rated current and far below its 230 mA stall current. Active-region gain
+does not prove saturation.}
+{Pen switching, not a pressure controller.}
+{rohmnpn,bc337data,finalreport2026}
+\ReportEq{9}{Switch pull down current}
+{$I=V/R=3.3/10000=0.33$ mA.}
+{Explain the closed-switch load and why an open logic node needs a defined
+level. Leakage and noise sensitivity constrain resistance too; the result
+does not prove that 10 k$\Omega$ is optimal.}
+{Endstop and pen feedback wiring.}
+{kernelgpio,code2026}
+\ReportEq{10}{Measured axis scale}
+{$K_{\rm axis}=N/L$ and $x=n/K-5$ mm in the clearance-offset frame.}
+{Use counted travel between contacts and an external length reference to
+establish position. The 5 mm offset reserves switch clearance; it is not a
+measurement of switch repeatability.}
+{Calibrate and \_GcodeLinearMove use per-axis calibrated factors.}
+{code2026,bresenham1965}
+\ReportEq{11}{Bresenham minor step count}
+{$m_k=\left\lceil[k a_y-\lfloor a_x/2\rfloor]/a_x\right\rceil$ for the stated
+major-axis accumulator convention.}
+{Explain how integer error updates distribute minor-axis pulses along a line.
+Initial error and the strict negative test determine ties. This is spatial
+interpolation; sequential pulses and sleeps affect timing separately.}
+{BresenhamMove.}
+{bresenham1965,code2026}
+
+\section{Report equations twelve through twenty four}
+\ReportEq{12}{Integral rectangle sum}
+{$Q=S(y_1,x_1)-S(y_0,x_1)-S(y_1,x_0)+S(y_0,x_0)$.}
+{Obtain a window total from four prefix-sum entries using inclusion and
+exclusion. The full table still costs image-sized work; constant window work
+does not mean constant full-image processing time.}
+{Integral, BoxSum and BoxMean.}
+{crow1984}
+\ReportEq{13}{Background ratio and ink mask}
+{$R=G/\max(B_r,1)$ and $M=\mathbf1[R<T]$.}
+{Reduce multiplicative illumination changes before thresholding. The floor
+prevents zero division; glare, clipping and ink-filled windows can still
+invalidate the paper-background approximation.}
+{InkMask and SegmentLines crop normalisation.}
+{code2026,otsu1979}
+\ReportEq{14}{Otsu threshold criterion}
+{$T=\arg\max_t\omega_0(t)\omega_1(t)[\mu_0(t)-\mu_1(t)]^2$.}
+{Separate the histogram into two maximally distinct classes. Histogram
+optimality is not semantic optimality for true ink, and empty classes require
+guards. Bins, range, tie handling and comparison polarity matter.}
+{Otsu, InkMask and BinarizeLine.}
+{otsu1979,opencvthreshold}
+\ReportEq{15}{Deskew concentration}
+{$\theta^*=\arg\max_\theta\sum_y p_\theta(y)^2$ with
+$p_\theta(y)=\sum_x M_\theta(y,x)$.}
+{Prefer rotations concentrating horizontal text into fewer rows. The selected
+angle grid is a project search budget, not a general guarantee on curved or
+perspective-distorted writing.}
+{SkewScore and Deskew; do not confuse with slant estimation.}
+{postl1986}
+\ReportEq{16}{Local seam cost}
+{$C(y,x)=4M_c(y,x)+0.012[(y-y_m)/h_g]^2$.}
+{Avoid closed-mask ink while weakly attracting the boundary toward the middle
+of its corridor. The dimensionless weights encode project priorities; the
+literature does not establish these exact coefficients.}
+{SeamCuts.}
+{arvanitopoulos2014,code2026}
+\ReportEq{17}{Seam recurrence}
+{$D(y,x)=C(y,x)+\min_d[D(y+d,x-1)+0.02|d|]$.}
+{Compare complete legal prefixes rather than greedily selecting one local
+pixel. Backtracking recovers the route; the optimum is limited to the chosen
+corridor and transitions. SeamCuts explicitly calls step 7 despite the
+LeastCostSeam default 3.}
+{LeastCostSeam and SeamCuts.}
+{bellman1954,code2026}
+\ReportEq{18}{Fixed canvas scale}
+{$a=\min(64/h,640/w)$, with resized dimensions near $(ah,aw)$.}
+{Preserve aspect ratio while fitting the checkpoint input. Long lines can
+become short vertically when width determines scale. Padding is vertically
+centred and left aligned.}
+{FitFixedCanvas, ResizeLineImageFixed and FrameXToPixel.}
+{wolberg1990,code2026}
+\ReportEq{19}{Convolution response}
+{$Z_{o,y,x}=b_o+\sum_{c,i,j}W_{o,c,i,j}X_{c,y+i,x+j}$ on the appropriately padded array.}
+{Extract local learned stroke patterns shared across positions. This is
+cross-correlation in common framework terminology. A feature channel is not
+automatically a labelled character detector.}
+{Conv2d and the train-mode convolution pair.}
+{shi2017,torchconv}
+\ReportEq{20}{Batch normalisation}
+{$\hat z=(z-\mu)/\sqrt{v+\epsilon}$ and $y=\gamma\hat z+\beta$.}
+{Control activation scale while allowing a learned affine response. Training
+uses current batch statistics; inference uses saved running statistics.
+Changing that mode changes the operation.}
+{BatchNorm2d and BatchNorm2dForwardTrain/Backward.}
+{ioffe2015,torchbn}
+\ReportEq{21}{LSTM cell and hidden state}
+{$c_t=f_t\odot c_{t-1}+i_t\odot g_t$ and $h_t=o_t\odot\tanh c_t$.}
+{Carry gated memory along feature columns and expose a bounded hidden output.
+The gates and candidate are computed from current features and previous
+hidden state; weights are shared, not passed as the state.}
+{LstmForward and LstmBackward.}
+{hochreiter1997,torchlstm}
+\ReportEq{22}{CTC sequence loss}
+{$L=-\log\sum_{\pi:B(\pi)=\ell}\prod_t p_t(\pi_t)$.}
+{Learn complete transcriptions without character boxes by summing all valid
+alignment paths. Collapse merges adjacent repeats before removing blank;
+literal spaces remain ordinary labels.}
+{CtcLoss; DecodeCtc solves a cheaper best-path inference problem.}
+{graves2006,ctcdistill}
+\ReportEq{23}{CTC occupancy and derivative}
+{$q_{t,k}=\sum_{s:\ell'_s=k}\exp(\alpha_{t,s}+\beta_{t,s}-\log Z)$ and
+$\partial L/\partial z_{t,k}=p_t(k)-q_{t,k}$.}
+{Propagate the sequence loss through logits. Alpha includes the current
+emission and beta excludes it in this convention, preventing double counting.
+State indices differ from class indices.}
+{CtcLoss; batch averaging and library reduction must also match.}
+{graves2006,torchctc}
+\ReportEq{24}{Controlled stroke width}
+{$I_s=255[1-\delta_k(\mathrm{thin}(M))]$,
+$w=\mathrm{clip}(\mathrm{round}(\rho h_x),2,9)$,
+$k=2\lfloor w/2\rfloor+1$.}
+{Reduce pen-width cues before shape-based identification. The effective odd
+kernel quantises the requested relative width; thinning can change geometry.
+Current PenWidthXh is 0.17. Historical sweep selection is not an independent
+qualification of this source snapshot.}
+{StrokeNormalize and ClassifyImage.}
+{zhangsuen1984,finalreport2026,code2026}
+
+\section{Report equations twenty five through thirty five}
+\ReportEq{25}{Forced transcript alignment}
+{$V(t,s)=\log p_t(\ell'_s)+\max_{r\in\mathcal P(s)}V(t-1,r)$.}
+{Recover a high-scoring legal path consistent with the known label before
+extracting characters. Replacing path summation by maximisation gives a hard
+alignment, not proof of correct geometric boundaries.}
+{CtcForcedAlign and ExtractLineGlyphs.}
+{graves2006,viterbi1967}
+\ReportEq{26}{Character cut cost}
+{$C_x=p_x/q_{0.60}(p_j:p_j>0)+1.15\,\mathrm{clip}[(b-y_{\rm top}(x))/h_x,0,3]$.}
+{Prefer thin low connectors over stems near the recogniser's suggested cut.
+Blank columns have zero cost. Ordered boundaries and minimum cell width
+prevent neighbouring cuts collapsing. All exact weights/percentiles are
+project heuristics, not derived from CTC.}
+{ExtractLineGlyphs.}
+{code2026}
+\ReportEq{27}{Stored glyph coordinates}
+{$v=(b-y)/h_x$, $u_0=(x-x_L)/h_x-v\tan\phi$, and $u=u_0-\delta$.}
+{Flip image-down to glyph-up, remove source scale and slant, and store trim
+as lead spacing. Shear is not rotation. The inverse placement must restore
+the same conventions.}
+{ExtractLineGlyphs and SynthesizeText.}
+{wolberg1990,vinciarelli2001,code2026}
+\ReportEq{28}{Measured connectedness}
+{$c=N_{\rm cross}/\max(1,N_{\rm adj})$.}
+{Summarise eligible in-word boundaries crossed by a traced centreline. It is
+not measured original pen-lift probability: touching and bad cuts can inflate
+it. Current synthesis suppresses joins below 0.45 and chooses cursive fallback
+style at 0.5.}
+{BuildAuthorProfile, \_CoreGlyph and SynthesizeText.}
+{code2026,bulacu2007}
+\ReportEq{29}{New glyph placement}
+{$x=p_x+H(l+u+sv)$ and $y=p_y+H(v+d)$.}
+{Restore writer shear, physical size, lead and baseline drift at the new
+text location. H and origins have millimetre units; stored glyph coordinates
+are dimensionless. Additional jitter/collision handling changes placement.}
+{SynthesizeText.}
+{code2026,wolberg1990}
+\ReportEq{30}{Automatic anchoring strength}
+{$\lambda=\mathrm{clip}[(d-0.24)/(0.32-0.24),0,1]$.}
+{Increase fallback preference when median stored prior distance is poor.
+The endpoints are project settings, not universal perceptual thresholds.
+A stored explicit legibilityLambda can override automatic calculation.}
+{AutoLegibility, \_SwapProb and SynthesizeJointBestOf.}
+{code2026}
+\ReportEq{31}{Candidate objective}
+{$A=\max(0,1-d_{\rm edit}/|t|)$ and $J=2AP/(A+P)$ for $A+P>0$.}
+{Prefer candidates with both text recovery and requested-writer probability.
+The harmonic mean penalises a weak component, but P is a model posterior
+and A is an edit score, so J is not a joint likelihood or independent physical
+style judgement.}
+{SynthesizeJointBestOf and CharAcc.}
+{code2026,levenshtein1966}
+\ReportEq{32}{Machine placement}
+{$x_m=o_x+m_x+a(x-x_0)$,
+$y_m=o_y-m_y-d_y-a(y_1-y)+\Delta y$.}
+{Place the trajectory within margins and fit to bounds. The current
+ToMachine retains scaled synthesis pitch and removes measured row-centre
+wander; it has no ignoreRuling choice. Both frames here are y-up.}
+{ToMachine and \_Clamp.}
+{code2026,wolberg1990}
+\ReportEq{33}{Nominal timing budget}
+{$t_{\rm nom}=L_d/v_d+L_u/v_u+N_{\rm toggle}\tau$.}
+{Explain drawing, travel and dwell contributions. Current WriteGcode uses
+feeds in mm/min, multiplies length/feed by 60, and approximates dwell using
+the mean of up/down dwell. Initial/final travel, actual toggles and software
+overhead prevent treating it as a rigorous measured lower bound.}
+{WriteGcode and timing.Run; keep estimates distinct from completed-job logs.}
+{code2026,pythontime}
+\ReportEq{34}{Pooled character recovery}
+{$A_c=100[1-\sum_i d_i/\sum_i|t_i|]$.}
+{Weight characters rather than equally weighting lines. This differs from
+the clamped per-candidate CharAcc at extreme insertion counts. Case, spaces,
+punctuation and empty-reference handling must remain explicit.}
+{Report evaluation and server scoring.}
+{levenshtein1966,finalreport2026}
+\ReportEq{35}{Geometric agreement and natural baseline}
+{$F=2PR/(P+R)$ and $Q_k=100F_{{\rm robot},k}/F_{{\rm genuine},k}$.}
+{Compare thresholded centreline precision/recall and then contextualise robot
+agreement using genuine writing variation. F is not character accuracy or IoU;
+Q is project-defined and can exceed 100 percent. Mean writer ratios differ
+from a ratio of pooled means.}
+{Historical geometric evaluation, not a loaded classifier confidence.}
+{tanksmetric,finalreport2026}
+
+\section{Other named report methods that must not disappear}
+\Q{Method}{Normalisation and affine terminology}
+Min--max scaling uses $(x-x_{\min})/(x_{\max}-x_{\min})$ to map a range;
+z-score scaling uses $(x-\mu)/\sigma$ to centre and scale a distribution.
+Neither is identical to illumination division, stroke-width normalisation or
+geometric x-height normalisation. Each removes a different nuisance variable.
+The denominator needs a defined constant-image convention. These are direct
+definitions, not evidence that all are active inference stages.
+
+\Q{Alternatives}{LeNet five and residual networks}
+The report mentions LeNet-5 as a historical convolution/pooling example and
+residual networks as a deeper architecture with shortcut paths. A residual
+block computes $y=x+F(x)$ (or a projection when dimensions differ); the extra
+route can help gradient propagation. Neither is the current twelve-convolution,
+two-BiLSTM reader. Changing the backbone would require compatible weights and
+new evaluation; citing a benchmark architecture does not establish better
+accuracy or speed for this photographed dataset~\cite{lenet1998,resnet2016}.
+Its historical radial-basis output compares feature position with learned
+class representatives through a distance-based response; it is not the current
+affine writer head or framewise text softmax. ANN is the broad neural-network
+family, CNN specifies local shared spatial weights, and RNN specifies a state
+carried along a sequence. These names are not separate active modules merely
+because they appear in the literature chapter.
+
+\Q{Alternatives}{Recurrent stroke generation GANwriting and One DM}
+Graves's recurrent synthesis predicts successive online movements; the project
+has offline images with no observed stroke order. GANwriting conditions raster
+generation on content and writer style; its image still needs a pen-path
+conversion for this robot. One-DM iteratively denoises an image and can use one
+style reference at generation, but it was trained on a larger corpus. A small
+reference requirement is not a small training-data requirement. The current
+glyph library avoids training a separate generator and exposes controllable
+geometry, while finite variants approximate contextual cursive poorly. These
+are report-grounded trade-offs, not new head-to-head measurements
+~\cite{gravesgenerate,ganwriting,onedm,haines2016}.
+
+\Q{Method}{Writer texture allographs and ink width}
+Textural edge-direction distributions summarise local stroke orientations;
+allographs are alternative realisations of a character. The explicit glyph
+pool stores allographic variation, while the CNN learns discriminative maps.
+Ink width can carry writer evidence but changes when the robot uses one pen.
+That motivates shape normalisation, without proving all ink information is
+undesirable or every normalised prediction is more accurate
+~\cite{bulacu2007,brink2012}.
+
+\Q{Alternatives}{Mechanisms lifts and control}
+A Cartesian gantry maps orthogonal axes directly; serial arms require coupled
+kinematics and can vary stiffness over the workspace; parallel mechanisms
+trade workspace and coupling differently. The report's one-way geared cam
+replaces a position-commanded servo or third stepper with a switched motor and
+binary raised-state feedback. A4988 current chopping controls winding current;
+it is not the same as the controller's STEP sequence. Open-loop interior motion
+and switch-referenced homing are not continuous position feedback. These
+mechanical trade-offs are discussed here because they determine the meaning of
+the software calculations, not because another mechanism was built or tested.
+
+\Q{Evidence}{Appendix calculations plots and recorded checks}
+The two-crop page vote, finite-difference derivative, patch-storage calculation,
+12 ms switch confirmation, stroke-width sweep, confusion matrices, seam/capture
+counts and training epoch logs are all retained in the verification chapter.
+For a confusion matrix, row normalisation gives prediction fractions conditional
+on actual writer; it is not class precision. Wilson limits describe binomial
+decision counts subject to dependence caveats. A recognition score used to
+select a candidate is not an independent physical test of that candidate.
+Every retained historical number stays attached to its population and source.
+
+\section{Report algorithm and figure reading map}
+\Q{Purpose}{The named procedures and their current homes}
+The pen-toggle procedure is \texttt{SetPen}; debounced switch reads are
+\texttt{TriggeredEndstop}; dynamic axis calibration uses
+\texttt{\_CalibrateAxis} and \texttt{Calibrate}; coordinated integer movement
+is \texttt{BresenhamMove}. The report's line-ownership refinement maps to
+\texttt{AssignOwnership} and its correction helpers. Labelled handwriting to
+a writer profile maps to \texttt{ExtractLineGlyphs},
+\texttt{ExtractAuthorRaw} and \texttt{BuildAuthorProfile}.
+Joint search/accepted repair is \texttt{SynthesizeJointBestOf}. The extended
+training algorithm maps to the train-mode forward/cache/backward functions,
+loss routines, optimiser step, validation and checkpoint logic. These names
+are linked through the function index; unrelated helpers do not outrank them.
+
+\Q{Method}{What each report plot can and cannot show}
+The integral/ratio example demonstrates arithmetic for one pixel, not all
+lighting conditions. A seam/cost overlay shows the route preferred by the
+chosen objective; a labelled crop establishes whether that route preserves
+the intended ink. A convolution feature plot shows activation responses,
+not fixed semantic labels for channels, and independent colour scales cannot
+be compared as absolute strengths. A CTC plot places symbols against feature
+frames, not physical pen time. Forced alignment is conditional on the supplied
+transcript. A Bresenham staircase represents integer commanded positions,
+not an observed vibration trace. Stroke-normalisation panels show mask,
+skeleton and restored width rather than guaranteed shape preservation.
+
+Variant clouds, medoids and prototypes have different provenance: a medoid
+is a real selected sample, whereas a prototype is constructed. Candidate-score
+panels show optimisation against the judging networks. Confusion matrices
+require the actual per-class counts. Word overlays depend on registration,
+normalisation and distance tolerance; they are not automatic proof of
+character correctness. Timing bars require host, stage boundaries and
+completed-job status. Training curves require the selected checkpoint and
+holdout definition. The verification chapter explains the exact reported
+calculations and their qualifications rather than rerunning them.
+
+\Q{Evidence}{System decisions mentioned outside the algorithms}
+The camera, frame/clamps, Cartesian mechanism, geared lift, endstops, transistor
+and power/driver connections influence assumptions in the software and are
+covered in the motion/hardware explanation. Ergonomics, cost, maintainability,
+privacy and environmental discussions are report design context rather than
+additional image-processing functions. They do not create undocumented
+sensor feedback, trained classes or software safety guarantees.

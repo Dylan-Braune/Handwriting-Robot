@@ -1,0 +1,153 @@
+\chapter{The current demo pipeline}
+\label{ch:current}
+\Q{Purpose}{Which implementation this edition describes}
+The documentation snapshot is \path{Software/DemoCode}, captured during this
+revision. \path{START.sh} changes into that directory, sets
+\texttt{OPENBLAS\_NUM\_THREADS=4} and \texttt{OPENBLAS\_CORETYPE=ARMV8},
+sets \texttt{READER\_WEIGHTS=paper\_cnn\_bilstm\_ctc\_joint\_best.npz},
+then starts \path{web/server.py}. The variable named CP3 in that server
+resolves to its own parent, DemoCode; its name does not redirect imports to
+CleanPipeline3. Source hashes and exact signatures are supplied with this
+edition. No robot module was imported or executed for this work.
+
+\Q{Evidence}{Current source versus a running board}
+These are facts about the captured local source, not confirmation of the
+ODROID's environment, files, loaded weights or successful requests. Two files
+were already uncommitted: the server and new lineworkers helper. Those contents
+are included in the documentation snapshot and left untouched. If another
+agent subsequently changes the tree, the hash manifest identifies exactly
+which version was documented. No training, inference, hardware run, deployment,
+commit or report edit is part of this revision.
+
+\section{Read a photographed page}
+\Q{Method}{Acquisition orientation segmentation reading and naming}
+OpenCV obtains camera frames. Pillow opens image files and applies EXIF
+orientation; a configured quarter turn is a camera mounting hint. The
+segmenter's axis score compares empty-row evidence in two orientations.
+\texttt{SegmentLines(page, mergeValley=None)} then estimates illumination,
+deskews, filters structures/components, finds line centres, optimises seams,
+refines ownership and builds full-resolution crops. Its current signature
+does not take a timer; the server times this complete call as one stage.
+
+The reader probes up to three sampled lines in both directions to resolve
+180-degree inversion. The comparison uses mean best-frame log score, not a
+transcript likelihood. Chosen probe outputs are reused; remaining lines are
+eligible for lineworker mapping. If inversion wins, crop rotation and line
+order are changed together. Metadata is reordered to match the returned text.
+
+Each surviving crop is named with the configured writer model. A weighted
+arithmetic average of class vectors supplies the page decision, with weight
+equal to the crop's count of pixels below 128. More dark pixels are treated
+as more evidence; the procedure is not a Bayesian multiplication of
+independent observations. Supplied expected text/author are used for reported
+evaluation, not as substitutes for the network prediction.
+
+\section{Models and defaults that changed}
+\Q{Evidence}{There is one writer checkpoint in this tree}
+The module default reader is
+\path{paper_cnn_bilstm_ctc_scratch_best.npz}; START.sh explicitly overrides
+it with the joint checkpoint. Calling the module directly without that
+override can therefore load a different reader. The writer default is
+\path{author_shape_11w_pw170_scratch_weights.npz}.
+\texttt{INK\_MODEL} is loaded once and \texttt{SHAPE\_MODEL=INK\_MODEL}:
+the two server names reference the same object, not independent ink/shape
+checkpoints. The stale log wording does not change this assignment.
+
+The page namer uses that shared object with stroke normalisation disabled.
+Candidate judging calls \texttt{ClassifyImage} with its default stroke
+normalisation enabled. Thus preparation differs even when weights are shared.
+Class mappings come from the checkpoint. Thirteen configured writer names do
+not prove thirteen output classes or thirteen usable profiles. Actual loaded
+class metadata, source populations and historical eleven-writer tests are
+separate evidence.
+
+\Q{Method}{Capital Forward is the current method name}
+Both reader and writer classes now expose \texttt{Forward}. The function
+references in this edition use the current case. The mathematical forward
+operations can remain unchanged while a caller using the old method spelling
+is incompatible.
+
+\section{Generate a new handwriting job}
+\Q{Purpose}{Separate intent from interface compatibility}
+The intended endpoint flow validates text/writer, creates a GantryConfig,
+chooses physical x-height before wrapping, runs joint candidate synthesis,
+renders a preview, writes G-code and saves timing/placement metadata.
+The server's default candidate count is fourteen (overridable through
+WEBAPP\_TRIES); the direct function default is six. Neither source comment's
+claimed tuning gain is adopted here as a new measured result.
+
+Current synthesis always uses the uniform raster renderer and style-calibration
+path. It offers the best five prior-ranked variants, prefers a stored medoid
+anchor, suppresses joins below 0.45 and chooses cursive fallback style at 0.5.
+Retired controls such as JOIN\_PROB\_CAP, IDEAL\_SOURCE,
+USE\_STYLE\_CALIBRATION and tangent-ligature switches do not exist in this
+tree. They are not live knobs merely because an older guide mentioned them.
+
+\Q{Evidence}{Static integration discrepancies in the captured source}
+The current \texttt{ApiGenerate} still accesses \texttt{cfg.ignoreRuling}
+and passes \texttt{ignoreRuling} into dataclass replacement, but current
+GantryConfig defines no such field. It also calls RenderTrajectory with
+\texttt{profile} and \texttt{uniformInk}, which the current renderer does
+not accept. \texttt{retrace.PageStrokes} passes \texttt{timer} to
+SegmentLines, which does not accept it. These are visible caller/callee
+contract mismatches, not newly executed failures. This manual explains the
+intended algorithms and actual local definitions without asserting that these
+endpoints complete successfully as captured. No compatibility fix is applied.
+
+\section{Place and execute motion}
+\Q{Method}{The path and the machine have different responsibilities}
+Current ToMachine uniformly shrinks to bounds, places the top at origin minus
+margin/line offset, and removes row-centre wander while retaining scaled
+synthesis pitch. It has no ignoreRuling/fitToRuling branch. The configuration
+does not define accelMmS2. The controller's commanded step lattice is nominally
+80 steps/mm; homing derives per-axis factors from measured switch travel.
+
+WriteGcode can add connectors through endpoint joining and ring closure, so
+its drawn path is not always identical to the raw synthesis preview. The
+runner implements a limited modal dialect, converts linear targets to
+calibrated steps and pulses major/minor axes sequentially. A pen-confirmation
+failure is printed but the current runner continues. Command counters and
+parser coordinates are not independent carriage measurements. A successful
+return is not a proof of physical contact force or exact endpoint arrival.
+
+\section{Independent line processes and numerical threads}
+\Q{Purpose}{Parallelise independent work without confusing it with a new model}
+The new \path{web/lineworkers.py} stores configured reader/namer objects in
+parent state. When os.fork exists and enough jobs remain, Map creates an
+explicit fork pool, preserving returned job order. LINE\_WORKERS=1 disables
+the pool; zero requests up to the CPU count, bounded by job count. The minimum
+is four jobs per Map call, not necessarily four original page lines after
+orientation probes have already been read.
+
+\Q{Justification}{Parallel speed depends on overhead and oversubscription}
+If $N$ independent passes cost $t$ each, an ideal pool with $P$ equal workers
+would take about $\lceil N/P\rceil t$ plus setup and communication. For a
+serial fraction $s$, idealised Amdahl speedup is
+$1/[s+(1-s)/P]$. These are explanatory bounds under simplified assumptions,
+not measured ODROID gains. Memory bandwidth, heterogeneous cores, crop transfer,
+pool startup and native numerical threads alter the outcome.
+
+Workers attempt to cap OpenBLAS threads to one using environment settings and
+selected shared-library entry points. It is best effort, not a portable proof
+that every backend is capped. Fork provides copy-on-write address spaces,
+not zero allocation or zero IPC. The explicit fork context is distinct from
+Python's platform/version default. Forking a threaded service with native
+state requires deployment care. Exceptions in pool work fall back to serial
+execution of the same function; errors can still propagate if the serial
+function also fails~\cite{pythonmp,numpymatmul}.
+
+\section{Dependencies and fair library comparisons}
+\Q{Library}{First principles does not mean no libraries are present}
+The numerical core uses NumPy arrays and compiled linear algebra. Flask/CORS
+serve requests, Pillow decodes/encodes and renders UI artefacts, OpenCV acquires
+camera frames, gpiod accesses GPIO, and Python multiprocessing manages workers.
+Training also contains explicit PNG/JPEG decoders. This boundary is more precise
+than the old manual's blanket no-library statement.
+
+Compare an operation with fixed inputs, parameters, dtype, padding, axes,
+normalisation and reduction before comparing independently trained accuracy.
+A library may offer compiled/fused kernels or GPU execution, while the custom
+code exposes intermediates and design rules. It is not defensible to attach
+an unmeasured universal speed multiplier or accuracy gain to the word library.
+Library APIs documented here were consulted for semantics; their versions
+are not evidence of packages installed on the ODROID.

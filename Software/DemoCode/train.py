@@ -851,8 +851,12 @@ def DecodeJpeg(data):
 
     #every block through the inverse transform at once, then laid out as a plane
     rows,cols,_ = yBlocks.shape
-    flat = yBlocks.reshape(-1,8,8).astype(np.float32)
-    spatial = np.einsum("ux,nuv,vy->nxy",IDCT_M,flat,IDCT_M)+128.0
+    #f = M.T F M, one matrix product per block rather than a general
+    #contraction: einsum walks its own loop while two matrix products go
+    #to the linear algebra library.  float64 throughout, which is what
+    #einsum promoted to anyway, so the pixels are unchanged
+    flat = yBlocks.reshape(-1,8,8).astype(np.float64)
+    spatial = (IDCT_M.T@flat@IDCT_M)+128.0
     plane = spatial.reshape(rows,cols,8,8).transpose(0,2,1,3).reshape(rows*8,cols*8)
     if y["h"]!=hMax or y["v"]!=vMax:
         plane = np.repeat(np.repeat(plane,vMax//y["v"],axis=0),hMax//y["h"],axis=1)

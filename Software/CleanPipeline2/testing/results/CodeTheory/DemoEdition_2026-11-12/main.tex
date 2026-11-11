@@ -1,0 +1,445 @@
+\documentclass[11pt,a4paper,oneside]{report}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=2.1cm,headheight=15pt]{geometry}
+\usepackage{amsmath,amssymb,enumitem,booktabs,longtable,array,listings,xcolor,titlesec,fancyhdr,microtype}
+\usepackage[colorlinks=true,linkcolor=navy,urlcolor=navy,citecolor=source]{hyperref}
+\usepackage{url}
+\urlstyle{same}
+\definecolor{navy}{HTML}{17344A}
+\definecolor{purpose}{HTML}{126B91}
+\definecolor{method}{HTML}{495AA1}
+\definecolor{reason}{HTML}{176B50}
+\definecolor{alternative}{HTML}{80508F}
+\definecolor{library}{HTML}{8B5814}
+\definecolor{source}{HTML}{7B3C42}
+\definecolor{sigbg}{HTML}{EFF4F7}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{5.5pt plus 1pt minus 1pt}
+\setlength{\emergencystretch}{4em}
+\setcounter{secnumdepth}{2}
+\setcounter{tocdepth}{0}
+\titleformat{\chapter}[hang]{\sffamily\LARGE\bfseries\color{navy}}{\thechapter}{0.6em}{}
+\titlespacing*{\chapter}{0pt}{0pt}{16pt}
+\titleformat{\section}{\sffamily\Large\bfseries\color{navy}}{\thesection}{0.6em}{}
+\titleformat{\subsection}{\sffamily\large\bfseries\color{navy}}{\thesubsection}{0.6em}{}
+\newcommand{\Q}[2]{\par\addvspace{7pt}\begingroup\sffamily\bfseries\small
+\def\qt{#1}\def\pp{Purpose}\def\jj{Justification}\def\aa{Alternatives}\def\ll{Library}\def\ee{Evidence}
+\ifx\qt\pp\color{purpose}\else\ifx\qt\jj\color{reason}\else\ifx\qt\aa\color{alternative}\else\ifx\qt\ll\color{library}\else\ifx\qt\ee\color{source}\else\color{method}\fi\fi\fi\fi\fi
+#1\enspace\textbar\enspace #2\par\endgroup\nobreak\smallskip}
+\newcommand{\FormulaNote}[2]{\par\smallskip{\small\color{purpose}\textbf{Formula purpose and system use.} #1\enspace\textcolor{source}{\textbf{Source basis:} \cite{#2}. Exact project constants remain implementation choices unless evidence is stated.}}\par\nobreak}
+\newcommand{\ReportEq}[6]{\subsection*{Report equation #1\quad #2}\phantomsection\label{report-eq:#1}\addcontentsline{toc}{subsection}{Report equation #1: #2}
+\Q{Method}{Formula}#3\par\Q{Purpose}{Why the system needs it}#4\par
+\Q{Evidence}{Current location and source}#5\enspace\cite{#6}.\par}
+\lstdefinestyle{sig}{basicstyle=\ttfamily\small,backgroundcolor=\color{sigbg},frame=none,breaklines=true,columns=fullflexible,keepspaces=true,aboveskip=5pt,belowskip=7pt,literate={_}{{\_}}1}
+\lstdefinestyle{plain}{basicstyle=\ttfamily\footnotesize,breaklines=true,columns=fullflexible,keepspaces=true,literate={_}{{\_}}1}
+\pagestyle{fancy}\fancyhf{}\fancyhead[L]{\small\sffamily\color{navy}Handwriting Robot\quad Code theory}
+\fancyhead[R]{\small\sffamily\color{navy}DemoCode edition}\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0.3pt}
+\begin{document}
+\begin{titlepage}
+\vspace*{1.4cm}
+{\sffamily\Huge\bfseries\color{navy}Handwriting Robot\par Code Theory Manual\par}
+\vspace{0.7cm}{\sffamily\Large Report methods and the current demo pipeline\par}
+\vspace{1cm}D. R. Braune\quad u23539195\par University of Pretoria\par
+\vspace{0.4cm}Revised study edition\quad November 2026\par
+\vspace{1.1cm}
+\Q{Purpose}{What problem does this solve} Blue labels explain the role in the robot.
+\Q{Method}{How does it work} Indigo labels unpack mathematics and implementation.
+\Q{Justification}{Why use this approach} Green labels state the rationale and assumptions.
+\Q{Alternatives}{What else could have been used} Purple labels compare relevant methods.
+\Q{Library}{What could a library change} Amber labels distinguish implementation, cost and equivalence.
+\Q{Evidence}{Where does the claim come from} Burgundy labels identify sources, records and limits.
+\vfill The report's named methods and all 35 numbered equations take priority.
+Current signatures and source hashes identify the implementation being explained.
+\end{titlepage}
+\tableofcontents
+\input{report_index}
+\input{current_pipeline}
+\input{reference_paths}
+\input{reference_web_camera}
+\input{reference_segment}
+\input{reference_recognise}
+\input{reference_style}
+\input{reference_curate}
+\input{reference_synthesise}
+\input{reference_retrace}
+\input{reference_reproduce}
+\input{reference_web_server}
+\input{reference_web_lineworkers}
+\input{reference_web_render}
+\input{reference_train}
+\input{reference_timing}
+\input{worked_verification}
+\input{glossary}
+\chapter{Function index and source provenance}
+\Q{Evidence}{Coverage and scope}
+Every top-level function/class in the captured fourteen Python modules is listed
+below; methods are listed inside their class entries. Nested local helpers belong
+to their enclosing function. The source ZIP includes the exact captured Python
+and startup files for cross-checking; the manual does not execute them.
+The report equation cards cover numbered equations 1 through 35. A library
+comparison is grouped by method family so small helpers need not repeat it.
+\small\begin{longtable}{p{0.28\linewidth}p{0.48\linewidth}r}
+\toprule Module & Function or class & Source line\\\midrule\endhead
+paths.py & \hyperref[fn:paths:PersonalWriterPages]{PersonalWriterPages} & 22\\
+web/camera.py & \hyperref[fn:web-camera:-GetLock]{\_GetLock} & 39\\
+web/camera.py & \hyperref[fn:web-camera:PreviewStart]{PreviewStart} & 52\\
+web/camera.py & \hyperref[fn:web-camera:PreviewStop]{PreviewStop} & 68\\
+web/camera.py & \hyperref[fn:web-camera:PreviewActive]{PreviewActive} & 76\\
+web/camera.py & \hyperref[fn:web-camera:PreviewFrameJpeg]{PreviewFrameJpeg} & 83\\
+web/camera.py & \hyperref[fn:web-camera:CaptureImage]{CaptureImage} & 105\\
+segment.py & \hyperref[fn:segment:Integral]{Integral} & 12\\
+segment.py & \hyperref[fn:segment:BoxSum]{BoxSum} & 18\\
+segment.py & \hyperref[fn:segment:BoxCount]{BoxCount} & 27\\
+segment.py & \hyperref[fn:segment:BoxMean]{BoxMean} & 34\\
+segment.py & \hyperref[fn:segment:Dilate]{Dilate} & 41\\
+segment.py & \hyperref[fn:segment:Erode]{Erode} & 45\\
+segment.py & \hyperref[fn:segment:Close]{Close} & 50\\
+segment.py & \hyperref[fn:segment:AnyWithinRadius]{AnyWithinRadius} & 54\\
+segment.py & \hyperref[fn:segment:LongRunMask]{LongRunMask} & 61\\
+segment.py & \hyperref[fn:segment:RowRunLength]{RowRunLength} & 74\\
+segment.py & \hyperref[fn:segment:Otsu]{Otsu} & 89\\
+segment.py & \hyperref[fn:segment:BinarizeLine]{BinarizeLine} & 108\\
+segment.py & \hyperref[fn:segment:InkMask]{InkMask} & 427\\
+segment.py & \hyperref[fn:segment:PaperRegionMask]{PaperRegionMask} & 438\\
+segment.py & \hyperref[fn:segment:LabelComponents]{LabelComponents} & 142\\
+segment.py & \hyperref[fn:segment:PieceBounds]{PieceBounds} & 180\\
+segment.py & \hyperref[fn:segment:Blur]{Blur} & 340\\
+segment.py & \hyperref[fn:segment:Elastic]{Elastic} & 364\\
+segment.py & \hyperref[fn:segment:DrawPolyline]{DrawPolyline} & 377\\
+segment.py & \hyperref[fn:segment:-Weights]{\_Weights} & 224\\
+segment.py & \hyperref[fn:segment:Resize]{Resize} & 243\\
+segment.py & \hyperref[fn:segment:Halve]{Halve} & 266\\
+segment.py & \hyperref[fn:segment:FitFixedCanvas]{FitFixedCanvas} & 274\\
+segment.py & \hyperref[fn:segment:-Sample]{\_Sample} & 288\\
+segment.py & \hyperref[fn:segment:-Like]{\_Like} & 303\\
+segment.py & \hyperref[fn:segment:Rotate]{Rotate} & 309\\
+segment.py & \hyperref[fn:segment:Warp]{Warp} & 322\\
+segment.py & \hyperref[fn:segment:CoreBand]{CoreBand} & 130\\
+segment.py & \hyperref[fn:segment:-LetterHeight]{\_LetterHeight} & 464\\
+segment.py & \hyperref[fn:segment:LinePitch]{LinePitch} & 484\\
+segment.py & \hyperref[fn:segment:LineCentres]{LineCentres} & 632\\
+segment.py & \hyperref[fn:segment:EstimateSlantDeg]{EstimateSlantDeg} & 405\\
+segment.py & \hyperref[fn:segment:SkewScore]{SkewScore} & 544\\
+segment.py & \hyperref[fn:segment:Deskew]{Deskew} & 560\\
+segment.py & \hyperref[fn:segment:-SheetCrop]{\_SheetCrop} & 944\\
+segment.py & \hyperref[fn:segment:LineAxisScore]{LineAxisScore} & 957\\
+segment.py & \hyperref[fn:segment:UprightPage]{UprightPage} & 974\\
+segment.py & \hyperref[fn:segment:LeastCostSeam]{LeastCostSeam} & 515\\
+segment.py & \hyperref[fn:segment:SeamCuts]{SeamCuts} & 656\\
+segment.py & \hyperref[fn:segment:RemovePrintedStructure]{RemovePrintedStructure} & 577\\
+segment.py & \hyperref[fn:segment:DropArtifactPieces]{DropArtifactPieces} & 592\\
+segment.py & \hyperref[fn:segment:-BandOwnership]{\_BandOwnership} & 680\\
+segment.py & \hyperref[fn:segment:-DotsJoinedAbove]{\_DotsJoinedAbove} & 755\\
+segment.py & \hyperref[fn:segment:-RingsToStem]{\_RingsToStem} & 784\\
+segment.py & \hyperref[fn:segment:-FragmentsToNeighbour]{\_FragmentsToNeighbour} & 837\\
+segment.py & \hyperref[fn:segment:AssignOwnership]{AssignOwnership} & 873\\
+segment.py & \hyperref[fn:segment:-BuildLineCrop]{\_BuildLineCrop} & 886\\
+segment.py & \hyperref[fn:segment:DropSolidCrops]{DropSolidCrops} & 986\\
+segment.py & \hyperref[fn:segment:SegmentLines]{SegmentLines} & 1004\\
+segment.py & \hyperref[fn:segment:Skeletonize]{Skeletonize} & 194\\
+segment.py & \hyperref[fn:segment:PolylineLength]{PolylineLength} & 420\\
+recognise.py & \hyperref[fn:recognise:LoadStateDictAny]{LoadStateDictAny} & 31\\
+recognise.py & \hyperref[fn:recognise:ResizeLineImageFixed]{ResizeLineImageFixed} & 157\\
+recognise.py & \hyperref[fn:recognise:TensorFromResized]{TensorFromResized} & 161\\
+recognise.py & \hyperref[fn:recognise:FrameXToPixel]{FrameXToPixel} & 251\\
+recognise.py & \hyperref[fn:recognise:StrokeNormalize]{StrokeNormalize} & 171\\
+recognise.py & \hyperref[fn:recognise:Conv2d]{Conv2d} & 41\\
+recognise.py & \hyperref[fn:recognise:ConvBlockForward]{ConvBlockForward} & 113\\
+recognise.py & \hyperref[fn:recognise:PaperCRNNNumpy]{PaperCRNNNumpy} & 259\\
+recognise.py & \hyperref[fn:recognise:AuthorClassifierCNNNumpy]{AuthorClassifierCNNNumpy} & 325\\
+recognise.py & \hyperref[fn:recognise:ClassifyImage]{ClassifyImage} & 348\\
+recognise.py & \hyperref[fn:recognise:BatchNorm2d]{BatchNorm2d} & 62\\
+recognise.py & \hyperref[fn:recognise:Relu]{Relu} & 68\\
+recognise.py & \hyperref[fn:recognise:Sigmoid]{Sigmoid} & 72\\
+recognise.py & \hyperref[fn:recognise:Linear]{Linear} & 95\\
+recognise.py & \hyperref[fn:recognise:MaxPool2d]{MaxPool2d} & 76\\
+recognise.py & \hyperref[fn:recognise:AdaptiveMaxPoolHeight]{AdaptiveMaxPoolHeight} & 87\\
+recognise.py & \hyperref[fn:recognise:AdaptiveAvgPoolWidth]{AdaptiveAvgPoolWidth} & 91\\
+recognise.py & \hyperref[fn:recognise:LogSoftmax]{LogSoftmax} & 100\\
+recognise.py & \hyperref[fn:recognise:Softmax]{Softmax} & 107\\
+recognise.py & \hyperref[fn:recognise:LstmForward]{LstmForward} & 123\\
+recognise.py & \hyperref[fn:recognise:BidirectionalLstmForward]{BidirectionalLstmForward} & 143\\
+recognise.py & \hyperref[fn:recognise:MultilayerBidirectionalLstm]{MultilayerBidirectionalLstm} & 150\\
+recognise.py & \hyperref[fn:recognise:DecodeCtc]{DecodeCtc} & 187\\
+recognise.py & \hyperref[fn:recognise:CtcForcedAlign]{CtcForcedAlign} & 204\\
+recognise.py & \hyperref[fn:recognise:ReadTextScored]{ReadTextScored} & 294\\
+recognise.py & \hyperref[fn:recognise:ReadText]{ReadText} & 301\\
+recognise.py & \hyperref[fn:recognise:Levenshtein]{Levenshtein} & 305\\
+recognise.py & \hyperref[fn:recognise:CharAcc]{CharAcc} & 319\\
+style.py & \hyperref[fn:style:TracePolylines]{TracePolylines} & 56\\
+style.py & \hyperref[fn:style:-Dir]{\_Dir} & 115\\
+style.py & \hyperref[fn:style:-PruneSpurs]{\_PruneSpurs} & 126\\
+style.py & \hyperref[fn:style:-JoinAtJunctions]{\_JoinAtJunctions} & 146\\
+style.py & \hyperref[fn:style:SimplifyPolyline]{SimplifyPolyline} & 180\\
+style.py & \hyperref[fn:style:-TrimLigatureTails]{\_TrimLigatureTails} & 205\\
+style.py & \hyperref[fn:style:ExtractLineGlyphs]{ExtractLineGlyphs} & 254\\
+style.py & \hyperref[fn:style:-ClassOk]{\_ClassOk} & 505\\
+style.py & \hyperref[fn:style:-PenLength]{\_PenLength} & 515\\
+style.py & \hyperref[fn:style:-LongestStroke]{\_LongestStroke} & 524\\
+style.py & \hyperref[fn:style:RenderRefStats]{RenderRefStats} & 724\\
+style.py & \hyperref[fn:style:-MedianWordGap]{\_MedianWordGap} & 763\\
+style.py & \hyperref[fn:style:ExtractAuthorRaw]{ExtractAuthorRaw} & 774\\
+style.py & \hyperref[fn:style:BuildAuthorProfile]{BuildAuthorProfile} & 789\\
+style.py & \hyperref[fn:style:-ShapeGrid]{\_ShapeGrid} & 536\\
+style.py & \hyperref[fn:style:BuildLetterPrior]{BuildLetterPrior} & 570\\
+style.py & \hyperref[fn:style:-PriorScore]{\_PriorScore} & 588\\
+style.py & \hyperref[fn:style:PriorFilter]{PriorFilter} & 596\\
+style.py & \hyperref[fn:style:-ConsensusFilter]{\_ConsensusFilter} & 604\\
+style.py & \hyperref[fn:style:-ResampleN]{\_ResampleN} & 620\\
+style.py & \hyperref[fn:style:-AlignStroke]{\_AlignStroke} & 632\\
+style.py & \hyperref[fn:style:-DenoisedPrototype]{\_DenoisedPrototype} & 647\\
+style.py & \hyperref[fn:style:SmoothStroke]{SmoothStroke} & 703\\
+curate.py & \hyperref[fn:curate:ParseSpec]{ParseSpec} & 42\\
+curate.py & \hyperref[fn:curate:LoadProfile]{LoadProfile} & 55\\
+curate.py & \hyperref[fn:curate:Listing]{Listing} & 132\\
+curate.py & \hyperref[fn:curate:Variants]{Variants} & 198\\
+curate.py & \hyperref[fn:curate:Drop]{Drop} & 219\\
+curate.py & \hyperref[fn:curate:Apply]{Apply} & 224\\
+curate.py & \hyperref[fn:curate:Main]{Main} & 303\\
+curate.py & \hyperref[fn:curate:Medoid]{Medoid} & 153\\
+curate.py & \hyperref[fn:curate:Prototype]{Prototype} & 173\\
+curate.py & \hyperref[fn:curate:DrawGlyph]{DrawGlyph} & 67\\
+curate.py & \hyperref[fn:curate:Sheet]{Sheet} & 95\\
+synthesise.py & \hyperref[fn:synthesise:-BaselineGlyph]{\_BaselineGlyph} & 182\\
+synthesise.py & \hyperref[fn:synthesise:Trajectory]{Trajectory} & 255\\
+synthesise.py & \hyperref[fn:synthesise:-SwapProb]{\_SwapProb} & 290\\
+synthesise.py & \hyperref[fn:synthesise:AutoLegibility]{AutoLegibility} & 314\\
+synthesise.py & \hyperref[fn:synthesise:-GapRange]{\_GapRange} & 327\\
+synthesise.py & \hyperref[fn:synthesise:-Advance]{\_Advance} & 346\\
+synthesise.py & \hyperref[fn:synthesise:-CoreGlyph]{\_CoreGlyph} & 357\\
+synthesise.py & \hyperref[fn:synthesise:-GlyphSource]{\_GlyphSource} & 374\\
+synthesise.py & \hyperref[fn:synthesise:-Jitter]{\_Jitter} & 445\\
+synthesise.py & \hyperref[fn:synthesise:-Resample]{\_Resample} & 462\\
+synthesise.py & \hyperref[fn:synthesise:StyleCalibration]{StyleCalibration} & 484\\
+synthesise.py & \hyperref[fn:synthesise:-ApplyCal]{\_ApplyCal} & 524\\
+synthesise.py & \hyperref[fn:synthesise:-Ligature]{\_Ligature} & 544\\
+synthesise.py & \hyperref[fn:synthesise:-BodyStroke]{\_BodyStroke} & 564\\
+synthesise.py & \hyperref[fn:synthesise:-SplitWords]{\_SplitWords} & 579\\
+synthesise.py & \hyperref[fn:synthesise:-WordWidth]{\_WordWidth} & 587\\
+synthesise.py & \hyperref[fn:synthesise:SynthesizeText]{SynthesizeText} & 596\\
+synthesise.py & \hyperref[fn:synthesise:SynthesizeJointBestOf]{SynthesizeJointBestOf} & 813\\
+synthesise.py & \hyperref[fn:synthesise:-Draw]{\_Draw} & 752\\
+synthesise.py & \hyperref[fn:synthesise:RenderTrajectory]{RenderTrajectory} & 771\\
+synthesise.py & \hyperref[fn:synthesise:-LineLogProbs]{\_LineLogProbs} & 783\\
+synthesise.py & \hyperref[fn:synthesise:-WeakChars]{\_WeakChars} & 788\\
+retrace.py & \hyperref[fn:retrace:PageStrokes]{PageStrokes} & 49\\
+retrace.py & \hyperref[fn:retrace:LinePitchMm]{LinePitchMm} & 77\\
+retrace.py & \hyperref[fn:retrace:PruneSpecks]{PruneSpecks} & 83\\
+retrace.py & \hyperref[fn:retrace:RetracePage]{RetracePage} & 100\\
+retrace.py & \hyperref[fn:retrace:Main]{Main} & 141\\
+reproduce.py & \hyperref[fn:reproduce:GantryConfig]{GantryConfig} & 18\\
+reproduce.py & \hyperref[fn:reproduce:XhForRuling]{XhForRuling} & 91\\
+reproduce.py & \hyperref[fn:reproduce:-TallestLine]{\_TallestLine} & 120\\
+reproduce.py & \hyperref[fn:reproduce:ToMachine]{ToMachine} & 151\\
+reproduce.py & \hyperref[fn:reproduce:-Decimate]{\_Decimate} & 198\\
+reproduce.py & \hyperref[fn:reproduce:OptimizeStrokeOrder]{OptimizeStrokeOrder} & 212\\
+reproduce.py & \hyperref[fn:reproduce:-Clamp]{\_Clamp} & 252\\
+reproduce.py & \hyperref[fn:reproduce:-ClampToUsableArea]{\_ClampToUsableArea} & 819\\
+reproduce.py & \hyperref[fn:reproduce:AxisDirValue]{AxisDirValue} & 564\\
+reproduce.py & \hyperref[fn:reproduce:-RetractOffSwitch]{\_RetractOffSwitch} & 569\\
+reproduce.py & \hyperref[fn:reproduce:-StepAxis]{\_StepAxis} & 738\\
+reproduce.py & \hyperref[fn:reproduce:-CalibrateAxis]{\_CalibrateAxis} & 756\\
+reproduce.py & \hyperref[fn:reproduce:Calibrate]{Calibrate} & 775\\
+reproduce.py & \hyperref[fn:reproduce:NewPenState]{NewPenState} & 269\\
+reproduce.py & \hyperref[fn:reproduce:SetPenLines]{SetPenLines} & 277\\
+reproduce.py & \hyperref[fn:reproduce:TriggeredEndstop]{TriggeredEndstop} & 545\\
+reproduce.py & \hyperref[fn:reproduce:-AllTriggeredEndstops]{\_AllTriggeredEndstops} & 560\\
+reproduce.py & \hyperref[fn:reproduce:PenIsUp]{PenIsUp} & 703\\
+reproduce.py & \hyperref[fn:reproduce:SetPen]{SetPen} & 710\\
+reproduce.py & \hyperref[fn:reproduce:BresenhamMove]{BresenhamMove} & 663\\
+reproduce.py & \hyperref[fn:reproduce:-GcodeLinearMove]{\_GcodeLinearMove} & 827\\
+reproduce.py & \hyperref[fn:reproduce:-GcodeArcMove]{\_GcodeArcMove} & 849\\
+reproduce.py & \hyperref[fn:reproduce:WriteGcode]{WriteGcode} & 294\\
+reproduce.py & \hyperref[fn:reproduce:GantryNotConnectedError]{GantryNotConnectedError} & 406\\
+reproduce.py & \hyperref[fn:reproduce:NotCalibratedError]{NotCalibratedError} & 410\\
+reproduce.py & \hyperref[fn:reproduce:Connect]{Connect} & 501\\
+reproduce.py & \hyperref[fn:reproduce:Disconnect]{Disconnect} & 529\\
+reproduce.py & \hyperref[fn:reproduce:-TriggerEmergencyStop]{\_TriggerEmergencyStop} & 598\\
+reproduce.py & \hyperref[fn:reproduce:RequestAbort]{RequestAbort} & 613\\
+reproduce.py & \hyperref[fn:reproduce:EmergencyStop]{EmergencyStop} & 620\\
+reproduce.py & \hyperref[fn:reproduce:ParseGcodeLine]{ParseGcodeLine} & 803\\
+reproduce.py & \hyperref[fn:reproduce:RunGcodeFile]{RunGcodeFile} & 875\\
+reproduce.py & \hyperref[fn:reproduce:-RunGcodeLines]{\_RunGcodeLines} & 900\\
+web/server.py & \hyperref[fn:web-server:OpenUpright]{OpenUpright} & 125\\
+web/server.py & \hyperref[fn:web-server:IngestImage]{IngestImage} & 149\\
+web/server.py & \hyperref[fn:web-server:StandUp]{StandUp} & 388\\
+web/server.py & \hyperref[fn:web-server:ReadAllLines]{ReadAllLines} & 394\\
+web/server.py & \hyperref[fn:web-server:NameWriter]{NameWriter} & 439\\
+web/server.py & \hyperref[fn:web-server:SplitExpected]{SplitExpected} & 468\\
+web/server.py & \hyperref[fn:web-server:WordAcc]{WordAcc} & 517\\
+web/server.py & \hyperref[fn:web-server:-Clamp]{\_Clamp} & 715\\
+web/server.py & \hyperref[fn:web-server:BaseAuthor]{BaseAuthor} & 242\\
+web/server.py & \hyperref[fn:web-server:LoadProfiles]{LoadProfiles} & 247\\
+web/server.py & \hyperref[fn:web-server:Remember2]{Remember2} & 265\\
+web/server.py & \hyperref[fn:web-server:Remember]{Remember} & 273\\
+web/server.py & \hyperref[fn:web-server:CheckApiKey]{CheckApiKey} & 283\\
+web/server.py & \hyperref[fn:web-server:Index]{Index} & 292\\
+web/server.py & \hyperref[fn:web-server:Static]{Static} & 297\\
+web/server.py & \hyperref[fn:web-server:ApiAuthors]{ApiAuthors} & 307\\
+web/server.py & \hyperref[fn:web-server:ApiGetImage]{ApiGetImage} & 319\\
+web/server.py & \hyperref[fn:web-server:ApiCameraCapture]{ApiCameraCapture} & 331\\
+web/server.py & \hyperref[fn:web-server:ApiPreviewStart]{ApiPreviewStart} & 342\\
+web/server.py & \hyperref[fn:web-server:ApiPreviewStop]{ApiPreviewStop} & 351\\
+web/server.py & \hyperref[fn:web-server:ApiPreviewStream]{ApiPreviewStream} & 357\\
+web/server.py & \hyperref[fn:web-server:WriteReport]{WriteReport} & 479\\
+web/server.py & \hyperref[fn:web-server:ApiReport]{ApiReport} & 504\\
+web/server.py & \hyperref[fn:web-server:ApiClassify]{ApiClassify} & 535\\
+web/server.py & \hyperref[fn:web-server:ReadBackText]{ReadBackText} & 656\\
+web/server.py & \hyperref[fn:web-server:JobResponse]{JobResponse} & 696\\
+web/server.py & \hyperref[fn:web-server:ApiGenerate]{ApiGenerate} & 727\\
+web/server.py & \hyperref[fn:web-server:ApiRetrace]{ApiRetrace} & 839\\
+web/server.py & \hyperref[fn:web-server:IsConnected]{IsConnected} & 889\\
+web/server.py & \hyperref[fn:web-server:WriteGcodeFile]{WriteGcodeFile} & 896\\
+web/server.py & \hyperref[fn:web-server:ParseGcode]{ParseGcode} & 910\\
+web/server.py & \hyperref[fn:web-server:ApiGcodeUpload]{ApiGcodeUpload} & 946\\
+web/server.py & \hyperref[fn:web-server:ApiGetGcode]{ApiGetGcode} & 976\\
+web/server.py & \hyperref[fn:web-server:ApiGantryStatus]{ApiGantryStatus} & 992\\
+web/server.py & \hyperref[fn:web-server:ApiGantryCalibrate]{ApiGantryCalibrate} & 1004\\
+web/server.py & \hyperref[fn:web-server:ApiGantryStop]{ApiGantryStop} & 1025\\
+web/server.py & \hyperref[fn:web-server:ApiWriteGcode]{ApiWriteGcode} & 1044\\
+web/server.py & \hyperref[fn:web-server:ApiModelInfo]{ApiModelInfo} & 1096\\
+web/server.py & \hyperref[fn:web-server:ApiTimings]{ApiTimings} & 1167\\
+web/server.py & \hyperref[fn:web-server:ApiSamples]{ApiSamples} & 1192\\
+web/server.py & \hyperref[fn:web-server:ApiSampleFile]{ApiSampleFile} & 1205\\
+web/server.py & \hyperref[fn:web-server:ApiGlyphs]{ApiGlyphs} & 1214\\
+web/server.py & \hyperref[fn:web-server:ApiCurateGet]{ApiCurateGet} & 1233\\
+web/server.py & \hyperref[fn:web-server:ApiCuratePost]{ApiCuratePost} & 1247\\
+web/server.py & \hyperref[fn:web-server:ApiCurateDelete]{ApiCurateDelete} & 1272\\
+web/lineworkers.py & \hyperref[fn:web-lineworkers:Configure]{Configure} & 30\\
+web/lineworkers.py & \hyperref[fn:web-lineworkers:CanPool]{CanPool} & 37\\
+web/lineworkers.py & \hyperref[fn:web-lineworkers:-Workers]{\_Workers} & 43\\
+web/lineworkers.py & \hyperref[fn:web-lineworkers:-CapThreads]{\_CapThreads} & 58\\
+web/lineworkers.py & \hyperref[fn:web-lineworkers:-Init]{\_Init} & 91\\
+web/lineworkers.py & \hyperref[fn:web-lineworkers:ReadOne]{ReadOne} & 96\\
+web/lineworkers.py & \hyperref[fn:web-lineworkers:NameOne]{NameOne} & 108\\
+web/lineworkers.py & \hyperref[fn:web-lineworkers:Map]{Map} & 124\\
+web/render.py & \hyperref[fn:web-render:-font]{\_font} & 31\\
+web/render.py & \hyperref[fn:web-render:-RenderOneGlyph]{\_RenderOneGlyph} & 44\\
+web/render.py & \hyperref[fn:web-render:GlyphGridPath]{GlyphGridPath} & 72\\
+web/render.py & \hyperref[fn:web-render:SampleCrops]{SampleCrops} & 105\\
+train.py & \hyperref[fn:train:IdctMatrix]{IdctMatrix} & 536\\
+train.py & \hyperref[fn:train:UnfilterPng]{UnfilterPng} & 550\\
+train.py & \hyperref[fn:train:DecodePng]{DecodePng} & 592\\
+train.py & \hyperref[fn:train:BuildHuffTable]{BuildHuffTable} & 632\\
+train.py & \hyperref[fn:train:JpegBitReader]{JpegBitReader} & 659\\
+train.py & \hyperref[fn:train:DecodeHuffValue]{DecodeHuffValue} & 715\\
+train.py & \hyperref[fn:train:Extend]{Extend} & 729\\
+train.py & \hyperref[fn:train:DecodeJpeg]{DecodeJpeg} & 740\\
+train.py & \hyperref[fn:train:ReadImageFile]{ReadImageFile} & 865\\
+train.py & \hyperref[fn:train:EncodeCrop]{EncodeCrop} & 878\\
+train.py & \hyperref[fn:train:DecodeCrop]{DecodeCrop} & 887\\
+train.py & \hyperref[fn:train:ReadLabelLines]{ReadLabelLines} & 894\\
+train.py & \hyperref[fn:train:ClusterRows]{ClusterRows} & 902\\
+train.py & \hyperref[fn:train:FindRuleLineClusters]{FindRuleLineClusters} & 910\\
+train.py & \hyperref[fn:train:RemoveStraightFormLines]{RemoveStraightFormLines} & 919\\
+train.py & \hyperref[fn:train:DetectPageBounds]{DetectPageBounds} & 930\\
+train.py & \hyperref[fn:train:MergeUndersizedFragments]{MergeUndersizedFragments} & 942\\
+train.py & \hyperref[fn:train:MergeOrSplitToExpectedLineCount]{MergeOrSplitToExpectedLineCount} & 975\\
+train.py & \hyperref[fn:train:EstimateLinePitch]{EstimateLinePitch} & 1010\\
+train.py & \hyperref[fn:train:SplitLinesByPeriodicity]{SplitLinesByPeriodicity} & 1023\\
+train.py & \hyperref[fn:train:ExtractLinePatches]{ExtractLinePatches} & 1051\\
+train.py & \hyperref[fn:train:EncodeText]{EncodeText} & 1169\\
+train.py & \hyperref[fn:train:FindPeaks]{FindPeaks} & 1177\\
+train.py & \hyperref[fn:train:LineImageCache]{LineImageCache} & 1294\\
+train.py & \hyperref[fn:train:IAMLineDatasetRaw]{IAMLineDatasetRaw} & 1413\\
+train.py & \hyperref[fn:train:TrainEvalView]{TrainEvalView} & 1518\\
+train.py & \hyperref[fn:train:TextCollateFn]{TextCollateFn} & 1536\\
+train.py & \hyperref[fn:train:AuthorLabeledView]{AuthorLabeledView} & 1547\\
+train.py & \hyperref[fn:train:AuthorCollateFn]{AuthorCollateFn} & 1571\\
+train.py & \hyperref[fn:train:AddPersonalSamples]{AddPersonalSamples} & 1580\\
+train.py & \hyperref[fn:train:TekliaLineDataset]{TekliaLineDataset} & 1646\\
+train.py & \hyperref[fn:train:IterateBatches]{IterateBatches} & 1808\\
+train.py & \hyperref[fn:train:TextNumpyBatch]{TextNumpyBatch} & 1905\\
+train.py & \hyperref[fn:train:ValidateTextModel]{ValidateTextModel} & 1918\\
+train.py & \hyperref[fn:train:BuildPagesSplit]{BuildPagesSplit} & 1939\\
+train.py & \hyperref[fn:train:BuildTekliaSplit]{BuildTekliaSplit} & 1949\\
+train.py & \hyperref[fn:train:PersonalLineView]{PersonalLineView} & 1955\\
+train.py & \hyperref[fn:train:CollectPersonalLines]{CollectPersonalLines} & 1971\\
+train.py & \hyperref[fn:train:BuildJointSplit]{BuildJointSplit} & 1983\\
+train.py & \hyperref[fn:train:IterateMixedBatches]{IterateMixedBatches} & 1995\\
+train.py & \hyperref[fn:train:TrainTextModel]{TrainTextModel} & 2015\\
+train.py & \hyperref[fn:train:ValidateAuthorModel]{ValidateAuthorModel} & 2162\\
+train.py & \hyperref[fn:train:TrainAuthorModel]{TrainAuthorModel} & 2179\\
+train.py & \hyperref[fn:train:Main]{Main} & 2280\\
+train.py & \hyperref[fn:train:MyAffine]{MyAffine} & 1207\\
+train.py & \hyperref[fn:train:AugmentShear]{AugmentShear} & 1220\\
+train.py & \hyperref[fn:train:AugmentRotate]{AugmentRotate} & 1226\\
+train.py & \hyperref[fn:train:FindPerspectiveCoeffs]{FindPerspectiveCoeffs} & 1231\\
+train.py & \hyperref[fn:train:AugmentPerspective]{AugmentPerspective} & 1241\\
+train.py & \hyperref[fn:train:PerspectiveJitterPoints]{PerspectiveJitterPoints} & 1250\\
+train.py & \hyperref[fn:train:AugmentElastic]{AugmentElastic} & 1275\\
+train.py & \hyperref[fn:train:AugmentLineImage]{AugmentLineImage} & 1282\\
+train.py & \hyperref[fn:train:InitConv]{InitConv} & 1689\\
+train.py & \hyperref[fn:train:InitBatchNorm]{InitBatchNorm} & 1697\\
+train.py & \hyperref[fn:train:InitLinear]{InitLinear} & 1702\\
+train.py & \hyperref[fn:train:InitLstmDirection]{InitLstmDirection} & 1709\\
+train.py & \hyperref[fn:train:InitConvBlock]{InitConvBlock} & 1718\\
+train.py & \hyperref[fn:train:InitTextModelParams]{InitTextModelParams} & 1819\\
+train.py & \hyperref[fn:train:BuildLstmLayerParams]{BuildLstmLayerParams} & 1843\\
+train.py & \hyperref[fn:train:InitAuthorModelParams]{InitAuthorModelParams} & 2098\\
+train.py & \hyperref[fn:train:Conv2dForward]{Conv2dForward} & 39\\
+train.py & \hyperref[fn:train:ConvBlockForwardTrain]{ConvBlockForwardTrain} & 217\\
+train.py & \hyperref[fn:train:InitBackboneParams]{InitBackboneParams} & 1733\\
+train.py & \hyperref[fn:train:BackboneForwardTrain]{BackboneForwardTrain} & 1777\\
+train.py & \hyperref[fn:train:EvalBackboneForward]{EvalBackboneForward} & 1798\\
+train.py & \hyperref[fn:train:TextModelForward]{TextModelForward} & 1854\\
+train.py & \hyperref[fn:train:EvalTextForward]{EvalTextForward} & 1895\\
+train.py & \hyperref[fn:train:AuthorModelForward]{AuthorModelForward} & 2114\\
+train.py & \hyperref[fn:train:EvalAuthorForward]{EvalAuthorForward} & 2152\\
+train.py & \hyperref[fn:train:BatchNorm2dForwardTrain]{BatchNorm2dForwardTrain} & 90\\
+train.py & \hyperref[fn:train:ReluForward]{ReluForward} & 123\\
+train.py & \hyperref[fn:train:LinearForward]{LinearForward} & 184\\
+train.py & \hyperref[fn:train:MaxPool2dForward]{MaxPool2dForward} & 133\\
+train.py & \hyperref[fn:train:AdaptiveMaxPoolHeightForward]{AdaptiveMaxPoolHeightForward} & 160\\
+train.py & \hyperref[fn:train:AdaptiveAvgPoolWidthForward]{AdaptiveAvgPoolWidthForward} & 174\\
+train.py & \hyperref[fn:train:DropoutForward]{DropoutForward} & 203\\
+train.py & \hyperref[fn:train:DropoutBackward]{DropoutBackward} & 210\\
+train.py & \hyperref[fn:train:LstmForwardTrain]{LstmForwardTrain} & 246\\
+train.py & \hyperref[fn:train:BidirectionalLstmForwardTrain]{BidirectionalLstmForwardTrain} & 315\\
+train.py & \hyperref[fn:train:MultilayerBidirectionalLstmForwardTrain]{MultilayerBidirectionalLstmForwardTrain} & 341\\
+train.py & \hyperref[fn:train:LogSumExp]{LogSumExp} & 360\\
+train.py & \hyperref[fn:train:CtcLoss]{CtcLoss} & 373\\
+train.py & \hyperref[fn:train:CrossEntropyLoss]{CrossEntropyLoss} & 434\\
+train.py & \hyperref[fn:train:Conv2dBackward]{Conv2dBackward} & 65\\
+train.py & \hyperref[fn:train:BatchNorm2dBackward]{BatchNorm2dBackward} & 110\\
+train.py & \hyperref[fn:train:ReluBackward]{ReluBackward} & 128\\
+train.py & \hyperref[fn:train:MaxPool2dBackward]{MaxPool2dBackward} & 148\\
+train.py & \hyperref[fn:train:AdaptiveMaxPoolHeightBackward]{AdaptiveMaxPoolHeightBackward} & 167\\
+train.py & \hyperref[fn:train:AdaptiveAvgPoolWidthBackward]{AdaptiveAvgPoolWidthBackward} & 179\\
+train.py & \hyperref[fn:train:LinearBackward]{LinearBackward} & 191\\
+train.py & \hyperref[fn:train:ConvBlockBackwardTrain]{ConvBlockBackwardTrain} & 231\\
+train.py & \hyperref[fn:train:LstmBackward]{LstmBackward} & 274\\
+train.py & \hyperref[fn:train:BidirectionalLstmBackward]{BidirectionalLstmBackward} & 323\\
+train.py & \hyperref[fn:train:MultilayerBidirectionalLstmBackward]{MultilayerBidirectionalLstmBackward} & 350\\
+train.py & \hyperref[fn:train:BackboneBackwardTrain]{BackboneBackwardTrain} & 1787\\
+train.py & \hyperref[fn:train:TextModelBackward]{TextModelBackward} & 1869\\
+train.py & \hyperref[fn:train:AuthorModelBackward]{AuthorModelBackward} & 2131\\
+train.py & \hyperref[fn:train:RMSprop]{RMSprop} & 446\\
+train.py & \hyperref[fn:train:AdamW]{AdamW} & 467\\
+train.py & \hyperref[fn:train:ReduceLrOnPlateau]{ReduceLrOnPlateau} & 489\\
+train.py & \hyperref[fn:train:CosineAnnealingLr]{CosineAnnealingLr} & 509\\
+train.py & \hyperref[fn:train:ClipGradNorm]{ClipGradNorm} & 521\\
+train.py & \hyperref[fn:train:TrainableParams]{TrainableParams} & 1739\\
+train.py & \hyperref[fn:train:SaveCheckpoint]{SaveCheckpoint} & 1743\\
+train.py & \hyperref[fn:train:LoadCheckpointMeta]{LoadCheckpointMeta} & 1751\\
+train.py & \hyperref[fn:train:LoadParamsInto]{LoadParamsInto} & 1761\\
+train.py & \hyperref[fn:train:AppendLog]{AppendLog} & 1771\\
+timing.py & \hyperref[fn:timing:Stage]{Stage} & 47\\
+timing.py & \hyperref[fn:timing:Run]{Run} & 66\\
+\bottomrule\end{longtable}\normalsize
+\Q{Evidence}{Unresolved sources and comparison limits}
+The exact motor torque-curve points, the assumed friction coefficient, installed
+sense resistance/reference voltage and GPIO current-limit provenance remain
+conditional. Published algorithms do not supply optima for the project seam,
+glyph-cut, drift or joining constants. Historical sweeps are identified as such;
+this edition does not absorb another agent's unreviewed new experiments.
+Some publisher/manufacturer pages blocked automated full-text access; those
+limitations are retained in bibliography notes rather than described as a
+completed reference certification. The reader should use the exact component
+edition and operating conditions before adopting a hardware numerical claim.
+\bibliographystyle{ieeetr}
+\bibliography{refs,expansion_sources,library_sources}
+\end{document}

@@ -1,0 +1,244 @@
+\section{Expanded reasoning: recognition and writer identity}
+\label{sec:expand-recognise}
+\subsection{Input dimensions, scale and information loss}
+The inspected input is one grey channel on a $64\times640$ canvas.
+For source height $h$ and width $w$, isotropic fit uses
+$a=\min(64/h,640/w)$, producing rounded dimensions near $(ah,aw)$.
+White padding fills the rest. Isotropic means the same scale in both axes;
+it preserves aspect ratio before rounding. Stretching directly to the canvas
+would distort letters. The report's $156\times2170$ example is width-limited:
+$a=640/2170\simeq0.29493$, so the content height is about 46 pixels.
+That is why a large nominal canvas height does not guarantee a tall letter
+image. A very long line can be compressed until dots or gaps disappear.
+
+The exact canvas size is a project architecture choice and a checkpoint
+compatibility constraint, not a theorem. Increasing width retains more detail
+but increases feature/sequence work; increasing height can preserve vertical
+shape but changes activation memory. A trained fixed-shape model cannot be
+assumed accurate under a new preparation convention. Variable-width batches
+are an alternative, with padding/length masking costs. Pixel range, ink polarity,
+placement and stroke normalisation must match training, not merely dimensions.
+
+\subsection{What local feature map $Z$ actually means}
+For input $X_{b,c,y,x}$, weights $W_{o,c,i,j}$ and bias $b_o$, a stride-one
+layer computes
+\FormulaNote{Purpose in this explanation: What local feature map \$Z\$ actually means}{graves2006,shi2017,code2026}
+\[
+Z_{b,o,y,x}=b_o+\sum_{c=1}^{C_{\rm in}}\sum_{i,j}
+ W_{o,c,i,j}X_{b,c,y+i-p,x+j-p}.
+\]
+$b$ indexes batch examples, $c$ input channels, $o$ output channels,
+$(i,j)$ the kernel and $p$ zero padding. Each $Z_o$ is a learned response
+map, not a labelled character map. The operation used in machine learning
+is cross-correlation (the kernel is not flipped), conventionally called
+convolution~\cite{torchconv}. Sharing the same weights at every position
+expresses the assumption that a useful local stroke pattern can appear anywhere.
+
+Constructed $2\times2$ example: a patch
+$\left[\begin{smallmatrix}1&2\\3&4\end{smallmatrix}\right]$ and kernel
+$\left[\begin{smallmatrix}1&0\\0&-1\end{smallmatrix}\right]$ with bias 0.5
+give $1-4+0.5=-2.5$. ReLU would then give zero. The kernel values in a
+real network are learned, so visual intuition about an edge detector does
+not establish what any particular saved channel detects.
+
+\Q{Method}{Shape and parameter arithmetic.}
+For kernel $k$, padding $p$, stride $s$ and dilation $d$,
+$H_{\rm out}=\lfloor(H+2p-d(k-1)-1)/s+1\rfloor$; apply the same formula
+to width. With $k=3,p=1,s=d=1$, size is unchanged. A convolution with bias
+has $C_{\rm out}(C_{\rm in}k^2+1)$ parameters; $1\to32$ channels costs
+$32(9+1)=320$, whereas $32\to32$ costs $32(288+1)=9248$.
+More channels increase representation capacity and both parameter and
+activation costs. Channel counts 32, 64 and 128 are implementation design
+choices; powers of two are convenient, not evidence of an optimum.
+
+The reported blocks use two, four and six convolutions, with two $2\times2$
+spatial pools. Output shapes are $32\times32\times320$,
+$64\times16\times160$ and $128\times16\times160$.
+Taking a maximum over height yields $128\times1\times160$; transposing
+gives 160 ordered feature vectors, each of length 128. A frame is therefore
+a feature column, not a presegmented character or a video frame.
+The CNN/recurrent/transcription combination follows the CRNN family
+of Shi et al.~\cite{shi2017}. Its use does not justify these exact widths.
+
+\Q{Method}{Receptive field.}
+Track receptive-field span $r$ and source-pixel jump $j$. Starting at
+$(r,j)=(1,1)$, a layer of kernel $k$ and stride $s$ gives
+$r'=r+(k-1)j$, $j'=sj$. For the reported stack: two $3$-kernels give
+$r=5$, first pool gives $(6,2)$; four more convolutions give 22, second
+pool gives $(24,4)$; six more give $r=72,j=4$. Thus each final spatial
+position can depend on about a $72$-pixel input span, subject to padding.
+The LSTM adds longer horizontal context. A 4-pixel frame stride does not
+mean a character boundary is localised to four source-image pixels.
+
+\subsection{Batch normalisation, ReLU, sigmoid and max pooling}
+For one channel containing $m=BHW$ values, training normalisation uses
+$\mu=m^{-1}\sum_i z_i$, $v=m^{-1}\sum_i(z_i-\mu)^2$ and
+$\hat z_i=(z_i-\mu)/\sqrt{v+\epsilon}$; the learned affine output is
+$u_i=\gamma\hat z_i+\beta$~\cite{ioffe2015}.
+$\gamma$ changes scale, $\beta$ restores a useful offset, and $\epsilon$
+prevents unstable division for almost-constant input. For $(1,3)$,
+$\mu=2,v=1$, so ignoring tiny $\epsilon$, normalised values are $(-1,1)$.
+$\gamma=2,\beta=0.5$ produces $(-1.5,2.5)$.
+Inference uses saved running statistics, not statistics of the current single
+crop. A running-update coefficient controls how quickly history is forgotten;
+it is not the optimiser learning rate. Libraries can use different variance
+conventions for the running estimate~\cite{torchbn}.
+
+ReLU is $\max(0,u)$, derivative 1 for $u>0$ and 0 for $u<0$, with an
+implementation convention at zero. It makes the network nonlinear while
+keeping the positive branch unsaturated~\cite{glorotrect}. Without nonlinear
+operations, compositions of affine maps reduce to a single affine map.
+This observation does not mean a network containing max pooling would become
+linear merely by removing ReLU: max pooling is itself nonlinear.
+
+Sigmoid $\sigma(z)=1/(1+e^{-z})$ has derivative $\sigma(z)(1-\sigma(z))$.
+It maps real scores into $(0,1)$; $\sigma(0)=0.5$ and
+$\sigma(\log3)=0.75$. It is used as a gate because multiplication can
+attenuate or pass information. A gate is not automatically a calibrated
+probability of a real-world event. Saturation near 0 or 1 yields small
+derivatives. Tanh maps into $(-1,1)$ and has derivative $1-\tanh^2z$.
+
+Max pooling selects the largest value in each window. For
+$\left[\begin{smallmatrix}1&4\\3&2\end{smallmatrix}\right]$ it returns 4.
+The backward pass routes the upstream derivative to the selected maximum,
+using a fixed tie convention. Pooling reduces work and offers limited local
+shift tolerance, while discarding exact position. Average pooling retains
+average strength; strided convolution learns a reduction. Neither is
+automatically preferable for small character details.
+
+\subsection{LSTM gates, bidirectionality and the second recurrent layer}
+In the gate convention used by the inspected implementation,
+\FormulaNote{Purpose in this explanation: LSTM gates, bidirectionality and the second recurrent layer}{graves2006,shi2017,code2026}
+\[
+\begin{bmatrix}a_i\\a_f\\a_g\\a_o\end{bmatrix}
+=W_xx_t+W_hh_{t-1}+b,\quad
+i_t=\sigma(a_i),\ f_t=\sigma(a_f),\ g_t=\tanh(a_g),\ o_t=\sigma(a_o),
+\]
+\FormulaNote{Purpose in this explanation: LSTM gates, bidirectionality and the second recurrent layer}{graves2006,shi2017,code2026}
+\[
+c_t=f_t\odot c_{t-1}+i_t\odot g_t,\qquad
+h_t=o_t\odot\tanh(c_t).
+\]
+$\odot$ means elementwise multiplication. The cell $c_t$ carries a memory
+value; $h_t$ exposes a gated version. Weights are shared across frames and
+do not get ``transferred'' from frame to frame. Input $x_t$, hidden state
+and cell state do. The original LSTM motivation was learning long temporal
+dependencies~\cite{hochreiter1997}; practical gate conventions are documented
+in the framework reference~\cite{torchlstm}.
+
+Constructed scalar cell: $c_{t-1}=0.8,f_t=0.9,i_t=0.2,g_t=0.5,o_t=0.7$
+gives $c_t=0.82$ and $h_t\simeq0.472$. The forget gate retains 90\% of
+the previous cell along this direct path; other dependencies also affect the
+total gradient. A BiLSTM processes the same feature sequence left-to-right
+and right-to-left and concatenates hidden outputs. With 256 units in each
+direction it outputs 512 values per frame. The second layer therefore takes
+512 inputs, whereas the first takes 128. Offline line images supply both
+directions; a live causal system would not have future context immediately.
+
+For input width $D$ and hidden width $h$, one direction has
+$4h(D+h)$ weights and either $4h$ combined biases or $8h$ separately stored
+input/recurrent biases. Counting the latter twice as two \emph{effective}
+offsets would misdescribe the affine sum. Increasing hidden width has a
+quadratic recurrent cost. The selected 256 and two layers are architecture
+settings, not uniquely implied by CTC or handwriting.
+
+\subsection{CTC: paths, blank, collapse and a complete small example}
+Let $p_t(k)$ be the softmax probability of symbol $k$ at frame $t$.
+For a path $\pi$ of $T$ symbols, its conditional score is
+$\prod_t p_t(\pi_t)$. Collapse $B$ first merges consecutive identical
+symbols, then removes blank. Thus $(a,a,\varnothing,b,b)$ becomes $ab$,
+whereas $(a,\varnothing,a)$ becomes $aa$. Blank is a special alignment
+symbol, not the space character. A literal space is an ordinary label.
+CTC sums the scores of \emph{all} paths collapsing to the target and takes
+negative logarithm~\cite{graves2006}.
+
+Constructed two-frame example, target $a$: at frame one probabilities for
+$(a,\varnothing)$ are $(0.6,0.4)$ and at frame two $(0.7,0.3)$.
+The valid paths are $(a,a),(a,\varnothing),(\varnothing,a)$.
+Their total is $0.42+0.18+0.28=0.88$, so loss is $-\log0.88\simeq0.1278$.
+The all-blank path scores 0.12 and produces the empty string. Computing
+only the best path would give 0.42 and a different training loss.
+
+For target length $U$ with $r$ adjacent repeated pairs, at least $U+r$
+frames are needed: each repeated adjacent label needs an intervening blank.
+For ``book'', $U=4,r=1$, so five frames suffice in principle. This condition
+is necessary, not evidence the network will learn good alignment.
+
+\Q{Method}{Dynamic summation, not a separate dynamic collapse algorithm.}
+Expand target labels to $\ell'=(\varnothing,\ell_1,\varnothing,\ldots,
+\ell_U,\varnothing)$, giving $2U+1$ states. A transition can stay, advance
+one state, or skip one blank when the new label is nonblank and differs
+from the label two states back. Forward probability $\alpha_{t,s}$ sums
+valid prefixes ending at $s$, multiplying by the current emission.
+Initialise only the first blank and first label; terminate by summing the
+last label and last blank states. Log-domain arithmetic replaces sums by
+log-sum-exp to avoid underflow. For values $a_i$, use
+$m+\log\sum_i e^{a_i-m}$ with $m=\max_i a_i$. Collapse itself is just
+the deterministic repeat/blank removal rule~\cite{ctcdistill}.
+
+Greedy inference chooses $\arg\max_k p_t(k)$ independently at each frame,
+then collapses. It maximises a single path, not necessarily the total score
+of a collapsed transcript. Beam search considers several prefixes and can
+sum path scores; a language model can add linguistic assumptions. The
+reported reader uses greedy decoding without a language model.
+
+\subsection{Forced alignment and reading the CTC plot}
+Given a known transcript, forced alignment uses the same allowed state
+transitions but maximises the sum of log probabilities. Write
+$V_{t,s}=\log p_t(\ell'_s)+\max_{r\in\mathcal P(s)}V_{t-1,r}$.
+Store predecessors and backtrack. This Viterbi-style path is a timing/location
+explanation conditional on the supplied transcript, not a fresh proof that
+the transcript is correct. If a model is weak, a legal alignment can still
+put cuts inside letters. Forward--backward soft occupancy and hard best-path
+intervals answer different questions.
+
+A frame edge $t$ maps approximately to canvas coordinate $640t/T$, then
+to source $x=(640t/T)/a$ for left-aligned fit. With $T=160,a=0.5$, edge
+10 maps to source $x=80$. Padding offsets, rounding and endpoint conventions
+must be included when different preparation is used. CNN receptive fields
+and CTC's flexible blank placement mean this is an approximate geometric
+correspondence, not a character bounding-box measurement.
+
+In the report's CTC plot, horizontal position is feature frame, each row a
+class, and the shown trace can be either a greedy class or a transcript-state
+alignment. Repeated $g$ labels need a blank-separated path. Blank carrying
+about 46\% of average probability mass is compatible with correct decoding:
+many frames are gaps or redundant representations. Probability mass is not
+the fraction of blank image pixels. Compare labels, axes and the two paths
+before interpreting the picture as segmentation evidence.
+
+\subsection{Writer head, $K$ classes, dropout and stroke normalisation}
+The writer head averages the 160 feature columns, applies a 96-unit hidden
+layer with ReLU and a final $K$-logit layer. $K$ is the number of writers in
+the loaded mapping, not the text alphabet size. The report evaluates eleven;
+current path lists can contain thirteen. Checkpoint class order determines
+which output index means which writer. A softmax over a closed set has no
+automatic ``unknown writer'' class. Pooling loses order but summarises
+distributed stroke features; it does not prove writer identity is independent
+of text content.
+
+With dropout probability $p=0.2$, training uses
+$\tilde h=m h/(1-p)$ for Bernoulli keep mask $m$ of mean 0.8.
+Therefore $E[\tilde h]=h$. Inference removes the random mask. Dropout is
+published regularisation~\cite{srivastava2014}; 0.2 is the project's chosen
+strength, not a universal optimum. For a 96-unit layer the expected number
+kept is 76.8, not exactly 77 on every pass.
+
+For the shape classifier, binary ink is thinned and square-dilated to controlled
+width: $w=\operatorname{clip}(\operatorname{round}(\rho h_x),2,9)$,
+$k=2\lfloor w/2\rfloor+1$, then white-background image
+$I_s=255[1-\delta_k(\operatorname{thin}(M))]$. At $h_x=40,\rho=0.17$,
+$w=7,k=7$; at $h_x=20$, $w=3,k=3$. If $w=2$, the odd side is 3.
+Thus the effective width is quantised, not exactly $\rho h_x$. Square
+dilation uses a Chebyshev neighbourhood; a disk is a different metric.
+Reducing pen-width cues can make geometry more comparable, but preprocessing
+can also erase genuine writer cues and amplify segmentation errors.
+
+The report records widths 0.06, 0.09, 0.11 and 0.17, best epochs 38, 43,
+39 and 43, and displayed accuracies 98.06\%, 97.42\%, 98.06\% and
+99.35\%. These support ``best observed among these four settings'' for
+that selection experiment. The surrounding prose calls it page identification
+while Table 4 says per-line accuracy: the unit is unresolved here and must
+not silently be chosen. It is not an independent post-selection qualification
+score. The archived run settings and held-out unit would be needed to resolve
+the discrepancy. No stroke-width sweep was rerun.

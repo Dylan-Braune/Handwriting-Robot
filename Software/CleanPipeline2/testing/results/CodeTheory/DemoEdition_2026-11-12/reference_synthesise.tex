@@ -1,0 +1,1187 @@
+\chapter{Handwriting synthesis and candidate selection}\label{module:synthesise}
+\Q{Evidence}{Current implementation boundary}
+\path{Software/DemoCode/synthesise.py}. Exact file hashes are in the accompanying source manifest. Names, declarations and source locations below come from the captured source, not a runtime import.
+\Q{Purpose}{Input-to-output reading flow}
+Read a writer profile and text; choose eligible source glyphs and calibration; lay out words and joins; render candidates; use text/writer judges and accepted local repair to select a trajectory. The text and writer judges score a candidate rather than train during the request.
+
+
+\input{worked_synth}
+\section*{Current function reference}
+\Q{Evidence}{Selected current module settings}
+These are declarations or expressions, not recovered environment values. Source comments do not establish a measured optimum. Larger glyph coordinate tables are designed data in the bundled source.
+\begin{lstlisting}[style=plain]
+_FB_ADV = 1.0
+_SIMILAR = {'I': 'l', 'O': '0', 'l': 'I', '0': 'O', 'o': '0', ';': ':', '"': "'", '!': 'l'}
+UNIFORM_PEN_WIDTH_XH = 0.085
+UNIFORM_SOFT_FRAC = 0.3
+GAP_HI_PCT = 90
+MAX_LETTER_GAP_XH = 0.3
+MIN_LETTER_GAP_XH = 0.03
+MAX_JOIN_GAP_XH = 0.8
+JOIN_FLAT_MAX_ASPECT = 0.35
+JOIN_VERT_MIN_XSPAN_XH = 0.25
+CORE_SLANT_CAP_DEG = 22.0
+CORE_JITTER_FRAC = 0.15
+COLLISION_MIN_GAP_XH = 0.05
+_ELIGIBLE_VARIANTS = 5
+CORE_CURSIVE_CONN = 0.5
+JOIN_PRINT_CONN_FLOOR = 0.45
+IDEAL_ANCHOR_MAX_PRIORD = 0.3
+_GLYPH_CLEAN = 0.12
+_GLYPH_GARBAGE = 0.55
+_COMMIT_LAM = 0.85
+_AUTO_LAM_GOOD = 0.24
+_AUTO_LAM_BAD = 0.32
+_STYLE_CAL = {}
+\end{lstlisting}
+\section*{Stage: Glyph placement and candidate search}
+\ReportEq{29}{New glyph placement}
+{$x=p_x+H(l+u+sv)$ and $y=p_y+H(v+d)$.}
+{Restore writer shear, physical size, lead and baseline drift at the new
+text location. H and origins have millimetre units; stored glyph coordinates
+are dimensionless. Additional jitter/collision handling changes placement.}
+{SynthesizeText.}
+{code2026,wolberg1990}
+
+\ReportEq{30}{Automatic anchoring strength}
+{$\lambda=\mathrm{clip}[(d-0.24)/(0.32-0.24),0,1]$.}
+{Increase fallback preference when median stored prior distance is poor.
+The endpoints are project settings, not universal perceptual thresholds.
+A stored explicit legibilityLambda can override automatic calculation.}
+{AutoLegibility, \_SwapProb and SynthesizeJointBestOf.}
+{code2026}
+
+\ReportEq{31}{Candidate objective}
+{$A=\max(0,1-d_{\rm edit}/|t|)$ and $J=2AP/(A+P)$ for $A+P>0$.}
+{Prefer candidates with both text recovery and requested-writer probability.
+The harmonic mean penalises a weak component, but P is a model posterior
+and A is an edit score, so J is not a joint likelihood or independent physical
+style judgement.}
+{SynthesizeJointBestOf and CharAcc.}
+{code2026,levenshtein1966}
+
+\Q{Alternatives}{Recurrent stroke generation GANwriting and One DM}
+Graves's recurrent synthesis predicts successive online movements; the project
+has offline images with no observed stroke order. GANwriting conditions raster
+generation on content and writer style; its image still needs a pen-path
+conversion for this robot. One-DM iteratively denoises an image and can use one
+style reference at generation, but it was trained on a larger corpus. A small
+reference requirement is not a small training-data requirement. The current
+glyph library avoids training a separate generator and exposes controllable
+geometry, while finite variants approximate contextual cursive poorly. These
+are report-grounded trade-offs, not new head-to-head measurements
+~\cite{gravesgenerate,ganwriting,onedm,haines2016}.
+
+
+\section{Method background: Glyph placement and candidate search}\label{method:synth}
+\Q{Purpose}{The role in this system}
+Generate new text in a stored writer style and balance readability with model-based writer identity.
+
+
+\Q{Justification}{The reason for this construction}
+Explicit glyphs suit a small offline collection and expose size, slant, spacing, joins and fallback provenance. Repeated candidates and accepted repair search this finite representation.
+
+
+\Q{Alternatives}{What changes if another method is used}
+Recurrent stroke generators need online trajectories; GANwriting and One-DM produce raster images and add generative training plus path recovery. They may model context better but are not drop-in arithmetic replacements.
+
+
+\Q{Library}{Implementation speed and accuracy}
+PyTorch can implement neural generators or accelerate judging networks; it does not supply this project glyph library and joining policy as one operation. No measured synthesis quality or time advantage is claimed for an untested replacement. \cite{haines2016,gravesgenerate,ganwriting,onedm}.
+
+
+\section{\_BaselineGlyph}\label{fn:synthesise:-BaselineGlyph}
+\begin{lstlisting}[style=sig]
+def _BaselineGlyph(ch, profile, printOnly=False)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/synthesise.py} line 182. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:synth}.
+
+
+\Q{Purpose}{What this contributes}
+Fetches a fallback letter, stretched to this writer's own reach above and below the line.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{ch}] \normalfont the character wanted
+  \item[{profile}] \normalfont the writer's style profile
+  \item[{printOnly}] \normalfont force the printed alphabet even for a cursive hand
+\end{description}
+
+\noindent\textbf{Output.} a pair of the strokes and the advance, scaled to this writer's reach; or nothing if the character is in neither alphabet.
+
+
+\Q{Purpose}{What it is for}
+Fetches a built-in letterform and adapts it to the writer. Without the adaptation a substituted letter would be visibly foreign: a generic l reaching 1.75 x-heights dropped into a hand whose own ascenders reach 2.4 looks short, and in a hand that reaches only 1.4 it towers over its neighbours. The letterform itself is generic; its proportions should not be.
+
+
+\Q{Justification}{Why only the zones outside the band are rescaled}
+
+\FormulaNote{Set a fallback advance from its geometric width plus designed clearance.}{haines2016,gravesgenerate,ganwriting,onedm}
+\begin{equation}
+y' \;=\; \begin{cases} 1 + (y-1)\,\max\!\big(0.35,\, \tfrac{\mathrm{asc}-1}{0.75}\big) & y > 1 \\[4pt] y \cdot \max\!\big(0.35,\, \tfrac{|\mathrm{desc}|}{0.55}\big) & y < 0 \\[4pt] y & 0 \le y \le 1 \end{cases}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$y$}] \normalfont the built-in letterform's height at this point, in x-heights
+  \item[{$y'$}] \normalfont the adapted height
+  \item[{$\mathrm{asc}$}] \normalfont this writer's measured ascender reach, in x-heights above the baseline
+  \item[{$\mathrm{desc}$}] \normalfont their measured descender reach, negative
+  \item[{$0.75$}] \normalfont the ascender reach above the band that the built-in forms were drawn with, so dividing by it gives a ratio of 1 for a writer matching them
+  \item[{$0.55$}] \normalfont the same for the descender zone
+  \item[{$\max(0.35,\cdot)$}] \normalfont a floor, so a writer with very little measured reach does not collapse the zone to nothing
+\end{description}
+The x-height band itself, from 0 to 1, is left untouched, and that is the point of the piecewise form. The band is the reference against which everything is measured, so it is 1 by definition and rescaling it would be meaningless. What varies between writers is how far they reach \emph{beyond} the band, and those are exactly the two zones the formula adjusts. A letter like an o, entirely inside the band, is therefore unchanged, while an l is stretched or compressed only above y = 1, leaving its body the same size as its neighbours'.
+
+
+\Q{Justification}{Why there is a floor of 0.35}
+A writer whose measured ascender is close to 1.0, which happens when the measurement failed or when most of their ascender letters were rejected, would otherwise give a ratio near zero and flatten every ascender to the height of the band. An l indistinguishable from an e is worse than a slightly wrong l, so the floor keeps at least a third of the designed reach whatever the measurement says.
+
+
+\Q{Method}{How the advance is derived}
+The advance is the shape's own horizontal extent plus 0.12 x-heights of spacing, computed from the points rather than stored. Deriving it means the two alphabets need no advance table to be maintained alongside them, and the margin is added so that consecutive fallback letters do not touch.
+
+
+
+\section{Trajectory}\label{fn:synthesise:Trajectory}
+\begin{lstlisting}[style=sig]
+class Trajectory
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/synthesise.py} line 255. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:synth}.
+
+
+\Q{Purpose}{What this contributes}
+The pen path in millimetres, a list of strokes, each a list of points drawn with the pen down, with y up.
+
+
+\Q{Method}{Methods exposed by this current class}
+\begin{lstlisting}[style=plain]
+def __init__(self, strokes, meta)
+def Bounds(self)
+def PenTravelMm(self)
+\end{lstlisting}
+
+
+\noindent\textbf{Output.} an object holding the pen path: a list of pen-down strokes in millimetres, plus metadata describing how it was produced.
+
+
+\Q{Method}{What it represents}
+The output of synthesis, and the thing the rest of the project consumes. It is a list of \textbf{pen-down paths}: each entry is a sequence of points the pen visits with its tip on the paper, and the gaps between consecutive entries are where the pen lifts. That representation carries exactly the information a plotter needs and nothing more.
+
+
+\Q{Justification}{Why the pen-up moves are implicit}
+Nothing records the lifts explicitly. They are implied by the boundaries between strokes, because by definition the pen must rise at the end of one and fall at the start of the next. Storing them would duplicate information already present and create the possibility of the two disagreeing, which is a class of bug that cannot arise if the state is stored once.
+
+
+\Q{Method}{The coordinate convention, and the one place it changes}
+Coordinates are millimetres with y increasing upward, which is the natural orientation for describing writing and the convention the stored glyphs use. Images have y increasing downward, and some machines expect one or the other. Rather than taking a position on that, the trajectory states its own convention and each consumer converts: the rasteriser flips y as it draws, and the G-code writer flips it if the machine needs it. The flip therefore happens at the boundary, once per consumer, rather than being half-applied inside the trajectory.
+
+
+\Q{Method}{What the two methods report}
+
+\begin{itemize}\setlength\itemsep{0pt}
+  \item \textbf{Bounds} returns the smallest rectangle containing every point, which the rasteriser needs to size its canvas and the G-code writer needs to check the drawing fits the machine's travel.
+  \item \textbf{PenTravelMm} returns the distance drawn with the pen down and the distance moved with it up. The first is how much ink the page needs; the second is wasted motion, and it is the quantity a stroke-ordering optimisation would try to reduce.
+\end{itemize}
+
+\begin{quote}\small\itshape This is one of only two classes in the project, and it earns the form: it bundles data with two derived measurements of that same data, which is what a class is for. The rest of the pipeline is plain functions, because elsewhere there is no state that several operations need to share.\end{quote}
+
+
+\section{\_SwapProb}\label{fn:synthesise:-SwapProb}
+\begin{lstlisting}[style=sig]
+def _SwapProb(lam, priorD)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/synthesise.py} line 290. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:synth}.
+
+
+\Q{Purpose}{What this contributes}
+The chance a stored shape is swapped for the fallback, rising with both the legibility setting and how rough the shape is.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{lam}] \normalfont the legibility setting, from 0 to 1
+  \item[{priorD}] \normalfont this shape's distance from the cross-writer reference
+\end{description}
+
+\noindent\textbf{Output.} the probability, from 0 to 1, that this shape is replaced by the anchor.
+
+
+\Q{Purpose}{What it is for}
+This small function is where the project's central trade-off is actually resolved. For one glyph, given how far it sits from what the letter should look like and how much the library as a whole is trusted, it returns the chance that the writer's own shape is set aside in favour of a clean one.
+
+
+\Q{Method}{The four cases, and the order they are tested in}
+
+\FormulaNote{Convert prior-distance quality into an anchor substitution preference.}{haines2016,gravesgenerate,ganwriting,onedm}
+\begin{equation}
+P_{\mathrm{swap}} \;=\; \begin{cases} 1 & d \ge 0.55 \\[3pt] 1 & \mathrm{lam} \ge 0.85 \\[3pt] 0 & \mathrm{lam} \le 0.001 \\[3pt] 0.06\,\mathrm{lam} & d \le 0.12 \\[3pt] \mathrm{clip}\big(\mathrm{lam}\,(0.55 + 0.9\,b),\,0,\,1\big) & \text{otherwise} \end{cases}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$P_{\mathrm{swap}}$}] \normalfont the returned swap probability
+  \item[{$d$}] \normalfont the shape's prior distance
+  \item[{$\mathrm{lam}$}] \normalfont the legibility setting
+  \item[{$b$}] \normalfont how bad the shape is on a 0 to 1 scale, defined below
+  \item[{$0.55$}] \normalfont the base swap rate for a shape of middling quality
+  \item[{$0.9$}] \normalfont how much worse quality raises that rate
+  \item[{$\mathrm{clip}(\cdot,0,1)$}] \normalfont the result held to a valid probability
+\end{description}
+The order matters because the cases overlap. Garbage is tested first, so a hopeless shape is replaced even at lam 0. Full commitment is next, so above 0.85 everything goes regardless of quality. Only then is lam 0 tested, which keeps every shape that survived the first test: this is what makes lam 0 mean "faithful reproduction, defects and all" rather than "no filtering whatever".
+
+
+\Q{Method}{The interpolation in the middle range}
+
+\FormulaNote{Limit that substitution preference to a valid probability range.}{haines2016,gravesgenerate,ganwriting,onedm}
+\begin{equation}
+b \;=\; \mathrm{clip}\!\left( \frac{d - 0.12}{0.55 - 0.12},\; 0,\; 1 \right)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$b$}] \normalfont the badness of the shape: 0 at the clean threshold, 1 at the garbage threshold
+  \item[{$d$}] \normalfont the shape's prior distance
+  \item[{$0.12,\;0.55$}] \normalfont the clean and garbage reference points
+  \item[{$\mathrm{clip}(\cdot,0,1)$}] \normalfont held in range, although the earlier cases already guarantee d lies between the two
+\end{description}
+This maps the prior distance onto a 0 to 1 scale between the two reference points, which is what lets a single expression cover the whole middle range. The swap probability is then lam times a factor running from 0.55 at the clean end to 1.45 at the garbage end, clipped to 1. So at a given lam, a worse shape is swapped more often, and at a given quality, a less trusted library is swapped more often. The two inputs act multiplicatively, which is the behaviour wanted: neither alone should force a swap.
+
+
+\Q{Justification}{Why a probability and not a decision}
+Returning a probability rather than a yes or no is what produces a mixed page, and a mixed page is the point. A threshold rule would draw every instance of a given character from the same source, so a letter whose shape sits near the line would be either always the writer's or always the anchor. With a probability, some instances are theirs and some are not, which both preserves more of the hand and spreads the risk: one bad instance of a letter in a line is recoverable from context, where every instance being bad is not.
+
+
+\begin{quote}\small\itshape Because the draw is made per glyph from a seeded generator, the same text and seed give the same page. That is what makes the best-of-N search meaningful, since each attempt differs only by its seed, and what makes a result reproducible rather than something that happened once.\end{quote}
+
+
+\section{AutoLegibility}\label{fn:synthesise:AutoLegibility}
+\begin{lstlisting}[style=sig]
+def AutoLegibility(profile)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/synthesise.py} line 314. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:synth}.
+
+
+\Q{Purpose}{What this contributes}
+How far to trust this writer's glyph storage, from the median distance from typical of all their stored shapes.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{profile}] \normalfont the writer's style profile
+\end{description}
+
+\noindent\textbf{Output.} the legibility setting for that writer, from 0 to 1.
+
+
+\Q{Purpose}{What it is for}
+Derives the legibility setting from the profile instead of requiring it to be chosen. The question it answers is: how far can this writer's extracted library be trusted?
+
+
+\FormulaNote{Map median glyph prior distance between project quality endpoints into anchoring strength.}{haines2016,gravesgenerate,ganwriting,onedm}
+\begin{equation}
+\mathrm{lam} \;=\; \mathrm{clip}\!\left( \frac{\mathrm{median}\{d_g\} - 0.24}{0.32 - 0.24},\; 0,\; 1\right)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{lam}$}] \normalfont the returned legibility setting
+  \item[{$d_g$}] \normalfont the prior distance of stored variant g, over every variant of every character in the library
+  \item[{$\mathrm{median}$}] \normalfont the middle value of those distances
+  \item[{$0.24,\;0.32$}] \normalfont the good and bad reference points above
+  \item[{$\mathrm{clip}(\cdot,0,1)$}] \normalfont held within the valid range, which is what makes the mapping flat outside the two reference points
+\end{description}
+
+\Q{Justification}{Why this works, and what it is really measuring}
+The chain of reasoning behind it is the substantive part. The prior distance measures how far a stored shape sits from what its letter should look like. A library whose shapes sit far from that is a library of bad cuts. Bad cuts come from boundaries placed where no honest boundary exists. And that happens exactly when the writing is joined up, because in cursive the pen does not lift between letters, so there is no place to cut that does not damage something.
+
+So the median prior distance is, indirectly, a measure of how cursive the hand is, arrived at by measuring the consequence rather than the cause. That is why it works as a trust signal: it responds to the thing that actually makes an extraction unreliable. And it is why heavily cursive writers end up drawn from anchor forms, which is the mechanism behind this project's finding that such hands reproduce less faithfully.
+
+
+\Q{Justification}{Why an empty library returns 1}
+With no variants there is nothing to measure and nothing to draw from, so the anchor is the only available source and lam 1 states that. Returning 0 instead would claim a library worth trusting, and the caller would then try to draw from one that does not exist.
+
+
+\begin{quote}\small\itshape A profile may carry an explicit legibilityLambda, which callers prefer over this function. That is how a value found by experiment for a particular writer can override the derived one, and it is why the stored lam column appears in this project's profile tables even though it is usually empty.\end{quote}
+
+
+\section{\_GapRange}\label{fn:synthesise:-GapRange}
+\begin{lstlisting}[style=sig]
+def _GapRange(profile)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/synthesise.py} line 327. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:synth}.
+
+
+\Q{Purpose}{What this contributes}
+Caches a gap interval in profile \_gapRange from the ninetieth percentile of stored advance minus lead minus width. Bounds MIN\_LETTER\_GAP\_XH and MAX\_LETTER\_GAP\_XH constrain it. Later parameter or pool edits may need this cached interval recalculated.
+
+
+\Q{Method}{Current implementation}
+Generate new text in a stored writer style and balance readability with model-based writer identity. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def _GapRange(profile):
+    r = profile.get('_gapRange')
+    if r is None:
+        gaps = []
+        for ch,vs in (profile.get('glyphs') or {}).items():
+            if len(ch)!=1 or not ch.isalpha():
+                continue
+            for g in vs:
+                gaps.append(float(g.get('advance',0.9))
+                            -float(g.get('lead',0.0))
+                            -float(g.get('width',0.9)))
+        hi = float(np.percentile(gaps,GAP_HI_PCT)) if gaps else 0.25
+        lo = MIN_LETTER_GAP_XH
+        hi = min(MAX_LETTER_GAP_XH,max(lo+0.02,hi))
+        r = (lo,hi)
+        profile['_gapRange'] = r
+    return r
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Explicit glyphs suit a small offline collection and expose size, slant, spacing, joins and fallback provenance. Repeated candidates and accepted repair search this finite representation. \cite{haines2016,gravesgenerate,ganwriting,onedm}.
+
+
+\section{\_Advance}\label{fn:synthesise:-Advance}
+\begin{lstlisting}[style=sig]
+def _Advance(g, profile)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/synthesise.py} line 346. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:synth}.
+
+
+\Q{Purpose}{What this contributes}
+Uses the selected glyph own lead and width plus a bounded residual gap. Editing only the profile letterAdvance summary does not generally change normal stored glyph placement.
+
+
+\Q{Method}{Current implementation}
+Generate new text in a stored writer style and balance readability with model-based writer identity. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def _Advance(g,profile):
+    lead = float(g.get('lead',0.0))
+    wid = float(g.get('width',0.9))
+    lo,hi = _GapRange(profile)
+    gap = float(g.get('advance',0.9))-lead-wid
+    return lead+wid+min(max(gap,lo),hi)
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Explicit glyphs suit a small offline collection and expose size, slant, spacing, joins and fallback provenance. Repeated candidates and accepted repair search this finite representation. \cite{haines2016,gravesgenerate,ganwriting,onedm}.
+
+
+\section{\_CoreGlyph}\label{fn:synthesise:-CoreGlyph}
+\begin{lstlisting}[style=sig]
+def _CoreGlyph(ch, profile)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/synthesise.py} line 357. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:synth}.
+
+
+\Q{Purpose}{What this contributes}
+The current source always prefers profile idealMedoid if acceptable; the older IDEAL\_SOURCE switch is absent. It falls back to the designed alphabet when the stored representative is absent or too rough. The profile connectedness threshold 0.5 chooses print versus cursive fallback style.
+
+
+\Q{Method}{Current implementation}
+Generate new text in a stored writer style and balance readability with model-based writer identity. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def _CoreGlyph(ch,profile):
+    cursive = float(profile.get('connectedness',0.0))>=CORE_CURSIVE_CONN
+    src = profile.get('idealMedoid') or {}
+    own = src.get(ch)
+    if own and float(own.get('priorD',1.0))<=IDEAL_ANCHOR_MAX_PRIORD:
+        strokes = [[tuple(p) for p in s] for s in own['strokes']]
+        adv = _Advance(own,profile)
+        return strokes,adv,float(own.get('lead',0.0)),cursive
+    b = _BaselineGlyph(ch,profile,printOnly=not cursive)
+    return None if b is None else (b[0],b[1],0.0,cursive)
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Explicit glyphs suit a small offline collection and expose size, slant, spacing, joins and fallback provenance. Repeated candidates and accepted repair search this finite representation. \cite{haines2016,gravesgenerate,ganwriting,onedm}.
+
+
+\section{\_GlyphSource}\label{fn:synthesise:-GlyphSource}
+\begin{lstlisting}[style=sig]
+def _GlyphSource(profile, ch, rng, prevExitY=None, lam=0.0, forceCore=False, forcePrint=False)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/synthesise.py} line 374. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:synth}.
+
+
+\Q{Purpose}{What this contributes}
+Sorts a character pool by prior distance and offers only the first \_ELIGIBLE\_VARIANTS, currently five. Rank weight is 1/(1+1.4*i), with an entry-height compatibility factor when joining. A probability policy may substitute the representative; case-related, similar, designed and blank fallbacks cover missing characters. It records own/core/case/similar/fallback provenance rather than silently treating all shapes as captured.
+
+
+\Q{Method}{Current implementation}
+Generate new text in a stored writer style and balance readability with model-based writer identity. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def _GlyphSource(profile,ch,rng,prevExitY=None,lam=0.0,forceCore=False,
+                 forcePrint=False):
+    store = profile['glyphs']
+    adv = profile.get('letterAdvance',{})
+    if forcePrint:
+        b = _BaselineGlyph(ch,profile,printOnly=True)
+        if b is not None:
+            return b[0],b[1],0.0,'core'
+
+    def Pack(g,k=1.0):
+        strokes = [[(x*k,y*k) for (x,y) in s] for s in g['strokes']]
+        a = _Advance(g,profile)
+        return strokes,a*k,float(g.get('lead',0.0))*k
+
+    def Pick(cands):
+        cands = cands[:_ELIGIBLE_VARIANTS]
+        w = []
+        for i,g in enumerate(cands):
+            wi = 1.0/(1.0+1.4*i)
+            if prevExitY is not None:
+                dy = abs(float(g.get('entryY',0.0))-prevExitY)
+                wi*=math.exp(-(dy/0.45)**2)
+            w.append(wi)
+        tot = sum(w)
+        if tot<=1e-9:
+            return cands[0]
+        r = rng.random()*tot
+        acc = 0.0
+        for i,wi in enumerate(w):
+            acc+=wi
+            if r<=acc:
+                return cands[i]
+        return cands[-1]
+
+    if ch in store and store[ch]:
+        cands = store[ch]
+        ranked = sorted(cands,key=lambda g: g.get('priorD',0.5))
+        g = Pick(ranked)
+        d = float(g.get('priorD',0.5))
+        core = _CoreGlyph(ch,profile)
+        if core is not None and (forceCore
+                                 or rng.random()<_SwapProb(lam,d)):
+            return core[0],core[1],core[2],'core'
+        s,a,lead = Pack(g)
+        return s,a,lead,'own'
+    for alt in (ch.swapcase(),_SIMILAR.get(ch,'')):
+        if alt and alt in store and store[alt]:
+            core = _CoreGlyph(ch,profile)
+            if core is not None and (forceCore
+                                     or rng.random()<_SwapProb(lam,0.4)):
+                return core[0],core[1],core[2],'core'
+            g = Pick(sorted(store[alt],key=lambda x: x.get('priorD',0.5)))
+            if alt==ch.swapcase() and ch.isupper():
+                k = profile.get('ascender',1.7)/max(0.6,g['top'] or 1.0)
+                k = float(np.clip(k,1.0,2.0))
+                s,a,lead = Pack(g,k)
+                return s,a,lead,'case'
+            s,a,lead = Pack(g)
+# Excerpt ends; full definition continues in bundled source.
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Explicit glyphs suit a small offline collection and expose size, slant, spacing, joins and fallback provenance. Repeated candidates and accepted repair search this finite representation. \cite{haines2016,gravesgenerate,ganwriting,onedm}.
+
+
+\section{\_Jitter}\label{fn:synthesise:-Jitter}
+\begin{lstlisting}[style=sig]
+def _Jitter(strokes, rng, amp, rotAmp, scaleAmp)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/synthesise.py} line 445. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:synth}.
+
+
+\Q{Purpose}{What this contributes}
+Generate new text in a stored writer style and balance readability with model-based writer identity.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{strokes}] \normalfont one glyph's strokes
+  \item[{rng}] \normalfont the seeded random generator
+  \item[{amp}] \normalfont the position shift amplitude, in x-heights
+  \item[{rotAmp}] \normalfont the rotation amplitude, in degrees
+  \item[{scaleAmp}] \normalfont the scale variation amplitude, as a fraction
+\end{description}
+
+\noindent\textbf{Output.} the strokes shifted, rotated and scaled by small random amounts.
+
+
+\Q{Justification}{Why randomness is added deliberately}
+Without it, every instance of a letter on the page is identical to the pixel, because the same stored variant is drawn the same way. Identical repetition is the visual signature of print, and a page of it reads as a font however handwritten the individual letterforms are. Real writing never repeats a letter exactly, so a small random variation per glyph is not a flaw introduced into the output; it is a property of handwriting that must be put back.
+
+
+\Q{Method}{The three transformations}
+
+\FormulaNote{Apply small coordinate, rotation and scale perturbations to vary repeated glyphs.}{haines2016,gravesgenerate,ganwriting,onedm}
+\begin{equation}
+\begin{pmatrix} x' \\ y' \end{pmatrix} \;=\; \begin{pmatrix} \cos\theta & -\sin\theta \\ \sin\theta & \cos\theta \end{pmatrix} \begin{pmatrix} s_x x \\ s_y y \end{pmatrix} \;+\; \begin{pmatrix} \delta_x \\ \delta_y \end{pmatrix}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$x,\,y$}] \normalfont the glyph's original coordinates, in x-heights
+  \item[{$x',\,y'$}] \normalfont the jittered coordinates
+  \item[{$\theta$}] \normalfont a small random rotation, drawn from a normal distribution
+  \item[{$s_x,\,s_y$}] \normalfont independent random scale factors, each near 1
+  \item[{$\delta_x,\,\delta_y$}] \normalfont a random translation
+  \item[{$\begin{pmatrix}\cos\theta & -\sin\theta \\ \sin\theta & \cos\theta\end{pmatrix}$}] \normalfont the standard 2-D rotation matrix, which turns a point anticlockwise about the origin by theta
+\end{description}
+The order is scale, then rotate, then translate, and it is not interchangeable: rotating before scaling would make the independent x and y scalings act along the rotated axes, shearing the glyph rather than stretching it. Scaling x and y independently is itself deliberate, since a writer's letters vary slightly in proportion as well as in size.
+
+
+\Q{Justification}{Background: why a normal distribution}
+Each amount is drawn from a \textbf{normal distribution}, the bell-shaped curve, rather than uniformly from a range. The difference is that a normal distribution makes small deviations much commoner than large ones, with no hard limit, whereas a uniform draw makes a large deviation exactly as likely as a tiny one. Real variation behaves the first way: most letters are close to the writer's usual form and a few are noticeably off. A uniform draw produces output that wobbles unconvincingly, because every letter is about equally displaced.
+
+
+\Q{Justification}{Why the vertical shift is smaller}
+The vertical amplitude is 0.6 of the horizontal. Vertical position is read more sharply than horizontal: the eye uses the baseline as a reference, so a letter sitting high stands out in a way that one sitting slightly right does not. The recogniser is similarly sensitive, since its features were learned relative to the baseline. Reducing the vertical component keeps the variation from reading as a fault.
+
+
+\begin{quote}\small\itshape The amplitudes reaching this function are already scaled by the caller's jitter setting and, for an anchor glyph, by CORE\_JITTER\_FRAC. So the same function serves for a fully varied extracted glyph and a nearly rigid anchor, with the policy decision kept in the caller rather than here.\end{quote}
+
+
+\section{\_Resample}\label{fn:synthesise:-Resample}
+\begin{lstlisting}[style=sig]
+def _Resample(poly, step)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/synthesise.py} line 462. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:synth}.
+
+
+\Q{Purpose}{What this contributes}
+Generate new text in a stored writer style and balance readability with model-based writer identity.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{poly}] \normalfont a path
+  \item[{step}] \normalfont the desired spacing between points
+\end{description}
+
+\noindent\textbf{Output.} the path with points evenly spaced at about that interval.
+
+
+\Q{Purpose}{What it is for}
+Respaces a path so its points sit at roughly equal distances along it, by the arc-length method described under \_ResampleN in style.py: cumulative distance along the path is computed and new points are read off at even distances by interpolation.
+
+
+\Q{Justification}{Why layout needs it}
+Paths reaching this point come from several sources with very different point densities. A stored glyph was simplified, so a straight run is two points. A ligature is generated from three control points. A built-in letterform was laid out by hand at whatever spacing was convenient. Concatenating them gives a path whose density varies several-fold along its length, and two later stages are sensitive to that.
+
+
+\begin{itemize}\setlength\itemsep{0pt}
+  \item \textbf{The rasteriser} uses distances to complete line segments in DrawPolyline, so sparse vertices do not inherently create dotted straight segments; resampling changes the represented geometry and amount of segment work.
+  \item \textbf{The G-code writer} emits moves between points; point density affects command count and curve approximation. Actual speed also depends on pulse timing and mechanics, so even spacing does not establish constant physical pen speed.
+\end{itemize}
+
+\Q{Justification}{Why 0.35 millimetres}
+The 0.35 mm sampling step controls trajectory point density. Finer spacing increases point storage and later processing; coarser spacing gives fewer samples and can underrepresent curved geometry. Segment-based drawing and motion interpolation also matter, so uniform samples alone do not guarantee continuous raster coverage, smoother physical motion or constant actual pen speed. This exact step is a project setting, not a literature optimum.
+
+
+\begin{quote}\small\itshape This duplicates \_ResampleN in style.py, differing in that it takes a spacing rather than a count and returns tuples rather than an array. Both forms are needed: averaging requires a fixed count so that points correspond between strokes, while drawing requires a fixed spacing so that density is uniform. The two interfaces serve different callers; count and spacing can be related through total path length, subject to endpoint and rounding conventions.\end{quote}
+
+
+\section{StyleCalibration}\label{fn:synthesise:StyleCalibration}
+\begin{lstlisting}[style=sig]
+def StyleCalibration(profile, mmPerXh=4.0, pxPerMm=18.0)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/synthesise.py} line 484. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:synth}.
+
+
+\Q{Purpose}{What this contributes}
+Always used unless a caller passes an explicit \_cal into SynthesizeText. The retired USE\_STYLE\_CALIBRATION switch is absent. A cache keyed by authorId, physical x-height and render density stores corrections from a short fixed probe. Changes to other profile fields can reuse an old correction unless the cache is invalidated.
+
+
+\Q{Method}{Current implementation}
+Generate new text in a stored writer style and balance readability with model-based writer identity. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def StyleCalibration(profile,mmPerXh=4.0,pxPerMm=18.0):
+    key = (profile.get('authorId'),round(mmPerXh,3),round(pxPerMm,3))
+    if key in _STYLE_CAL:
+        return _STYLE_CAL[key]
+    ref = (profile.get('slantMeasRef'),profile.get('ascMeasRef'),
+           profile.get('descMeasRef'))
+    cal = dict(shearDelta=0.0,ascK=1.0,descK=1.0)
+    if None in ref or any(r!=r for r in ref):
+        _STYLE_CAL[key] = cal
+        return cal
+    slantRef,ascRef,descRef = ref
+    sample = ('the quick brown fox jumps over lazy dogs and by half past '
+              'eight it kept flying quietly')
+    for _ in range(3):
+        traj = SynthesizeText(sample,profile,mmPerXh=mmPerXh,seed=17,
+                              lineWidthMm=10_000.0,jitter=0.0,_cal=cal)
+        img = RenderTrajectory(traj,pxPerMm=pxPerMm)
+        ink = BinarizeLine(np.array(img))
+        band = CoreBand(ink)
+        if band is None or not ink.any():
+            break
+        top,base = band
+        xh = float(base-top)
+        if xh<4:
+            break
+        ys = np.nonzero(ink.any(axis=1))[0]
+        gotSlant = EstimateSlantDeg(ink)
+        gotAsc = float(base-ys.min())/xh
+        gotDesc = float(base-ys.max())/xh
+        cal = dict(
+            shearDelta=cal['shearDelta']+
+            math.tan(math.radians(slantRef))-math.tan(math.radians(gotSlant)),
+            ascK=float(np.clip(cal['ascK']*(ascRef-1.0)/
+                               max(1e-3,gotAsc-1.0),0.5,1.6)),
+            descK=float(np.clip(cal['descK']*descRef/min(-1e-3,gotDesc),
+                                0.5,1.6)))
+    _STYLE_CAL[key] = cal
+    return cal
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Explicit glyphs suit a small offline collection and expose size, slant, spacing, joins and fallback provenance. Repeated candidates and accepted repair search this finite representation. \cite{haines2016,gravesgenerate,ganwriting,onedm}.
+
+
+\section{\_ApplyCal}\label{fn:synthesise:-ApplyCal}
+\begin{lstlisting}[style=sig]
+def _ApplyCal(strokes, cal)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/synthesise.py} line 524. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:synth}.
+
+
+\Q{Purpose}{What this contributes}
+Generate new text in a stored writer style and balance readability with model-based writer identity.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{strokes}] \normalfont one glyph's strokes
+  \item[{cal}] \normalfont the correction dictionary
+\end{description}
+
+\noindent\textbf{Output.} the strokes with the ascender and descender zones rescaled.
+
+
+\Q{Method}{What it does}
+Applies the two zone corrections, stretching or compressing only the parts of a glyph outside the x-height band. The shear correction is not applied here; it was folded into the slant before layout began, since shear depends on the final height and must be applied as the glyph is placed.
+
+
+\FormulaNote{Adjust ascender and descender extents while preserving the body-band reference.}{haines2016,gravesgenerate,ganwriting,onedm}
+\begin{equation}
+y' \;=\; \begin{cases} 1 + (y-1)\,k_{\mathrm{asc}} & y > 1 \\[3pt] y \cdot k_{\mathrm{desc}} & y < 0 \\[3pt] y & 0 \le y \le 1 \end{cases}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$y$}] \normalfont the glyph's height at this point, in x-heights
+  \item[{$y'$}] \normalfont the corrected height
+  \item[{$k_{\mathrm{asc}}$}] \normalfont the ascender correction factor
+  \item[{$k_{\mathrm{desc}}$}] \normalfont the descender correction factor
+\end{description}
+This is the same piecewise form as \_BaselineGlyph uses for adapting a built-in letterform, and for the same reason: the band from 0 to 1 is the reference and must not move, so only the reach beyond it is scaled. Writing the ascender case as 1 plus a scaled excess, rather than scaling y directly, is what keeps the band's top edge fixed at exactly 1.
+
+
+\Q{Method}{The early exit}
+When both factors are within a thousandth of 1, the strokes are returned untouched. That is the common case, since many writers need no zone correction, and the check avoids rebuilding every point of every glyph to multiply by one.
+
+
+\begin{quote}\small\itshape This is applied only to extracted glyphs, never to an anchor. The anchor's proportions were either designed to be legible or are the writer's own best letterform, and re-stretching them would reintroduce the distortion the anchor exists to avoid. The caller enforces that by testing the source label before calling.\end{quote}
+
+
+\section{\_Ligature}\label{fn:synthesise:-Ligature}
+\begin{lstlisting}[style=sig]
+def _Ligature(p0, p1, xh, rng)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/synthesise.py} line 544. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:synth}.
+
+
+\Q{Purpose}{What this contributes}
+The current connector uses the shallow project construction; the optional tangent-ligature implementation and switch are absent. A join adds new ink that was not observed in either stored character. It should not be represented as recovered original pen motion.
+
+
+\Q{Method}{Current implementation}
+Generate new text in a stored writer style and balance readability with model-based writer identity. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def _Ligature(p0,p1,xh,rng):
+    dx = p1[0]-p0[0]
+    if abs(dx)<0.06*xh:
+        return [p0,p1]
+    sag = min(0.11*xh,0.16*abs(dx))+rng.gauss(0.0,0.015*xh)
+    ctrlY = min(p0[1],p1[1])+0.35*abs(p1[1]-p0[1])-sag
+    ctrl = ((p0[0]+p1[0])*0.5,ctrlY)
+    out = []
+    for i in range(9):
+        t = i/8.0
+        u = 1.0-t
+        out.append((u*u*p0[0]+2*u*t*ctrl[0]+t*t*p1[0],
+                    u*u*p0[1]+2*u*t*ctrl[1]+t*t*p1[1]))
+    return _Resample(out,step=0.35)
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Explicit glyphs suit a small offline collection and expose size, slant, spacing, joins and fallback provenance. Repeated candidates and accepted repair search this finite representation. \cite{haines2016,gravesgenerate,ganwriting,onedm}.
+
+
+\section{\_BodyStroke}\label{fn:synthesise:-BodyStroke}
+\begin{lstlisting}[style=sig]
+def _BodyStroke(placed, xh)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/synthesise.py} line 564. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:synth}.
+
+
+\Q{Purpose}{What this contributes}
+Selects the body path and eligible entry/exit rather than joining via dots or crossbars. Flatness and small-horizontal-span guards address ambiguous skeleton ordering. The former JOIN\_ANATOMY feature switch is absent; the actual helper determines the rule.
+
+
+\Q{Method}{Current implementation}
+Generate new text in a stored writer style and balance readability with model-based writer identity. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def _BodyStroke(placed,xh):
+    spans = [max(p[0] for p in s)-min(p[0] for p in s) for s in placed]
+    highs = [max(p[1] for p in s)-min(p[1] for p in s) for s in placed]
+    cand = [i for i in range(len(placed))
+            if highs[i]>=JOIN_FLAT_MAX_ASPECT*max(spans[i],1e-9)]
+    if not cand:
+        cand = list(range(len(placed)))
+    bi = max(cand,key=lambda i: spans[i])
+    body = list(placed[bi])
+    if spans[bi]<JOIN_VERT_MIN_XSPAN_XH*xh:
+        if body[0][1]<body[-1][1]:
+            body = body[::-1]   #y is up, so the lower end goes last
+    return bi,body
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Explicit glyphs suit a small offline collection and expose size, slant, spacing, joins and fallback provenance. Repeated candidates and accepted repair search this finite representation. \cite{haines2016,gravesgenerate,ganwriting,onedm}.
+
+
+\section{\_SplitWords}\label{fn:synthesise:-SplitWords}
+\begin{lstlisting}[style=sig]
+def _SplitWords(text)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/synthesise.py} line 579. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:synth}.
+
+
+\Q{Purpose}{What this contributes}
+Generate new text in a stored writer style and balance readability with model-based writer identity.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{text}] \normalfont the text to be written
+\end{description}
+
+\noindent\textbf{Output.} a list of words with newline markers between the lines.
+
+
+\Q{Purpose}{What it is for}
+Breaks the text into the units layout works with. Words are the unit because wrapping happens at word boundaries: a word that will not fit on the current line moves to the next one whole, since handwriting is not hyphenated.
+
+
+\Q{Justification}{Why newlines survive as markers}
+The text is split on newlines first and a marker is inserted between the resulting chunks, so an explicit line break in the input is preserved rather than being treated as a space. The distinction matters because an explicit break is the writer's instruction and must be obeyed wherever the line happens to be, while a space is merely a place where a break is permitted. Keeping the two distinct lets layout handle them as what they are.
+
+
+\begin{quote}\small\itshape Empty strings between consecutive spaces are discarded, so repeated spaces collapse to one gap, and a trailing marker is removed so text ending in a newline does not produce an empty final line. Both are small conveniences that keep the layout loop from needing to test for them.\end{quote}
+
+
+\section{\_WordWidth}\label{fn:synthesise:-WordWidth}
+\begin{lstlisting}[style=sig]
+def _WordWidth(word, profile)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/synthesise.py} line 587. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:synth}.
+
+
+\Q{Purpose}{What this contributes}
+Generate new text in a stored writer style and balance readability with model-based writer identity.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{word}] \normalfont one word
+  \item[{profile}] \normalfont the writer's style profile
+\end{description}
+
+\noindent\textbf{Output.} approximately how wide the word will be, in x-heights.
+
+
+\Q{Purpose}{What it is for}
+An estimate used only to decide whether a word fits on the current line. It sums the writer's median advance for each character, falling back to 0.9 x-heights for a character with no recorded advance.
+
+
+\Q{Justification}{Why an estimate is acceptable here}
+The true width is not available in advance, because it depends on which variant of each letter is chosen, how the jitter scales them, and whether the collision guard pushes anything right. All of that happens while the word is being drawn, which is after the decision to put it on this line has been made. Determining the exact width would mean laying the word out, measuring it, and discarding the result if it did not fit, which is several times the work for a decision whose only consequence is where a line breaks.
+
+The estimate is slightly low on average, since it ignores the collision guard, which only ever widens. So a word occasionally overruns the requested line width by a small margin. That is the right direction for the error to fall: a line a few percent too long is unremarkable, where a conservative estimate that broke lines early would leave visible ragged gaps.
+
+
+
+\section{SynthesizeText}\label{fn:synthesise:SynthesizeText}
+\begin{lstlisting}[style=sig]
+def SynthesizeText(text, profile, mmPerXh=4.0, seed=None, lineWidthMm=180.0, jitter=0.15, legibility=None, perCharLam=None, _cal=None)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/synthesise.py} line 596. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:synth}.
+
+
+\Q{Purpose}{What this contributes}
+Always computes or accepts style correction, clamps writer slant, suppresses joins below connectedness 0.45, and otherwise uses connEff equal to measured connectedness. There is no JOIN\_PROB\_CAP or JOIN\_LEGIBILITY\_COUPLING in this tree. Glyph variants, bounded spacing, jitter, integrated drift, collision clearance and compatible joins create millimetre paths; lineStepMm is (ascender - descender + 0.85) times x-height.
+
+
+\Q{Method}{Current implementation}
+Generate new text in a stored writer style and balance readability with model-based writer identity. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def SynthesizeText(text,profile,mmPerXh=4.0,seed=None,lineWidthMm=180.0,
+                   jitter=0.15,legibility=None,perCharLam=None,_cal=None):
+    if legibility is None:
+        legibility = float(profile.get('legibilityLambda',
+                                       AutoLegibility(profile)))
+    rng = random.Random(seed)
+    xh = float(mmPerXh)
+    cal = _cal if _cal is not None else StyleCalibration(profile,mmPerXh)
+    slantDeg = profile.get('slantDeg',0.0)
+    authorSlantCap = 45.0-19.0*float(np.clip(legibility,0.0,1.0))
+    slantDeg = float(np.clip(slantDeg,-authorSlantCap,authorSlantCap))
+    slant = math.tan(math.radians(slantDeg))+cal['shearDelta']
+    conn = float(profile.get('connectedness',0.0))
+    connEff = 0.0 if conn<JOIN_PRINT_CONN_FLOOR else conn
+    wordGap = float(profile.get('wordSpaceXh',1.2))
+    ascender = float(profile.get('ascender',1.7))
+    descender = float(profile.get('descender',-0.6))
+    lineStep = (ascender-descender+0.85)*xh
+
+    ampP = 0.022*jitter   #position jitter, in x-heights
+    ampR = 2.2*jitter   #rotation jitter, in degrees
+    ampS = 0.05*jitter   #scale jitter
+    driftAmp = 0.05*jitter   #slow baseline drift, in x-heights
+
+    strokes = []
+    penX,penY = 0.0,0.0
+    lineIdx = 0
+    drift = 0.0
+    driftV = 0.0
+    usage = {}
+    vpos = 0   #index into the text with newlines as spaces, for perCharLam
+
+    def Flush(chain):
+        if len(chain)>=2:
+            strokes.append(_Resample(chain,step=0.35))
+        elif len(chain)==1:
+            strokes.append(chain+[(chain[0][0]+0.05,chain[0][1])])
+
+    for word in _SplitWords(text):
+        if word=='\n':
+            lineIdx+=1
+            penX = 0.0
+            penY = -lineIdx*lineStep
+            vpos+=1
+            continue
+        wWidth = _WordWidth(word,profile)*xh
+        if penX>1e-6 and penX+wWidth>lineWidthMm:
+            lineIdx+=1
+            penX = 0.0
+            penY = -lineIdx*lineStep
+        chain = []   #the current pen-down polyline
+        prevExit = None
+        prevBodyMaxX = None
+        prevSrc = None
+        prevCoreCursive = False
+        for ci,ch in enumerate(word):
+            lam = legibility
+            forceCore = forcePrint = False
+# Excerpt ends; full definition continues in bundled source.
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Explicit glyphs suit a small offline collection and expose size, slant, spacing, joins and fallback provenance. Repeated candidates and accepted repair search this finite representation. \cite{haines2016,gravesgenerate,ganwriting,onedm}.
+
+
+\section{SynthesizeJointBestOf}\label{fn:synthesise:SynthesizeJointBestOf}
+\begin{lstlisting}[style=sig]
+def SynthesizeJointBestOf(author, text, profile, nTries=6, mmPerXh=4.0, lineWidthMm=180.0, jitter=0.5, seed=0, reader=None, authorModel=None, authorMapping=None, pxPerMm=18.0, legibility=None, repair=True, repairRounds=3, repairWorstK=2)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/synthesise.py} line 813. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:synth}.
+
+
+\Q{Purpose}{What this contributes}
+The direct function default is six tries, while server DEFAULT\_TRIES is fourteen unless WEBAPP\_TRIES overrides it. Each candidate is rendered and scored by text edit agreement and requested-writer probability using their harmonic mean. Up to three repair rounds target two new weak positions per round; only an improved complete score commits the repair. Search stopping thresholds and seed spacing 977 are heuristics, not published optima.
+
+
+\Q{Method}{Current implementation}
+Generate new text in a stored writer style and balance readability with model-based writer identity. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def SynthesizeJointBestOf(author,text,profile,nTries=6,mmPerXh=4.0,
+                          lineWidthMm=180.0,jitter=0.5,seed=0,
+                          reader=None,authorModel=None,authorMapping=None,
+                          pxPerMm=18.0,legibility=None,
+                          repair=True,repairRounds=3,repairWorstK=2):
+    if legibility is None:
+        legibility = float(profile.get('legibilityLambda',
+                                       AutoLegibility(profile)))
+    if reader is None:
+        reader = PaperCRNNNumpy()
+    if authorModel is None:
+        authorModel = AuthorClassifierCNNNumpy()
+    if authorMapping is None:
+        authorMapping = authorModel.authorMapping
+    visible = text.replace('\n',' ')
+    authorIdx = authorMapping[author]
+
+    def Score(img):
+        textAcc = CharAcc(ReadText(img,reader),visible)
+        _predIdx,probs = ClassifyImage(img,authorModel)
+        widConf = float(probs[authorIdx])
+        combined = (2*textAcc*widConf/(textAcc+widConf)
+                   if (textAcc+widConf)>1e-9 else 0.0)
+        return combined,textAcc,widConf
+
+    base = 0 if seed is None else int(seed)
+    best,bestTraj,bestImg = -1.0, None, None
+    for k in range(max(1,nTries)):
+        traj = SynthesizeText(text,profile,mmPerXh=mmPerXh,
+                              seed=base+977*k,lineWidthMm=lineWidthMm,
+                              jitter=jitter,legibility=legibility)
+        img = RenderTrajectory(traj,pxPerMm=pxPerMm)
+        combined,_textAcc,_widConf = Score(img)
+        if combined>best:
+            best,bestTraj,bestImg = combined,traj,img
+        if best>=0.99:
+            break
+
+    perChar = {}
+    if repair:
+        for _round in range(repairRounds):
+            if best>=0.995:
+                break
+            weak = _WeakChars(reader,bestImg,visible)
+            fresh = [p for p in weak if p not in perChar][:repairWorstK]
+            if not fresh:
+                break
+            trial = dict(perChar)
+            for p in fresh:
+                trial[p] = 1.0
+            cand = SynthesizeText(text,profile,mmPerXh=mmPerXh,seed=base,
+                                  lineWidthMm=lineWidthMm,jitter=jitter,
+                                  legibility=legibility,perCharLam=trial)
+            img = RenderTrajectory(cand,pxPerMm=pxPerMm)
+            combined,_textAcc,_widConf = Score(img)
+            if combined>best:
+                best,bestTraj,bestImg = combined,cand,img
+                perChar = trial
+# Excerpt ends; full definition continues in bundled source.
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Explicit glyphs suit a small offline collection and expose size, slant, spacing, joins and fallback provenance. Repeated candidates and accepted repair search this finite representation. \cite{haines2016,gravesgenerate,ganwriting,onedm}.
+
+
+\section*{Stage: Trajectory rasterisation}
+Method rationale, alternatives and library comparison: Section~\ref{method:render}.
+\section{\_Draw}\label{fn:synthesise:-Draw}
+\begin{lstlisting}[style=sig]
+def _Draw(traj, pxPerMm, padMm, strokePx, paper=255, ink=0, softPx=0.0)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/synthesise.py} line 752. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:render}.
+
+
+\Q{Purpose}{What this contributes}
+Rasterises the pen path as black ink on white paper with the round pen, then softens the edge slightly.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{traj}] \normalfont the trajectory to draw
+  \item[{pxPerMm}] \normalfont the resolution in pixels per millimetre
+  \item[{padMm}] \normalfont the margin in millimetres
+  \item[{strokePx}] \normalfont the pen width in pixels
+  \item[{paper}] \normalfont the background value, default 255
+  \item[{ink}] \normalfont the stroke value, default 0
+  \item[{softPx}] \normalfont the blur radius in pixels, 0 for none
+\end{description}
+
+\noindent\textbf{Output.} a grey image of the trajectory, ink on paper.
+
+
+\Q{Justification}{Why the pen path is turned into an image at all}
+The plotter draws from the trajectory and never needs an image. The image exists because the two judging networks score pictures, not paths. Every evaluation in this project, and the best-of-N search itself, works by rendering a candidate and asking the networks what they see. So the rasteriser is not a display convenience; it is part of the optimisation loop, and how faithfully it imitates a photograph determines whether the scores mean anything.
+
+
+\Q{Method}{The coordinate flip}
+
+\FormulaNote{Convert millimetre trajectory coordinates into image pixels with a vertical-axis flip.}{pillowdraw,opencvdraw,code2026}
+\begin{equation}
+x_{\mathrm{px}} \;=\; (x - x_0 + \mathrm{pad}) \cdot \mathrm{ppm}, \qquad y_{\mathrm{px}} \;=\; (y_1 - y + \mathrm{pad}) \cdot \mathrm{ppm}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$x_{\mathrm{px}},\, y_{\mathrm{px}}$}] \normalfont the pixel position
+  \item[{$x,\,y$}] \normalfont the trajectory position in millimetres, y upward
+  \item[{$x_0$}] \normalfont the leftmost extent of the trajectory
+  \item[{$y_1$}] \normalfont the topmost extent
+  \item[{$\mathrm{pad}$}] \normalfont the margin in millimetres
+  \item[{$\mathrm{ppm}$}] \normalfont pixels per millimetre
+\end{description}
+The x expression merely shifts the origin and scales. The y expression also reverses direction, by subtracting from the top extent rather than adding to the bottom one, because the trajectory has y increasing upward and an image has row 0 at the top. This is the single place that conversion happens on the rendering path, which is the discipline described under Trajectory: each consumer converts at its own boundary.
+
+
+\Q{Justification}{Why the round pen needs no end caps}
+Each stroke is drawn by DrawPolyline, which sets a pixel according to its distance from the path rather than by stepping along and stamping a shape. A consequence worth drawing out is that round ends and round joins come out automatically: the set of points within a fixed distance of a line segment is a rectangle with a semicircle at each end, and the union of two such regions is already correctly rounded where they meet. A stamping rasteriser would need explicit end caps and join handling, and would leave notches at sharp corners.
+
+
+\Q{Justification}{Why the blur comes last}
+All the strokes are drawn and then the whole image is blurred once. Blurring each stroke as it was drawn would be both slower and wrong: where two strokes overlap, each having been individually softened, the overlap would be darker than a single stroke's core, producing a visible dark patch at every crossing. Blurring the finished image treats a crossing as the single region of ink that it is.
+
+
+\begin{quote}\small\itshape The canvas is sized from the trajectory's own bounds plus the margin, so it is exactly as large as the writing requires. A fixed canvas size would either clip long text or surround short text with blank paper, and the second matters as much as the first, because the proportion of the crop that is ink is one of the statistics the networks respond to.\end{quote}
+
+
+\section{RenderTrajectory}\label{fn:synthesise:RenderTrajectory}
+\begin{lstlisting}[style=sig]
+def RenderTrajectory(traj, pxPerMm=8.0, padMm=None, strokePx=None, size=None)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/synthesise.py} line 771. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:render}.
+
+
+\Q{Purpose}{What this contributes}
+Current accepted parameters are traj, pxPerMm, padMm, strokePx and size. There are no profile or uniformInk parameters. Rendering always uses the uniform-width path, default width fraction 0.085 and blur fraction 0.30. Optional size performs a subsequent raster resize and can change aspect ratio if both dimensions are specified independently.
+
+
+\Q{Method}{Current implementation}
+Make an image of a generated path for preview and recognition-based scoring. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def RenderTrajectory(traj,pxPerMm=8.0,padMm=None,strokePx=None,size=None):
+    mm = traj.meta.get('mmPerXh',4.0)
+    if padMm is None:
+        padMm = 0.18*mm   #padding proportional to the writing
+    sp = strokePx or max(1,int(round(UNIFORM_PEN_WIDTH_XH*mm*pxPerMm)))
+    img = _Draw(traj,pxPerMm,padMm,sp,paper=255,ink=0,
+                softPx=UNIFORM_SOFT_FRAC*max(1.0,sp))
+    if size is not None:
+        img = Resize(np.asarray(img,dtype=np.uint8),size[0],size[1],'linear')
+    return img
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Sampling straight segments and applying a controlled width makes candidate rendering explicit. The uniform width models one drawing pen rather than source ink intensity. \cite{pillowdraw,opencvdraw,code2026}.
+
+
+\section*{Stage: CTC decoding and forced alignment}
+Method rationale, alternatives and library comparison: Section~\ref{method:ctc}.
+\section{\_LineLogProbs}\label{fn:synthesise:-LineLogProbs}
+\begin{lstlisting}[style=sig]
+def _LineLogProbs(reader, img)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/synthesise.py} line 783. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:ctc}.
+
+
+\Q{Purpose}{What this contributes}
+Fits the rendered crop to the reader canvas and calls reader.Forward. It is a model-scoring input path, not a geometric measurement of the physical gantry output.
+
+
+\Q{Method}{Current implementation}
+Train from complete line transcripts and recover transcript-constrained character locations for extraction. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def _LineLogProbs(reader,img):
+    t = TensorFromResized(ResizeLineImageFixed(img))
+    return reader.Forward(t)[:,0,:]
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+CTC marginalises valid blank/repeat paths; greedy decoding selects a path cheaply; forced alignment maximises over paths for a supplied known transcript. \cite{graves2006,ctcdistill,torchctc}.
+
+
+\section{\_WeakChars}\label{fn:synthesise:-WeakChars}
+\begin{lstlisting}[style=sig]
+def _WeakChars(reader, img, visible)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/synthesise.py} line 788. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:ctc}.
+
+
+\Q{Purpose}{What this contributes}
+Train from complete line transcripts and recover transcript-constrained character locations for extraction.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{reader}] \normalfont a loaded reader
+  \item[{img}] \normalfont a rendered line image
+  \item[{visible}] \normalfont the text that was supposed to be written
+\end{description}
+
+\noindent\textbf{Output.} the positions of the characters the reader scored worst, worst first.
+
+
+\Q{Purpose}{What it is for}
+Identifies which characters of the rendered line the reader is least sure about. The repair loop uses the answer to redraw only those characters, instead of redrawing the whole line and hoping for a better outcome.
+
+
+\Q{Justification}{Why forced alignment rather than decoding}
+The text is known, so there is no recognition to be done. What is wanted is per-character evidence, and forced alignment provides it: it finds where each known character sits in the rendered line, after which the reader's own score for that character over exactly those columns is a direct measure of how legible that character came out.
+
+
+\FormulaNote{Rank transcript-aligned character positions by mean log probability for targeted repair.}{graves2006,ctcdistill,torchctc}
+\begin{equation}
+s_i \;=\; \frac{1}{t_1 - t_0} \sum_{t=t_0}^{t_1-1} \log p_t\big(c_i\big)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$s_i$}] \normalfont the score for the i-th character: higher is more legible
+  \item[{$c_i$}] \normalfont that character
+  \item[{$t_0,\, t_1$}] \normalfont the first and last columns the alignment assigned to it
+  \item[{$\log p_t(c_i)$}] \normalfont the reader's log probability for that character at column t
+  \item[{$\frac{1}{t_1-t_0}$}] \normalfont the mean over its columns, so a wide letter is not favoured over a narrow one merely for occupying more columns
+\end{description}
+Averaging rather than summing is the point of that factor. A summed score would rank an m below an i automatically, since it spans more columns and so accumulates more negative terms, and the repair loop would spend its attention on wide letters regardless of how legible they were.
+
+
+\Q{Method}{The unaligned case}
+A character the alignment could not place at all is given a very large negative score, so it sorts to the front. That is the correct ranking: a character with no columns of its own was so poorly drawn that the aligner had to pass through it in a single step shared with its neighbours, which is a more complete failure than a character that was placed but scored badly.
+
+
+\begin{quote}\small\itshape Whitespace is skipped, since a space is not a drawn shape and cannot be repaired by substituting a letterform. Positions are returned as indices into the original text, not into the filtered character list, because that is what the per-character override table is keyed by.\end{quote}
+

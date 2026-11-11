@@ -1,0 +1,1742 @@
+\chapter{Gantry mapping and control}\label{module:reproduce}
+\Q{Evidence}{Current implementation boundary}
+\path{Software/DemoCode/reproduce.py}. Exact file hashes are in the accompanying source manifest. Names, declarations and source locations below come from the captured source, not a runtime import.
+\Q{Purpose}{Input-to-output reading flow}
+Establish units, workspace and axis calibration; map and order trajectories; describe pen state and switches; generate coordinated integer pulses and G-code; interpret the job with stop and connection checks. Hardware sizing explains assumptions before the motion equations.
+
+
+\input{worked_hardware}
+\section*{Current function reference}
+\Q{Evidence}{Selected current module settings}
+These are declarations or expressions, not recovered environment values. Source comments do not establish a measured optimum. Larger glyph coordinate tables are designed data in the bundled source.
+\begin{lstlisting}[style=plain]
+_EXTENT_HI_PCT = 98.0
+_EXTENT_LO_PCT = 2.0
+CHIP_PATH = '/dev/gpiochip0'
+DIR1_PIN, STEP1_PIN = (64, 68)
+DIR2_PIN, STEP2_PIN = (81, 69)
+X_MIN_PIN, X_MAX_PIN = (72, 65)
+Y_MIN_PIN, Y_MAX_PIN = (66, 67)
+PEN_SWITCH_PIN = 70
+PEN_MOTOR_PIN = 71
+ENDSTOP_PINS = {'X_MIN': X_MIN_PIN, 'X_MAX': X_MAX_PIN, 'Y_MIN': Y_MIN_PIN, 'Y_MAX': Y_MAX_PIN}
+INVERT_X = True
+INVERT_Y = True
+MICROSTEPS = 16
+STEPS_PER_REV = 200 * MICROSTEPS
+STEPS_PER_MM = 80.0
+MIN_STEP_DELAY_S = 2e-06
+X_SWITCH_TRAVEL_MM = 200.6
+Y_SWITCH_TRAVEL_MM = 261.3
+EDGE_TOLERANCE_MM = 5.0
+HOMING_STEP_DELAY_S = 0.0008
+HOMING_MAX_STEPS = 200000
+ENDSTOP_DEBOUNCE_S = 0.006
+ENDSTOP_CONFIRM_SAMPLES = 3
+RETRACT_MM = 5.0
+PEN_UP_OVERRUN_S = 0.04
+GCODE_MIN_FEED_MM_S = 0.1
+_GCODE_WORD_RE = re.compile('([A-Za-z])\\s*(-?[0-9]*\\.?[0-9]+)')
+_RETREAT_SIGN = {'X_MIN': +1, 'X_MAX': -1, 'Y_MIN': +1, 'Y_MAX': -1}
+\end{lstlisting}
+\section*{Stage: Coordinate mapping and path planning}
+\ReportEq{1}{Belt travel and pitch radius}
+{$\ell_{\rm rev}=N_tp=40\,\mathrm{mm/rev}$ and
+$r=\ell_{\rm rev}/(2\pi)=6.366\,\mathrm{mm}$.}
+{Translate motor rotation to belt motion and establish the moment arm for torque.
+The current configuration uses 20 teeth, 2 mm pitch and 40 mm per revolution.
+The pitch radius is not necessarily the pulley outer radius.}
+{GantryConfig and its steps-per-mm properties. Geometry derived from the stated
+transmission; motor/driver relations are conditional on actual hardware.}
+{a4988datasheet,code2026}
+
+\ReportEq{2}{Linear speed to motor speed}
+{$n=v/\ell_{\rm rev}$, so $4000/40=100$ revolutions per minute.}
+{Compare a proposed traverse rate with a speed-dependent motor curve. Millimetres
+per minute divided by millimetres per revolution yields revolutions per minute.
+It is a design calculation, not a measured maximum feed.}
+{Mechanical sizing and \_GcodeLinearMove feed interpretation.}
+{code2026,openstaxrotation}
+
+\ReportEq{3}{Torque curve interpolation}
+{$T(n)=T_1+(n-n_1)(T_2-T_1)/(n_2-n_1)$.}
+{Estimate between two verified curve samples. The report's $(60,7)$ and
+$(120,21)$ RPM/N\,cm points give 16.33 N\,cm at 100 RPM, but its curve citation
+is literally left as SOURCE. The arithmetic is reproducible; the points and
+their operating conditions remain unauthenticated.}
+{Report hardware justification, not a torque lookup in the current controller.}
+{finalreport2026,openstaxrotation}
+
+\ReportEq{4}{Steady opposing load}
+{$T=r\mu mg=0.0002373\,\mathrm{N\,m}=0.02373\,\mathrm{N\,cm}$ under the report inputs.}
+{Estimate one steady-friction term. The assumed $\mu=0.004$ is not an observed
+assembly coefficient. Acceleration, pen drag, belt forces and rotary inertia
+are omitted, so this cannot establish the available dynamic margin.}
+{Report mechanical sizing; the fuller load discussion is in the motion chapter.}
+{openstaxrotation,finalreport2026}
+
+\ReportEq{5}{Command lattice and rounding}
+{$K=200(16)/40=80\,\mathrm{steps/mm}$ and $\Delta=1/K=0.0125$ mm.}
+{Relate integer pulse targets to millimetres. Nearest rounding gives at most
+$\Delta/2$ per axis and $\sqrt2\Delta/2$ endpoint distance for equal axes.
+These are quantisation bounds, not loaded microstep accuracy or measured
+reproduction precision.}
+{GantryConfig, Calibrate and \_GcodeLinearMove.}
+{a4988datasheet,code2026}
+
+\ReportEq{6}{Driver current limit}
+{$I_{\rm trip,max}=V_{\rm REF}/(8R_S)$; with $R_S=0.1\,\Omega$ and 1.68 A,
+$V_{\rm REF}=1.344$ V.}
+{Set a conditional electrical current limit. Eight is the driver's internal
+sense scaling, not the microstep setting. Installed sense resistance, actual
+reference voltage and thermal conditions must be established separately.}
+{Hardware setting, not a software-assigned phase current.}
+{a4988datasheet,pololu4988}
+
+\ReportEq{32}{Machine placement}
+{$x_m=o_x+m_x+a(x-x_0)$,
+$y_m=o_y-m_y-d_y-a(y_1-y)+\Delta y$.}
+{Place the trajectory within margins and fit to bounds. The current
+ToMachine retains scaled synthesis pitch and removes measured row-centre
+wander; it has no ignoreRuling choice. Both frames here are y-up.}
+{ToMachine and \_Clamp.}
+{code2026,wolberg1990}
+
+\Q{Alternatives}{Mechanisms lifts and control}
+A Cartesian gantry maps orthogonal axes directly; serial arms require coupled
+kinematics and can vary stiffness over the workspace; parallel mechanisms
+trade workspace and coupling differently. The report's one-way geared cam
+replaces a position-commanded servo or third stepper with a switched motor and
+binary raised-state feedback. A4988 current chopping controls winding current;
+it is not the same as the controller's STEP sequence. Open-loop interior motion
+and switch-referenced homing are not continuous position feedback. These
+mechanical trade-offs are discussed here because they determine the meaning of
+the software calculations, not because another mechanism was built or tested.
+
+\Q{Evidence}{System decisions mentioned outside the algorithms}
+The camera, frame/clamps, Cartesian mechanism, geared lift, endstops, transistor
+and power/driver connections influence assumptions in the software and are
+covered in the motion/hardware explanation. Ergonomics, cost, maintainability,
+privacy and environmental discussions are report design context rather than
+additional image-processing functions. They do not create undocumented
+sensor feedback, trained classes or software safety guarantees.
+
+\section{Method background: Coordinate mapping and path planning}\label{method:motion}
+\Q{Purpose}{The role in this system}
+Place and fit the generated trajectory into the measured machine work area.
+
+
+\Q{Justification}{The reason for this construction}
+Uniform scaling preserves shape while margins/origin define placement. Row grouping and nearest-end stroke order reduce travel; clamping makes out-of-bounds points explicit.
+
+
+\Q{Alternatives}{What changes if another method is used}
+Anisotropic fitting distorts glyphs. Optimal travelling-salesperson routing is more expensive and still must respect stroke/row semantics. A fixed sequence preserves order but may travel farther.
+
+
+\Q{Library}{Implementation speed and accuracy}
+Geometry libraries provide affine transforms and route solvers, but hardware bounds and pen semantics remain application-specific. Algorithmic path length is different from measured motion time. \cite{bresenham1965,code2026}.
+
+
+\section{GantryConfig}\label{fn:reproduce:GantryConfig}
+\begin{lstlisting}[style=sig]
+class GantryConfig
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/reproduce.py} line 18. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:motion}.
+
+
+\Q{Purpose}{What this contributes}
+Current fields include gearing, bounds, origin, margins, ruling fractions, feeds, decimation, pen dwell and endpoint/ring join distances. They do not include ignoreRuling, fitToRuling or accelMmS2. Properties derive commanded steps/mm from 200 full steps, sixteen microsteps and forty millimetres per revolution; controller calibration later uses measured per-axis factors.
+
+
+\Q{Method}{Methods exposed by this current class}
+\begin{lstlisting}[style=plain]
+def __post_init__(self)
+def usableWidthMm(self)
+def microstepsPerRev(self)
+def stepsPerMmX(self)
+def stepsPerMmY(self)
+\end{lstlisting}
+\Q{Method}{Current implementation}
+Place and fit the generated trajectory into the measured machine work area. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+class GantryConfig:
+    fullStepsPerRev: int = 200   #NEMA 17
+    microstepping: int = 16   #A4988 MS1/MS2/MS3 set to 1/16
+    mmPerRevX: float = 40.0   #GT2 2 mm pitch, 20 teeth
+    mmPerRevY: float = 40.0
+    boundsMinXmm: float = 0.0
+    boundsMinYmm: float = 0.0
+    boundsMaxXmm: float = 0.0
+    boundsMaxYmm: float = 0.0
+    originXmm: float = 0.0
+    originYmm: float = 0.0   #zero means the top of the calibrated area
+    pageMarginXmm: float = 15.0
+    pageMarginYmm: float = 10.0
+    lineHeightMm: float = 8.4
+    lineOffsetMm: float = 0.0
+    rulingXhFrac: float = 0.46
+    rulingMaxExtent: float = 1.25
+    drawFeedMmMin: float = 900.0
+    travelFeedMmMin: float = 2400.0
+    minSegmentMm: float = 0.12   #shorter moves are collapsed
+    penUpDwellMs: float = 350.0
+    penDownDwellMs: float = 350.0   #longer, to let the nib seat before drawing
+    penUpCode: str = 'M5'
+    penDownCode: str = 'M3'
+    penStartsUp: bool = True
+    joinStrokesMm: float = 0.6
+    closeRingMm: float = 0.6
+
+    def __post_init__(self):
+        usableW = X_SWITCH_TRAVEL_MM-2*EDGE_TOLERANCE_MM
+        usableH = Y_SWITCH_TRAVEL_MM-2*EDGE_TOLERANCE_MM
+        self.boundsMaxXmm = (usableW if self.boundsMaxXmm <= 0
+                             else min(self.boundsMaxXmm, usableW))
+        self.boundsMaxYmm = (usableH if self.boundsMaxYmm <= 0
+                             else min(self.boundsMaxYmm, usableH))
+        if self.originYmm <= 0:
+            self.originYmm = self.boundsMaxYmm
+
+    @property
+    def usableWidthMm(self):
+        return self.boundsMaxXmm-self.originXmm-2*self.pageMarginXmm
+
+    @property
+    def microstepsPerRev(self):
+        return self.fullStepsPerRev*self.microstepping
+
+    @property
+    def stepsPerMmX(self):
+        return self.microstepsPerRev/self.mmPerRevX
+
+    @property
+    def stepsPerMmY(self):
+        return self.microstepsPerRev/self.mmPerRevY
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Uniform scaling preserves shape while margins/origin define placement. Row grouping and nearest-end stroke order reduce travel; clamping makes out-of-bounds points explicit. \cite{bresenham1965,code2026}.
+
+
+\section{XhForRuling}\label{fn:reproduce:XhForRuling}
+\begin{lstlisting}[style=sig]
+def XhForRuling(profile, cfg, text=None, default=4.0, probe=True)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/reproduce.py} line 91. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:motion}.
+
+
+\Q{Purpose}{What this contributes}
+Chooses x-height before line wrapping from profile xhOverPitch if between 0.15 and 0.90, otherwise rulingXhFrac, multiplied by lineHeightMm. An optional plain synthesis probe reduces size if the tallest line exceeds rulingMaxExtent. It supplies a size constraint, not guaranteed actual line spacing.
+
+
+\Q{Method}{Current implementation}
+Place and fit the generated trajectory into the measured machine work area. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def XhForRuling(profile,cfg,text=None,default=4.0,probe=True):
+    ruling = float(getattr(cfg,'lineHeightMm',8.4))
+    frac = float(profile.get('xhOverPitch',0.0) or 0.0)
+    if not 0.15<=frac<=0.90:
+        frac = float(getattr(cfg,'rulingXhFrac',0.46))
+    xh = ruling*frac
+    if not probe or not text:
+        return xh
+    try:
+        import synthesise as SYN
+        t = SYN.SynthesizeText(text,profile,mmPerXh=xh,seed=0,
+                               lineWidthMm=getattr(cfg,'usableWidthMm',180.0))
+        got = _TallestLine(t)
+        cap = ruling*float(getattr(cfg,'rulingMaxExtent',1.60))
+        if got>cap>0:
+            xh *= cap/got
+    except Exception:
+        pass   #a probe that will not run must not stop a job being written
+    return xh
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Uniform scaling preserves shape while margins/origin define placement. Row grouping and nearest-end stroke order reduce travel; clamping makes out-of-bounds points explicit. \cite{bresenham1965,code2026}.
+
+
+\section{\_TallestLine}\label{fn:reproduce:-TallestLine}
+\begin{lstlisting}[style=sig]
+def _TallestLine(traj)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/reproduce.py} line 120. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:motion}.
+
+
+\Q{Purpose}{What this contributes}
+Groups trajectory strokes around the stored synthesis pitch and measures each row extent for the size cap. Grouping can be imperfect when stroke geometry spans neighbouring rows; the returned extent is a geometric proxy.
+
+
+\Q{Method}{Current implementation}
+Place and fit the generated trajectory into the measured machine work area. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def _TallestLine(traj):
+    pitch = float(traj.meta.get('lineStepMm',0.0) or 0.0)
+    rows = {}
+    for s in traj.strokes:
+        if not s:
+            continue
+        ys = [p[1] for p in s]
+        if pitch>1e-6:
+            k = round(-(sum(ys)/len(ys))/pitch)
+            base = -k*pitch
+        else:
+            k,base = 0,0.0
+        rows.setdefault(k,[]).append((max(ys)-base,min(ys)-base))
+    if not rows:
+        return 0.0
+    worst = 0.0
+    for v in rows.values():
+        tops = np.array([t for t,_b in v],dtype=np.float64)
+        bots = np.array([b for _t,b in v],dtype=np.float64)
+        if tops.size<8:   #too few strokes for a percentile to mean anything
+            worst = max(worst,float(tops.max()-bots.min()))
+        else:
+            worst = max(worst,float(np.percentile(tops,_EXTENT_HI_PCT)
+                                   -np.percentile(bots,_EXTENT_LO_PCT)))
+    return worst
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Uniform scaling preserves shape while margins/origin define placement. Row grouping and nearest-end stroke order reduce travel; clamping makes out-of-bounds points explicit. \cite{bresenham1965,code2026}.
+
+
+\section{ToMachine}\label{fn:reproduce:ToMachine}
+\begin{lstlisting}[style=sig]
+def ToMachine(traj, cfg, fitToBounds=True, optimizeOrder=True, rowTolMm=None)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/reproduce.py} line 151. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:motion}.
+
+
+\Q{Purpose}{What this contributes}
+Uniformly shrinks only when work-area width/height requires it, then uses each detected line centre to remove baseline wander while retaining synthesis pitch times scale. There is no selectable ignoreRuling branch. Coordinates remain y-up; top alignment and margin/offset subtraction do not introduce a second image-axis flip.
+
+
+\Q{Method}{Current implementation}
+Place and fit the generated trajectory into the measured machine work area. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def ToMachine(traj,cfg,fitToBounds=True,optimizeOrder=True,rowTolMm=None):
+    x0,y0,x1,y1 = traj.Bounds()
+    w,h = max(1e-6,x1-x0),max(1e-6,y1-y0)
+    scale = 1.0
+    mx,my = cfg.pageMarginXmm,cfg.pageMarginYmm
+    off = max(0.0,float(getattr(cfg,'lineOffsetMm',0.0)))
+    if fitToBounds:
+        availW = cfg.boundsMaxXmm-cfg.originXmm-2*mx
+        availH = (cfg.originYmm-my-off)-cfg.boundsMinYmm
+        scale = min(1.0,availW/w,availH/h)
+    pitch = float(traj.meta.get('lineStepMm',0.0) or 0.0)
+    ruledPitch = pitch*scale
+    respace = pitch>1e-6 and int(traj.meta.get('lines',1) or 1)>1
+    centres = {}
+    if respace:
+        rows = {}
+        for s in traj.strokes:
+            if not s:
+                continue
+            k = round(-(sum(p[1] for p in s)/len(s))/pitch)
+            ys = [p[1] for p in s]
+            lo,hi = rows.get(k,(1e18,-1e18))
+            rows[k] = (min(lo,min(ys)),max(hi,max(ys)))
+        if rows:
+            k0 = min(rows)   #the topmost line stays where it is
+            c0 = (rows[k0][0]+rows[k0][1])*0.5
+            for k,(lo,hi) in rows.items():
+                ck = (lo+hi)*0.5
+                centres[k] = (c0-ck)*scale-(k-k0)*ruledPitch
+    out = []
+    for s in traj.strokes:
+        shift = 0.0
+        if respace and s:
+            k = round(-(sum(p[1] for p in s)/len(s))/pitch)
+            shift = centres.get(k,0.0)
+        q = [(cfg.originXmm+mx+(x-x0)*scale,
+              cfg.originYmm-my-off-(y1-y)*scale+shift)
+             for (x,y) in s]
+        out.append(_Decimate(q,cfg.minSegmentMm))
+    if optimizeOrder:
+        out = OptimizeStrokeOrder(out,rowTolMm=rowTolMm)
+    return out,scale
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Uniform scaling preserves shape while margins/origin define placement. Row grouping and nearest-end stroke order reduce travel; clamping makes out-of-bounds points explicit. \cite{bresenham1965,code2026}.
+
+
+\section{\_Decimate}\label{fn:reproduce:-Decimate}
+\begin{lstlisting}[style=sig]
+def _Decimate(poly, minSeg)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/reproduce.py} line 198. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:motion}.
+
+
+\Q{Purpose}{What this contributes}
+Place and fit the generated trajectory into the measured machine work area.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{poly}] \normalfont a path in millimetres
+  \item[{minSeg}] \normalfont the shortest segment to keep, in millimetres
+\end{description}
+
+\noindent\textbf{Output.} the path with points closer together than that merged away.
+
+
+\Q{Purpose}{What it is for}
+A path may carry far more points than the machine can act on. A traced stroke has a point per pixel, and resampling during layout placed points every 0.35 mm. This removes the points that are closer together than the machine can resolve.
+
+
+\Q{Justification}{The method, and why it is not Douglas-Peucker}
+Each point is kept only if it is at least the minimum distance from the last point kept. This is a different rule from the path simplification in style.py, which keeps points according to how far they stray from a straight line, and the difference is appropriate to the different purpose. Here the question is not whether a point carries shape information but whether the machine can act on it at all: a commanded move shorter than the minimum segment is below the resolution of the motion, so it costs a line in the file and produces nothing.
+
+
+\Q{Justification}{Why the comparison is against the last kept point}
+Comparing against the last kept point rather than the previous input point is what makes the rule accumulate correctly. Against the previous input point, a long run of points each slightly under the threshold would all be dropped, however far the path travelled in total. Against the last kept point, the distance accumulates until the threshold is reached, so a point is emitted every minimum segment along the path regardless of how finely the input was sampled.
+
+
+\begin{quote}\small\itshape The first and last points are always kept, whatever the spacing. The endpoints define where a stroke begins and ends, so dropping one would shorten the stroke, and the final point in particular is where the pen lifts and where the next stroke's travel is measured from.\end{quote}
+
+
+\section{OptimizeStrokeOrder}\label{fn:reproduce:OptimizeStrokeOrder}
+\begin{lstlisting}[style=sig]
+def OptimizeStrokeOrder(strokes, rowTolMm=None)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/reproduce.py} line 212. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:motion}.
+
+
+\Q{Purpose}{What this contributes}
+Orders the strokes in bands down the page and, inside a band, takes the nearest unvisited stroke next, which cuts the pen-up travel.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{strokes}] \normalfont the strokes in bed coordinates
+  \item[{rowTolMm}] \normalfont how far apart two strokes may sit vertically and still count as the same row; derived if not given
+\end{description}
+
+\noindent\textbf{Output.} the same strokes in an order that reduces pen-up travel.
+
+
+\Q{Purpose}{What it is for}
+The strokes may be drawn in any order, since each is independent. The order determines how far the pen travels raised between them, and that travel is pure waste: it takes time and draws nothing. For a page of handwriting with hundreds of strokes the difference between a good order and a poor one is substantial.
+
+
+\Q{Purpose}{Background: this is a travelling salesman problem}
+Finding the order that minimises total travel is the \textbf{travelling salesman problem}: given a set of places, find the shortest route visiting all of them. It is one of the classic hard problems in computing, with no known method that finds the exact best route in reasonable time as the number of places grows. With several hundred strokes an exact answer is out of reach, so a \textbf{heuristic} is used: a rule that gives a good answer quickly with no guarantee of being best.
+
+
+\Q{Method}{The heuristic: bands, then nearest neighbour}
+Two ideas are combined. The strokes are first grouped into horizontal bands by their vertical centres, and the bands are processed from top to bottom. Within a band, the nearest unvisited stroke is taken next.
+
+
+\begin{itemize}\setlength\itemsep{0pt}
+  \item \textbf{Banding} exploits the structure of the problem. Text is arranged in lines, and almost all the strokes of one line of writing are near each other, so a route that finishes one line before starting the next is close to optimal. A pure nearest-neighbour search without banding can wander between lines, since a stroke on the line below may happen to be nearer than the next stroke along.
+  \item \textbf{Nearest neighbour} within a band is the standard simple heuristic: from where the pen is, go to the closest place not yet visited. It is greedy, so it can paint itself into a corner and leave a long move to the last stroke, but within one line of text the strokes are nearly collinear and the greedy route is close to the best.
+\end{itemize}
+
+\Q{Justification}{Why the band tolerance is derived from the strokes}
+
+\FormulaNote{Place and fit the generated trajectory into the measured machine work area.}{bresenham1965,code2026}
+\begin{equation}
+\mathrm{rowTol} \;=\; \max\big(1,\; 1.2 \cdot \mathrm{median}\{\,h_s\,\}\big)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{rowTol}$}] \normalfont how far apart two strokes' vertical centres may be and still share a band, in millimetres
+  \item[{$h_s$}] \normalfont the height of stroke s, from its lowest point to its highest
+  \item[{$1.2$}] \normalfont a margin above the typical stroke height
+  \item[{$1$}] \normalfont a floor in millimetres, for a drawing of very small strokes
+\end{description}
+A fixed tolerance would be wrong at every size but one. Deriving it from the median stroke height ties it to the writing: a band should be about as tall as a line of text, and a typical stroke is about the height of a letter. The median again rather than the mean, so that one tall stroke spanning several lines, which a long descender or an underline can produce, does not widen every band.
+
+
+\Q{Method}{Reversing a stroke to enter from the nearer end}
+A stroke can be drawn from either end, and the result is identical ink. So when the far end is closer to the pen than the near end, the stroke is reversed. The code comment notes that this is free for a plotter, and it is worth saying why: unlike a milling cut or an extrusion, a pen stroke has no direction-dependent behaviour, so nothing is lost. It can nearly halve the travel to a long stroke.
+
+
+\begin{quote}\small\itshape Fewer than three strokes are returned unchanged. With two strokes there is only one meaningful order, and the banding statistics would be computed from a sample too small to describe anything.\end{quote}
+
+
+\section{\_Clamp}\label{fn:reproduce:-Clamp}
+\begin{lstlisting}[style=sig]
+def _Clamp(strokes, cfg)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/reproduce.py} line 252. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:motion}.
+
+
+\Q{Purpose}{What this contributes}
+Place and fit the generated trajectory into the measured machine work area.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{strokes}] \normalfont the strokes in bed coordinates
+  \item[{cfg}] \normalfont the machine configuration
+\end{description}
+
+\noindent\textbf{Output.} a pair: the strokes with every point forced inside the work area, and how many points were moved.
+
+
+\Q{Purpose}{What it is for}
+A final safety net. Every point is forced inside the machine's declared bounds, and the number of points that had to be moved is counted and reported.
+
+
+\Q{Justification}{Why it exists when ToMachine already fits the drawing}
+The fitting scales the drawing to the available area, so in principle nothing can lie outside it. This clamp exists for the cases where that reasoning does not hold: the fitting can be switched off by the caller, the origin can be set such that the available area is computed wrongly, and a stroke can be reversed or reordered by code that has no knowledge of the bounds. A point outside the work area is not a cosmetic problem; it commands the machine to drive into its own frame.
+
+
+\Q{Justification}{Why the count is returned}
+Clamping silently would hide a real fault. A drawing that needed clamping was mispositioned, and the clamped version is not what was asked for: the affected strokes are flattened against the boundary, which is visible as a straight edge where writing should be. Returning the count lets the writer emit a warning into the file, so the condition is recorded where someone will see it rather than inferred from the drawing.
+
+
+\begin{quote}\small\itshape Clamping each coordinate independently is not geometrically principled: a stroke crossing the boundary diagonally is bent rather than cut, so its shape changes. Properly clipping the path to the rectangle would preserve the shape of the part inside. That is not done because the condition is a fault to be reported rather than a case to be handled well, and the simple form cannot itself fail.\end{quote}
+
+
+\section{\_ClampToUsableArea}\label{fn:reproduce:-ClampToUsableArea}
+\begin{lstlisting}[style=sig]
+def _ClampToUsableArea(xMm, yMm)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/reproduce.py} line 819. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:motion}.
+
+
+\Q{Purpose}{What this contributes}
+Place and fit the generated trajectory into the measured machine work area.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{xMm}] \normalfont the target X coordinate
+  \item[{yMm}] \normalfont the target Y coordinate
+\end{description}
+
+\noindent\textbf{Output.} the coordinates forced inside the homed usable area.
+
+
+\Q{Justification}{Why the machine clamps as well as the writer}
+The G-code writer already clamps to the configured bounds. This clamps again, against the \emph{measured} usable area, and the two are not the same check. The writer's bounds are configuration, stated in advance; this one is what calibration actually found, which may be smaller, and it applies to any file whatever its origin, including a hand-written one or one from another program.
+
+The principle is that the machine must protect itself rather than trusting its input. A clamp at the point of motion is the last line of defence and the only one that cannot be bypassed by using a different generator.
+
+
+\Q{Justification}{Why it prints when it acts}
+A clamp that fires means the file asked for something outside the machine, so the drawing will be wrong: strokes are flattened against the boundary. Printing the original and clamped coordinates makes that visible while the job runs, so the operator can stop it rather than discovering afterwards that part of the drawing is a straight line along one edge.
+
+
+
+\section*{Stage: Homing and axis calibration}
+\ReportEq{10}{Measured axis scale}
+{$K_{\rm axis}=N/L$ and $x=n/K-5$ mm in the clearance-offset frame.}
+{Use counted travel between contacts and an external length reference to
+establish position. The 5 mm offset reserves switch clearance; it is not a
+measurement of switch repeatability.}
+{Calibrate and \_GcodeLinearMove use per-axis calibrated factors.}
+{code2026,bresenham1965}
+
+
+\section{Method background: Homing and axis calibration}\label{method:calibrate}
+\Q{Purpose}{The role in this system}
+Establish a reference and convert commanded pulse counts into machine coordinates.
+
+
+\Q{Justification}{The reason for this construction}
+Counting pulses between switches against measured travel estimates steps/mm; clearance retracts keep drawing away from the contacts.
+
+
+\Q{Alternatives}{What changes if another method is used}
+Nominal belt geometry avoids a measurement but misses actual scale errors. Encoders observe motion continuously at extra hardware cost. Multi-point calibration can assess squareness and backlash beyond one scale factor.
+
+
+\Q{Library}{Implementation speed and accuracy}
+Motion-control firmware can home and scale axes but still needs correct wiring, travel and configuration. A library cannot supply missing reference measurements. \cite{a4988datasheet,bresenham1965,code2026}.
+
+
+\section{AxisDirValue}\label{fn:reproduce:AxisDirValue}
+\begin{lstlisting}[style=sig]
+def AxisDirValue(invert, positive)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/reproduce.py} line 564. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:calibrate}.
+
+
+\Q{Purpose}{What this contributes}
+Establish a reference and convert commanded pulse counts into machine coordinates.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{invert}] \normalfont whether this axis's direction signal is reversed
+  \item[{positive}] \normalfont whether the wanted motion is in the positive direction
+\end{description}
+
+\noindent\textbf{Output.} the level to set on the direction pin.
+
+
+\Q{Method}{What it resolves}
+Turns a wanted direction into a pin level, accounting for the axis's wiring inversion. It is the single place the inversion is applied, so every motion routine inherits it by asking for a direction by meaning rather than by level.
+
+
+\FormulaNote{Establish a reference and convert commanded pulse counts into machine coordinates.}{a4988datasheet,bresenham1965,code2026}
+\begin{equation}
+\mathrm{forward} \;=\; \mathrm{positive} \;\oplus\; \mathrm{invert}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{forward}$}] \normalfont whether the direction pin should be driven active
+  \item[{$\mathrm{positive}$}] \normalfont whether the wanted motion is toward increasing coordinates
+  \item[{$\mathrm{invert}$}] \normalfont this axis's wiring inversion flag
+  \item[{$\oplus$}] \normalfont \textbf{exclusive or}: true when exactly one of the two is true
+\end{description}
+Exclusive or is exactly the right operation, and it is worth checking the four cases. Wanting positive motion on an uninverted axis drives the pin active; wanting negative on the same axis drives it inactive. On an inverted axis both answers swap. So the output is active when the two inputs disagree, which is what exclusive or computes. Written as nested conditions it would be four branches that must each be right; as an exclusive or it is one expression that cannot be half correct.
+
+
+
+\section{\_RetractOffSwitch}\label{fn:reproduce:-RetractOffSwitch}
+\begin{lstlisting}[style=sig]
+def _RetractOffSwitch(hit, ignore=frozenset())
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/reproduce.py} line 569. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:calibrate}.
+
+
+\Q{Purpose}{What this contributes}
+Establish a reference and convert commanded pulse counts into machine coordinates.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{hit}] \normalfont the name of the pressed switch
+  \item[{ignore}] \normalfont other switches to disregard while retracting
+\end{description}
+
+\noindent\textbf{Output.} nothing; it steps the axis clear and updates the position count.
+
+
+\Q{Method}{What it does}
+Steps the affected axis away from the switch by the retract distance, at homing speed, updating the step count as it goes. The direction comes from the retreat table and the axis and pins from the switch's name.
+
+
+\Q{Justification}{Why it watches the other switches}
+Each step checks for any switch other than the one being escaped and the ones explicitly ignored, and stops if one trips. The code comment calls that a real fault, and it is: moving away from one limit should not approach another, so if it does, the machine's geometry is not what is believed, perhaps because a switch is stuck closed or an axis is shorter than its recorded travel. Continuing to drive would push against a second limit.
+
+
+\Q{Justification}{Why the position count is updated}
+The retract moves the carriage, so the recorded position must follow, or every subsequent absolute move is out by the retract distance. The count is accumulated during the loop and applied to the right axis afterwards, which also means a retract cut short by another switch updates by the distance actually travelled rather than the distance intended.
+
+
+\begin{quote}\small\itshape Retracting at homing speed rather than drawing speed is deliberate. The machine is at a limit, in a state it was not supposed to reach, and the geometry is not trusted. Moving slowly means the other-switch check has time to act before much further travel occurs.\end{quote}
+
+
+\section{\_StepAxis}\label{fn:reproduce:-StepAxis}
+\begin{lstlisting}[style=sig]
+def _StepAxis(stepPin, dirPin, dirValue, stopWhen, ignore=frozenset())
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/reproduce.py} line 738. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:calibrate}.
+
+
+\Q{Purpose}{What this contributes}
+Establish a reference and convert commanded pulse counts into machine coordinates.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{stepPin}] \normalfont the step pin for this axis
+  \item[{dirPin}] \normalfont its direction pin
+  \item[{dirValue}] \normalfont the level to drive the direction pin at
+  \item[{stopWhen}] \normalfont a test saying which switch is the expected one
+  \item[{ignore}] \normalfont switches to disregard
+\end{description}
+
+\noindent\textbf{Output.} the switch that stopped the motion and how many steps were taken.
+
+
+\Q{Purpose}{What it is for}
+Drives one axis in one direction until a switch stops it, counting the steps. It is the primitive the homing and calibration are built from, and the step count it returns is the measurement that calibration converts into steps per millimetre.
+
+
+\Q{Justification}{Why the stopping condition is a test rather than a name}
+The caller supplies a function saying which switch is the expected one, rather than naming it. That is necessary because homing begins without knowing which end of the axis it will reach: the carriage may be anywhere, so driving in one direction may bring it to either switch. The first call accepts either, and the second accepts only the opposite one.
+
+
+\Q{Justification}{Why an unexpected switch is an error rather than a stop}
+A switch that trips which is not the expected one raises an error naming the wiring, rather than being treated as a normal stop. The distinction matters because the step count is about to be used as a measurement: stopping on the wrong switch means the count does not measure what it is believed to, and a calibration built on it would scale every subsequent move wrongly. A measurement known to be invalid should fail rather than be used.
+
+
+\Q{Justification}{Why the step limit is also an error}
+Exceeding the step bound raises an error too. A correctly functioning machine reaches a switch in a fraction of that distance, so the bound being reached means no switch is going to trip, which is the disconnected-wiring case. Again the appropriate response is to stop and say so, since there is no sensible way to proceed without a reference position.
+
+
+
+\section{\_CalibrateAxis}\label{fn:reproduce:-CalibrateAxis}
+\begin{lstlisting}[style=sig]
+def _CalibrateAxis(stepPin, dirPin, minName, maxName, OtherAxisNames=frozenset())
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/reproduce.py} line 756. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:calibrate}.
+
+
+\Q{Purpose}{What this contributes}
+Establish a reference and convert commanded pulse counts into machine coordinates.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{stepPin}] \normalfont the step pin
+  \item[{dirPin}] \normalfont the direction pin
+  \item[{minName}] \normalfont the minimum switch's name
+  \item[{maxName}] \normalfont the maximum switch's name
+  \item[{OtherAxisNames}] \normalfont the other axis's switches, to disregard
+\end{description}
+
+\noindent\textbf{Output.} the first switch reached, the second, and the steps measured between them.
+
+
+\Q{Method}{The measurement}
+The axis is driven in one direction until either switch trips, then reversed until the opposite one does, counting the steps of the second move. That count is the full travel of the axis in steps, which divided by the known travel in millimetres gives the steps per millimetre.
+
+
+\Q{Justification}{Why the count comes from the second move}
+The first move starts from wherever the carriage happened to be and ends at a switch, so its length is arbitrary and carries no information. The second starts at a known position, one switch, and ends at another known position, the other switch, so its length is the distance between two physical references. Only a move between two known points measures anything.
+
+
+\Q{Justification}{Why the first switch is ignored during the reverse}
+The reverse move begins with the first switch still pressed, since the carriage is resting against it, and it stays pressed for the first few steps until the lever releases. The code comment calls this release lag and notes it is not a fault. Without adding that switch to the ignore set, the reverse move would immediately detect it, decide it was unexpected, and raise an error on every calibration.
+
+
+\Q{Justification}{Why the other axis is ignored throughout}
+The other axis may be resting against one of its own limits while this one is being calibrated, which is a perfectly normal state and nothing to do with this axis's motion. Ignoring its switches lets each axis be calibrated regardless of where the other happens to be parked.
+
+
+
+\section{Calibrate}\label{fn:reproduce:Calibrate}
+\begin{lstlisting}[style=sig]
+def Calibrate()
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/reproduce.py} line 775. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:calibrate}.
+
+
+\Q{Purpose}{What this contributes}
+Homes both axes, sets steps per millimetre from the travel it counts, and stores the usable area, no absolute move is accepted before this runs.
+
+
+
+
+\noindent\textbf{Output.} a copy of the calibration record: the measured scaling for both axes and the usable area.
+
+
+\Q{Method}{What it establishes}
+Two things the machine cannot otherwise know: where it is, and how far a step moves it. Both come from driving to physical references, since the motors report neither.
+
+
+\Q{Method}{The sequence}
+
+\begin{itemize}\setlength\itemsep{0pt}
+  \item \textbf{Refuse if a switch is already pressed.} Calibration drives until a switch trips, so starting against one makes the first move meaningless.
+  \item \textbf{Measure the X axis} between its two switches, and set its steps per millimetre from the count.
+  \item \textbf{Retract off the switch} it finished against, so it is clear of its limit.
+  \item \textbf{Measure the Y axis} the same way, ignoring the X switches.
+  \item \textbf{Retract} again, record the usable area, and park at the safe corner.
+\end{itemize}
+
+\Q{Method}{Where the position count comes from}
+After each axis, the step count is set to the full travel if the axis finished at its maximum switch, and to zero if at its minimum. That is the whole point of homing: the carriage is at a switch, the switch is at a known place, so the count can be set rather than guessed. Every subsequent absolute move is measured from it.
+
+
+\Q{Method}{The usable area and the switch-travel allowance}
+
+\FormulaNote{Establish a reference and convert commanded pulse counts into machine coordinates.}{a4988datasheet,bresenham1965,code2026}
+\begin{equation}
+\mathrm{usable} \;=\; \mathrm{switchTravel} \;-\; 2 \cdot \mathrm{edgeTolerance}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{usable}$}] \normalfont the area the machine will address, per axis
+  \item[{$\mathrm{switchTravel}$}] \normalfont the hand-measured distance between the two switches
+  \item[{$\mathrm{edgeTolerance}$}] \normalfont the margin kept clear at each end
+\end{description}
+The usable area is deliberately smaller than the measured travel, for the reasons given under EDGE\_TOLERANCE\_MM. The coordinate origin is placed at the margin's distance in from the minimum switches, so a commanded zero is a position the machine is allowed to occupy rather than the switch itself.
+
+
+\Q{Justification}{Why it parks at the end}
+Calibration finishes with a move to the origin of the usable area. That leaves the machine at a known, legal position, clear of every switch, which is what a drawing job expects to start from. Finishing while resting against a limit would mean the first motion check of the next job found a tripped switch.
+
+
+
+\section*{Stage: Pen state and switch confirmation}
+\ReportEq{7}{Minimum base resistance}
+{$R_{B,\min}=(V_{\rm GPIO}-V_{BE})/I_{\rm GPIO,max}=650\,\Omega$ for the stated assumptions.}
+{Limit GPIO base current. This is a minimum resistance, not a maximum. The
+report's 4 mA GPIO capability lacks a resolved specific source, and 0.7 V is
+an approximation; neither is certified by the arithmetic.}
+{Pen transistor circuit and PEN\_MOTOR\_PIN output.}
+{rohmnpn,bc337data,finalreport2026}
+
+\ReportEq{8}{Base current and saturation check}
+{$I_B=(3.3-0.7)/1000=2.6$ mA.}
+{Check the selected resistor against the stated GPIO budget and transistor
+drive. A forced gain of ten corresponds to 26 mA, below the listed 30 mA
+motor rated current and far below its 230 mA stall current. Active-region gain
+does not prove saturation.}
+{Pen switching, not a pressure controller.}
+{rohmnpn,bc337data,finalreport2026}
+
+\ReportEq{9}{Switch pull down current}
+{$I=V/R=3.3/10000=0.33$ mA.}
+{Explain the closed-switch load and why an open logic node needs a defined
+level. Leakage and noise sensitivity constrain resistance too; the result
+does not prove that 10 k$\Omega$ is optimal.}
+{Endstop and pen feedback wiring.}
+{kernelgpio,code2026}
+
+
+\section{Method background: Pen state and switch confirmation}\label{method:pen}
+\Q{Purpose}{The role in this system}
+Avoid unnecessary one-way cam toggles and wait for the requested feedback state.
+
+
+\Q{Justification}{The reason for this construction}
+An idempotent state request does nothing when already at target; finite confirmation, timeout and motor-off paths bound actuation. Switch state does not measure contact pressure.
+
+
+\Q{Alternatives}{What changes if another method is used}
+A servo gives positional commands; a third stepper adds another axis; hardware debounce filters electrical transitions. These are hardware/design alternatives rather than interchangeable constants.
+
+
+\Q{Library}{Implementation speed and accuracy}
+GPIO libraries handle line access; they do not define cam geometry, debounce policy or pressure feedback. Hardware timing can be steadier than userspace sleeps. No new reliability or force measurement is inferred. \cite{kernelgpio,rohmnpn,code2026}.
+
+
+\section{NewPenState}\label{fn:reproduce:NewPenState}
+\begin{lstlisting}[style=sig]
+def NewPenState(cfg)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/reproduce.py} line 269. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:pen}.
+
+
+\Q{Purpose}{What this contributes}
+Avoid unnecessary one-way cam toggles and wait for the requested feedback state.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{cfg}] \normalfont the machine configuration
+\end{description}
+
+\noindent\textbf{Output.} a small mutable record holding whether the pen is up and how many pulses have been emitted.
+
+
+\Q{Justification}{Why the pen's state must be tracked at all}
+This is the central peculiarity of the machine and it shapes the whole of the G-code writing. The pen is raised and lowered by a geared motor that turns 90 degrees per pulse. It is a \textbf{one-way actuator}: it accepts "move" and nothing else. There is no command meaning "be up", and nothing in the G-code can ask where the pen currently is.
+
+The consequence is that the writer must know the pen's state by remembering it. The state begins at a known value, assumed at power-on, and every pulse emitted flips it. Emitting a toggle when the pen is already in the wanted state would move it to the wrong one, and from then on every pen command in the file would be inverted: the machine would travel with the pen down and draw with it up.
+
+
+\Q{Justification}{Why it is a list rather than a plain value}
+The record is a two-element list so that the function updating it can modify it in place and the caller sees the change. A tuple or an integer would be copied, and the caller would keep the old state. This is the smallest possible piece of shared mutable state and it exists because the pen genuinely has a state that persists across many lines of output.
+
+
+\begin{quote}\small\itshape The starting state is an assumption, not a measurement. If the machine is powered on with the pen down, every pen command in the file is inverted. The hardware half resolves this properly, with a switch that reports the pen's actual position, but a written file cannot: it has no way to ask.\end{quote}
+
+
+\section{SetPenLines}\label{fn:reproduce:SetPenLines}
+\begin{lstlisting}[style=sig]
+def SetPenLines(state, cfg, wantUp)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/reproduce.py} line 277. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:pen}.
+
+
+\Q{Purpose}{What this contributes}
+Maintains the generated-job pen state and emits M3/M5 plus direction-specific dwell only when the requested state differs. It models commanded state; physical switch confirmation belongs to SetPen, not this G-code construction helper.
+
+
+\Q{Method}{Current implementation}
+Avoid unnecessary one-way cam toggles and wait for the requested feedback state. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def SetPenLines(state,cfg,wantUp):
+    if wantUp==state[0]:
+        return []
+    state[0] = wantUp
+    state[1]+= 1
+    code = cfg.penUpCode if wantUp else cfg.penDownCode
+    dwell = (cfg.penUpDwellMs if wantUp else cfg.penDownDwellMs)/1000.0
+    out = [f"{code}   ; pen {'UP' if wantUp else 'DOWN'} "
+           f"(one 90deg pulse of the one-way gear motor)"]
+    if dwell>0:
+        out.append(f"G4 P{dwell:.3f}   ; wait for the 90deg rotation to finish")
+    return out
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+An idempotent state request does nothing when already at target; finite confirmation, timeout and motor-off paths bound actuation. Switch state does not measure contact pressure. \cite{kernelgpio,rohmnpn,code2026}.
+
+
+\section{TriggeredEndstop}\label{fn:reproduce:TriggeredEndstop}
+\begin{lstlisting}[style=sig]
+def TriggeredEndstop(ignore=frozenset())
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/reproduce.py} line 545. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:pen}.
+
+
+\Q{Purpose}{What this contributes}
+The name of a limit switch reading triggered, confirmed over several samples because a long wire picks up noise.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{ignore}] \normalfont switch names to disregard
+\end{description}
+
+\noindent\textbf{Output.} the name of a switch confirmed to be pressed, or nothing.
+
+
+\Q{Purpose}{What it is for}
+The safety check, called before essentially every step of every motion. It reads each switch and returns the name of the first confirmed to be pressed.
+
+
+\Q{Method}{How the debounce is arranged}
+A switch reading open is dismissed immediately. One reading closed is then sampled twice more, spaced by the debounce delay, and is believed only if all three agree. The reasoning behind the spacing and the count is given under ENDSTOP\_DEBOUNCE\_S and ENDSTOP\_CONFIRM\_SAMPLES.
+
+
+\Q{Justification}{Why the asymmetry is what makes this affordable}
+This function runs before every step pulse, so its cost is multiplied by the tens of thousands of steps in a drawing. The early dismissal is what keeps that cost down: in the normal case every switch reads open and the function performs four pin reads and returns, with no delays at all. The twelve milliseconds of confirmation are spent only when a switch actually reads closed, which happens once per job at most.
+
+
+\Q{Justification}{Why some switches can be ignored}
+The ignore set exists because there are legitimate situations in which a switch is pressed and should not stop the machine. Retracting off a switch necessarily begins with that switch pressed, and homing one axis may hold a switch while the other axis is moved. Without the ability to disregard a named switch, the only remedy would be to omit the safety check entirely during those operations, which would remove it exactly where the machine is deliberately being driven against its limits.
+
+
+\begin{quote}\small\itshape The check returns at the first switch it confirms rather than examining all four. For stopping that is sufficient, since one tripped switch is reason enough. The separate \_AllTriggeredEndstops exists for the emergency stop, which does need the full list so that it can retract off every one of them.\end{quote}
+
+
+\section{\_AllTriggeredEndstops}\label{fn:reproduce:-AllTriggeredEndstops}
+\begin{lstlisting}[style=sig]
+def _AllTriggeredEndstops()
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/reproduce.py} line 560. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:pen}.
+
+
+\Q{Purpose}{What this contributes}
+Avoid unnecessary one-way cam toggles and wait for the requested feedback state.
+
+
+
+
+\noindent\textbf{Output.} a list of every switch currently confirmed as pressed.
+
+
+\Q{Justification}{Why a complete list is needed}
+An emergency stop must retract off every pressed switch, not just the one that was noticed first. Two can be pressed at once: a carriage driven into a corner reaches an X and a Y limit together, and retracting off only one leaves the machine still held against the other, so the next motion check still finds a tripped switch and nothing can move.
+
+
+\Q{Method}{How it is built from the single check}
+Each switch is tested by calling the single check with every \emph{other} switch in the ignore set, so the answer concerns that switch alone. It is a roundabout construction, but it reuses the debounce logic rather than duplicating it, which matters for a safety check: two implementations of a debounce could diverge, and the one in the rarely exercised path is the one that would not be noticed.
+
+
+
+\section{PenIsUp}\label{fn:reproduce:PenIsUp}
+\begin{lstlisting}[style=sig]
+def PenIsUp()
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/reproduce.py} line 703. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:pen}.
+
+
+\Q{Purpose}{What this contributes}
+Avoid unnecessary one-way cam toggles and wait for the requested feedback state.
+
+
+
+
+\noindent\textbf{Output.} whether the pen switch currently reads as up.
+
+
+\Q{Purpose}{What it is for}
+Reads the pen position switch. This is the capability the written G-code file lacks: the machine can ask where the pen is, so it never has to assume.
+
+
+\begin{quote}\small\itshape The read is not debounced, unlike the endstop check. That is acceptable because of how it is used: SetPen polls it repeatedly in a loop while the motor runs, so a single spurious reading advances the loop by one iteration and the next reading corrects it. A spurious endstop reading, by contrast, aborts the whole job, which is why that one is confirmed and this one is not.\end{quote}
+
+
+\section{SetPen}\label{fn:reproduce:SetPen}
+\begin{lstlisting}[style=sig]
+def SetPen(targetUp, timeoutS=3.0, force=False)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/reproduce.py} line 710. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:pen}.
+
+
+\Q{Purpose}{What this contributes}
+First respects endstop interlocks unless forced, returns immediately if already at the requested feedback state, then runs the one-way motor until target/timeout and adds up-overrun only after successful pen-up. Returns success/failure. It cannot measure force, and the current G-code runner logs pen-confirmation failure but continues.
+
+
+\Q{Method}{Current implementation}
+Avoid unnecessary one-way cam toggles and wait for the requested feedback state. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def SetPen(targetUp,timeoutS=3.0,force=False):
+    hit = TriggeredEndstop()
+    if hit is not None and not force:
+        print(f"Refusing pen move -- end-stop {hit} still tripped.")
+        return False
+    if PenIsUp()==targetUp:
+        return True
+
+    req.set_value(PEN_MOTOR_PIN,Value.ACTIVE)
+    deadline = time.time()+timeoutS
+    reached = False
+    while time.time()<deadline:
+        if not force and TriggeredEndstop() is not None:
+            break
+        if PenIsUp()==targetUp:
+            reached = True
+            break
+        time.sleep(0.002)
+    if reached and targetUp:
+        time.sleep(PEN_UP_OVERRUN_S)
+    req.set_value(PEN_MOTOR_PIN,Value.INACTIVE)
+
+    if not reached:
+        print("Pen move did NOT confirm via switch -- check motor/wiring.")
+    return reached
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+An idempotent state request does nothing when already at target; finite confirmation, timeout and motor-off paths bound actuation. Switch state does not measure contact pressure. \cite{kernelgpio,rohmnpn,code2026}.
+
+
+\section*{Stage: Bresenham stepping and feed timing}
+\ReportEq{11}{Bresenham minor step count}
+{$m_k=\left\lceil[k a_y-\lfloor a_x/2\rfloor]/a_x\right\rceil$ for the stated
+major-axis accumulator convention.}
+{Explain how integer error updates distribute minor-axis pulses along a line.
+Initial error and the strict negative test determine ties. This is spatial
+interpolation; sequential pulses and sleeps affect timing separately.}
+{BresenhamMove.}
+{bresenham1965,code2026}
+
+
+
+\section{Method background: Bresenham stepping and feed timing}\label{method:bresenham}
+\Q{Purpose}{The role in this system}
+Coordinate two integer step counts along one line using a bounded error accumulator.
+
+
+\Q{Justification}{The reason for this construction}
+Major-axis stepping distributes minor-axis pulses without a division per step. Feed conversion turns desired length and rate into a nominal pulse delay.
+
+
+\Q{Alternatives}{What changes if another method is used}
+Independent axis moves draw an L shape. DDA uses fractional accumulation. Dedicated motion firmware can add acceleration and more deterministic pulse timing.
+
+
+\Q{Library}{Implementation speed and accuracy}
+An image-library line drawer generates pixels, not GPIO pulses. A motion controller or kernel/hardware pulse engine is the relevant timing alternative. Geometry equivalence cannot establish equal scheduling, missed steps or physical accuracy. \cite{bresenham1965,a4988datasheet,kernelgpio}.
+
+
+\section{BresenhamMove}\label{fn:reproduce:BresenhamMove}
+\begin{lstlisting}[style=sig]
+def BresenhamMove(dx, dy, stepDelayS=MIN_STEP_DELAY_S)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/reproduce.py} line 663. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:bresenham}.
+
+
+\Q{Purpose}{What this contributes}
+The current default delay is MIN\_STEP\_DELAY\_S, not the old circle-demo constant. It updates commanded counters after sequential GPIO pulses, checks abort/endstops per major iteration and distributes minor pulses through an integer error. A diagonal iteration can incur two pulse sleeps; the geometry algorithm alone does not enforce constant physical feed.
+
+
+\Q{Method}{Current implementation}
+Coordinate two integer step counts along one line using a bounded error accumulator. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def BresenhamMove(dx,dy,stepDelayS=MIN_STEP_DELAY_S):
+    global CurrentXSteps,CurrentYSteps
+    ax,ay = abs(dx),abs(dy)
+    sx = 1 if dx>=0 else -1
+    sy = 1 if dy>=0 else -1
+    req.set_value(DIR1_PIN,AxisDirValue(INVERT_X,sx>0))
+    req.set_value(DIR2_PIN,AxisDirValue(INVERT_Y,sy>0))
+
+    def Pulse(stepPin):
+        req.set_value(stepPin,Value.ACTIVE)
+        time.sleep(stepDelayS)
+        req.set_value(stepPin,Value.INACTIVE)
+
+    if ax>=ay:   #x is the major axis
+        err = ax//2
+        for _ in range(ax):
+            if abortEvent.is_set() or TriggeredEndstop() is not None:
+                return
+            Pulse(STEP1_PIN)
+            CurrentXSteps+=sx
+            err-=ay
+            if err<0:   #the minor axis catches up by one step
+                Pulse(STEP2_PIN)
+                CurrentYSteps+=sy
+                err+=ax
+    else:   #y is the major axis
+        err = ay//2
+        for _ in range(ay):
+            if abortEvent.is_set() or TriggeredEndstop() is not None:
+                return
+            Pulse(STEP2_PIN)
+            CurrentYSteps+=sy
+            err-=ax
+            if err<0:
+                Pulse(STEP1_PIN)
+                CurrentXSteps+=sx
+                err+=ay
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Major-axis stepping distributes minor-axis pulses without a division per step. Feed conversion turns desired length and rate into a nominal pulse delay. \cite{bresenham1965,a4988datasheet,kernelgpio}.
+
+
+\section{\_GcodeLinearMove}\label{fn:reproduce:-GcodeLinearMove}
+\begin{lstlisting}[style=sig]
+def _GcodeLinearMove(targetXMm, targetYMm, feedMmMin)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/reproduce.py} line 827. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:bresenham}.
+
+
+\Q{Purpose}{What this contributes}
+Clamps the requested machine target, uses calibrated X/Y steps/mm and a switch-clearance offset, rounds to integer target steps, and computes nominal major-iteration delay from Euclidean length and F/60. It then calls sequential-pulse Bresenham. This explains direction-dependent timing overhead and why the feed is not a verified speed.
+
+
+\Q{Method}{Current implementation}
+Coordinate two integer step counts along one line using a bounded error accumulator. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def _GcodeLinearMove(targetXMm,targetYMm,feedMmMin):
+    targetXMm,targetYMm = _ClampToUsableArea(targetXMm,targetYMm)
+    spmmX,spmmY = Calibration["steps_per_mm_x"],Calibration["steps_per_mm_y"]
+    x0Mm = CurrentXSteps/spmmX-EDGE_TOLERANCE_MM
+    y0Mm = CurrentYSteps/spmmY-EDGE_TOLERANCE_MM
+    distMm = math.hypot(targetXMm-x0Mm,targetYMm-y0Mm)
+    TargetXSteps = round((targetXMm+EDGE_TOLERANCE_MM)*spmmX)
+    TargetYSteps = round((targetYMm+EDGE_TOLERANCE_MM)*spmmY)
+    dxSteps = TargetXSteps-CurrentXSteps
+    dySteps = TargetYSteps-CurrentYSteps
+    if dxSteps==0 and dySteps==0:
+        return
+    majorSteps = max(abs(dxSteps),abs(dySteps),1)
+    feedMmS = max(feedMmMin/60.0,GCODE_MIN_FEED_MM_S)
+    stepDelayS = max((distMm/feedMmS)/majorSteps,MIN_STEP_DELAY_S)
+    BresenhamMove(dxSteps,dySteps,stepDelayS=stepDelayS)
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Major-axis stepping distributes minor-axis pulses without a division per step. Feed conversion turns desired length and rate into a nominal pulse delay. \cite{bresenham1965,a4988datasheet,kernelgpio}.
+
+
+\section{\_GcodeArcMove}\label{fn:reproduce:-GcodeArcMove}
+\begin{lstlisting}[style=sig]
+def _GcodeArcMove(x0Mm, y0Mm, x1Mm, y1Mm, iMm, jMm, clockwise, feedMmMin)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/reproduce.py} line 849. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:bresenham}.
+
+
+\Q{Purpose}{What this contributes}
+Converts an I/J-centred G2/G3 arc to short straight chords and executes them through the linear mover. Approximation depends on chord segmentation, and the current parser supports only its implemented dialect rather than every CNC command.
+
+
+\Q{Method}{Current implementation}
+Coordinate two integer step counts along one line using a bounded error accumulator. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def _GcodeArcMove(x0Mm,y0Mm,x1Mm,y1Mm,iMm,jMm,clockwise,feedMmMin):
+    cx,cy = x0Mm+iMm,y0Mm+jMm
+    radius = math.hypot(iMm,jMm)
+    if radius<1e-6:
+        _GcodeLinearMove(x1Mm,y1Mm,feedMmMin)
+        return
+    startAngle = math.atan2(y0Mm-cy,x0Mm-cx)
+    endAngle = math.atan2(y1Mm-cy,x1Mm-cx)
+    if clockwise:
+        while endAngle>=startAngle:   #force a strictly decreasing sweep
+            endAngle-=2.0*math.pi
+    else:
+        while endAngle<=startAngle:
+            endAngle+=2.0*math.pi
+    angleSpan = endAngle-startAngle
+    nSegments = max(4,int(abs(angleSpan)*radius/0.4))   #about 0.4 mm per chord
+    for k in range(1,nSegments+1):
+        if abortEvent.is_set() or TriggeredEndstop() is not None:
+            return
+        a = startAngle+angleSpan*(k/nSegments)
+        _GcodeLinearMove(cx+radius*math.cos(a),cy+radius*math.sin(a),feedMmMin)
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Major-axis stepping distributes minor-axis pulses without a division per step. Feed conversion turns desired length and rate into a nominal pulse delay. \cite{bresenham1965,a4988datasheet,kernelgpio}.
+
+
+\section*{Stage: G code parsing and job generation}
+\ReportEq{33}{Nominal timing budget}
+{$t_{\rm nom}=L_d/v_d+L_u/v_u+N_{\rm toggle}\tau$.}
+{Explain drawing, travel and dwell contributions. Current WriteGcode uses
+feeds in mm/min, multiplies length/feed by 60, and approximates dwell using
+the mean of up/down dwell. Initial/final travel, actual toggles and software
+overhead prevent treating it as a rigorous measured lower bound.}
+{WriteGcode and timing.Run; keep estimates distinct from completed-job logs.}
+{code2026,pythontime}
+
+
+\section{Method background: G code parsing and job generation}\label{method:gcode}
+\Q{Purpose}{The role in this system}
+Connect abstract pen paths to modal movement and pen-state commands.
+
+
+\Q{Justification}{The reason for this construction}
+Explicit units, absolute positioning, feeds and dwell make a job inspectable; calibrated execution maintains a commanded position and checks interruptions.
+
+
+\Q{Alternatives}{What changes if another method is used}
+Direct streaming avoids a stored file but loses a convenient review/replay artefact. Standard firmware has a richer parser and motion planner, requiring agreed dialect and pen-code mapping.
+
+
+\Q{Library}{Implementation speed and accuracy}
+A G-code parser can recognise syntax but cannot assume this project M3/M5 pen semantics or P dwell units. LinuxCNC/GRBL-style conventions must be checked rather than treated as identical. \cite{code2026,linuxcnc}.
+
+
+\section{WriteGcode}\label{fn:reproduce:WriteGcode}
+\begin{lstlisting}[style=sig]
+def WriteGcode(traj, cfg, path, title='', rowTolMm=None)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/reproduce.py} line 294. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:gcode}.
+
+
+\Q{Purpose}{What this contributes}
+Maps, decimates, orders and clamps paths, optionally closes near-rings and draws short endpoint bridges. It explicitly restates modal feed on travel and drawing transitions, counts lengths and writes an inspectable file. Its timing summary uses toggle count times the mean of up/down dwells and excludes some initial/final travel and execution overhead; it is nominal accounting, not a rigorous measured lower bound.
+
+
+\Q{Method}{Current implementation}
+Connect abstract pen paths to modal movement and pen-state commands. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def WriteGcode(traj,cfg,path,title='',rowTolMm=None):
+    strokes,scale = ToMachine(traj,cfg,rowTolMm=rowTolMm)
+    strokes,clipped = _Clamp(strokes,cfg)
+    pen = NewPenState(cfg)
+    L = []
+    L.append(f"; Handwriting-Robot G-code{(' -- '+title) if title else ''}")
+    L.append(f"; author={traj.meta.get('author')} strokes={len(strokes)} "
+             f"scale={scale:.3f}")
+    L.append(f"; steps/mm  X={cfg.stepsPerMmX:.3f}  Y={cfg.stepsPerMmY:.3f} "
+             f"({cfg.microstepsPerRev} microsteps/rev)")
+    L.append(f"; pen: one-way gear motor, {cfg.penUpCode}=up "
+             f"{cfg.penDownCode}=down, each = one 90deg pulse")
+    if clipped:
+        L.append(f"; WARNING: {clipped} point(s) clamped to work area")
+    L.append('G21   ; millimetres')
+    L.append('G90   ; absolute')
+    L+=SetPenLines(pen,cfg,True)
+    L.append(f"G0 F{cfg.travelFeedMmMin:.0f}")
+    here = None        #where the pen is, in millimetres
+    joined = rings = 0
+    joinedMm = 0.0
+    drawMm = travelMm = 0.0
+    for s in strokes:
+        if len(s)<2:
+            continue
+        if (cfg.closeRingMm>0 and len(s)>3
+                and math.dist(s[0],s[-1])<=cfg.closeRingMm
+                and s[0]!=s[-1]):
+            s = list(s)+[s[0]]
+            rings += 1
+        if here is not None and math.dist(here,s[0])<=cfg.joinStrokesMm:
+            L.append(f"G1 F{cfg.drawFeedMmMin:.0f}")
+            joined += 1
+            joinedMm += math.dist(here,s[0])
+            drawMm += math.dist(here,s[0])
+        else:
+            L+=SetPenLines(pen,cfg,True)
+            L.append(f"G0 F{cfg.travelFeedMmMin:.0f} "
+                     f"X{s[0][0]:.3f} Y{s[0][1]:.3f}")
+            if here is not None:
+                travelMm += math.dist(here,s[0])
+            L+=SetPenLines(pen,cfg,False)
+            L.append(f"G1 F{cfg.drawFeedMmMin:.0f}")
+        prev = s[0]
+        for (x,y) in s[1:]:
+            L.append(f"G1 X{x:.3f} Y{y:.3f}")
+            drawMm += math.dist(prev,(x,y))
+            prev = (x,y)
+        here = s[-1]
+    L+=SetPenLines(pen,cfg,True)
+    L.append(f"G0 F{cfg.travelFeedMmMin:.0f} "
+             f"X{cfg.originXmm:.3f} Y{cfg.originYmm:.3f}   ; park")
+    if here is not None:
+        travelMm += math.dist(here,(cfg.originXmm,cfg.originYmm))
+    L.append('M2')
+    Path(path).parent.mkdir(parents=True,exist_ok=True)
+    with open(path,'w',encoding='utf-8') as f:
+        f.write('\n'.join(L)+'\n')
+# Excerpt ends; full definition continues in bundled source.
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Explicit units, absolute positioning, feeds and dwell make a job inspectable; calibrated execution maintains a commanded position and checks interruptions. \cite{code2026,linuxcnc}.
+
+
+\section{GantryNotConnectedError}\label{fn:reproduce:GantryNotConnectedError}
+\begin{lstlisting}[style=sig]
+class GantryNotConnectedError
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/reproduce.py} line 406. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:gcode}.
+
+
+\Q{Purpose}{What this contributes}
+Connect abstract pen paths to modal movement and pen-state commands.
+
+
+
+
+\noindent\textbf{Output.} an error type raised when something needs the hardware and the hardware is not available.
+
+
+\Q{Purpose}{What it is for}
+Raised when the GPIO library is missing or the chip device cannot be opened, which is the ordinary situation on any computer that is not the machine's own controller.
+
+
+\Q{Justification}{Why a named error rather than letting the import fail}
+An unguarded import of the hardware library would make this module unimportable off the machine, and since the test and evaluation scripts all import it, none of them could run anywhere else. A distinct error type lets the hardware functions fail cleanly when called, while the arithmetic half of the file remains usable.
+
+Being a distinct type rather than a generic error is what lets a caller distinguish "there is no machine here" from "the machine is there and something went wrong". The first is expected and should be reported as a plain message; the second is a fault.
+
+
+
+\section{NotCalibratedError}\label{fn:reproduce:NotCalibratedError}
+\begin{lstlisting}[style=sig]
+class NotCalibratedError
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/reproduce.py} line 410. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:gcode}.
+
+
+\Q{Purpose}{What this contributes}
+Connect abstract pen paths to modal movement and pen-state commands.
+
+
+
+
+\noindent\textbf{Output.} an error type raised when an absolute move is attempted before homing.
+
+
+\Q{Justification}{Why calibration is a precondition and not a convenience}
+A stepper motor has no idea where it is. It moves a commanded number of steps from wherever it happens to be, and nothing in the motor or the driver reports a position. So a command to move to a particular place on the bed is meaningless until the machine has established where that place is relative to its current position, which is what homing does.
+
+Executing such a command anyway is not a silent error. The machine drives toward a position computed from an unknown origin, which is as likely as not to be outside the bed, and it will drive into its own frame until the limit switches catch it. A distinct error type refusing the command is the appropriate response to a request that cannot be carried out safely.
+
+
+\begin{quote}\small\itshape This is one of the few places in the project where a function refuses rather than falling back. The usual pattern is to return a degraded result, but there is no degraded version of a physical move: it either goes to the right place or it drives the machine somewhere arbitrary.\end{quote}
+
+
+\section{Connect}\label{fn:reproduce:Connect}
+\begin{lstlisting}[style=sig]
+def Connect()
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/reproduce.py} line 501. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:gcode}.
+
+
+\Q{Purpose}{What this contributes}
+Claims the configured chip lines with gpiod v2, sets initial direction/step/motor states, and records the live handle. Failure must be interpreted as no connected controller; reading this function does not verify actual header wiring or GPIO current capability.
+
+
+\Q{Method}{Current implementation}
+Connect abstract pen paths to modal movement and pen-state commands. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def Connect():
+    global req
+    if req is not None:
+        return
+    if gpiod is None:
+        raise GantryNotConnectedError(f"gpiod not available: {_GPIOD_IMPORT_ERROR}")
+    try:
+        req = gpiod.request_lines(
+            CHIP_PATH,
+            consumer="stepper-control",
+            config={
+                DIR1_PIN: gpiod.LineSettings(direction=Direction.OUTPUT,output_value=Value.ACTIVE),
+                STEP1_PIN: gpiod.LineSettings(direction=Direction.OUTPUT,output_value=Value.INACTIVE),
+                DIR2_PIN: gpiod.LineSettings(direction=Direction.OUTPUT,output_value=Value.ACTIVE),
+                STEP2_PIN: gpiod.LineSettings(direction=Direction.OUTPUT,output_value=Value.INACTIVE),
+                X_MIN_PIN: gpiod.LineSettings(direction=Direction.INPUT),
+                X_MAX_PIN: gpiod.LineSettings(direction=Direction.INPUT),
+                Y_MIN_PIN: gpiod.LineSettings(direction=Direction.INPUT),
+                Y_MAX_PIN: gpiod.LineSettings(direction=Direction.INPUT),
+                PEN_SWITCH_PIN: gpiod.LineSettings(direction=Direction.INPUT),
+                PEN_MOTOR_PIN: gpiod.LineSettings(direction=Direction.OUTPUT,output_value=Value.INACTIVE),
+            },
+        )
+    except Exception as e:
+        req = None
+        raise GantryNotConnectedError(f"Could not open {CHIP_PATH}: {e}") from e
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Explicit units, absolute positioning, feeds and dwell make a job inspectable; calibrated execution maintains a commanded position and checks interruptions. \cite{code2026,linuxcnc}.
+
+
+\section{Disconnect}\label{fn:reproduce:Disconnect}
+\begin{lstlisting}[style=sig]
+def Disconnect()
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/reproduce.py} line 529. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:gcode}.
+
+
+\Q{Purpose}{What this contributes}
+Connect abstract pen paths to modal movement and pen-state commands.
+
+
+
+
+\noindent\textbf{Output.} nothing; it sets the outputs safe and releases the lines.
+
+
+\Q{Method}{The order of operations}
+The step pins and the pen motor are set inactive first, and only then are the lines released. The order is necessary: once a line is released, its level is no longer controlled, and a line released while active may stay active. Releasing a step pin while high would leave the driver holding a coil energised, which heats the motor with nothing running to notice.
+
+
+\Q{Justification}{Why the release is in a finally clause}
+The setting of safe levels is wrapped so that the release happens whether or not it succeeded. If a pin cannot be set, because the chip has gone away or the device was unplugged, the lines must still be released, or they stay claimed by a process that has exited and the next run cannot acquire them. Releasing a resource must not depend on the success of the tidying done before it.
+
+
+
+\section{\_TriggerEmergencyStop}\label{fn:reproduce:-TriggerEmergencyStop}
+\begin{lstlisting}[style=sig]
+def _TriggerEmergencyStop(hit)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/reproduce.py} line 598. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:gcode}.
+
+
+\Q{Purpose}{What this contributes}
+Cuts the drive, retracts off every tripped switch and marks the machine stopped until it is cleared.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{hit}] \normalfont the switch that caused the stop
+\end{description}
+
+\noindent\textbf{Output.} nothing; it stops the drive, retracts and latches the fault.
+
+
+\Q{Justification}{The sequence, and why it is in this order}
+
+\begin{itemize}\setlength\itemsep{0pt}
+  \item \textbf{Latch the fault first,} before anything else. Setting the flag and recording the switch immediately means that any other code checking it from this point on sees the stop, including the retract that follows.
+  \item \textbf{Set the step pins inactive.} This ends any pulse in progress so no coil is left energised mid-step.
+  \item \textbf{Find every pressed switch,} since more than one may be.
+  \item \textbf{Retract off each of them,} so the machine is clear of its limits and able to move again once the fault is cleared.
+  \item \textbf{Report,} naming the switches and the retract distance.
+\end{itemize}
+
+\Q{Justification}{Why re-entry is refused}
+The function returns immediately if the fault is already latched. Without that, a second switch tripping during the retract would trigger another stop, which would retract again, which could trip again, and the recursion would continue until the program ran out of stack. The guard makes the stop happen once and the retract complete, which is the behaviour wanted: the first stop has already established that the machine is to halt, and a second detection adds nothing.
+
+
+\Q{Justification}{Why the pen is raised}
+Raising the pen is part of stopping, not a courtesy. A pen left down during an abort rests on the paper at the point of failure, where the ink bleeds into a visible blot, and if the machine is subsequently moved by hand it drags a line across the drawing. The drawing is already spoiled by the abort; the object is to avoid spoiling it further.
+
+
+
+\section{RequestAbort}\label{fn:reproduce:RequestAbort}
+\begin{lstlisting}[style=sig]
+def RequestAbort()
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/reproduce.py} line 613. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:gcode}.
+
+
+\Q{Purpose}{What this contributes}
+Sets an event consumed inside motion/dwell loops. Requesting interruption and observing that the active job has stopped are separate events.
+
+
+\Q{Method}{Current implementation}
+Connect abstract pen paths to modal movement and pen-state commands. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def RequestAbort():
+    abortEvent.set()
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Explicit units, absolute positioning, feeds and dwell make a job inspectable; calibrated execution maintains a commanded position and checks interruptions. \cite{code2026,linuxcnc}.
+
+
+\section{EmergencyStop}\label{fn:reproduce:EmergencyStop}
+\begin{lstlisting}[style=sig]
+def EmergencyStop(waitS=3.0, park=True)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/reproduce.py} line 620. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:gcode}.
+
+
+\Q{Purpose}{What this contributes}
+Requests abort, waits a bounded interval for the active-job event, turns outputs inactive and attempts pen-up/parking according to state. It returns whether execution remains active or latched. It does not supply a hard real-time maximum stop latency or guarantee the pen successfully raised.
+
+
+\Q{Method}{Current implementation}
+Connect abstract pen paths to modal movement and pen-state commands. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def EmergencyStop(waitS=3.0,park=True):
+    Connect()
+    abortEvent.set()
+    deadline = time.time()+waitS
+    while _jobActive.is_set() and time.time()<deadline:
+        time.sleep(0.005)
+    stillRunning = _jobActive.is_set()
+
+    req.set_value(STEP1_PIN,Value.INACTIVE)
+    req.set_value(STEP2_PIN,Value.INACTIVE)
+
+    penUp = SetPen(True,force=True)
+    parked,detail = False,""
+    if stillRunning:
+        detail = ("the drawing thread did not let go within %.1f s, so the "
+                  "stop is still latched and the corner move was skipped"%waitS)
+    else:
+        abortEvent.clear()   #cleared before the park move
+        if not park:
+            detail = "parking not asked for"
+        elif not Calibration["done"]:
+            detail = ("not calibrated, so there is no known corner to drive "
+                      "to -- the pen is up and the motors are idle")
+        elif TriggeredEndstop() is not None:
+            detail = ("end-stop %s is tripped, so the corner move was skipped "
+                      "-- clear it, then re-home"%TriggeredEndstop())
+        else:
+            cfg = GantryConfig()
+            _GcodeLinearMove(cfg.originXmm,cfg.originYmm,cfg.travelFeedMmMin)
+            parked = True
+    print("[stop] pen %s, %s%s"%("up" if penUp else "UP FAILED",
+                                 "parked at the corner" if parked else "not parked",
+                                 " -- "+detail if detail else ""))
+    return {"stopped": True,"pen_up": bool(penUp),"parked": parked,
+            "still_running": stillRunning,"latched": stillRunning,
+            "detail": detail,"estopped": estopped,
+            "tripped_switch": TrippedSwitch}
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Explicit units, absolute positioning, feeds and dwell make a job inspectable; calibrated execution maintains a commanded position and checks interruptions. \cite{code2026,linuxcnc}.
+
+
+\section{ParseGcodeLine}\label{fn:reproduce:ParseGcodeLine}
+\begin{lstlisting}[style=sig]
+def ParseGcodeLine(raw)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/reproduce.py} line 803. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:gcode}.
+
+
+\Q{Purpose}{What this contributes}
+Connect abstract pen paths to modal movement and pen-state commands.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{raw}] \normalfont one line of a G-code file
+\end{description}
+
+\noindent\textbf{Output.} the command and its parameters, or nothing for a line with no command.
+
+
+\Q{Method}{What it does}
+Strips comments, splits the line into words, takes the first G or M word as the command, and collects the rest as parameters keyed by their letters.
+
+
+\Q{Method}{The two comment conventions}
+G-code has two: a semicolon makes the rest of the line a comment, and text in parentheses is a comment wherever it appears, including in the middle of a line. Both are handled, the first by truncating at the semicolon and the second by removing every parenthesised span. Handling only the first would leave comment text to be parsed as words, and a comment containing a letter followed by a digit would be read as a parameter.
+
+
+\Q{Justification}{Why the first G or M word becomes the command}
+A line has one command and any number of parameters, and the command is identified by being a G or M word. Taking the first such word rather than the first word generally is what lets a line with a leading line number be parsed, and the test that the command slot is still empty is what stops a later G word being mistaken for a second command.
+
+
+\begin{quote}\small\itshape The command's number is converted to an integer while parameters stay as floating point. That is correct for each: G1 and G01 denote the same command, so an integer normalises them, while a coordinate of 12.5 must keep its fraction.\end{quote}
+
+
+\section{RunGcodeFile}\label{fn:reproduce:RunGcodeFile}
+\begin{lstlisting}[style=sig]
+def RunGcodeFile(path)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/reproduce.py} line 875. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:gcode}.
+
+
+\Q{Purpose}{What this contributes}
+Requires calibration, opens the job, initialises modal state and encloses execution in a finally block clearing \_jobActive. Initial parser coordinates use nominal STEPS\_PER\_MM, whereas \_GcodeLinearMove obtains physical coordinates from calibrated factors. Do not assume these are identical in every modal/no-coordinate case.
+
+
+\Q{Method}{Current implementation}
+Connect abstract pen paths to modal movement and pen-state commands. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def RunGcodeFile(path):
+    global lastJobAborted
+    lastJobAborted = False
+    if not Calibration["done"]:
+        raise NotCalibratedError("Run calibration before running a G-code file.")
+    try:
+        with open(path,'r') as f:
+            lines = f.readlines()
+    except OSError as e:
+        print(f"Couldn't open '{path}': {e}")
+        return
+
+    absMode = True
+    feedMmMin = 900.0
+    curXMm = CurrentXSteps/STEPS_PER_MM
+    curYMm = CurrentYSteps/STEPS_PER_MM
+    print(f"Running G-code: {path} ({len(lines)} lines)")
+
+    _jobActive.set()
+    try:
+        _RunGcodeLines(path,lines,absMode,feedMmMin,curXMm,curYMm)
+    finally:
+        _jobActive.clear()
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Explicit units, absolute positioning, feeds and dwell make a job inspectable; calibrated execution maintains a commanded position and checks interruptions. \cite{code2026,linuxcnc}.
+
+
+\section{\_RunGcodeLines}\label{fn:reproduce:-RunGcodeLines}
+\begin{lstlisting}[style=sig]
+def _RunGcodeLines(path, lines, absMode, feedMmMin, curXMm, curYMm)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/reproduce.py} line 900. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:gcode}.
+
+
+\Q{Purpose}{What this contributes}
+Processes commands with abort and endstop checks, modal feed and absolute/relative positioning. M3/M5 call SetPen; a false return is printed and execution continues. Unsupported commands are logged/skipped. Commanded parser targets and clamped/actually reached coordinates need not agree after interruptions; successful parsing is not independent position feedback.
+
+
+\Q{Method}{Current implementation}
+Connect abstract pen paths to modal movement and pen-state commands. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def _RunGcodeLines(path,lines,absMode,feedMmMin,curXMm,curYMm):
+    global lastJobAborted
+    for lineno,raw in enumerate(lines,1):
+        if abortEvent.is_set():
+            lastJobAborted = True
+            print(f"G-code job STOPPED at line {lineno} -- stop requested.")
+            return
+        hit = TriggeredEndstop()
+        if hit is not None:
+            _TriggerEmergencyStop(hit)
+            print(f"G-code job ABORTED at line {lineno}.")
+            return
+        if estopped:
+            print(f"G-code job ABORTED at line {lineno} -- already emergency-stopped.")
+            return
+
+        parsed = ParseGcodeLine(raw)
+        if parsed is None:
+            continue
+        cmd,p = parsed
+
+        if cmd in ("G0","G1"):
+            if "F" in p:
+                feedMmMin = p["F"]
+            targetX = p.get("X",curXMm) if absMode else curXMm+p.get("X",0.0)
+            targetY = p.get("Y",curYMm) if absMode else curYMm+p.get("Y",0.0)
+            _GcodeLinearMove(targetX,targetY,feedMmMin)
+            curXMm,curYMm = targetX,targetY
+
+        elif cmd in ("G2","G3"):
+            if "F" in p:
+                feedMmMin = p["F"]
+            targetX = p.get("X",curXMm) if absMode else curXMm+p.get("X",0.0)
+            targetY = p.get("Y",curYMm) if absMode else curYMm+p.get("Y",0.0)
+            _GcodeArcMove(curXMm,curYMm,targetX,targetY,
+                            p.get("I",0.0),p.get("J",0.0),cmd=="G2",feedMmMin)
+            curXMm,curYMm = targetX,targetY
+
+        elif cmd=="G4":
+            deadline = time.time()+p.get("P",0.0)
+            while time.time()<deadline:
+                if abortEvent.is_set() or TriggeredEndstop() is not None:
+                    break
+                time.sleep(0.005)
+
+        elif cmd=="G90":
+            absMode = True
+        elif cmd=="G91":
+            absMode = False
+        elif cmd=="G21":
+            pass
+        elif cmd=="M3":
+            if not SetPen(False):
+                print(f"[Line {lineno}] Pen-down did not confirm -- continuing anyway.")
+        elif cmd=="M5":
+            if not SetPen(True):
+                print(f"[Line {lineno}] Pen-up did not confirm -- continuing anyway.")
+        elif cmd in ("M2","M30"):
+# Excerpt ends; full definition continues in bundled source.
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Explicit units, absolute positioning, feeds and dwell make a job inspectable; calibrated execution maintains a commanded position and checks interruptions. \cite{code2026,linuxcnc}.
+

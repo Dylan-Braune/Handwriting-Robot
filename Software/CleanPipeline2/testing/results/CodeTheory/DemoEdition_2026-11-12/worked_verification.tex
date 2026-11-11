@@ -1,0 +1,566 @@
+\chapter{Expanded measurement, verification and coefficient evidence}
+\label{ch:expand-verification}
+\ReportEq{35}{Geometric agreement and natural baseline}
+{$F=2PR/(P+R)$ and $Q_k=100F_{{\rm robot},k}/F_{{\rm genuine},k}$.}
+{Compare thresholded centreline precision/recall and then contextualise robot
+agreement using genuine writing variation. F is not character accuracy or IoU;
+Q is project-defined and can exceed 100 percent. Mean writer ratios differ
+from a ratio of pooled means.}
+{Historical geometric evaluation, not a loaded classifier confidence.}
+{tanksmetric,finalreport2026}
+
+
+\Q{Evidence}{Appendix calculations plots and recorded checks}
+The two-crop page vote, finite-difference derivative, patch-storage calculation,
+12 ms switch confirmation, stroke-width sweep, confusion matrices, seam/capture
+counts and training epoch logs are all retained in the verification chapter.
+For a confusion matrix, row normalisation gives prediction fractions conditional
+on actual writer; it is not class precision. Wilson limits describe binomial
+decision counts subject to dependence caveats. A recognition score used to
+select a candidate is not an independent physical test of that candidate.
+Every retained historical number stays attached to its population and source.
+
+
+\Q{Purpose}{The named procedures and their current homes}
+The pen-toggle procedure is \texttt{SetPen}; debounced switch reads are
+\texttt{TriggeredEndstop}; dynamic axis calibration uses
+\texttt{\_CalibrateAxis} and \texttt{Calibrate}; coordinated integer movement
+is \texttt{BresenhamMove}. The report's line-ownership refinement maps to
+\texttt{AssignOwnership} and its correction helpers. Labelled handwriting to
+a writer profile maps to \texttt{ExtractLineGlyphs},
+\texttt{ExtractAuthorRaw} and \texttt{BuildAuthorProfile}.
+Joint search/accepted repair is \texttt{SynthesizeJointBestOf}. The extended
+training algorithm maps to the train-mode forward/cache/backward functions,
+loss routines, optimiser step, validation and checkpoint logic. These names
+are linked through the function index; unrelated helpers do not outrank them.
+
+\Q{Method}{What each report plot can and cannot show}
+The integral/ratio example demonstrates arithmetic for one pixel, not all
+lighting conditions. A seam/cost overlay shows the route preferred by the
+chosen objective; a labelled crop establishes whether that route preserves
+the intended ink. A convolution feature plot shows activation responses,
+not fixed semantic labels for channels, and independent colour scales cannot
+be compared as absolute strengths. A CTC plot places symbols against feature
+frames, not physical pen time. Forced alignment is conditional on the supplied
+transcript. A Bresenham staircase represents integer commanded positions,
+not an observed vibration trace. Stroke-normalisation panels show mask,
+skeleton and restored width rather than guaranteed shape preservation.
+
+Variant clouds, medoids and prototypes have different provenance: a medoid
+is a real selected sample, whereas a prototype is constructed. Candidate-score
+panels show optimisation against the judging networks. Confusion matrices
+require the actual per-class counts. Word overlays depend on registration,
+normalisation and distance tolerance; they are not automatic proof of
+character correctness. Timing bars require host, stage boundaries and
+completed-job status. Training curves require the selected checkpoint and
+holdout definition. The verification chapter explains the exact reported
+calculations and their qualifications rather than rerunning them.
+
+
+\section{Verification, validation, selection and qualification are different}
+Verification asks whether an implementation performs the stated calculation.
+A finite-difference derivative, an integral-image hand sum and comparison with
+a separately implemented operation are examples. Validation asks whether the
+method represents the intended task: correct line ink, readable letters or
+actual carriage distances. Model selection chooses settings using observed
+performance; qualification assesses the specified requirement under the
+documented test conditions. A high validation score used to choose a width
+is evidence for selection, not an untouched qualification result.
+
+The additions explain how calculations can be checked; none was rerun as an
+experiment. New arithmetic is labelled as constructed or derived. No coefficient
+sweep, inference, robot motion, training, lighting experiment, old-segmenter
+comparison, pressure repair or demonstration preparation belongs to this work.
+
+\section{How the recorded NumPy--Torch comparisons should be understood}
+The final report Table 7 records reader/writer maximum-logit differences
+normalised by maximum magnitude of $2.12\times10^{-14}$ and
+$3.04\times10^{-15}$; absolute loss differences of $1.14\times10^{-13}$
+and $1.78\times10^{-15}$; worst-ranked gradient relative L2 differences of
+$2.80\times10^{-13}$ and $6.01\times10^{-14}$~\cite{finalreport2026}.
+Its prose saying all values are below $10^{-13}$ is inconsistent with two
+displayed reader entries. The table values are retained rather than replaced
+with that blanket description.
+
+For corresponding tensors $a,b$, useful measures are
+\FormulaNote{Purpose in this explanation: How the recorded NumPy--Torch comparisons should be understood}{finalreport2026,code2026}
+\begin{align*}
+e_{\max}&=\max_i|a_i-b_i|,\\
+e_{\rm rel,max}&=e_{\max}/\max(\epsilon,\max_i|b_i|),\\
+e_{\rm rel,2}&=\|a-b\|_2/\max(\epsilon,\|b\|_2).
+\end{align*}
+Other symmetric denominators are possible and give different numbers.
+The exact archived checker defines which was used; a descriptive table
+heading alone does not recover every denominator/floor. Relative metrics
+near zero can be misleading, so retain an absolute metric too. ``Worst ranked''
+must identify the compared parameter tensors, not imply all possible states
+and inputs were exhausted.
+
+A meaningful comparison holds fixed input arrays, parameters, precision,
+layout, padding, activation conventions, training/evaluation mode, batchnorm
+statistics, LSTM gate order, blank index, sequence lengths and loss reduction.
+Dropout is disabled or its mask is shared. Compare intermediate operations
+before relying on final logits. Float64 agreement near these scales supports
+consistency for the checked cases; it does not validate the model's learned
+accuracy or guarantee a whole training trajectory matches. Floating-point
+operations are order-dependent~\cite{torchnumeric}. Independently trained
+checkpoints can differ for many reasons beyond accumulated rounding error.
+
+Table 6's performance comparison is a different experiment: reader pooled
+94.06\% versus 94.39\%, writer 98.08\% versus 97.51\% on common material.
+These are trained-route evaluation scores, not numerical roundoff measures.
+Matching an operation to Torch and achieving a character score answer
+different questions. The writer QTP2 score 153/156 should not be silently
+assigned to the alternative first-principles checkpoint.
+
+\section{Finite differences and all Appendix A.1 arithmetic}
+For scalar parameter $\theta_i$, central difference is
+\FormulaNote{Purpose in this explanation: Finite differences and all Appendix A.1 arithmetic}{finalreport2026,code2026}
+\[
+g_i^{\rm FD}={L(\theta+h e_i)-L(\theta-h e_i)\over2h}.
+\]
+Taylor expansion cancels the first-order error terms and gives an $O(h^2)$
+truncation error when $L$ is sufficiently smooth. Making $h$ too small
+causes subtraction cancellation and roundoff; making it too large measures
+curvature rather than the local derivative. ReLU zeros and max-pool ties
+are nondifferentiable, so a central difference crossing them need not equal
+the implementation's selected subgradient. These observations follow from
+calculus and floating-point arithmetic, not new network tests.
+
+The report records losses 0.4703364611173033 and 0.4703403997759956,
+$h=10^{-4}$. In the recorded plus/minus order,
+\FormulaNote{Purpose in this explanation: Finite differences and all Appendix A.1 arithmetic}{finalreport2026,code2026}
+\[
+{0.4703364611173033-0.4703403997759956\over0.0002}
+\simeq-0.0196932934615.
+\]
+The analytic derivative is $-0.0196932934309$, absolute discrepancy
+about $3.06\times10^{-11}$. This is one recorded coordinate check,
+not a worst-case bound for all derivatives. Recovering it operationally
+would require the exact frozen input, target, parameter coordinate, dtype,
+weights, loss reduction and perturbation order; the two scalar losses alone
+do not identify those objects. No checker was executed in this edition.
+
+The patch-storage example is $368640\times4/2^{20}=1.40625$ MiB.
+The factor four assumes four bytes per element (float32); float64 would
+double the value. MiB uses $2^{20}$ bytes, while MB uses $10^6$.
+An im2col view can become a materialised array during reshape/multiplication;
+count actual storage, not only logical view shape. This arithmetic does not
+establish peak process memory. The switch-confirmation example is
+$(3-1)\times6=12$ ms; three reads contain two intervals.
+
+\section{The mysterious ``Appendix calculation 1'': the page vote}
+The final report labels Appendix A.0.1 ``System integration calculation''.
+It combines line writer probabilities using ink-count weights:
+\FormulaNote{Purpose in this explanation: The mysterious ``Appendix calculation 1'': the page vote}{finalreport2026,code2026}
+\[
+\bar p_k={\sum_i w_i p_{i,k}\over\sum_i w_i},\quad w_i\ge0.
+\]
+For two archived Author O01 crops,
+\FormulaNote{Purpose in this explanation: The mysterious ``Appendix calculation 1'': the page vote}{finalreport2026,code2026}
+\[
+\bar p_O={20204(0.9996674)+21750(0.9999279)\over41954}
+\simeq0.9998024.
+\]
+Weights sum to 41954; normalised weights sum to one, so the pooled vector
+remains a probability vector when the inputs are. Weighting by ink count
+assumes more ink supplies more useful evidence; a dark artefact or a long
+misclassified line can instead dominate. This is not a Bayesian product
+of independent likelihoods, and near-one softmax values do not prove
+near-certain real-world identity. The example uses two crops and cannot
+substitute for the full-page result~\cite{finalreport2026}.
+
+\section{Levenshtein edits, character accuracy and exact text measures}
+For reference prefix length $i$ and predicted prefix length $j$,
+\FormulaNote{Purpose in this explanation: Levenshtein edits, character accuracy and exact text measures}{finalreport2026,code2026}
+\[
+D_{i,j}=\min\{D_{i-1,j}+1,D_{i,j-1}+1,
+D_{i-1,j-1}+\mathbf1[t_i\ne\hat t_j]\},
+\]
+with $D_{i,0}=i,D_{0,j}=j$. The three branches represent deletion,
+insertion and substitution/match. This dynamic-programming calculation gives
+minimum edit count~\cite{levenshtein1966}. For ``cat'' versus ``cut'',
+one substitution gives CER $1/3$ and character score $2/3$. A missing
+space counts if spaces are included. Case folding and punctuation removal
+must be specified before comparison; changing them changes the task.
+
+Pooled CER is $\sum_iD_i/\sum_i|t_i|$, not the unweighted mean of line
+CERs. For lengths 2 and 98 with errors 1 and 0, pooled accuracy is 99\%,
+whereas mean line accuracy is 75\%. The final report uses the pooled
+formula. Its raw accuracy can become negative if insertions exceed the
+reference length; the candidate \texttt{CharAcc} clamps at zero. These are
+different conventions at that extreme.
+
+Exact-line match counts a line only if the entire chosen text agrees.
+Word error rate, fraction of exact words and longest-common-subsequence
+word recall are also different. The inspected server \texttt{WordAcc} computes
+case-insensitive word-level LCS recall, despite its short descriptive comment.
+It should not automatically be interpreted as standard WER complement or
+strict positional exact-word accuracy. Reported numerical evidence must be
+read with the actual scorer and text normalisation.
+
+\section{Wilson intervals: derivation, numerical meaning and dependence}
+For $x$ correct binary decisions out of $n$ and $\hat p=x/n$, invert the
+score inequality $(\hat p-p)^2\le z^2p(1-p)/n$. Solving the resulting
+quadratic gives
+\FormulaNote{Purpose in this explanation: Wilson intervals: derivation, numerical meaning and dependence}{finalreport2026,code2026}
+\[
+{\hat p+z^2/(2n)\ \pm\ z\sqrt{\hat p(1-\hat p)/n+z^2/(4n^2)}
+\over1+z^2/n}.
+\]
+Use $z\simeq1.96$ for a nominal two-sided 95\% interval~\cite{wilson1927,nistinterval}.
+For $153/156$, $\hat p\simeq0.98077$ and the interval is about
+94.5--99.3\%; for $159/184$, about 80.7--90.6\%. These are reported
+line-decision examples. Even 25/25 gives a lower bound about 86.7\%, not
+certainty of universal success.
+
+Wilson avoids the zero-width interval that a naive normal approximation
+can give at all successes. Its binomial interpretation still assumes suitable
+independent trials with a shared success probability. Lines sharing page,
+writer, lighting and model are dependent. The report therefore treats its
+intervals descriptively. It is incorrect to claim a 95\% posterior probability
+that a fixed unknown $p$ lies in a frequentist interval without an additional
+Bayesian model. Character edit scores are not simple independent Bernoulli
+trials and cannot be inserted as fractional ``successes'' without justification.
+
+\section{Direct geometry: registration before comparison}
+The direct word-shape check is independent of a reader's text labels at
+scoring time, but depends on correct crop/transcript matching and image
+processing. Binary masks are thinned to centreline point sets. Normalisation
+and registration define which differences are ignored. Translation removes
+position; isotropic scaling removes uniform size; independent X/Y scaling
+also removes aspect ratio; shear correction removes slant. A deformable warp
+can erase precisely the writer features being assessed. Therefore allowable
+transforms are part of the metric, not cosmetic preparation.
+
+The archived natural-baseline protocol documents two alternatives: line
+x-height scaled to 48 pixels, or tightly cropped whole-word ink height scaled
+isotropically to 48 pixels; centring and at most five pixels translation per
+axis; point tolerance 4.8 pixels. Whole-word height includes ascenders and
+descenders, unlike body x-height. No width-only stretch, slant correction or
+deformable warp belongs to that protocol. A 4.8-pixel tolerance is one tenth
+of the selected 48-pixel reference height; changing that reference changes
+the physical meaning of tolerance. The local evidence source is
+\texttt{Report/NaturalVariationBaseline\_2026-11-02/PROTOCOL.md} and
+\texttt{FINDINGS.md}. Its historical aggregate is not substituted for the
+final report's later aggregation.
+
+Optimising translation for maximum overlap already introduces an alignment
+selection step. The same policy must be applied to genuine and robot pairs.
+Reference crops must be exact-token matches and self-matches excluded.
+Nearest-reference selection gives a higher or equal score than averaging
+every reference and becomes easier with more references. Matching reference
+banks controls that opportunity. A plot of beautifully aligned skeletons
+must retain the raw word photographs and transformation policy for context.
+
+\section{Point-set precision, recall and harmonic F-score}
+Let $A$ be robot skeleton points and $B$ genuine-reference points. With
+distance tolerance $\tau$, define
+\FormulaNote{Purpose in this explanation: Point-set precision, recall and harmonic F-score}{finalreport2026,code2026}
+\[
+P={|\{a\in A:\min_{b\in B}\|a-b\|\le\tau\}|\over|A|},\qquad
+R={|\{b\in B:\min_{a\in A}\|b-a\|\le\tau\}|\over|B|},\quad
+F={2PR\over P+R}.
+\]
+The thresholded point-set definition is used by reconstruction benchmarks;
+its application to 2D handwriting and the chosen normalisation are project
+choices~\cite{tanksmetric}. Each point asks whether any nearby point exists;
+this is not one-to-one matching. A distance transform gives distance to the
+nearest foreground grid point; a spatial tree can independently compute
+nearest-point distances for the same sets. Agreement checks arithmetic,
+not semantic validity of the chosen crops.
+
+Constructed example: 90 of 100 robot points have a reference neighbour,
+while 80 of 100 reference points have a robot neighbour. Then
+$P=0.9,R=0.8,F=1.44/1.7\simeq0.8471$. Missing strokes lower recall;
+extra strokes lower precision. F is not intersection-over-union, character
+correctness or Pearson correlation. Tolerance can make shifted strokes
+match despite zero exact pixel overlap. If both sets are empty, or one is
+empty, a scoring convention is required; silent division by zero is not a
+definition. Scores can depend on point density unless sampling is controlled.
+
+\section{Natural-variation normalisation and why 100\% is not a ceiling}
+For writer $k$, let $F_{r,k}$ and $F_{g,k}$ be robot and genuine agreement
+against corresponding reference banks, using the same protocol. The final
+report defines $Q_k=100F_{r,k}/F_{g,k}$ and averages eleven writer ratios.
+For writer 150 the displayed $87.73/90.01$ gives about 97.47\%.
+For Owen $70.22/76.03$ gives about 92.36\%, subject to rounded table inputs.
+The final result is about 86.7\% relative agreement, not 86.7\% correctly
+written characters~\cite{finalreport2026}.
+
+Equal-writer mean $\frac1K\sum_kF_{r,k}/F_{g,k}$ differs from
+ratio of means $\sum_kF_{r,k}/\sum_kF_{g,k}$. For two writers with
+$(F_g,F_r)=(0.9,0.9),(0.5,0.25)$, mean ratio is 0.75 but ratio of
+means is $1.15/1.4\simeq0.8214$. This explains why an older evidence
+note can quote a different aggregate without either arithmetic necessarily
+being wrong. State the exact rule rather than mixing versions.
+
+If $F_{r,k}>F_{g,k}$, $Q_k$ exceeds 100\%; it means closer agreement to
+the available bank than the measured genuine baseline, not superhuman style.
+A small denominator destabilises the ratio. A baseline below one does not
+make an absolute 85\% target impossible; the ratio is a newly defined
+comparison, not a logical replacement for the proposal's original requirement.
+Repeated words are a selected subset, often shorter/common words. Four or
+five words for a writer do not establish full-page fidelity. A nearest-reference
+figure can have a higher F than the corresponding ordinary-reference writer
+mean. Both policies should be named.
+
+\section{Direct length checks and completion-time statistics}
+For commanded length $L_0$ and measured $L_i$, signed error is $e_i=L_i-L_0$;
+absolute error $|e_i|$; mean signed error indicates bias; mean absolute error
+describes typical magnitude; maximum absolute error addresses a worst
+observed limit. The report's 70 readings give mean absolute error 0.297 mm
+and maximum 0.49 mm. Neither is an uncertainty bound for all future drawings.
+A ruler/caliper's resolution, endpoint definition, paper motion and repeated
+measurements affect interpretation. A sloped line length may combine errors
+in both axes and squareness. Scaling calibration and independent acceptance
+measurements should not be confused.
+
+For completed job $j$, normalised completion time is $r_j=t_j/n_j$, where
+the counting convention for $n_j$ must include/exclude spaces consistently.
+The mean of job ratios $\frac1J\sum_jr_j$ gives every job equal weight;
+$\sum_jt_j/\sum_jn_j$ weights by characters. For 10 characters in 30 s
+and 100 in 100 s, these give 2 s/character and about 1.182 s/character.
+The report's 25 confirmed completed jobs and recorded stages must be kept
+distinct from unconfirmed/pending rows and ideal trajectory budgets.
+Full request time includes generation and motion when the record says so;
+classifier-only latency does not. Host names and laptop/ODROID evidence
+must remain attached to the timings.
+
+The conditional 2.76 network-speed factor from a separate benchmark is not
+a measured system acceleration. If image time is $t_I$ and selected network
+time $t_N$, the conditional estimate is $t_I+t_N/2.76$ plus all unchanged
+stages. Dividing the entire request by 2.76 would overstate the gain. This
+is Amdahl-style accounting of unchanged work, not a new passing qualification.
+
+\section{Capture records, plots and the old-segmenter question}
+The report's Table 18 lists expected/reduced/gradient/+3-degree/90-degree
+line counts: Owen $20/19/20/11/19$, Dylan $24/24/24/25/24$, and
+Yeukita $26/26/26/26/26$. These are digital perturbation observations,
+not an illumination robustness guarantee. Equal counts do not establish
+correct labels, ownership or readable crops. Reduced resolution can merge
+thin strokes; a synthetic gradient is not every physical shadow, glare or
+phone-light configuration.
+
+Seam-sensitivity plots vary a cost coefficient and show line/ownership
+behaviour. A visually cleaner seam is evidence for that example, not a
+universal coefficient optimum. CNN channel plots show activations under one
+checkpoint/input; independent colour scales prevent comparing absolute
+strength across panels. CTC plots show frame symbols and constrained paths;
+Bresenham plots show integer command locations. Joint-score plots show
+model-based selection, not independent physical style accuracy.
+
+The requested old-versus-new segmentation accuracy comparison is a meaningful
+paired-ablation question, but running it is explicitly outside this task.
+To interpret a future result, the same frozen pages, labels, classifier,
+preparation and scoring would be needed. Failed or unmatched crops must
+remain accounted for; evaluating only surviving easy crops can inflate the
+score. A report saying segmentation ``affects accuracy'' is plausible causal
+reasoning, but a quantified benefit requires that controlled evidence.
+
+\section{Coefficient evidence register and questions left open}
+\begin{description}[style=nextline]
+\item[Derived from stated geometry/electronics.] Forty mm/rev, nominal
+80 steps/mm, 12.5 micrometre spacing, nearest-rounding bounds, RPM conversion,
+12 ms confirmation span, conditional reference voltage and resistor currents.
+These validate arithmetic only under their stated inputs.
+\item[Published method, project constants.] Otsu and integral sums;
+deskew objective; seam dynamic programming; Zhang--Suen; CTC and LSTM;
+dropout; Douglas--Peucker; optimiser families; edit distance and score interval.
+Their publications do not establish the project's exact parameter choices.
+\item[Reported selection evidence.] Stroke-width 0.17 versus the other
+three displayed widths. Keep the unresolved page/line wording and selected
+validation status visible. Do not promote it to an independent result.
+\item[Documented local rationale, not newly verified.] 0.45 connection
+suppression between commented print/joined examples; 15\%/threefold solid-crop
+guard with commented crop-density observations; visual settling dwell.
+These are stronger than no explanation, weaker than independently audited
+coefficient optima.
+\item[Heuristics still lacking an established optimum.] Rotation margin
+1.35; 1.25/1.4-pitch run guards; 6\% peaks; $0.6P$ suppression; seam
+weights 4, 0.012, 0.02 and closing $0.07P$; 15\% ownership; darkness
+0.55; 64 by 640 canvas and network widths/depths; 15\% split and 20\%
+sampling; dropout 0.2; body threshold 45\%; cut weight 1.15, clip 3 and
+minimum $0.08h_x$; 75-degree continuation; 0.6-pixel simplification;
+2.1/2.9-width caps; 12-grid descriptor; drift 0.85/$\pm0.25$; clearance
+0.05; maximum join 0.80 x-heights; physical join 0.6 mm; anchoring endpoints
+0.24/0.32; search/repair budgets; pen overrun, debounce and timeout settings.
+Their operational roles are explained in the relevant chapters. No numerical
+optimum is fabricated in place of the other agent's sweeps.
+\item[Unresolved physical/source facts.] Actual curve underlying torque
+interpolation and assumed friction; exact installed driver sense resistors
+and reference voltage; GPIO current-limit source; full rail/ground map;
+base pull-down placement and transistor saturation under real load. Calculation
+can expose these gaps but cannot replace missing measurements.
+\end{description}
+
+\section{Source audit and how to trace assertions}
+\label{sec:source-audit}
+The named final report, local function bodies, cited original papers and
+manufacturer/framework documentation serve different roles. The report is
+the source for historical numbers; code is the source for present formulas
+and defaults; papers establish method origins; component datasheets establish
+conditional electrical relations. A generic citation cannot authenticate an
+installed board or as-run checkpoint.
+
+New bibliography entries provide links for the A4988 and carrier current
+relation, low-side transistor reasoning, GPIO API, PyTorch conventions,
+Wilson/NIST, CTC exposition, RMSprop and source snapshots. Original entries
+for Otsu, summed-area tables, thinning, seam methods, LSTM, CRNN, optimisers,
+initialisation and edit distance are retained. Sources are cited near the
+definitions they support. The substantial worked arithmetic and sensitivity
+reasoning in these additions are explicit derivations, not quotations.
+
+Automated full-text access was blocked for some publisher DOI pages and
+the ODROID/onsemi pages. Their bibliographic links are retained with access
+limitations, rather than claiming they were read successfully. Some older
+references have no persistent URL in the original bibliography. This manual
+does not certify all forty-four report references or every historical claim.
+Current implementation explanations have been revised against the captured DemoCode tree. In particular the torque paragraph and GPIO
+current claim still contain missing-source issues. A later complete reference
+audit would need each cited edition/page and the specific claim it supports.
+This is deliberately distinct from asserting the report has been repaired.
+
+For a future numerical claim, record input identity, source revision,
+checkpoint identity, host, preparation, dtype, units, partition, count,
+aggregation and raw evidence location. A bare rounded number cannot supply
+those facts. The present expansion adds understanding and traceability while
+leaving measurements, source code and the final report unchanged.
+
+\section{Additional vocabulary needed to defend the calculations}
+\begin{description}[style=nextline]
+\item[Dimensionless coefficient.] A pure ratio or multiplier without units.
+Its numerical effect still depends on the scale of the quantity it multiplies.
+Changing cost normalisation can change a coefficient's meaning.
+\item[Heuristic versus hyperparameter.] A heuristic is a practical rule without
+a general optimality guarantee. A hyperparameter is a setting chosen outside
+ordinary weight learning. A setting can be both. A learned convolution weight
+is a model parameter; dropout probability is a hyperparameter.
+\item[Guard, floor, cap and clamp.] A guard handles an invalid or exceptional
+case; a floor enforces a minimum; a cap enforces a maximum; clipping enforces
+both. A numerical guard prevents arithmetic failure, not necessarily bad input.
+\item[Quantile and percentile.] A quantile $q_f$ marks fraction $f$ of a
+distribution; a percentile expresses $100f$. The 60th percentile is not
+60\% of the maximum. Interpolation conventions can differ on small samples.
+\item[Argmax and argmin.] They return the location/index attaining an extreme,
+not the extreme value. Ties require a rule, often first occurrence.
+\item[Indicator.] $\mathbf1[E]$ is one if statement $E$ is true and zero
+otherwise. It encodes a decision without implying a probability.
+\item[Recurrence, state and backtracking.] A recurrence computes new entries
+from previous ones. A state summarises what a prefix needs for future choices.
+Backtracking follows saved choices to recover a path. A recurrence can sum
+paths, as CTC does, or optimise one path, as a seam/alignment does.
+\item[Dynamic programming versus greedy choice.] Dynamic programming compares
+prefix solutions for each state; a greedy rule takes an immediate best choice.
+Both can be fast, but they solve different optimisation problems.
+\item[Prior and posterior.] A prior expresses information before a particular
+observation; a posterior conditions on it. The project's glyph ``prior'' is
+a pooled geometric reference, not a fully specified Bayesian probability
+distribution. CTC state occupancy is a conditional path posterior under the
+model and target.
+\item[Likelihood versus confidence.] Likelihood evaluates observations/labels
+under a model. A softmax output is normalised model confidence; its match to
+real frequencies requires calibration evidence. High confidence can be wrong.
+\item[Calibration, two meanings.] Mechanical calibration relates pulse counts
+to reference positions/lengths. Probability calibration relates predicted
+confidence to observed frequency. The procedures and units are unrelated.
+\item[Bias and variance, two contexts.] Measurement bias is systematic offset;
+sampling variance is variation across repeated estimates. A neural bias is
+an additive learned parameter. An unbiased variance estimator is a statistical
+formula, not a guarantee a classifier is fair or accurate.
+\item[Regularisation and weight decay.] Regularisation constrains learning
+to reduce overfitting. Weight decay shrinks parameters. Dropout, augmentation,
+early selection and penalties influence generalisation by different mechanisms;
+their strengths cannot simply be added as one scalar percentage.
+\item[Epoch, update and iteration.] An update changes parameters after a batch;
+an iteration may mean one such processing step; an epoch follows the sampler's
+definition of a pass. Replacement/mixture sampling can revisit images within
+one epoch. A checkpoint's epoch index is not elapsed time.
+\item[Logit and log probability.] A logit is an unrestricted score. Log-softmax
+subtracts log-sum-exp to produce log probabilities. Log probabilities are
+nonpositive; logits need not be. Exponentiating an arbitrary logit alone is
+not a normalised probability.
+\item[Jacobian, gradient and chain rule.] A Jacobian contains derivatives of
+vector outputs with respect to vector inputs. A scalar loss gradient is the
+corresponding vector derivative. Backpropagation efficiently composes these
+derivatives without storing every full Jacobian.
+\item[Subgradient.] A selected derivative-like value at a nonsmooth point.
+ReLU at zero and max ties require conventions; disagreement there is not
+necessarily evidence of an incorrect smooth derivative elsewhere.
+\item[Float32, float64 and tolerance.] Floating-point types have finite
+precision, not exact real arithmetic. Comparison tolerance defines an allowed
+discrepancy for a particular scale. A tolerance is neither a p-value nor a
+physical instrument uncertainty.
+\item[Isotropic versus anisotropic.] Isotropic scaling uses one factor in
+both axes; anisotropic scaling uses different factors and changes aspect ratio.
+Normalisation describes a transformation, not proof that remaining differences
+are exclusively writer style.
+\item[Aliasing and interpolation.] Aliasing occurs when sampled detail becomes
+indistinguishable from another pattern. Interpolation estimates intermediate
+values but cannot reliably recreate information lost by undersampling.
+Antialiasing before reduction limits high-frequency content to reduce this risk.
+\item[Topology versus geometry.] Topology concerns connections, components and
+holes; geometry concerns positions, lengths and angles. Small geometric error
+does not necessarily preserve a tiny loop, and a connected skeleton can still
+have poor geometric fidelity.
+\item[Open-loop versus feedback.] Open-loop axis control estimates position
+from commands. Feedback observes a quantity, such as an endstop or pen-up
+switch. Having some switches does not make every interior carriage position
+closed-loop or verify pen pressure.
+\item[Resolution, repeatability, accuracy and uncertainty.] Resolution is the
+smallest represented/readable increment. Repeatability describes consistency
+under repeated conditions. Accuracy concerns agreement with a reference.
+Uncertainty characterises the range attributable to measurement knowledge.
+A fine step lattice alone establishes none of the other three.
+\item[Macro and micro aggregation.] Macro gives each group equal weight;
+micro pools elementary counts. Equal-writer ratios, word means and pooled
+character counts therefore answer different questions even on the same files.
+\item[Ablation and sensitivity.] Ablation removes a mechanism to assess its
+contribution under controlled conditions. Sensitivity varies a setting and
+observes response. A sensitivity plot can reveal fragility without proving a
+global optimum. No such new execution is part of this edition.
+\item[Confusion matrix.] Rows/columns count actual/predicted class pairs.
+Row normalisation divides by actual-class counts, showing conditional prediction
+fractions. It does not equal class precision, which uses predicted-class totals.
+An overall average without counts can conceal class imbalance.
+\item[Selection leakage and provenance.] Selection leakage occurs when a test
+set influences tuning and is later presented as untouched. Provenance records
+where an input, model or number came from. It prevents an old result from being
+silently attributed to a newer code revision or different host.
+\end{description}
+
+\section{Persistent source links for the retained method references}
+These links supplement the original bibliography. Publisher access restrictions
+are not treated as successful full-text review. Method citations establish
+origins; project arithmetic examples and parameter trade-offs remain explicit
+derivations and engineering reasoning.
+\begin{description}[style=nextline]
+\item[Otsu; integral images.]
+\url{https://doi.org/10.1109/TSMC.1979.4310076}\par
+\url{https://doi.org/10.1145/800031.808600}.
+\item[Thinning; polyline simplification.]
+\url{https://doi.org/10.1145/357994.358023}\par
+\url{https://doi.org/10.3138/FM57-6770-U75U-7727}.
+\item[CTC; CRNN; batch normalisation.]
+\url{https://www.cs.toronto.edu/~graves/icml_2006.pdf}\par
+\url{https://arxiv.org/abs/1507.05717}\par
+\url{https://arxiv.org/abs/1502.03167}.
+\item[LSTM original and derivative context.]
+\url{https://doi.org/10.1162/neco.1997.9.8.1735}\par
+\url{https://www.cs.toronto.edu/~graves/preprint.pdf}.
+\item[Dropout; Adam; AdamW.]
+\url{https://www.jmlr.org/papers/v15/srivastava14a.html}\par
+\url{https://arxiv.org/abs/1412.6980}\par
+\url{https://arxiv.org/abs/1711.05101}.
+\item[Initialisation and clipping.]
+\url{https://proceedings.mlr.press/v9/glorot10a.html}\par
+\url{https://arxiv.org/abs/1502.01852}\par
+\url{https://proceedings.mlr.press/v28/pascanu13.html}.
+\item[Bresenham; Wilson.]
+\url{https://doi.org/10.1147/sj.41.0025}\par
+\url{https://www.jstor.org/stable/2276774}.
+\item[Seam methods and document threshold alternative.]
+\url{https://doi.org/10.1109/ICFHR.2014.127}\par
+\url{https://doi.org/10.1145/1276377.1276390}\par
+\url{https://doi.org/10.1016/S0031-3203(99)00055-2}.
+\end{description}

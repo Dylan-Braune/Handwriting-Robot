@@ -1,0 +1,280 @@
+\chapter{Independent line workers}\label{module:web-lineworkers}
+\Q{Evidence}{Current implementation boundary}
+\path{Software/DemoCode/web/lineworkers.py}. Exact file hashes are in the accompanying source manifest. Names, declarations and source locations below come from the captured source, not a runtime import.
+\Q{Purpose}{Input-to-output reading flow}
+Configure inherited readers/classifiers; decide whether pooling is eligible; initialise per-process thread limits; map independent line jobs and preserve order, with serial fallback. The server remains responsible for page-level orchestration.
+
+
+\Q{Evidence}{Selected current module settings}
+These are declarations or expressions, not recovered environment values. Source comments do not establish a measured optimum. Larger glyph coordinate tables are designed data in the bundled source.
+\begin{lstlisting}[style=plain]
+LINE_WORKERS = int(os.environ.get('LINE_WORKERS', '0'))
+MIN_LINES_FOR_POOL = 4
+_CFG = {}
+\end{lstlisting}
+\section*{Stage: Independent line workers}
+\section{Method background: Independent line workers}\label{method:workers}
+\Q{Purpose}{The role in this system}
+Run independent text or writer passes on multiple processes while restoring page order.
+
+
+\Q{Justification}{The reason for this construction}
+Explicit fork workers inherit configured models and cap numerical threads to reduce oversubscription. The serial path remains available; startup and IPC still cost time.
+
+
+\Q{Alternatives}{What changes if another method is used}
+Serial processing avoids pool overhead for short pages. Threads share memory but interact with Python and BLAS scheduling. Spawn workers need explicit model initialisation rather than this fork-inherited configuration.
+
+
+\Q{Library}{Implementation speed and accuracy}
+The code already uses Python multiprocessing.Pool and NumPy/BLAS. Fork is copy-on-write, not a guarantee of no allocation; passing crops/results still needs communication. Forking a threaded server with native numerical state is a deployment consideration. No new speedup or identical-output test was run. \cite{pythonmp,numpymatmul}.
+
+
+\section{Configure}\label{fn:web-lineworkers:Configure}
+\begin{lstlisting}[style=sig]
+def Configure(reader, namer, strokeNormalise)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/lineworkers.py} line 30. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:workers}.
+
+
+\Q{Purpose}{What this contributes}
+Run independent text or writer passes on multiple processes while restoring page order.
+
+
+\Q{Method}{Current implementation}
+Run independent text or writer passes on multiple processes while restoring page order. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def Configure(reader, namer, strokeNormalise):
+    _CFG["reader"] = reader
+    _CFG["namer"] = namer
+    _CFG["norm"] = bool(strokeNormalise)
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Explicit fork workers inherit configured models and cap numerical threads to reduce oversubscription. The serial path remains available; startup and IPC still cost time. \cite{pythonmp,numpymatmul}.
+
+
+\section{CanPool}\label{fn:web-lineworkers:CanPool}
+\begin{lstlisting}[style=sig]
+def CanPool(n)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/lineworkers.py} line 37. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:workers}.
+
+
+\Q{Purpose}{What this contributes}
+Allows a pool only when LINE\_WORKERS is not one, at least MIN\_LINES\_FOR\_POOL jobs are present, os.fork exists and configuration is nonempty. Eligibility uses the number of jobs passed to Map: after orientation probes this can be smaller than page line count.
+
+
+\Q{Method}{Current implementation}
+Run independent text or writer passes on multiple processes while restoring page order. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def CanPool(n):
+    return (LINE_WORKERS != 1 and n >= MIN_LINES_FOR_POOL
+            and hasattr(os, "fork") and bool(_CFG))
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Explicit fork workers inherit configured models and cap numerical threads to reduce oversubscription. The serial path remains available; startup and IPC still cost time. \cite{pythonmp,numpymatmul}.
+
+
+\section{\_Workers}\label{fn:web-lineworkers:-Workers}
+\begin{lstlisting}[style=sig]
+def _Workers(n)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/lineworkers.py} line 43. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:workers}.
+
+
+\Q{Purpose}{What this contributes}
+Run independent text or writer passes on multiple processes while restoring page order.
+
+
+\Q{Method}{Current implementation}
+Run independent text or writer passes on multiple processes while restoring page order. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def _Workers(n):
+    if LINE_WORKERS > 0:
+        return min(LINE_WORKERS, n)
+    return max(1, min(os.cpu_count() or 1, n))
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Explicit fork workers inherit configured models and cap numerical threads to reduce oversubscription. The serial path remains available; startup and IPC still cost time. \cite{pythonmp,numpymatmul}.
+
+
+\section{\_CapThreads}\label{fn:web-lineworkers:-CapThreads}
+\begin{lstlisting}[style=sig]
+def _CapThreads()
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/lineworkers.py} line 58. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:workers}.
+
+
+\Q{Purpose}{What this contributes}
+Sets thread-count environment variables and tries seven OpenBLAS entry-point spellings (including SciPy-prefixed wheel symbols) found in NumPy shared libraries. It is a best-effort cap, not a portable guarantee for every BLAS/backend. Environment settings after initialisation alone may not reconfigure an already-loaded backend.
+
+
+\Q{Method}{Current implementation}
+Run independent text or writer passes on multiple processes while restoring page order. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def _CapThreads():
+    for v in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
+        os.environ[v] = "1"
+    try:
+        import ctypes
+        import glob
+        import numpy
+        root = os.path.dirname(os.path.dirname(os.path.abspath(numpy.__file__)))
+        pats = [os.path.join(root, "numpy.libs", "*openblas*.so*"),
+                os.path.join(root, "numpy", ".libs", "*openblas*.so*")]
+        names = ("scipy_openblas_set_num_threads64_",
+                 "scipy_openblas_set_num_threads_64_",
+                 "scipy_openblas_set_num_threads",
+                 "openblas_set_num_threads64_",
+                 "openblas_set_num_threads",
+                 "scipy_goto_set_num_threads64_",
+                 "goto_set_num_threads")
+        for pat in pats:
+            for so in glob.glob(pat):
+                lib = ctypes.CDLL(so)
+                for fn in names:
+                    if hasattr(lib, fn):
+                        getattr(lib, fn)(1)
+                        return True
+    except Exception:
+        pass
+    return False
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Explicit fork workers inherit configured models and cap numerical threads to reduce oversubscription. The serial path remains available; startup and IPC still cost time. \cite{pythonmp,numpymatmul}.
+
+
+\section{\_Init}\label{fn:web-lineworkers:-Init}
+\begin{lstlisting}[style=sig]
+def _Init()
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/lineworkers.py} line 91. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:workers}.
+
+
+\Q{Purpose}{What this contributes}
+Run independent text or writer passes on multiple processes while restoring page order.
+
+
+\Q{Method}{Current implementation}
+Run independent text or writer passes on multiple processes while restoring page order. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def _Init():
+    _CapThreads()
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Explicit fork workers inherit configured models and cap numerical threads to reduce oversubscription. The serial path remains available; startup and IPC still cost time. \cite{pythonmp,numpymatmul}.
+
+
+\section{ReadOne}\label{fn:web-lineworkers:ReadOne}
+\begin{lstlisting}[style=sig]
+def ReadOne(job)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/lineworkers.py} line 96. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:workers}.
+
+
+\Q{Purpose}{What this contributes}
+Run independent text or writer passes on multiple processes while restoring page order.
+
+
+\Q{Method}{Current implementation}
+Run independent text or writer passes on multiple processes while restoring page order. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def ReadOne(job):
+    import numpy as np
+    from PIL import Image
+    import recognise as REC
+    i, crop, flip = job
+    img = np.rot90(crop, 2) if flip else crop
+    text, score = REC.ReadTextScored(Image.fromarray(img).convert("L"),
+                                     _CFG["reader"])
+    return i, text, score
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Explicit fork workers inherit configured models and cap numerical threads to reduce oversubscription. The serial path remains available; startup and IPC still cost time. \cite{pythonmp,numpymatmul}.
+
+
+\section{NameOne}\label{fn:web-lineworkers:NameOne}
+\begin{lstlisting}[style=sig]
+def NameOne(job)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/lineworkers.py} line 108. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:workers}.
+
+
+\Q{Purpose}{What this contributes}
+Run independent text or writer passes on multiple processes while restoring page order.
+
+
+\Q{Method}{Current implementation}
+Run independent text or writer passes on multiple processes while restoring page order. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def NameOne(job):
+    import numpy as np
+    from PIL import Image
+    import recognise as REC
+    i, crop = job
+    _idx, p = REC.ClassifyImage(Image.fromarray(crop).convert("L"),
+                                _CFG["namer"], strokeNormalise=_CFG["norm"])
+    return i, np.asarray(p, dtype=np.float64)
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Explicit fork workers inherit configured models and cap numerical threads to reduce oversubscription. The serial path remains available; startup and IPC still cost time. \cite{pythonmp,numpymatmul}.
+
+
+\section{Map}\label{fn:web-lineworkers:Map}
+\begin{lstlisting}[style=sig]
+def Map(fn, jobs)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/lineworkers.py} line 124. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:workers}.
+
+
+\Q{Purpose}{What this contributes}
+Uses an explicit fork multiprocessing context, creates a pool for the current map and returns results in supplied job order. Failures fall back to serial calls of the same function. Successful model inheritance does not remove crop/result IPC or pool-startup cost, and failure during a serial retry can still propagate.
+
+
+\Q{Method}{Current implementation}
+Run independent text or writer passes on multiple processes while restoring page order. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def Map(fn, jobs):
+    jobs = list(jobs)
+    if not jobs:
+        return []
+    if not CanPool(len(jobs)):
+        return [fn(j) for j in jobs]
+    try:
+        import multiprocessing as mp
+        ctx = mp.get_context("fork")
+        with ctx.Pool(processes=_Workers(len(jobs)), initializer=_Init) as pool:
+            out = pool.map(fn, jobs, chunksize=1)
+        return out
+    except Exception as e:
+        print("[lineworkers] pool unavailable (%s), running in one process"
+              % type(e).__name__, file=sys.stderr, flush=True)
+        return [fn(j) for j in jobs]
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Explicit fork workers inherit configured models and cap numerical threads to reduce oversubscription. The serial path remains available; startup and IPC still cost time. \cite{pythonmp,numpymatmul}.
+

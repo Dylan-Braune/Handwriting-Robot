@@ -1,0 +1,1 @@
+The current full PDF is **main.pdf**. Its updated source and build instructions are in **DemoEdition_2026-11-12/README.md**. Parent-level main.tex and codetheory files are preserved historical source.

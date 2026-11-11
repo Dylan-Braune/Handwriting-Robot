@@ -1,0 +1,168 @@
+\chapter{Timing and allowance accounting}\label{module:timing}
+\Q{Evidence}{Current implementation boundary}
+\path{Software/DemoCode/timing.py}. Exact file hashes are in the accompanying source manifest. Names, declarations and source locations below come from the captured source, not a runtime import.
+\Q{Purpose}{Input-to-output reading flow}
+Measure elapsed stage intervals and aggregate a request record. Compare those measurements with nominal motion allowances only after checking the stage boundary, host and completion status.
+
+
+\Q{Evidence}{Selected current module settings}
+These are declarations or expressions, not recovered environment values. Source comments do not establish a measured optimum. Larger glyph coordinate tables are designed data in the bundled source.
+\begin{lstlisting}[style=plain]
+ALLOWANCE = {'classify': lambda chars: 2.0 + 0.025 * chars, 'reproduce': lambda chars: 4.0 * chars, 'draw': lambda chars: 4.0 * chars}
+ALLOWANCE_TEXT = {'classify': '2 s + 0.025 s per character', 'reproduce': '4 s per character', 'draw': '4 s per character'}
+\end{lstlisting}
+\section*{Stage: Timing and requirement accounting}
+\section{Method background: Timing and requirement accounting}\label{method:timing}
+\Q{Purpose}{The role in this system}
+Measure request wall time and retain earlier generation work when drawing is requested later.
+
+
+\Q{Justification}{The reason for this construction}
+perf\_counter differences measure elapsed time; Carry adds external work while Add only labels work already inside the wall interval. This avoids double counting stages.
+
+
+\Q{Alternatives}{What changes if another method is used}
+CPU time excludes waiting; summing nested stages can double-count; theoretical path time ignores overhead. A benchmark on another host is not an embedded qualification.
+
+
+\Q{Library}{Implementation speed and accuracy}
+Python perf\_counter is already the timing primitive. Profilers can attribute cost more finely but add overhead. Multiprocessing stage wall time is not the sum of worker CPU times. \cite{pythontime,code2026}.
+
+
+\section{Stage}\label{fn:timing:Stage}
+\begin{lstlisting}[style=sig]
+class Stage
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/timing.py} line 47. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:timing}.
+
+
+\Q{Purpose}{What this contributes}
+Measure request wall time and retain earlier generation work when drawing is requested later.
+
+
+\Q{Method}{Methods exposed by this current class}
+\begin{lstlisting}[style=plain]
+def __init__(self, run, name, chars=0)
+def __enter__(self)
+def __exit__(self, *exc)
+\end{lstlisting}
+\Q{Method}{Current implementation}
+Measure request wall time and retain earlier generation work when drawing is requested later. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+class Stage:
+    """See source snapshot for the original docstring."""
+
+    def __init__(self, run, name, chars=0):
+        self.run = run
+        self.name = name
+        self.chars = chars
+        self.t0 = None
+
+    def __enter__(self):
+        self.t0 = time.perf_counter()
+        return self
+
+    def __exit__(self, *exc):
+        wall = time.perf_counter()-self.t0
+        self.run.Record(self.name, wall, self.chars)
+        return False
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+perf\_counter differences measure elapsed time; Carry adds external work while Add only labels work already inside the wall interval. This avoids double counting stages. \cite{pythontime,code2026}.
+
+
+\section{Run}\label{fn:timing:Run}
+\begin{lstlisting}[style=sig]
+class Run
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/timing.py} line 66. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:timing}.
+
+
+\Q{Purpose}{What this contributes}
+Measure request wall time and retain earlier generation work when drawing is requested later.
+
+
+\Q{Method}{Methods exposed by this current class}
+\begin{lstlisting}[style=plain]
+def __init__(self, kind, chars=0, lines=0)
+def Step(self, name, chars=None)
+def Record(self, name, wall, chars)
+def Add(self, name, seconds, chars=0)
+def Carry(self, name, seconds, chars=0)
+def Total(self)
+def AsDict(self)
+def AsJson(self)
+def Report(self)
+\end{lstlisting}
+\Q{Method}{Current implementation}
+Measure request wall time and retain earlier generation work when drawing is requested later. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+class Run:
+    """See source snapshot for the original docstring."""
+
+    def __init__(self, kind, chars=0, lines=0):
+        self.kind = kind
+        self.chars = chars
+        self.lines = lines
+        self.stages = []
+        self.external = 0.0
+        self.t0 = time.perf_counter()
+
+    def Step(self, name, chars=None):
+        return Stage(self, name, self.chars if chars is None else chars)
+
+    def Record(self, name, wall, chars):
+        self.stages.append(dict(stage=name, seconds=round(wall, 4),
+                                characters=chars,
+                                secondsPerChar=round(wall/chars, 5) if chars else None))
+
+    def Add(self, name, seconds, chars=0):
+        self.Record(name, float(seconds), chars)
+
+    def Carry(self, name, seconds, chars=0):
+        self.external += float(seconds)
+        self.Record(name, float(seconds), chars)
+
+    def Total(self):
+        return (time.perf_counter()-self.t0)+self.external
+
+    def AsDict(self):
+        total = self.Total()
+        accounted = sum(s["seconds"] for s in self.stages)
+        out = dict(
+            kind=self.kind,
+            characters=self.chars,
+            lines=self.lines,
+            totalSeconds=round(total, 3),
+            measuredSeconds=round(accounted, 3),
+            overheadSeconds=round(max(0.0, total-accounted), 3),
+            secondsPerCharacter=round(total/self.chars, 4) if self.chars else None,
+            secondsPerLine=round(total/self.lines, 3) if self.lines else None,
+            charactersPerSecond=round(self.chars/total, 2) if self.chars and total else None,
+            stages=self.stages,
+        )
+        formula = ALLOWANCE.get(self.kind)
+        if formula and self.chars:
+            limit = formula(self.chars)
+            out["limitSeconds"] = round(limit, 2)
+            out["limitFormula"] = ALLOWANCE_TEXT.get(self.kind, "")
+            out["withinLimit"] = bool(total <= limit)
+            out["fractionOfLimit"] = round(total/limit, 3)
+            out["secondsSpare"] = round(limit-total, 2)
+        return out
+
+    def AsJson(self):
+        return json.dumps(self.AsDict(), indent=1)
+
+    def Report(self):
+# Excerpt ends; full definition continues in bundled source.
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+perf\_counter differences measure elapsed time; Carry adds external work while Add only labels work already inside the wall interval. This avoids double counting stages. \cite{pythontime,code2026}.
+

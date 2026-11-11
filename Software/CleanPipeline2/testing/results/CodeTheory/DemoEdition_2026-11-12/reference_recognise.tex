@@ -1,0 +1,1875 @@
+\chapter{Text recognition and writer identification}\label{module:recognise}
+\Q{Evidence}{Current implementation boundary}
+\path{Software/DemoCode/recognise.py}. Exact file hashes are in the accompanying source manifest. Names, declarations and source locations below come from the captured source, not a runtime import.
+\Q{Purpose}{Input-to-output reading flow}
+Load compatible arrays; fit and optionally normalise a line; form convolutional features; apply the writer or recurrent text head; decode or align CTC; score the result. Writer pooling and recurrent text decoding are parallel heads, not successive compulsory stages.
+
+
+\input{worked_recognise}
+\section*{Current function reference}
+\Q{Evidence}{Selected current module settings}
+These are declarations or expressions, not recovered environment values. Source comments do not establish a measured optimum. Larger glyph coordinate tables are designed data in the bundled source.
+\begin{lstlisting}[style=plain]
+CHARSET = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .,;:\'"!?()-'
+CHAR_TO_IDX = {c: i + 1 for i, c in enumerate(CHARSET)}
+IDX_TO_CHAR = {i: c for c, i in CHAR_TO_IDX.items()}
+WEIGHTS_DIR = paths.Weights
+INPUT_HEIGHT = 64
+INPUT_WIDTH = 640
+DEFAULT_TEXT_WEIGHTS = WEIGHTS_DIR / 'paper_cnn_bilstm_ctc_scratch_best.npz'
+DEFAULT_AUTHOR_WEIGHTS = WEIGHTS_DIR / 'author_shape_11w_pw170_scratch_weights.npz'
+PenWidthXh = 0.17
+\end{lstlisting}
+\section*{Stage: Checkpoint and log persistence}
+Method rationale, alternatives and library comparison: Section~\ref{method:checkpoint}.
+\section{LoadStateDictAny}\label{fn:recognise:LoadStateDictAny}
+\begin{lstlisting}[style=sig]
+def LoadStateDictAny(checkpointPath)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/recognise.py} line 31. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:checkpoint}.
+
+
+\Q{Purpose}{What this contributes}
+Preserve weights, class mappings and evidence about a training run.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{checkpointPath}] \normalfont path to a saved .npz checkpoint file
+\end{description}
+
+\noindent\textbf{Output.} a pair: a dictionary mapping parameter names to arrays, and the writer name-to-slot mapping if the file carries one, otherwise nothing.
+
+
+\Q{Purpose}{What it is for}
+A trained network is just a collection of named arrays, and this function reads that collection off disk. Its value is that it is the only place in the file that knows how a checkpoint is stored, so every network below receives a plain dictionary and none of them contains any file handling.
+
+
+\Q{Method}{Background: what a state dictionary is}
+A \textbf{state dictionary} is the standard way to store a trained network: a mapping from the name of each parameter to its values. A name like \texttt{stage1.0.weight} encodes a position in the network, here the weight array of layer 0 of the block called stage1. The network's structure is not stored at all; it is written in code, and loading consists of looking up the names that code expects. That is why the forward methods below are full of string keys: those strings are the contract between the training script that wrote the file and the code that reads it.
+
+
+\Q{Method}{The .npz format}
+An \texttt{.npz} file is a zip archive of individual arrays, each stored under a name. That suits a state dictionary exactly, and it needs no library beyond numpy, which is the constraint this project works under.
+
+
+\Q{Justification}{Why pickling is refused}
+The file is opened with object pickling disabled. \textbf{Pickling} is a mechanism for storing arbitrary Python objects, and restoring one executes code from the file, so a checkpoint able to contain pickled objects is able to run anything when loaded. Refusing it restricts the file to plain numeric arrays, which is all a set of weights needs to be. It also acts as a check on the files themselves: a checkpoint that will not load without pickling is storing something other than arrays, and that is worth discovering rather than tolerating.
+
+
+\Q{Method}{Keys beginning with a double underscore}
+Names starting with a double underscore are skipped when building the parameter dictionary, because they hold metadata rather than weights. One is read specially: a list of writer names, which is converted into a mapping from each name to its output slot.
+
+Carrying that mapping inside the checkpoint matters more than it appears. The namer outputs one score per slot, and a slot means nothing without knowing which writer it stands for. If the correspondence were kept separately, in a configuration file or in code, then a checkpoint trained on a different set of writers, or on the same writers in a different order, would load without complaint and attribute every page to the wrong person. Storing the names with the weights makes that mismatch impossible.
+
+
+
+\section*{Stage: Sampling and geometric resampling}
+\ReportEq{18}{Fixed canvas scale}
+{$a=\min(64/h,640/w)$, with resized dimensions near $(ah,aw)$.}
+{Preserve aspect ratio while fitting the checkpoint input. Long lines can
+become short vertically when width determines scale. Padding is vertically
+centred and left aligned.}
+{FitFixedCanvas, ResizeLineImageFixed and FrameXToPixel.}
+{wolberg1990,code2026}
+
+
+Method rationale, alternatives and library comparison: Section~\ref{method:resize}.
+\section{ResizeLineImageFixed}\label{fn:recognise:ResizeLineImageFixed}
+\begin{lstlisting}[style=sig]
+def ResizeLineImageFixed(img, height=INPUT_HEIGHT, width=INPUT_WIDTH, padValue=255)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/recognise.py} line 157. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:resize}.
+
+
+\Q{Purpose}{What this contributes}
+Fit captured lines to the trained canvas while limiting lost detail and retaining coordinate mappings.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{img}] \normalfont the line crop as a grey image
+  \item[{height}] \normalfont the target height, default 64
+  \item[{width}] \normalfont the target width, default 640
+  \item[{padValue}] \normalfont the value to fill unused canvas with, default 255 for white
+\end{description}
+
+\noindent\textbf{Output.} the crop fitted onto a canvas of exactly the trained size.
+
+
+\Q{Purpose}{What it is for}
+The networks accept exactly one input size, for the reasons given under INPUT\_HEIGHT. A crop cut from a page is whatever size that line of writing happened to be. This function reconciles the two, by delegating to FitFixedCanvas in segment.py.
+
+
+\Q{Justification}{Why the aspect ratio is preserved}
+The important property, explained in full in the entry for FitFixedCanvas, is that a single scale factor is applied to both axes, chosen so the crop fits inside the canvas, and the remainder is padded with white rather than stretched. Stretching each axis independently to fill the canvas would change the proportions of the letters, and proportion is precisely what distinguishes some letters from one another and one writer's hand from another's. A tall narrow l stretched to fill a wide canvas becomes something no letter looks like, and the filters trained on correctly proportioned letters would not find their features in it.
+
+
+\begin{quote}\small\itshape White, not black, is the pad value, because at this point the image is still in its natural form of dark ink on light paper. The inversion happens in the next function, and padding after inversion would require black instead. Getting this the wrong way round surrounds every crop with a solid block of apparent ink.\end{quote}
+
+
+\section{TensorFromResized}\label{fn:recognise:TensorFromResized}
+\begin{lstlisting}[style=sig]
+def TensorFromResized(img)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/recognise.py} line 161. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:resize}.
+
+
+\Q{Purpose}{What this contributes}
+Fit captured lines to the trained canvas while limiting lost detail and retaining coordinate mappings.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{img}] \normalfont the fitted grey crop
+\end{description}
+
+\noindent\textbf{Output.} a floating-point array shaped (1, 1, height, width), scaled and inverted into the range the networks were trained on.
+
+
+\Q{Purpose}{What it is for}
+An image is 8-bit integers from 0 to 255 with white high. A network expects floating-point numbers of a particular scale and sign convention. This function performs that conversion, in three steps that must match exactly what was done during training.
+
+
+\FormulaNote{Convert white-background grey pixels to the network ink polarity and scale.}{wolberg1990,pillowimage,opencvtransform}
+\begin{equation}
+x \;=\; \frac{\big(1 - \frac{g}{255}\big) - 0.5}{0.5} \;=\; 1 - \frac{2g}{255}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$x$}] \normalfont the value handed to the network, running from $-$1 for paper to +1 for black ink
+  \item[{$g$}] \normalfont the original grey value, 0 for black and 255 for white
+  \item[{$\frac{g}{255}$}] \normalfont the grey value scaled to the range 0 to 1
+  \item[{$1 - \cdot$}] \normalfont the inversion, making ink high and paper low
+  \item[{$\frac{\cdot - 0.5}{0.5}$}] \normalfont the standardisation, mapping the range 0 to 1 onto $-$1 to +1
+\end{description}
+
+\Q{Justification}{Why invert}
+After inversion, ink is a large number and blank paper is zero before standardising. This matters because of padding: every convolution pads with zeros, and zero must therefore mean nothing rather than something. With the original convention zero means black, so the padding round the edge of every crop would read as a border of solid ink and the first filters would spend their response on an artefact of the padding.
+
+
+\Q{Justification}{Why standardise to a range centred on zero}
+Networks train better when their inputs are centred near zero and of a magnitude near one, for the same reasons batch normalisation exists. Inputs in the hundreds would make the first layer's outputs correspondingly large and would demand very small initial weights to compensate. Mapping to $-$1 to +1 puts the input on the scale the initialisation assumed.
+
+
+\Q{Justification}{Why the two extra axes}
+The array is given the shape (1, 1, height, width) to match the four-axis convention described in the chapter introduction: one image in the batch, one channel in that image. The axes are necessary even though both lengths are 1, because every layer indexes by position and would otherwise misinterpret which axis is which.
+
+
+\begin{quote}\small\itshape These three steps are not a design decision that can be revisited independently; they are a reproduction of what the training code did. A network is only correct on inputs prepared the way its training inputs were, and a mismatch here, such as a forgotten inversion, produces a network that loads without error and returns confident nonsense.\end{quote}
+
+
+\section{FrameXToPixel}\label{fn:recognise:FrameXToPixel}
+\begin{lstlisting}[style=sig]
+def FrameXToPixel(canvasX, rawW, origH)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/recognise.py} line 251. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:resize}.
+
+
+\Q{Purpose}{What this contributes}
+Fit captured lines to the trained canvas while limiting lost detail and retaining coordinate mappings.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{canvasX}] \normalfont a horizontal position on the network's input canvas
+  \item[{rawW}] \normalfont the width of the original crop in pixels
+  \item[{origH}] \normalfont the height of the original crop in pixels
+\end{description}
+
+\noindent\textbf{Output.} the corresponding position in the original crop, clamped to lie within it.
+
+
+\Q{Purpose}{What it is for}
+An alignment span is measured in network columns, but a glyph has to be cut from the original crop in original pixels. This function reverses the geometric transformation that got the crop onto the canvas, so a column index becomes a pixel position.
+
+
+\Q{Method}{Reversing the fit}
+The fit applied one scale factor to both axes, chosen as the largest that lets the crop fit inside the canvas, which is the smaller of the two ratios. Undoing it is division by that same factor.
+
+
+\FormulaNote{Undo the fixed-canvas scale to locate an alignment boundary in the source crop.}{wolberg1990,pillowimage,opencvtransform}
+\begin{equation}
+s \;=\; \min\!\left( \frac{H_{\mathrm{in}}}{H_{\mathrm{orig}}},\; \frac{W_{\mathrm{in}}}{W_{\mathrm{raw}}} \right), \qquad x_{\mathrm{orig}} \;=\; \mathrm{clip}\!\left( \frac{x_{\mathrm{canvas}}}{s},\; 0,\; W_{\mathrm{raw}} \right)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$s$}] \normalfont the scale factor that was applied when fitting the crop
+  \item[{$H_{\mathrm{in}},\, W_{\mathrm{in}}$}] \normalfont the network's canvas height and width, 64 and 640
+  \item[{$H_{\mathrm{orig}},\, W_{\mathrm{raw}}$}] \normalfont the original crop's height and width
+  \item[{$x_{\mathrm{canvas}}$}] \normalfont the position on the canvas
+  \item[{$x_{\mathrm{orig}}$}] \normalfont the corresponding position in the original crop
+  \item[{$\mathrm{clip}(\cdot,0,W_{\mathrm{raw}})$}] \normalfont the result held inside the crop
+\end{description}
+
+\Q{Justification}{Why the smaller ratio, and why no offset}
+Taking the smaller of the two ratios is what guarantees the crop fits on both axes; the larger would overflow one of them. There is no offset term because the fit is left aligned horizontally, so the horizontal origins coincide; its vertical placement is centred. Had the crop been centred, this conversion would need to subtract the left margin first.
+
+
+\Q{Justification}{Why the result is clamped}
+A column index can map slightly beyond the crop, because the network's columns are a coarser grid than the original pixels and the last one may extend past the real content into the padding. Clamping keeps the returned position usable as an index without the caller checking. The value is returned as a floating-point number rather than an integer because the caller may want to interpolate between pixels, and rounding here would discard precision that was correctly computed.
+
+
+
+\section*{Stage: Skeletonisation and centreline recovery}
+\ReportEq{24}{Controlled stroke width}
+{$I_s=255[1-\delta_k(\mathrm{thin}(M))]$,
+$w=\mathrm{clip}(\mathrm{round}(\rho h_x),2,9)$,
+$k=2\lfloor w/2\rfloor+1$.}
+{Reduce pen-width cues before shape-based identification. The effective odd
+kernel quantises the requested relative width; thinning can change geometry.
+Current PenWidthXh is 0.17. Historical sweep selection is not an independent
+qualification of this source snapshot.}
+{StrokeNormalize and ClassifyImage.}
+{zhangsuen1984,finalreport2026,code2026}
+
+
+
+Method rationale, alternatives and library comparison: Section~\ref{method:skeleton}.
+\section{StrokeNormalize}\label{fn:recognise:StrokeNormalize}
+\begin{lstlisting}[style=sig]
+def StrokeNormalize(gray, penWidthXh=PenWidthXh)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/recognise.py} line 171. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:skeleton}.
+
+
+\Q{Purpose}{What this contributes}
+Convert thick ink areas into approximate pen paths and normalise stroke width.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{gray}] \normalfont a line crop as a grey image
+  \item[{penWidthXh}] \normalfont the pen width to redraw at, in x-heights, defaulting to the constant above
+\end{description}
+
+\noindent\textbf{Output.} the writing redrawn at one constant pen width as ink on white, or nothing if the crop has no usable ink.
+
+
+\Q{Purpose}{The problem it solves}
+A network asked to identify a writer from a raw crop will use whatever is most reliably distinctive, and that is not necessarily the handwriting. Pen width and ink darkness are extremely easy to measure and happen to be consistent within each writer's pages, because each writer used one pen. A network can reach high accuracy on such a dataset while having learned nothing about letterforms at all. This is a \textbf{confound}: a variable correlated with the answer that is not the thing being studied.
+
+The confound becomes a real failure precisely where the project needs the namer most. The robot draws with one pen, so every writer's reproduced output has identical stroke width. A namer relying on width therefore has nothing to go on and is being asked a question it was never really trained for. Removing pen width from the input forces the network to use shape, which is the property that does survive reproduction.
+
+
+\Q{Method}{The method: thin, then re-ink}
+The writing is reduced to its centre line and then redrawn at a chosen width. Whatever the original thickness, the output thickness is the same, so the information is genuinely destroyed rather than merely de-emphasised.
+
+
+\begin{itemize}\setlength\itemsep{0pt}
+  \item \textbf{Binarise.} The crop is thresholded into ink and paper by BinarizeLine.
+  \item \textbf{Measure the x-height.} CoreBand finds the band of rows holding the letter bodies, and its height is the x-height, which sets the scale for the pen width.
+  \item \textbf{Thin.} Skeletonize reduces the ink to a one-pixel-wide centre line by the Zhang-Suen method \cite{zhangsuen1984}, which removes boundary pixels repeatedly while preserving connectivity, so the skeleton has the same topology as the original writing.
+  \item \textbf{Re-ink.} The skeleton is dilated by a square of the chosen width, which draws a stroke of that width centred on the centre line, and the result is inverted back to dark ink on white paper.
+\end{itemize}
+
+\Q{Justification}{Why the pen width is forced to be odd}
+
+\FormulaNote{Convert a requested x-height-relative stroke width into the actual odd dilation window.}{zhangsuen1984,skmorph}
+\begin{equation}
+k \;=\; 2\left\lfloor \frac{w}{2} \right\rfloor + 1, \qquad w \;=\; \mathrm{clip}\big(\mathrm{round}(0.14 \cdot \mathrm{xh}),\; 2,\; 9\big)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$k$}] \normalfont the structuring element size actually used, always odd
+  \item[{$w$}] \normalfont the pen width in pixels before being made odd
+  \item[{$\mathrm{xh}$}] \normalfont the measured x-height in pixels
+  \item[{$0.14$}] \normalfont the pen width as a fraction of the x-height
+  \item[{$\mathrm{clip}(\cdot,2,9)$}] \normalfont the width held between 2 and 9 pixels, so a tiny crop still gets a visible stroke and a large one does not get a blob
+  \item[{$\lfloor \cdot \rfloor$}] \normalfont rounding down
+\end{description}
+A dilation by an even-sized square has no centre cell, so the redrawn stroke is offset by half a pixel from the skeleton it was drawn around. Over a whole line that shifts the writing slightly and, worse, shifts it in a direction that depends on the rounding, so two crops of the same writing could be offset differently. Forcing the size odd puts the pen exactly on the centre line.
+
+
+\Q{Method}{The x-height fallback}
+If no usable band is found, or the band is under four pixels tall, the x-height is taken as a third of the crop height instead, with a floor of eight pixels. A crop is built around one line of writing whose body occupies roughly the middle third, so that is a reasonable estimate when measurement fails, and it keeps the function returning something usable rather than propagating a nonsensical width.
+
+
+\begin{quote}\small\itshape Two cases return nothing at all: a crop with no ink, and one whose skeleton is empty. Returning nothing rather than a blank image is deliberate, because the caller must be able to tell "normalisation failed" from "this line is blank" and fall back to the raw crop. ClassifyImage does exactly that.\end{quote}
+
+
+\section*{Stage: Convolution and feature sequences}
+\ReportEq{19}{Convolution response}
+{$Z_{o,y,x}=b_o+\sum_{c,i,j}W_{o,c,i,j}X_{c,y+i,x+j}$ on the appropriately padded array.}
+{Extract local learned stroke patterns shared across positions. This is
+cross-correlation in common framework terminology. A feature channel is not
+automatically a labelled character detector.}
+{Conv2d and the train-mode convolution pair.}
+{shi2017,torchconv}
+
+\Q{Alternatives}{LeNet five and residual networks}
+The report mentions LeNet-5 as a historical convolution/pooling example and
+residual networks as a deeper architecture with shortcut paths. A residual
+block computes $y=x+F(x)$ (or a projection when dimensions differ); the extra
+route can help gradient propagation. Neither is the current twelve-convolution,
+two-BiLSTM reader. Changing the backbone would require compatible weights and
+new evaluation; citing a benchmark architecture does not establish better
+accuracy or speed for this photographed dataset~\cite{lenet1998,resnet2016}.
+Its historical radial-basis output compares feature position with learned
+class representatives through a distance-based response; it is not the current
+affine writer head or framewise text softmax. ANN is the broad neural-network
+family, CNN specifies local shared spatial weights, and RNN specifies a state
+carried along a sequence. These names are not separate active modules merely
+because they appear in the literature chapter.
+
+
+\section{Method background: Convolution and feature sequences}\label{method:conv}
+\Q{Purpose}{The role in this system}
+Extract local stroke features shared across locations before sequence recognition or writer pooling.
+
+
+\Q{Justification}{The reason for this construction}
+Weight sharing reduces parameters compared with a fully connected image mapping. Patch-to-matrix multiplication reaches compiled NumPy linear algebra while exposing the computation.
+
+
+\Q{Alternatives}{What changes if another method is used}
+Fully connected images ignore locality; larger kernels have more parameters; residual backbones add skip paths and different capacity. A replacement normally requires new weights.
+
+
+\Q{Library}{Implementation speed and accuracy}
+PyTorch Conv2d offers CPU/GPU backend kernels and autodiff. Match cross-correlation, weights, stride, padding and dtype for arithmetic comparisons. The current NumPy layer stacks one matrix product per batch item; stride views can still lead to reshape copies. No fixed speed factor is asserted. \cite{shi2017,torchconv,numpystride,numpymatmul}.
+
+
+\section{Conv2d}\label{fn:recognise:Conv2d}
+\begin{lstlisting}[style=sig]
+def Conv2d(x, weight, bias, stride=1, padding=1)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/recognise.py} line 41. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:conv}.
+
+
+\Q{Purpose}{What this contributes}
+Extract local stroke features shared across locations before sequence recognition or writer pooling.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{x}] \normalfont the input, shaped (batch, channels, height, width)
+  \item[{weight}] \normalfont the filters, shaped (out channels, in channels, filter height, filter width)
+  \item[{bias}] \normalfont one number added per output channel, or nothing
+  \item[{stride}] \normalfont how many pixels the filter advances between positions, default 1
+  \item[{padding}] \normalfont how many rows and columns of zeros to add round the input before filtering, default 1
+\end{description}
+
+\noindent\textbf{Output.} the filtered result, shaped (batch, out channels, output height, output width).
+
+
+\Q{Method}{What a convolution is, from scratch}
+A \textbf{convolution} takes a small grid of numbers, called a \textbf{filter} or \textbf{kernel}, places it over a patch of the image, multiplies each filter number by the image value beneath it, and adds the products into one output number. Then it moves along and does it again, covering every position. The result is a new image, one value per position, recording how strongly the pattern in the filter was present there.
+
+
+\FormulaNote{Compute one learned local stroke response from all input channels.}{shi2017,torchconv,numpystride,numpymatmul}
+\begin{equation}
+y[o,\,p,\,q] \;=\; b[o] \;+\; \sum_{c=0}^{C-1} \sum_{u=0}^{k_h-1} \sum_{v=0}^{k_w-1} w[o,\,c,\,u,\,v] \cdot x[c,\;p\,s+u,\;q\,s+v]
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$y[o,p,q]$}] \normalfont the output value for filter o at row p, column q
+  \item[{$b[o]$}] \normalfont the bias, one learned number added to every position of output channel o
+  \item[{$c$}] \normalfont which input channel, running over all C of them
+  \item[{$u,\,v$}] \normalfont the position inside the filter
+  \item[{$k_h,\,k_w$}] \normalfont the filter's height and width, 3 by 3 everywhere in this project
+  \item[{$w[o,c,u,v]$}] \normalfont the learned filter weight at that position
+  \item[{$x[c,\,y,\,x]$}] \normalfont the input value in channel c
+  \item[{$s$}] \normalfont the stride, how far the filter moves between output positions
+\end{description}
+Read the triple sum as: for one output position, visit every cell of the filter in every input channel, multiply by the input underneath, and total it. The sum over channels is the part that is easy to overlook and important: a filter is not a flat grid but a stack as deep as the input has channels, so it combines evidence from every feature map below it rather than looking at one.
+
+
+\Q{Justification}{Why this is the right operation for handwriting}
+Two properties make convolution suited to images. It is \textbf{local}: each output depends only on a small patch, which matches the fact that a stroke, a corner or a loop is a local arrangement of ink. And it is \textbf{translation-equivariant}, meaning that moving the input moves the output by the same amount without changing it: the same filter detects a vertical stroke wherever on the line it occurs. A plain fully connected layer has neither property; it would have to learn what a vertical stroke looks like separately at every position, needing enormously more parameters and far more examples.
+
+
+\Q{Method}{What padding is for}
+A 3 by 3 filter cannot be centred on a pixel in the outermost row, because part of it would hang off the edge, so without intervention each convolution would shrink the image by one pixel on every side. \textbf{Padding} adds a border of zeros so the filter can reach the edge, and a padding of 1 with a 3 by 3 filter keeps the output exactly the same size as the input. With twelve convolutions stacked in this network, the unpadded alternative would remove twenty-four pixels in total across twelve convolutions, before accounting for any intervening pooling. Zero is the correct pad value because the input has been arranged so that zero means no ink; see TensorFromResized.
+
+
+\FormulaNote{Determine output height before allocating the feature tensor.}{shi2017,torchconv,numpystride,numpymatmul}
+\begin{equation}
+H_{\mathrm{out}} \;=\; \left\lfloor \frac{H + 2\,\mathrm{pad} - k_h}{s} \right\rfloor + 1
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$H_{\mathrm{out}}$}] \normalfont the output height
+  \item[{$H$}] \normalfont the input height
+  \item[{$\mathrm{pad}$}] \normalfont the padding added on each side
+  \item[{$k_h$}] \normalfont the filter height
+  \item[{$s$}] \normalfont the stride
+  \item[{$\lfloor \cdot \rfloor$}] \normalfont rounding down, because a filter position that does not fit entirely inside the padded input is not used
+\end{description}
+
+\Q{Justification}{The im2col trick, and why it is used}
+Written literally the definition is a loop over output positions inside a loop over filters, which in Python would be unusably slow. The standard remedy is \textbf{im2col}, short for image to columns \cite{chellapilla2006}: rearrange the input so that every patch the filter will see becomes one column of a large matrix. The convolution then becomes a single matrix multiplication, because that is exactly what a matrix product computes, a dot product of every row of one matrix with every column of the other.
+
+
+\FormulaNote{Re-express the same local dot products as a matrix multiplication with explicit dimensions.}{shi2017,torchconv,numpystride,numpymatmul}
+\begin{equation}
+Y \;=\; W_{\mathrm{flat}} \, X_{\mathrm{cols}}, \qquad W_{\mathrm{flat}} \in \mathbb{R}^{\,O \times (C k_h k_w)}, \qquad X_{\mathrm{cols}} \in \mathbb{R}^{\,(C k_h k_w) \times (H_{\mathrm{out}} W_{\mathrm{out}})}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$Y$}] \normalfont the output, as a matrix of one row per filter and one column per output position
+  \item[{$W_{\mathrm{flat}}$}] \normalfont the filters flattened so each becomes one row of length C times the filter area
+  \item[{$X_{\mathrm{cols}}$}] \normalfont the patches, each flattened into one column in the same order
+  \item[{$O$}] \normalfont the number of filters, that is, output channels
+  \item[{$\mathbb{R}^{\,m \times n}$}] \normalfont the set of real-valued matrices with m rows and n columns; this notation just states each array's shape
+\end{description}
+The gain is not from doing less arithmetic, since the number of multiplications is unchanged. It is that matrix multiplication is handed to \textbf{BLAS}, a long-standing library of linear algebra routines written to use the processor's vector instructions and its cache well. A matrix product can substantially reduce interpreter overhead relative to Python loops, with the actual factor depending on shape, backend and hardware, and reformulating the problem to reach it is worth more than any amount of tuning the loops.
+
+
+\Q{Method}{The strided view and reshape storage}
+The patches are not assembled by copying. Neighbouring patches overlap heavily, a 3 by 3 filter at stride 1 sharing six of nine pixels with its neighbour, so a literal im2col would duplicate most of the input nine times over. Instead the columns are produced as a \textbf{strided view}, which needs some explanation.
+
+A numpy array is a flat block of memory plus a set of \textbf{strides}, one per axis, each saying how many bytes to step to advance by one along that axis. Indexing is then just arithmetic on those strides. Supplying a different shape and a different set of strides therefore produces an array that reads the same memory in a different pattern, as a view without an initial patch copy; a later reshape can still materialise storage. Here a six-axis view is constructed whose axes are batch, channel, filter row, filter column, output row and output column, so that the patches appear laid out ready to be reshaped into columns. The strides for the two output axes are the input's own row and column strides multiplied by the stride, which is what makes stepping to the next output position step the right distance through the image.
+
+
+\begin{quote}\small\itshape A strided view of overlapping patches reports a shape far larger than the memory behind it, because the same bytes appear at many positions. That is safe to read and would be meaningless to write to. The reshape that follows does force one copy, since the pattern cannot be expressed as strides alone, but it is one copy instead of nine.\end{quote}
+
+\Q{Method}{The bias}
+One learned number per output channel is added to every position of that channel. It lets a filter shift its whole response up or down, which matters because the squashing that follows treats zero specially: without a bias, a filter could only ever decide between zero and its raw response, whereas with one it can set the level at which it starts responding at all. Adding one number to a whole channel is written as a reshape to four axes and a plain addition, relying on \textbf{broadcasting}, numpy's rule that an axis of length 1 is repeated as needed to match the other operand.
+
+
+
+\section{ConvBlockForward}\label{fn:recognise:ConvBlockForward}
+\begin{lstlisting}[style=sig]
+def ConvBlockForward(x, sd, prefix, nLayers)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/recognise.py} line 113. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:conv}.
+
+
+\Q{Purpose}{What this contributes}
+Extract local stroke features shared across locations before sequence recognition or writer pooling.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{x}] \normalfont the input feature maps
+  \item[{sd}] \normalfont the loaded state dictionary of parameters
+  \item[{prefix}] \normalfont the name prefix identifying this block in the checkpoint, such as stage1
+  \item[{nLayers}] \normalfont how many convolution, normalise, activate groups this block contains
+\end{description}
+
+\noindent\textbf{Output.} the feature maps after that many groups have been applied.
+
+
+\Q{Purpose}{What it is for}
+Both networks are built from the same repeated unit: a convolution, then batch normalisation, then ReLU. This function applies that unit a given number of times, so the unit is written once rather than twelve times in each network.
+
+
+\Q{Justification}{Why that particular order}
+The order is not arbitrary and each adjacency has a reason. Normalisation comes after the convolution because its purpose is to fix the scale of the convolution's output, which it cannot do before that output exists. ReLU comes after normalisation because the normalisation needs to see the signed values to standardise them meaningfully; applied to an already rectified signal, with its mass piled at zero, the mean and variance would describe mostly how many units were silent. And ReLU must come before the next convolution, since the whole point of an activation is to break the chain of linear operations.
+
+A further consequence of this order is that the convolution's bias is redundant: the normalisation immediately subtracts a mean, which removes any constant the bias added. It is kept because the checkpoint stores it and the trained values must be applied as they were learned, but it is worth knowing that it has no effect on the result.
+
+
+\Q{Method}{How a layer is located in the checkpoint}
+Within a block the layers are numbered in threes, so group i occupies positions 3i for the convolution and 3i+1 for the normalisation, the activation having no parameters and so no position of its own. The names are built by joining the prefix and those numbers, which is how a checkpoint saved by the training framework names its layers. The pattern is effectively a contract, and the next entry describes what happens when it is relied on across different files.
+
+
+\Q{Justification}{The three stages, and why they get deeper}
+
+\begin{itemize}\setlength\itemsep{0pt}
+  \item \textbf{stage1, two groups,} on the full-resolution crop, where a filter sees a 3 by 3 patch of actual pixels and so can only detect the smallest features: an edge, a stroke, the direction of a line.
+  \item \textbf{stage2, four groups,} after one pooling, where features combine into corners, junctions and curves.
+  \item \textbf{stage3, six groups,} after a second pooling, where a filter's receptive field covers a large part of a letter and the features become letter-like.
+\end{itemize}
+The number of groups increases with depth because the number of distinguishable patterns does. There are few ways to arrange ink in a 3 by 3 patch and a great many ways to arrange strokes into a letter, so the later stages need more capacity. Placing the deepest stage after two poolings is also what makes this affordable: it runs on a sixteenth of the original area, so its six groups cost less than stage1's two.
+
+
+
+\section{PaperCRNNNumpy}\label{fn:recognise:PaperCRNNNumpy}
+\begin{lstlisting}[style=sig]
+class PaperCRNNNumpy
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/recognise.py} line 259. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:conv}.
+
+
+\Q{Purpose}{What this contributes}
+The callable method is Forward with a capital F. Two, four and six convolution blocks are separated by two spatial pools; a height maximum yields 160 feature columns for a 64 by 640 input. Two bidirectional recurrent layers feed the text head. The constructor default reader is the scratch checkpoint; START.sh selects the joint reader through READER\_WEIGHTS instead.
+
+
+\Q{Method}{Methods exposed by this current class}
+\begin{lstlisting}[style=plain]
+def __init__(self, checkpointPath=None, hiddenSize=256)
+def Forward(self, x)
+\end{lstlisting}
+\Q{Method}{Current implementation}
+Extract local stroke features shared across locations before sequence recognition or writer pooling. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+class PaperCRNNNumpy:
+    def __init__(self,checkpointPath=None,hiddenSize=256):
+        self.checkpointPath = Path(checkpointPath or DEFAULT_TEXT_WEIGHTS)
+        self.sd,_ = LoadStateDictAny(self.checkpointPath)
+        self.hiddenSize = hiddenSize
+
+        self.lstmLayerParams = []
+        for l in range(2):
+            def Get(name,layer=l):
+                return self.sd[f"sequence.{name}_l{layer}"]
+
+            fwd = dict(weightIh=Get("weight_ih"),weightHh=Get("weight_hh"),
+                       biasIh=Get("bias_ih"),biasHh=Get("bias_hh"))
+            bwd = dict(weightIh=self.sd[f"sequence.weight_ih_l{l}_reverse"],
+                       weightHh=self.sd[f"sequence.weight_hh_l{l}_reverse"],
+                       biasIh=self.sd[f"sequence.bias_ih_l{l}_reverse"],
+                       biasHh=self.sd[f"sequence.bias_hh_l{l}_reverse"])
+            self.lstmLayerParams.append({"fwd":fwd,"bwd":bwd})
+
+    def Forward(self,x):
+        sd = self.sd
+        x = ConvBlockForward(x,sd,"stage1",2)
+        x = MaxPool2d(x,2,2)
+        x = ConvBlockForward(x,sd,"stage2",4)
+        x = MaxPool2d(x,2,2)
+        x = ConvBlockForward(x,sd,"stage3",6)
+        x = AdaptiveMaxPoolHeight(x)
+        x = x[:,:,0,:]
+        x = np.transpose(x,(2,0,1))   #width becomes the CTC time axis
+        seq = MultilayerBidirectionalLstm(x,self.lstmLayerParams,self.hiddenSize)
+        logits = Linear(seq,sd["text_head.weight"],sd["text_head.bias"])
+        return LogSoftmax(logits,axis=2)
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Weight sharing reduces parameters compared with a fully connected image mapping. Patch-to-matrix multiplication reaches compiled NumPy linear algebra while exposing the computation. \cite{shi2017,torchconv,numpystride,numpymatmul}.
+
+
+\section{AuthorClassifierCNNNumpy}\label{fn:recognise:AuthorClassifierCNNNumpy}
+\begin{lstlisting}[style=sig]
+class AuthorClassifierCNNNumpy
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/recognise.py} line 325. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:conv}.
+
+
+\Q{Purpose}{What this contributes}
+The current method is Forward. After the convolution backbone, height maximum and width average, a 96-unit hidden affine/ReLU head produces one logit per saved writer mapping entry. Dropout is skipped at inference. The default file is author\_shape\_11w\_pw170\_scratch\_weights.npz; the server INK\_MODEL and SHAPE\_MODEL variables reference this same loaded object.
+
+
+\Q{Method}{Methods exposed by this current class}
+\begin{lstlisting}[style=plain]
+def __init__(self, checkpointPath=None)
+def Forward(self, x)
+\end{lstlisting}
+\Q{Method}{Current implementation}
+Extract local stroke features shared across locations before sequence recognition or writer pooling. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+class AuthorClassifierCNNNumpy:
+    def __init__(self,checkpointPath=None):
+        self.checkpointPath = Path(checkpointPath or DEFAULT_AUTHOR_WEIGHTS)
+        self.sd,self.authorMapping = LoadStateDictAny(self.checkpointPath)
+
+    def Forward(self,x):
+        sd = self.sd
+        x = ConvBlockForward(x,sd,"stage1",2)
+        x = MaxPool2d(x,2,2)
+        x = ConvBlockForward(x,sd,"stage2",4)
+        x = MaxPool2d(x,2,2)
+        x = ConvBlockForward(x,sd,"stage3",6)
+        x = AdaptiveMaxPoolHeight(x)
+        x = x[:,:,0,:]
+        pooled = AdaptiveAvgPoolWidth(x)[:,:,0]
+        h = Linear(pooled,sd["author_head.0.weight"],sd["author_head.0.bias"])
+        h = Relu(h)
+        logits = Linear(h,sd["author_head.3.weight"],sd["author_head.3.bias"])
+        return logits
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Weight sharing reduces parameters compared with a fully connected image mapping. Patch-to-matrix multiplication reaches compiled NumPy linear algebra while exposing the computation. \cite{shi2017,torchconv,numpystride,numpymatmul}.
+
+
+\section{ClassifyImage}\label{fn:recognise:ClassifyImage}
+\begin{lstlisting}[style=sig]
+def ClassifyImage(image, model, authorMapping=None, strokeNormalise=True)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/recognise.py} line 348. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:conv}.
+
+
+\Q{Purpose}{What this contributes}
+Optionally binarises, thins and redilates the input, fits the fixed canvas, calls model.Forward and returns argmax index plus the full softmax vector. The optional authorMapping argument is not used to remap outputs. Decode indices with model.authorMapping; its order is part of the checkpoint contract.
+
+
+\Q{Method}{Current implementation}
+Extract local stroke features shared across locations before sequence recognition or writer pooling. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def ClassifyImage(image,model,authorMapping=None,strokeNormalise=True):
+    if strokeNormalise:
+        normImg = StrokeNormalize(np.asarray(image,dtype=np.uint8))
+        if normImg is not None:
+            image = normImg
+    t = TensorFromResized(ResizeLineImageFixed(image))
+    logits = model.Forward(t)
+    probs = Softmax(logits,axis=1)[0]
+    predIdx = int(np.argmax(probs))
+    return predIdx,probs
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Weight sharing reduces parameters compared with a fully connected image mapping. Patch-to-matrix multiplication reaches compiled NumPy linear algebra while exposing the computation. \cite{shi2017,torchconv,numpystride,numpymatmul}.
+
+
+\section*{Stage: Batch normalisation}
+\ReportEq{20}{Batch normalisation}
+{$\hat z=(z-\mu)/\sqrt{v+\epsilon}$ and $y=\gamma\hat z+\beta$.}
+{Control activation scale while allowing a learned affine response. Training
+uses current batch statistics; inference uses saved running statistics.
+Changing that mode changes the operation.}
+{BatchNorm2d and BatchNorm2dForwardTrain/Backward.}
+{ioffe2015,torchbn}
+
+
+\section{Method background: Batch normalisation}\label{method:bn}
+\Q{Purpose}{The role in this system}
+Control activation scale during learning and apply stored training statistics during inference.
+
+
+\Q{Justification}{The reason for this construction}
+Learned scale and offset preserve representational freedom after normalisation; inference folds fixed statistics into an affine calculation.
+
+
+\Q{Alternatives}{What changes if another method is used}
+Layer normalisation normalises a different set of values and does not use the same batch statistics. Omitting normalisation changes learning dynamics and usually requires retraining.
+
+
+\Q{Library}{Implementation speed and accuracy}
+PyTorch BatchNorm2d distinguishes train/eval state and running statistics. Match epsilon, momentum convention and biased/unbiased variance treatment. A numerical match does not establish equal independently trained accuracy. \cite{ioffe2015,torchbn}.
+
+
+\section{BatchNorm2d}\label{fn:recognise:BatchNorm2d}
+\begin{lstlisting}[style=sig]
+def BatchNorm2d(x, weight, bias, runningMean, runningVar, eps=1e-05)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/recognise.py} line 62. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:bn}.
+
+
+\Q{Purpose}{What this contributes}
+Control activation scale during learning and apply stored training statistics during inference.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{x}] \normalfont the input, shaped (batch, channels, height, width)
+  \item[{weight}] \normalfont the learned scale, one per channel
+  \item[{bias}] \normalfont the learned shift, one per channel
+  \item[{runningMean}] \normalfont the mean of each channel recorded during training
+  \item[{runningVar}] \normalfont the variance of each channel recorded during training
+  \item[{eps}] \normalfont a small constant guarding the division, default 1e-5
+\end{description}
+
+\noindent\textbf{Output.} the input with each channel standardised and then rescaled, same shape as the input.
+
+
+\Q{Purpose}{The problem it solves}
+Stack a dozen layers and the scale of the numbers flowing through them drifts. Each layer multiplies by its weights, so if those weights are on average slightly larger than the scale that preserves magnitude, the values grow layer by layer; slightly smaller, and they shrink toward nothing. Worse, the scale a layer sees changes during training, because the layers beneath it are themselves being changed. A layer is therefore chasing a moving target, which forces a small learning rate and slow training. \textbf{Batch normalisation} \cite{ioffe2015} fixes the scale explicitly: it standardises each channel so that it arrives at the next layer with a known mean and spread.
+
+
+\Q{Method}{Background: mean, variance and standardising}
+The \textbf{mean} is the average value. The \textbf{variance} is the average of the squared distances from the mean, a measure of how spread out the values are, and its square root is the \textbf{standard deviation}, which is in the same units as the values themselves. To \textbf{standardise} is to subtract the mean and divide by the standard deviation, which leaves a quantity with mean 0 and standard deviation 1 regardless of what scale it started on.
+
+
+\FormulaNote{Standardise a channel using the saved training mean and variance.}{ioffe2015,torchbn}
+\begin{equation}
+\hat{x}[c] \;=\; \frac{x[c] - \mu[c]}{\sqrt{\sigma^{2}[c] + \epsilon}}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\hat{x}[c]$}] \normalfont the standardised value in channel c
+  \item[{$x[c]$}] \normalfont the incoming value
+  \item[{$\mu[c]$}] \normalfont the mean of channel c, recorded during training
+  \item[{$\sigma^{2}[c]$}] \normalfont the variance of channel c, also recorded during training
+  \item[{$\epsilon$}] \normalfont a small constant, 0.00001, added so that a channel with no variation cannot cause a division by zero
+\end{description}
+
+\Q{Justification}{Why the scale and shift are put back}
+Forcing every channel to mean 0 and spread 1 would be too strong a constraint, because for some features the useful information is precisely that they are usually large or usually near zero. So two learned numbers per channel are applied afterwards, a scale and a shift, letting the network restore any mean and spread it finds useful, including the original one. The point is not that the statistics are fixed at 0 and 1; it is that they are now set by two parameters the network controls directly, instead of emerging from the accumulated behaviour of every layer below.
+
+
+\FormulaNote{Restore a learned scale and offset after normalisation.}{ioffe2015,torchbn}
+\begin{equation}
+y[c] \;=\; \gamma[c] \, \hat{x}[c] \;+\; \beta[c]
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$y[c]$}] \normalfont the output value in channel c
+  \item[{$\gamma[c]$}] \normalfont the learned scale for that channel, held in the argument called weight
+  \item[{$\beta[c]$}] \normalfont the learned shift, held in the argument called bias
+  \item[{$\hat{x}[c]$}] \normalfont the standardised value from above
+\end{description}
+
+\Q{Method}{Training-time and inference-time behaviour differ}
+The method takes its name from how the statistics are obtained during training: from the current \textbf{batch}, the group of examples being processed together. That cannot be done when reading one crop. A single example's own mean and variance are not a useful description of anything, and worse, the answer for one image would depend on which other images happened to accompany it, which is unacceptable at inference time.
+
+The resolution is that training also keeps a running average of the statistics across all batches, which estimates the mean and variance over the whole dataset. Those stored values are what this function uses. So the layer behaves differently in training and in use, and that difference is intended: in training it standardises by the batch, in use by fixed numbers read from the checkpoint. This is why \texttt{runningMean} and \texttt{runningVar} are arguments here while a training implementation computes them.
+
+
+\Q{Method}{Folding four operations into two}
+Written directly the layer is a subtraction, a division, a multiplication and an addition at every one of the hundreds of thousands of values in the array. But at inference time all four constants are fixed, so the whole thing is a linear function and can be rearranged into one multiplication and one addition.
+
+
+\FormulaNote{Fold the fixed inference statistics into one scale and one shift per channel.}{ioffe2015,torchbn}
+\begin{equation}
+y \;=\; \underbrace{\frac{\gamma}{\sqrt{\sigma^{2}+\epsilon}}}_{\textstyle a} \; x \;+\; \underbrace{\left(\beta - \frac{\gamma\,\mu}{\sqrt{\sigma^{2}+\epsilon}}\right)}_{\textstyle b}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$a$}] \normalfont the combined scale, computed once per channel
+  \item[{$b$}] \normalfont the combined shift, computed once per channel
+  \item[{$\gamma,\,\beta$}] \normalfont the learned scale and shift
+  \item[{$\mu,\,\sigma^{2}$}] \normalfont the stored mean and variance
+  \item[{$\epsilon$}] \normalfont the guard constant
+\end{description}
+The two combined constants are computed once per channel, over an array of a few hundred numbers, and then applied to the full array in one multiply and one add. The square root, in particular, happens once per channel rather than once per pixel. This rearrangement is exact, not an approximation, and it is the whole reason the implementation is two lines.
+
+
+\Q{Justification}{Why it is per channel and not per pixel}
+There is one mean and one variance for each channel, shared by every pixel in it. That follows from what a channel is: the map of where one particular filter responded. A filter's typical response size is a property of that filter, the same wherever on the image it fires, so one statistic describes the whole map. Normalising per pixel would instead remove the differences between positions, which is the information the map exists to carry.
+
+
+
+\section*{Stage: Nonlinear activation and affine transforms}
+\section{Method background: Nonlinear activation and affine transforms}\label{method:activation}
+\Q{Purpose}{The role in this system}
+Let stacked learned layers express nonlinear image and sequence relationships, or convert features into class scores.
+
+
+\Q{Justification}{The reason for this construction}
+ReLU passes positive responses; sigmoid gates bound retention factors; tanh bounds a candidate state. An affine layer combines features with learned biases.
+
+
+\Q{Alternatives}{What changes if another method is used}
+Leaky ReLU avoids a zero negative slope; GELU is smoother but costs more and changes the network. A gate needs a bounded function rather than ordinary ReLU. These are architecture decisions, not interchangeable inference switches.
+
+
+\Q{Library}{Implementation speed and accuracy}
+PyTorch supplies Linear, ReLU, Sigmoid and related layers. NumPy already executes elementwise primitives in compiled loops. Small standalone library calls may cost more overhead than they save; fused network execution has different trade-offs. \cite{glorotrect,gravesbook,torchlinear}.
+
+
+\section{Relu}\label{fn:recognise:Relu}
+\begin{lstlisting}[style=sig]
+def Relu(x)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/recognise.py} line 68. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:activation}.
+
+
+\Q{Purpose}{What this contributes}
+-Relu: keeps positives, sets negatives to zero.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{x}] \normalfont any array
+\end{description}
+
+\noindent\textbf{Output.} the array with every negative value replaced by zero.
+
+
+\Q{Justification}{Why a network needs this at all}
+Convolution and the linear layer are both \textbf{linear} operations, meaning the output is a weighted sum of the inputs. Composing linear operations gives another linear operation: two matrix multiplications are equivalent to one by the product of the matrices. So a stack of a hundred linear layers computes exactly what a single one could, and depth buys nothing. Something non-linear must sit between them, and that is what an \textbf{activation function} is for.
+
+
+\FormulaNote{Introduce a nonlinearity by preserving positive responses and suppressing negatives.}{glorotrect,gravesbook,torchlinear}
+\begin{equation}
+\mathrm{ReLU}(x) \;=\; \max(x,\,0) \;=\; \begin{cases} x & x > 0 \\ 0 & x \le 0 \end{cases}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{ReLU}(x)$}] \normalfont the output, named for rectified linear unit
+  \item[{$x$}] \normalfont the input value
+  \item[{$\max(x,0)$}] \normalfont the larger of x and zero
+  \item[{$\begin{cases}\end{cases}$}] \normalfont case notation: the two lines give the value in each of the two situations listed on the right
+\end{description}
+
+\Q{Justification}{Why this particular function}
+ReLU is nearly the simplest non-linear function there is, and that is much of its appeal, but it has three concrete advantages over the smooth S-shaped functions that preceded it. Its derivative is 1 for every positive input, so a gradient passing back through many layers is not repeatedly multiplied by a number smaller than one, which is what made deep networks with sigmoid activations so hard to train. It produces exact zeros, so a layer's output is \textbf{sparse}, with many units silent on any given input, which tends to give cleaner and more separable features. And it costs one comparison, against an exponential for the alternatives.
+
+
+\Q{Method}{What it means in this network}
+After a convolution, a positive value means the filter's pattern was found and a negative one means something like its opposite was. ReLU discards the negatives entirely, which is to say the layer reports where each feature \emph{was} present and stays silent about where it was not. The next layer therefore builds on evidence of presence rather than on a signed score, which is the behaviour that makes stacked filters compose into detectors for larger shapes: strokes into corners, corners into loops, loops into letters.
+
+
+\begin{quote}\small\itshape A unit whose input is always negative outputs zero always, and its local derivative is zero there; it receives no direct gradient through that inactive response, though upstream changes can alter future inputs. This is known as a dying unit, and it is one training limitation of ReLU. It is a training-time concern, handled in train.py by careful initialisation, and has no effect on the forward pass here.\end{quote}
+
+
+\section{Sigmoid}\label{fn:recognise:Sigmoid}
+\begin{lstlisting}[style=sig]
+def Sigmoid(x)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/recognise.py} line 72. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:activation}.
+
+
+\Q{Purpose}{What this contributes}
+Squashes any number into 0 to 1.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{x}] \normalfont any array
+\end{description}
+
+\noindent\textbf{Output.} the array squashed into the range 0 to 1.
+
+
+\Q{Purpose}{What it is for}
+Where ReLU is used to introduce non-linearity, the sigmoid is used when a number has to be interpreted as a \textbf{proportion}: how much of something to let through, on a scale from none to all. In this file its only use is in the LSTM, whose gates each need exactly that.
+
+
+\FormulaNote{Bound an LSTM gate between zero and one so it can regulate information flow.}{glorotrect,gravesbook,torchlinear}
+\begin{equation}
+\sigma(x) \;=\; \frac{1}{1 + e^{-x}}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\sigma(x)$}] \normalfont the sigmoid of x, a value strictly between 0 and 1
+  \item[{$x$}] \normalfont the input, any real number
+  \item[{$e$}] \normalfont the base of the natural logarithm, about 2.71828
+  \item[{$e^{-x}$}] \normalfont the exponential of minus x: large when x is very negative, near zero when x is large and positive
+\end{description}
+
+\Q{Justification}{Why the shape is right for a gate}
+Follow the formula at three points. For a large positive x the exponential is near zero, so the result approaches 1, fully open. For a large negative x the exponential is huge, so the result approaches 0, fully closed. At zero the exponential is exactly 1 and the result is exactly one half. The curve is smooth and increases everywhere, so the gate can take any intermediate position, and because it is smooth it has a derivative everywhere, which training requires. The S shape also means it saturates: once a gate is firmly open or firmly closed, moderate changes in the input barely move it, which is the stability a memory mechanism needs.
+
+
+\begin{quote}\small\itshape For a very large negative input the exponential overflows and numpy issues a warning while returning infinity, whose reciprocal is correctly zero. The answer is right; only the warning is spurious. The implementation is left in its direct form because the alternative formulation adds a branch to every element of every gate at every time step to suppress a warning that misrepresents nothing.\end{quote}
+
+
+\section{Linear}\label{fn:recognise:Linear}
+\begin{lstlisting}[style=sig]
+def Linear(x, weight, bias)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/recognise.py} line 95. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:activation}.
+
+
+\Q{Purpose}{What this contributes}
+Let stacked learned layers express nonlinear image and sequence relationships, or convert features into class scores.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{x}] \normalfont the input, whose last axis is the feature vector
+  \item[{weight}] \normalfont the weight matrix, shaped (outputs, inputs)
+  \item[{bias}] \normalfont one number added per output, or nothing
+\end{description}
+
+\noindent\textbf{Output.} the input multiplied by the transposed weight matrix, with the bias added; the last axis becomes the number of outputs.
+
+
+\Q{Method}{What it is}
+The \textbf{fully connected} or \textbf{linear} layer, the most basic layer there is: every output is a weighted sum of every input, plus a constant. Where a convolution looks at a local patch and reuses one filter everywhere, a linear layer looks at the whole input vector and has an independent weight for each input-output pair.
+
+
+\FormulaNote{Map the current feature vector into learned output scores using an affine transformation.}{glorotrect,gravesbook,torchlinear}
+\begin{equation}
+y[j] \;=\; b[j] \;+\; \sum_{i=0}^{n-1} W[j,\,i] \, x[i]
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$y[j]$}] \normalfont the j-th output
+  \item[{$b[j]$}] \normalfont the bias for that output
+  \item[{$W[j,i]$}] \normalfont the weight connecting input i to output j
+  \item[{$x[i]$}] \normalfont the i-th input
+  \item[{$n$}] \normalfont the number of inputs
+\end{description}
+
+\Q{Justification}{Why the matrix is transposed}
+The weight array is stored with one row per output, which is the convention the training framework used, while the input has its features along its last axis. Multiplying the input by the transpose pairs each input vector with each row of weights, giving one output per row. Transposing is free in numpy, being only a reordering of the strides, so this costs nothing and keeps the stored weights in the layout the checkpoint was written with.
+
+
+\Q{Method}{Where it is used in each network}
+In the reader it is the final step, turning the LSTM's output at each column into one score per character. The weighted sum is the right operation there because any feature of the column may bear on any character. In the namer it appears twice, as a hidden layer with a ReLU between and then a final layer producing one score per writer, which is enough to combine the pooled features non-linearly before the decision.
+
+
+\begin{quote}\small\itshape The multiplication applies to the last axis and leaves every earlier axis alone, so the same call works on a single vector, on a batch of them, or on the reader's three-axis sequence of columns. That is broadcasting again, and it is why no reshaping surrounds either use.\end{quote}
+
+
+\section*{Stage: Pooling and sequence formation}
+\section{Method background: Pooling and sequence formation}\label{method:pool}
+\Q{Purpose}{The role in this system}
+Reduce spatial resolution or summarise a feature map into sequence columns and writer features.
+
+
+\Q{Justification}{The reason for this construction}
+Two spatial pools reduce work; height maximum produces one feature vector per horizontal position; writer width averaging summarises the line.
+
+
+\Q{Alternatives}{What changes if another method is used}
+Average instead of maximum retains average activation; strided convolution learns reduction; attention pooling adds trained weights. Every alternative changes the function and may require retraining.
+
+
+\Q{Library}{Implementation speed and accuracy}
+PyTorch pooling layers are equivalents only under the same axes, windows and edge rules. This project local max implementation is designed for the invoked two-by-two, stride-two case; its general signature is not proof of every library-supported configuration. \cite{shi2017,torchpool}.
+
+
+\section{MaxPool2d}\label{fn:recognise:MaxPool2d}
+\begin{lstlisting}[style=sig]
+def MaxPool2d(x, kernel=2, stride=2)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/recognise.py} line 76. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:pool}.
+
+
+\Q{Purpose}{What this contributes}
+Reduce spatial resolution or summarise a feature map into sequence columns and writer features.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{x}] \normalfont the input, shaped (batch, channels, height, width)
+  \item[{kernel}] \normalfont the window size, default 2
+  \item[{stride}] \normalfont how far the window moves, default 2
+\end{description}
+
+\noindent\textbf{Output.} the input reduced by the stride in both directions, each output value being the largest in its window.
+
+
+\Q{Purpose}{What it is for}
+\textbf{Pooling} shrinks the spatial size of a feature map by summarising each small window as a single number. With a 2 by 2 window and a stride of 2, the windows do not overlap and the map comes out half as tall and half as wide, a quarter of the values.
+
+
+\FormulaNote{Retain the strongest response in each local window while reducing feature resolution.}{shi2017,torchpool}
+\begin{equation}
+y[c,\,p,\,q] \;=\; \max_{0 \le u,v < k} \; x[c,\; p\,s+u,\; q\,s+v]
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$y[c,p,q]$}] \normalfont the pooled value in channel c at row p, column q
+  \item[{$k$}] \normalfont the window size
+  \item[{$s$}] \normalfont the stride
+  \item[{$u,\,v$}] \normalfont the position within the window
+  \item[{$\max$}] \normalfont the largest of the values in the window
+\end{description}
+
+\Q{Justification}{Three reasons it is done}
+
+\begin{itemize}\setlength\itemsep{0pt}
+  \item \textbf{Cost.} A quarter of the values means a quarter of the work in every layer that follows. Since this network pools twice, the deepest and widest convolutional block runs on a sixteenth of the original area.
+  \item \textbf{Receptive field.} The patch of the original image that influences one value, called its \textbf{receptive field}, grows slowly if only 3 by 3 convolutions are stacked, by two pixels per layer. Halving the resolution doubles the area each later filter covers in original pixels, which is how the network gets from detecting strokes to detecting whole letters without needing very many layers.
+  \item \textbf{Small-shift tolerance.} Taking the largest value in a window gives the same answer wherever in that window the feature occurred, so the output is unchanged by a shift of a pixel. For handwriting this is exactly right: the same letter written a pixel higher is the same letter.
+\end{itemize}
+
+\Q{Justification}{Why the maximum rather than the average}
+After ReLU, a value is evidence that a feature is present, and zero is silence. The maximum answers "was this feature found anywhere in this window", which is the useful question about evidence. An average would dilute a strong local response by the surrounding silence, so a thin stroke correctly detected in one position would be reported as a weak response over a wider area. Averaging has its place, and this file uses it later where the question genuinely is about a typical level rather than a presence.
+
+
+\Q{Method}{Implementation, and the discarded remainder}
+The windows are formed as a strided view, by the same mechanism described under Conv2d, with two extra axes for position within the window; taking the maximum over those two axes then pools everything at once. An odd final row or column, which cannot fill a window, is dropped before the view is built. Discarding input is acceptable here because the loss is a single row or column at the edge of a padded crop, where there is no ink, while the alternative of padding would introduce a window containing invented values whose maximum could be reported as a detected feature.
+
+
+
+\section{AdaptiveMaxPoolHeight}\label{fn:recognise:AdaptiveMaxPoolHeight}
+\begin{lstlisting}[style=sig]
+def AdaptiveMaxPoolHeight(x)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/recognise.py} line 87. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:pool}.
+
+
+\Q{Purpose}{What this contributes}
+Reduce spatial resolution or summarise a feature map into sequence columns and writer features.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{x}] \normalfont the input, shaped (batch, channels, height, width)
+\end{description}
+
+\noindent\textbf{Output.} the same array with its height collapsed to 1, keeping the largest value in each column of each channel.
+
+
+\Q{Purpose}{What it is for, and why it is the pivot of the whole network}
+This one line is where the reader stops being an image network and becomes a sequence network. Before it, the data is a stack of two-dimensional feature maps. After it, each column of the image is a single vector of features, and the line is a sequence of such vectors, left to right. That is the form the LSTM and CTC both require, and this is the step that produces it.
+
+
+\FormulaNote{Collapse vertical positions into one feature vector for each horizontal frame.}{shi2017,torchpool}
+\begin{equation}
+y[c,\,0,\,q] \;=\; \max_{0 \le p < H} \; x[c,\,p,\,q]
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$y[c,0,q]$}] \normalfont the collapsed value for channel c at column q, the height axis now being of length 1
+  \item[{$x[c,p,q]$}] \normalfont the feature value at row p of that column
+  \item[{$H$}] \normalfont the feature map height at this point in the network, which is 16 after two poolings of a 64-pixel crop
+  \item[{$\max_{0 \le p < H}$}] \normalfont the largest value down the whole column
+\end{description}
+
+\Q{Justification}{Why collapsing the height is legitimate}
+It looks like throwing away a great deal, and it would be for a general image. For a line of handwriting it is justified by the geometry of the problem. The crop contains exactly one line of text, so vertical position within it carries no information about \emph{which} character is present, only about which part of a character a pixel belongs to. What identifies the character at a given horizontal position is the set of features found anywhere in that column. Taking the maximum down each column asks precisely that: was this feature present anywhere at this horizontal position.
+
+The word \textbf{adaptive} means the output size is specified rather than the window: here the output height is 1 whatever the input height, so the window is as tall as the input. That is why the function needs no parameters, and why it would behave identically on a crop of a different height, unlike the fixed pooling above.
+
+
+\begin{quote}\small\itshape A maximum, not an average, for the same reason as before: after ReLU these values are evidence of presence, and a feature found in two rows out of sixteen should be reported as found, not diluted by the fourteen silent rows. This is the choice that lets an ascender and the body of a letter in the same column both register.\end{quote}
+
+
+\section{AdaptiveAvgPoolWidth}\label{fn:recognise:AdaptiveAvgPoolWidth}
+\begin{lstlisting}[style=sig]
+def AdaptiveAvgPoolWidth(x)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/recognise.py} line 91. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:pool}.
+
+
+\Q{Purpose}{What this contributes}
+Reduce spatial resolution or summarise a feature map into sequence columns and writer features.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{x}] \normalfont the input, shaped (batch, channels, height, width)
+\end{description}
+
+\noindent\textbf{Output.} the array averaged down axis 2, with that axis kept at length 1.
+
+
+\Q{Purpose}{What it is for}
+The namer, unlike the reader, has to produce one answer for the whole crop rather than one per column. The identity of a writer is a property of the line as a whole, not of a position along it. So at the end of the namer's backbone the remaining axis is collapsed by averaging, turning a sequence of feature vectors into a single feature vector describing the whole line.
+
+
+\FormulaNote{Summarise horizontal features for a whole-line writer decision.}{shi2017,torchpool}
+\begin{equation}
+y[c] \;=\; \frac{1}{N} \sum_{q=0}^{N-1} x[c,\,q]
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$y[c]$}] \normalfont the pooled value for channel c
+  \item[{$x[c,q]$}] \normalfont the feature value at position q
+  \item[{$N$}] \normalfont the number of positions being averaged over
+\end{description}
+
+\Q{Justification}{Why averaging is right here and maximum was right before}
+The question has changed, and so the summary must. The reader asks whether a feature occurs at a given position, which is a question about presence, answered by a maximum. The namer asks how characteristic a feature is of this writing, which is a question about prevalence, answered by an average. A writer who makes a particular join in most of their letters should score differently from one who makes it once; a maximum would report both identically, since both have it somewhere. Averaging is what makes the feature vector describe a habit rather than an occurrence.
+
+This construction is known as \textbf{global average pooling}, and beyond matching the question it has a practical benefit: the output size depends only on the number of channels, not on the length of the line. The classifier head that follows therefore has a fixed input size regardless of how long the crop was.
+
+
+\begin{quote}\small\itshape The function name says width and the code averages axis 2, which is the height axis in the four-axis convention. There is no inconsistency in effect, because by the time it is called the height has already been collapsed and the array has been reduced to three axes, so axis 2 is the sequence position. The name describes the intent and the index describes the array as it actually arrives.\end{quote}
+
+
+\section*{Stage: Softmax and log sum exp}
+\section{Method background: Softmax and log sum exp}\label{method:softmax}
+\Q{Purpose}{The role in this system}
+Turn logits into a normalised class distribution and sum small probabilities stably.
+
+
+\Q{Justification}{The reason for this construction}
+Subtracting the maximum leaves ratios unchanged while preventing exponential overflow. Log-domain path sums avoid underflow in CTC.
+
+
+\Q{Alternatives}{What changes if another method is used}
+Direct exponentiation is simpler but can overflow. Sigmoid treats classes independently and does not express the same exclusive-class distribution. Temperature changes confidence without necessarily changing argmax.
+
+
+\Q{Library}{Implementation speed and accuracy}
+SciPy special.logsumexp and PyTorch log\_softmax provide stable primitives and autodiff. Equal formulae can differ in rounding/reduction order. Calibrated real-world confidence does not follow from normalisation alone. \cite{gravesbook,scipylogsum,torchnumeric}.
+
+
+\section{LogSoftmax}\label{fn:recognise:LogSoftmax}
+\begin{lstlisting}[style=sig]
+def LogSoftmax(x, axis)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/recognise.py} line 100. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:softmax}.
+
+
+\Q{Purpose}{What this contributes}
+Turn logits into a normalised class distribution and sum small probabilities stably.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{x}] \normalfont an array of raw scores
+  \item[{axis}] \normalfont which axis the scores to be compared lie along
+\end{description}
+
+\noindent\textbf{Output.} the log of the softmax along that axis: values at most zero, whose exponentials sum to one.
+
+
+\Q{Method}{Background: turning scores into probabilities}
+A network's final layer produces one unbounded number per class, called a \textbf{logit}. These are not probabilities: they can be negative, and they need not sum to anything in particular. The \textbf{softmax} converts them into probabilities by exponentiating each, which makes them positive, and dividing by the total, which makes them sum to one.
+
+
+\FormulaNote{Normalise exponentiated logits into mutually exclusive class probabilities.}{gravesbook,scipylogsum,torchnumeric}
+\begin{equation}
+p_{k} \;=\; \frac{e^{x_{k}}}{\sum_{j} e^{x_{j}}}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$p_k$}] \normalfont the probability assigned to class k
+  \item[{$x_k$}] \normalfont the raw score, or logit, for class k
+  \item[{$\sum_{j} e^{x_{j}}$}] \normalfont the sum of the exponentials over every class, which makes the outputs total 1
+\end{description}
+Exponentiating is what makes the conversion monotone and amplifying: a score two units higher becomes a probability about 7.4 times larger, so softmax preserves the ranking while sharpening the differences.
+
+
+\Q{Justification}{Why the logarithm is taken}
+CTC multiplies many probabilities together, one per column of a line, and a line has well over a hundred columns. A product of a hundred values near 0.1 is about $10^{-100}$: representable in float64, but below the ordinary float32 range. Longer or lower-probability paths can also underflow in float64. Direct products therefore have a precision-dependent numerical risk. This is \textbf{underflow}. Working with logarithms avoids these direct tiny products, because the logarithm of a product is the sum of the logarithms, and a sum of a hundred moderate negative numbers is an ordinary number.
+
+
+\FormulaNote{Express those class probabilities in logarithmic form for CTC path arithmetic.}{gravesbook,scipylogsum,torchnumeric}
+\begin{equation}
+\log\!\Big(\prod_{t} p_{t}\Big) \;=\; \sum_{t} \log p_{t}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\prod_{t} p_{t}$}] \normalfont the product of the per-column probabilities along a path
+  \item[{$\sum_{t} \log p_{t}$}] \normalfont the equivalent sum of their logarithms
+  \item[{$p_t$}] \normalfont the probability at column t
+\end{description}
+
+\Q{Method}{The log-sum-exp trick}
+Computing the logarithm of the softmax naively would exponentiate first, and a logit of 800 overflows to infinity before any logarithm is taken. The remedy uses the fact that softmax is unchanged by subtracting a constant from every score, since the constant's exponential cancels between numerator and denominator. Subtracting the largest score makes the biggest exponential exactly 1 and every other smaller, so nothing can overflow.
+
+
+\FormulaNote{Evaluate the same log normaliser without exponential overflow.}{gravesbook,scipylogsum,torchnumeric}
+\begin{equation}
+\log p_{k} \;=\; (x_{k} - m) \;-\; \log \sum_{j} e^{\,x_{j} - m}, \qquad m \;=\; \max_{j} x_{j}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\log p_k$}] \normalfont the log probability of class k, the function's output
+  \item[{$x_k$}] \normalfont the raw score for class k
+  \item[{$m$}] \normalfont the largest score, subtracted from every score before any exponential is taken
+  \item[{$\log \sum_j e^{x_j - m}$}] \normalfont the log-sum-exp term, which is the normalisation expressed in log space
+\end{description}
+Underflow in the other direction is also harmless here. A score far below the maximum exponentiates to zero, contributing nothing to the sum, which is the correct contribution for a class of negligible probability. The maximum term is always present and equals 1, so the sum can never be zero and its logarithm is always defined. This rearrangement is known as the \textbf{log-sum-exp trick}, and it is standard wherever probabilities are handled in log space.
+
+
+\begin{quote}\small\itshape Every output of this function is at most zero, because a probability is at most one and the logarithm of a number at most one is at most zero. Seeing negative numbers in the reader's output is therefore expected, not a fault, and a value near zero means near-certainty.\end{quote}
+
+
+\section{Softmax}\label{fn:recognise:Softmax}
+\begin{lstlisting}[style=sig]
+def Softmax(x, axis)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/recognise.py} line 107. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:softmax}.
+
+
+\Q{Purpose}{What this contributes}
+Turn logits into a normalised class distribution and sum small probabilities stably.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{x}] \normalfont an array of raw scores
+  \item[{axis}] \normalfont which axis the scores to be compared lie along
+\end{description}
+
+\noindent\textbf{Output.} probabilities along that axis: non-negative and summing to one.
+
+
+\Q{Purpose}{What it is for}
+The same conversion as above without the logarithm, used where an actual probability is wanted for a person to read rather than a log probability for further arithmetic. In this file its only use is in the namer, where the output is a confidence per writer that gets reported.
+
+
+\Q{Justification}{The same stabilisation, for the same reason}
+The maximum is subtracted before exponentiating here too. The result is mathematically identical, since the subtraction cancels, but it cannot overflow: the largest exponential is 1 rather than potentially enormous. The cost is one pass to find the maximum and one subtraction, which is negligible against the exponentials themselves.
+
+
+\Q{Justification}{Why the namer uses this and the reader uses the log version}
+The distinction follows from what happens next. The namer's output is compared and reported directly, so a probability is what is wanted. The reader's output is summed along thousands of paths by CTC, so log probabilities are what is wanted. Converting between them afterwards would be possible but would reintroduce exactly the underflow that working in log space exists to avoid.
+
+
+\begin{quote}\small\itshape A confidence from this function is a probability over the enrolled writers only, and it necessarily sums to one across them. It therefore cannot express "none of these": a crop from somebody not enrolled is still assigned to whichever enrolled writer resembles it most, with a confidence that may be high. This is a property of the output layer, not a fault in the training, and any use of the namer on an unknown writer has to account for it.\end{quote}
+
+
+\section*{Stage: LSTM and bidirectional recurrence}
+\ReportEq{21}{LSTM cell and hidden state}
+{$c_t=f_t\odot c_{t-1}+i_t\odot g_t$ and $h_t=o_t\odot\tanh c_t$.}
+{Carry gated memory along feature columns and expose a bounded hidden output.
+The gates and candidate are computed from current features and previous
+hidden state; weights are shared, not passed as the state.}
+{LstmForward and LstmBackward.}
+{hochreiter1997,torchlstm}
+
+
+\section{Method background: LSTM and bidirectional recurrence}\label{method:lstm}
+\Q{Purpose}{The role in this system}
+Use left and right image context to disambiguate sequential character features.
+
+
+\Q{Justification}{The reason for this construction}
+Additive cell memory and multiplicative gates offer a controlled route for retaining information; reverse recurrence is available because the complete offline line is known.
+
+
+\Q{Alternatives}{What changes if another method is used}
+A plain RNN has simpler state but difficult long dependencies. GRU uses fewer gates. Attention/transformers offer another context model and different cost, data and checkpoint requirements.
+
+
+\Q{Library}{Implementation speed and accuracy}
+PyTorch LSTM provides optimised recurrent kernels and autodiff. Gate order, two bias arrays, direction reversal and tensor layout must match. Fused kernels can avoid Python frame loops; speed and final trained accuracy are separate comparisons. \cite{hochreiter1997,torchlstm,gravesbook}.
+
+
+\section{LstmForward}\label{fn:recognise:LstmForward}
+\begin{lstlisting}[style=sig]
+def LstmForward(x, weightIh, weightHh, biasIh, biasHh, hiddenSize)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/recognise.py} line 123. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:lstm}.
+
+
+\Q{Purpose}{What this contributes}
+Use left and right image context to disambiguate sequential character features.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{x}] \normalfont the input sequence, shaped (time, batch, features)
+  \item[{weightIh}] \normalfont the weights applied to the input, holding all four gates stacked
+  \item[{weightHh}] \normalfont the weights applied to the previous output, also all four gates stacked
+  \item[{biasIh}] \normalfont the bias on the input side
+  \item[{biasHh}] \normalfont the bias on the recurrent side
+  \item[{hiddenSize}] \normalfont the width of the memory and output vectors
+\end{description}
+
+\noindent\textbf{Output.} a pair: the output at every time step, shaped (time, batch, hidden), and the final hidden and cell state.
+
+
+\Q{Purpose}{The problem: a column is not enough}
+After the convolutional backbone the line has become a sequence of feature vectors, one per column. Classifying each column on its own would be hopeless. A single narrow column of a handwritten line is often ambiguous even to a person: the left half of an a and the left half of a d are the same stroke, and which it is depends on what follows. A smudge is identifiable only from the letters around it. What is needed is a layer whose output at each column depends on the whole line, and that is what a \textbf{recurrent} layer provides.
+
+
+\Q{Method}{Background: what recurrence means}
+A \textbf{recurrent neural network} processes a sequence one step at a time, carrying a vector of numbers from each step to the next. That carried vector is the \textbf{hidden state}, and it is the network's summary of everything seen so far. At each step the layer combines the new input with the incoming hidden state to produce a new hidden state, which is also its output for that step. The same weights are used at every step, so the layer has a fixed number of parameters however long the sequence is.
+
+
+\Q{Justification}{Why a plain recurrent layer is not used}
+In a plain recurrent layer the hidden state is overwritten at every step, as a weighted combination of the old state and the new input passed through a squashing function. Information therefore survives only by being repeatedly multiplied by the recurrent weights. Over a hundred and sixty steps that product either shrinks to nothing or grows without bound, depending on whether the weights are on average below or above the scale that preserves magnitude. These are the \textbf{vanishing} and \textbf{exploding gradient} problems, and the practical consequence is that a plain recurrent layer cannot learn to connect events more than a few steps apart. For reading a line of writing that is useless, since the evidence resolving an ambiguous letter can be a whole word away.
+
+
+\Q{Alternatives}{The LSTM idea: a cell you add to rather than overwrite}
+The \textbf{long short-term memory} layer \cite{hochreiter1997} solves this by keeping a second vector, the \textbf{cell state}, whose default behaviour is to persist unchanged. It is not recomputed each step; it is modified, by having some of its contents erased and some new contents added. Because the default is to carry forward, information can survive arbitrarily many steps without being multiplied by anything, which is precisely what the plain layer could not do.
+
+What to erase, what to add and what to reveal are decided by three \textbf{gates}, each a vector of numbers between 0 and 1 produced by a sigmoid. A gate value of 0 blocks completely, 1 lets everything through, and anything between is a proportion. A fourth quantity, the candidate, supplies the contents that might be added.
+
+
+\FormulaNote{Compute input, forget, candidate and output gate activations from the current features and previous hidden state.}{hochreiter1997,torchlstm,gravesbook}
+\begin{equation}
+\begin{aligned}i_t &= \sigma\big(W_{ii} x_t + b_{ii} + W_{hi} h_{t-1} + b_{hi}\big) \\[2pt]f_t &= \sigma\big(W_{if} x_t + b_{if} + W_{hf} h_{t-1} + b_{hf}\big) \\[2pt]g_t &= \tanh\big(W_{ig} x_t + b_{ig} + W_{hg} h_{t-1} + b_{hg}\big) \\[2pt]o_t &= \sigma\big(W_{io} x_t + b_{io} + W_{ho} h_{t-1} + b_{ho}\big)\end{aligned}
+\end{equation}
+\noindent\emph{Source: }\cite{hochreiter1997}
+
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$i_t$}] \normalfont the \textbf{input gate} at step t: how much of the candidate to write into the cell
+  \item[{$f_t$}] \normalfont the \textbf{forget gate}: how much of the existing cell to keep
+  \item[{$g_t$}] \normalfont the \textbf{candidate}, the new contents that might be written; it uses tanh rather than a sigmoid because it is a value to be stored, which may usefully be negative, not a proportion
+  \item[{$o_t$}] \normalfont the \textbf{output gate}: how much of the cell to reveal as this step's output
+  \item[{$x_t$}] \normalfont the input vector at step t
+  \item[{$h_{t-1}$}] \normalfont the hidden state carried in from the previous step
+  \item[{$W_{i\ast},\, W_{h\ast}$}] \normalfont the learned weights applied to the input and to the previous hidden state respectively
+  \item[{$b_{i\ast},\, b_{h\ast}$}] \normalfont the corresponding learned biases
+  \item[{$\sigma$}] \normalfont the sigmoid, squashing to between 0 and 1; see its own entry
+  \item[{$\tanh$}] \normalfont the hyperbolic tangent, squashing to between $-$1 and 1
+\end{description}
+Every one of the four lines has the same form: a weighted sum of the new input, plus a weighted sum of the previous output, plus biases. They differ only in their weights and in the squashing applied. That uniformity is what lets the implementation compute all four in a single matrix multiplication, described below.
+
+
+\Q{Method}{The two state updates}
+
+\FormulaNote{Update retained cell memory and expose its gated hidden output.}{hochreiter1997,torchlstm,gravesbook}
+\begin{equation}
+c_t \;=\; f_t \odot c_{t-1} \;+\; i_t \odot g_t, \qquad h_t \;=\; o_t \odot \tanh(c_t)
+\end{equation}
+\noindent\emph{Source: }\cite{hochreiter1997}
+
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$c_t$}] \normalfont the cell state after step t: the long-term memory
+  \item[{$c_{t-1}$}] \normalfont the cell state carried in from the previous step
+  \item[{$h_t$}] \normalfont the hidden state after step t, which is also this step's output
+  \item[{$\odot$}] \normalfont elementwise multiplication: each position of one vector multiplied by the matching position of the other, as opposed to a matrix product
+  \item[{$f_t,\, i_t,\, g_t,\, o_t$}] \normalfont the gates and candidate from above
+\end{description}
+The cell update is the heart of the method and is worth reading slowly. It is an addition, not a replacement. If the forget gate is 1 and the input gate is 0 at some position, that position of the cell passes through completely untouched, for as many steps as those gate values persist. No weight matrix is applied to it along the way, so it neither shrinks nor grows. That is the path along which information travels a long distance, and it is what the name long short-term memory refers to: a short-term memory that can be made to last.
+
+The hidden state is then a filtered view of the cell. The tanh keeps it in a bounded range, and the output gate decides how much of each position to expose. So the layer can hold something in the cell for many steps while revealing nothing about it, and then reveal it when it becomes relevant. For reading handwriting that is directly useful: the shape of an ambiguous stroke can be held until the letter that disambiguates it arrives.
+
+
+\Q{Method}{How all four gates are computed at once}
+The four weight matrices are stored stacked into one array, four times the hidden size tall. One matrix multiplication therefore produces all four pre-activation vectors end to end, and the implementation simply slices the result into four equal blocks in the order input, forget, candidate, output. That ordering is not a choice made here; it is the convention of the framework the weights were trained with, and slicing in a different order would silently use the forget gate's weights as the input gate's. One large matrix multiplication is also considerably faster than four small ones, for the BLAS reasons given under Conv2d.
+
+
+\Q{Justification}{Why there are two biases}
+Mathematically a single bias would do, since adding two constants is adding one constant. Both are kept because the framework that trained the weights stores both, and the trained values must be applied as they were learned. Their sum is what has any effect.
+
+
+\Q{Justification}{Why this loop cannot be vectorised}
+Every other layer in this file processes its whole input at once. This one cannot, and the reason is structural rather than a shortcoming of the implementation: step t needs the hidden and cell state from step t$-$1, so the steps are genuinely sequential. Within a step everything is already whole-array arithmetic across the batch and the hidden positions. This is the same situation as the column loop in LeastCostSeam, and the same conclusion holds: the loop is over the one axis that is irreducibly ordered.
+
+
+\begin{quote}\small\itshape Both states start as vectors of zeros. Zero is the natural choice for "nothing seen yet", and it has the useful property that an all-zero cell with a forget gate near 1 stays empty until something is deliberately written into it.\end{quote}
+
+
+\section{BidirectionalLstmForward}\label{fn:recognise:BidirectionalLstmForward}
+\begin{lstlisting}[style=sig]
+def BidirectionalLstmForward(x, paramsFwd, paramsBwd, hiddenSize)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/recognise.py} line 143. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:lstm}.
+
+
+\Q{Purpose}{What this contributes}
+Use left and right image context to disambiguate sequential character features.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{x}] \normalfont the input sequence, shaped (time, batch, features)
+  \item[{paramsFwd}] \normalfont the weights and biases for the forward pass
+  \item[{paramsBwd}] \normalfont the weights and biases for the backward pass
+  \item[{hiddenSize}] \normalfont the width of each direction's output
+\end{description}
+
+\noindent\textbf{Output.} the two directions' outputs joined along the feature axis, so twice as wide as one direction.
+
+
+\Q{Justification}{Why one direction is not enough}
+An LSTM reading left to right has, at each column, seen everything to the left and nothing to the right. For handwriting that is half the available evidence and often the less useful half. Consider the stroke that begins both an a and a d: what distinguishes them is the ascender that comes afterwards. A left-to-right reader at the start of that letter cannot know. It will often get the answer right in the end, because the output at the later column can be correct, but its representation of the earlier columns is impoverished, and the earlier columns are where CTC may want to place the character.
+
+
+\Q{Method}{The construction}
+The remedy is to run a second, completely separate LSTM over the sequence reversed, then put its outputs back into forward order and join the two side by side. Each position then carries a summary of everything to its left, from the forward pass, and a summary of everything to its right, from the backward pass. The two have independent weights throughout; nothing is shared.
+
+
+\FormulaNote{Join left-to-right and right-to-left context at the same image frame.}{hochreiter1997,torchlstm,gravesbook}
+\begin{equation}
+y_t \;=\; \big[\; \overrightarrow{h}_t \;;\; \overleftarrow{h}_t \;\big]
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$y_t$}] \normalfont the combined output at position t, of width twice the hidden size
+  \item[{$\overrightarrow{h}_t$}] \normalfont the forward LSTM's hidden state at position t, summarising positions 1 to t
+  \item[{$\overleftarrow{h}_t$}] \normalfont the backward LSTM's hidden state at the same position, summarising positions t to the end
+  \item[{$[\;\cdot\;;\;\cdot\;]$}] \normalfont concatenation: the two vectors laid end to end, not added or combined
+\end{description}
+Concatenation rather than addition is the right choice because the two summaries answer different questions and the layer above should be free to weigh them differently. Adding them would force every feature to mean the same thing in both directions and would discard which direction it came from.
+
+
+\Q{Justification}{Why this is legitimate here and not always}
+Reading the future is only possible because the whole line is available before any output is needed. A system transcribing speech as it is spoken could not do this, since the future has not happened yet. Handwriting recognition on a captured image has no such constraint: the entire line was photographed at once. Bidirectional recurrence is standard in handwriting recognition for exactly this reason, and the architecture this network follows is built on it \cite{shi2017}.
+
+
+\begin{quote}\small\itshape Reversing a numpy array along its first axis is a view, not a copy, so running the backward pass costs nothing extra in memory. The output of the backward pass is reversed again so that position t of both halves refers to the same column; forgetting that second reversal would align each position with its mirror image and produce fluent-looking nonsense.\end{quote}
+
+
+\section{MultilayerBidirectionalLstm}\label{fn:recognise:MultilayerBidirectionalLstm}
+\begin{lstlisting}[style=sig]
+def MultilayerBidirectionalLstm(x, layerParams, hiddenSize)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/recognise.py} line 150. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:lstm}.
+
+
+\Q{Purpose}{What this contributes}
+Use left and right image context to disambiguate sequential character features.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{x}] \normalfont the input sequence
+  \item[{layerParams}] \normalfont a list of parameter sets, one per layer, each holding a forward and a backward set
+  \item[{hiddenSize}] \normalfont the width of each direction in each layer
+\end{description}
+
+\noindent\textbf{Output.} the sequence after passing through every layer in turn.
+
+
+\Q{Method}{What stacking buys}
+Each layer's output sequence becomes the next layer's input sequence. The reader uses two such layers. The gain is the same as from depth anywhere in a network: the first layer works on the convolutional features directly and can form short-range relationships between neighbouring columns, such as grouping the strokes that make up one letter; the second works on the first's output, where each position already summarises a neighbourhood, and can form relationships between those summaries, such as relating a letter to the word around it.
+
+
+\Q{Justification}{Why the second layer's input is twice as wide}
+Because the first layer concatenates two directions, its output has twice the hidden size, and the second layer's input weights are shaped to accept that. This is handled implicitly here: the weights come from the checkpoint and already have the right shape, so the function needs no knowledge of the widths and the same loop would work for any number of layers.
+
+
+\begin{quote}\small\itshape Two layers is the depth the architecture specifies \cite{shi2017}. More would add parameters and sequential work for a task where the first layer already covers a letter and the second a word, which is the range the evidence actually spans.\end{quote}
+
+
+\section*{Stage: CTC decoding and forced alignment}
+\ReportEq{22}{CTC sequence loss}
+{$L=-\log\sum_{\pi:B(\pi)=\ell}\prod_t p_t(\pi_t)$.}
+{Learn complete transcriptions without character boxes by summing all valid
+alignment paths. Collapse merges adjacent repeats before removing blank;
+literal spaces remain ordinary labels.}
+{CtcLoss; DecodeCtc solves a cheaper best-path inference problem.}
+{graves2006,ctcdistill}
+
+
+\section{Method background: CTC decoding and forced alignment}\label{method:ctc}
+\Q{Purpose}{The role in this system}
+Train from complete line transcripts and recover transcript-constrained character locations for extraction.
+
+
+\Q{Justification}{The reason for this construction}
+CTC marginalises valid blank/repeat paths; greedy decoding selects a path cheaply; forced alignment maximises over paths for a supplied known transcript.
+
+
+\Q{Alternatives}{What changes if another method is used}
+Manual character boxes need annotation and unreliable cursive cuts. Beam search can improve transcript search at extra cost. Attention decoding learns a different alignment mechanism.
+
+
+\Q{Library}{Implementation speed and accuracy}
+PyTorch CTCLoss computes the training loss, not the entire greedy/forced-alignment pipeline. Its mean reduction divides by target length, unlike the project batch mean. Align lengths, blank, precision and reduction before numerical comparison. \cite{graves2006,ctcdistill,torchctc}.
+
+
+\section{DecodeCtc}\label{fn:recognise:DecodeCtc}
+\begin{lstlisting}[style=sig]
+def DecodeCtc(logProbs)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/recognise.py} line 187. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:ctc}.
+
+
+\Q{Purpose}{What this contributes}
+Train from complete line transcripts and recover transcript-constrained character locations for extraction.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{logProbs}] \normalfont the reader's output, shaped (time, batch, classes), holding a log probability per character per column
+\end{description}
+
+\noindent\textbf{Output.} a list of strings, one per item in the batch.
+
+
+\Q{Purpose}{The problem CTC exists to solve}
+The reader produces one set of character scores per column, around 160 of them, while the line contains perhaps 40 characters. Nothing says which columns correspond to which character, and the correspondence differs for every line and every writer: a wide m covers many columns, a narrow i covers few. Training a network to produce a short sequence from a long one would ordinarily require knowing that correspondence, which would mean marking by hand where every letter begins and ends on every training line. For tens of thousands of lines that is not feasible.
+
+\textbf{Connectionist temporal classification} \cite{graves2006} removes the requirement. It lets the network be trained on the text alone, with no indication of where the characters sit, by defining a rule that maps any per-column output onto a shorter string, and then training the network so that the total probability of all column-outputs mapping to the correct string is high. The alignment is never specified; it is whatever the network finds convenient.
+
+
+\Q{Method}{The collapsing rule}
+The rule has two steps, applied in this order: merge runs of the same character into one, then delete the blanks.
+
+
+\FormulaNote{Select the highest-probability class at each frame for greedy inference.}{graves2006,ctcdistill,torchctc}
+\begin{equation}
+\mathcal{B}\big(\pi\big) \;:\; \text{merge repeats, then remove blanks}
+\end{equation}
+\noindent\emph{Source: }\cite{graves2006}
+
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathcal{B}$}] \normalfont the collapsing map, which takes a sequence of one label per column and returns a string
+  \item[{$\pi$}] \normalfont a \textbf{path}: one label chosen for each column, including possibly the blank
+  \item[{$\text{blank}$}] \normalfont the extra label, slot 0, which stands for "emitting nothing here"
+\end{description}
+
+\Q{Justification}{Why the blank is necessary}
+The blank is the part that makes the scheme work, and its purpose is easiest to see from what goes wrong without it. If the rule were only "merge repeats", the word \texttt{letter} could never be produced, because its two consecutive t's would merge into one. The blank provides a separator: a path reading t, t, blank, t, t collapses first to t, blank, t and then, with the blank removed, to tt. So a blank between two runs of the same character means a genuine doubled letter, while its absence means one letter held across several columns.
+
+
+\begin{itemize}\setlength\itemsep{0pt}
+  \item \textbf{a, a, a, b, b} collapses to \textbf{ab}, one a and one b.
+  \item \textbf{a, blank, a} collapses to \textbf{aa}, a doubled letter.
+  \item \textbf{a, a, blank, b} collapses to \textbf{ab}, the blank being harmless between different letters.
+\end{itemize}
+The blank also gives the network somewhere to put the columns between letters, the gaps and joins where no character is being written. In practice a trained CTC network emits blank for the large majority of columns and spikes briefly on a character where it is confident, which is why its output looks sparse.
+
+
+\Q{Method}{Greedy decoding, and what it approximates}
+What is wanted is the single most probable \emph{string}, which requires summing over every path that collapses to it, since many paths give the same string. That is expensive. This function instead takes the most probable \emph{path}, by picking the best-scoring character independently in each column, and collapses that. This is \textbf{greedy} or \textbf{best-path} decoding.
+
+
+\FormulaNote{Collapse adjacent repeated path symbols and remove blanks in the correct order.}{graves2006,ctcdistill,torchctc}
+\begin{equation}
+\pi^{*}_t \;=\; \arg\max_{k} \; \log p_t(k), \qquad \hat{y} \;=\; \mathcal{B}\big(\pi^{*}\big)
+\end{equation}
+\noindent\emph{Source: }\cite{graves2006}
+
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\pi^{*}_t$}] \normalfont the chosen label for column t
+  \item[{$\log p_t(k)$}] \normalfont the reader's log probability for character k at column t
+  \item[{$\arg\max_k$}] \normalfont the character index with the highest score
+  \item[{$\hat{y}$}] \normalfont the decoded string
+  \item[{$\mathcal{B}$}] \normalfont the collapsing map defined above
+\end{description}
+The approximation is not exact: the most probable path need not collapse to the most probable string, because a string whose probability is spread over many moderately good paths can beat one concentrated in a single excellent path. In practice the difference is small for a well-trained network, whose output is confident enough that one path dominates, and the measured accuracy of 96 to 99 percent on real crops is obtained with this decoder. A beam search would recover the difference at several times the cost.
+
+
+\begin{quote}\small\itshape Because the comparison within a column is only between scores in that same column, the logarithm makes no difference to which character wins. The log probabilities could be replaced by raw logits here and the output would be identical. They are log probabilities because the same array is used by the alignment, which does need them.\end{quote}
+
+
+\section{CtcForcedAlign}\label{fn:recognise:CtcForcedAlign}
+\begin{lstlisting}[style=sig]
+def CtcForcedAlign(logProbs, text)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/recognise.py} line 204. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:ctc}.
+
+
+\Q{Purpose}{What this contributes}
+Walks the one path through the scores that spells a known text, and returns the column span of every character plus the path's mean score.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{logProbs}] \normalfont the reader's output for one line, shaped (time, classes)
+  \item[{text}] \normalfont the known text of that line
+\end{description}
+
+\noindent\textbf{Output.} a list pairing each character with the span of columns it occupies, together with a confidence; or nothing if the text cannot be aligned.
+
+
+\Q{Purpose}{What it is for, and why the project needs it}
+Decoding answers "what does this line say". This answers a different question: given that the line says this, \emph{where} is each character. That is what the glyph extractor needs. To build a library of a writer's letterforms, the pipeline must cut individual letters out of their line crops, and to do that it must know which columns of the crop hold which letter. No separate letter-finding step is needed, because the reader already contains that information implicitly in its per-column scores; forced alignment extracts it.
+
+
+\Q{Justification}{Why it is called forced}
+The text is not being recognised; it is given. The algorithm is \textbf{forced} to produce an alignment consistent with that text, and among all such alignments it finds the most probable. So it cannot return the wrong letters, only a wrong idea of where they are. This is a much easier problem than recognition and correspondingly more reliable, which is why the project uses known transcripts for glyph extraction rather than the reader's own output.
+
+
+\Q{Method}{The extended label sequence}
+The first step is to write out the target as a sequence that allows blanks everywhere they are permitted: a blank, then each character followed by a blank.
+
+
+\FormulaNote{Construct a target-state sequence with blanks so repeated letters can be aligned legally.}{graves2006,ctcdistill,torchctc}
+\begin{equation}
+\mathrm{ext} \;=\; \big(\,\varnothing,\; \ell_1,\; \varnothing,\; \ell_2,\; \varnothing,\; \dots,\; \ell_n,\; \varnothing \,\big), \qquad S \;=\; 2n+1
+\end{equation}
+\noindent\emph{Source: }\cite{graves2006}
+
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{ext}$}] \normalfont the extended sequence of states the alignment moves through
+  \item[{$\varnothing$}] \normalfont the blank label, slot 0
+  \item[{$\ell_i$}] \normalfont the slot number of the i-th character of the text
+  \item[{$n$}] \normalfont the number of characters
+  \item[{$S$}] \normalfont the length of the extended sequence, hence the number of states
+\end{description}
+Every valid path through the columns can now be described as a non-decreasing walk through these states: at each column the path is in some state, and as columns advance the state index only ever stays put or increases. Characters sit at odd positions and the optional blanks at even ones. A path that skips a blank writes two characters back to back; a path that lingers in a blank puts a gap between them.
+
+
+\Q{Method}{The allowed moves}
+From state s at the previous column, three moves are considered: stay at s, advance to s from s$-$1, or advance to s from s$-$2. The third, the skip, is what allows the optional blanks to be passed over, and it carries one restriction.
+
+
+\begin{itemize}\setlength\itemsep{0pt}
+  \item \textbf{Stay.} The same label continues across another column: a wide letter, or a long gap.
+  \item \textbf{Advance by one.} Move to the next state, either from a character into its following blank or from a blank into the next character.
+  \item \textbf{Skip by two.} Jump over a blank, placing two characters in consecutive columns. Permitted only when the target state is a character and that character differs from the one two states back.
+\end{itemize}
+The restriction on the skip is the whole reason the blanks were inserted. If the two characters either side of a blank are the same letter, skipping the blank would make a doubled letter collapse back into one, by the merge rule. So for a doubled letter the blank between them is compulsory, and the skip is forbidden. A skip onto a blank is likewise meaningless, since it would be jumping over a character. Both cases are enforced by setting the candidate score to a very large negative number, which the maximisation then never selects, which is the same device as the infinities in LeastCostSeam.
+
+
+\Q{Method}{The recurrence}
+This is dynamic programming again, with the same structure as the seam, but maximising a log probability instead of minimising a cost. Working in log space means the multiplication of probabilities along a path becomes an addition, as established under LogSoftmax.
+
+
+\FormulaNote{Accumulate the best legal transcript-constrained prefix in log space.}{graves2006,ctcdistill,torchctc}
+\begin{equation}
+\alpha[t,s] \;=\; \log p_t\big(\mathrm{ext}[s]\big) \;+\; \max\Big( \alpha[t-1,s],\; \alpha[t-1,s-1],\; \alpha[t-1,s-2] \Big)
+\end{equation}
+\noindent\emph{Source: }\cite{graves2006}
+
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\alpha[t,s]$}] \normalfont the score of the best path that reaches state s at column t
+  \item[{$\log p_t(\mathrm{ext}[s])$}] \normalfont the reader's log probability, at column t, of the label belonging to state s
+  \item[{$\alpha[t-1,\,\cdot\,]$}] \normalfont the best scores at the previous column, for the three states a path may arrive from
+  \item[{$\max$}] \normalfont the best of those three arrivals; the third is excluded when the skip is not allowed
+\end{description}
+The initial column may only be in state 0, the leading blank, or state 1, the first character, since a path cannot have progressed further than one state in one column. At the final column the path must have reached either the last state, the trailing blank, or the state before it, the last character; whichever of those two scores higher is the end of the best path.
+
+
+\Q{Justification}{Why maximum and not sum}
+Training CTC sums over all paths, because the quantity being maximised is the total probability of the target string. Alignment takes the maximum instead, because the quantity wanted is one specific path: the single most probable way the text could be laid out across the columns. Taking the maximum of a sequence of choices like this is the \textbf{Viterbi} algorithm \cite{viterbi1967}, long used for exactly this purpose of recovering the most likely state sequence behind an observed signal.
+
+
+\Q{Method}{From the path to column spans}
+Backtracking the recorded moves gives the state occupied at every column. The i-th character of the text lives in state 1+2i, so the columns whose state equals that number are the columns that character occupies, and the first and last of them are its span. A character without a usable recovered span is handled as an alignment/extraction failure. A legal CTC transition cannot simply skip an obligatory character or assign two different target states to one frame.
+
+
+\Q{Method}{The confidence}
+
+\FormulaNote{Translate aligned frame intervals into a summary confidence for the constrained path.}{graves2006,ctcdistill,torchctc}
+\begin{equation}
+\mathrm{conf} \;=\; \frac{1}{T} \sum_{t=1}^{T} \log p_t\big(\mathrm{ext}[\mathrm{path}[t]]\big)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{conf}$}] \normalfont the returned confidence: the mean log probability per column along the chosen path
+  \item[{$T$}] \normalfont the number of columns
+  \item[{$\mathrm{path}[t]$}] \normalfont the state the best path occupies at column t
+  \item[{$\log p_t(\cdot)$}] \normalfont the reader's log probability for that state's label at that column
+\end{description}
+Dividing by the number of columns is what makes the figure comparable between lines. A total would favour short lines simply because fewer negative terms are added, so the mean is the per-column average, with zero meaning perfect certainty and more negative meaning less. The glyph extractor uses it to reject lines whose alignment is not trustworthy enough to cut letters from, which matters because a confidently wrong alignment would poison the library with mislabelled glyphs.
+
+
+\begin{quote}\small\itshape Two guards return nothing rather than a bad answer: a text with no recognisable characters, and a line with fewer columns than characters. The second is a genuine impossibility rather than a difficulty, since every character needs at least one column of its own, so no alignment exists at all.\end{quote}
+
+
+\section{ReadTextScored}\label{fn:recognise:ReadTextScored}
+\begin{lstlisting}[style=sig]
+def ReadTextScored(image, model)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/recognise.py} line 294. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:ctc}.
+
+
+\Q{Purpose}{What this contributes}
+Calls model.Forward and returns the greedy transcript plus mean best-class log probability over every frame. Blank-dominated frames contribute. This score is used to choose page inversion; it is not transcript probability, edit accuracy or a calibrated confidence that the text is correct.
+
+
+\Q{Method}{Current implementation}
+Train from complete line transcripts and recover transcript-constrained character locations for extraction. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def ReadTextScored(image,model):
+    t = TensorFromResized(ResizeLineImageFixed(image))
+    logProbs = model.Forward(t)
+    best = np.max(logProbs[:,0,:],axis=1)
+    return DecodeCtc(logProbs)[0],float(np.mean(best))
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+CTC marginalises valid blank/repeat paths; greedy decoding selects a path cheaply; forced alignment maximises over paths for a supplied known transcript. \cite{graves2006,ctcdistill,torchctc}.
+
+
+\section{ReadText}\label{fn:recognise:ReadText}
+\begin{lstlisting}[style=sig]
+def ReadText(image, model)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/recognise.py} line 301. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:ctc}.
+
+
+\Q{Purpose}{What this contributes}
+Delegates to ReadTextScored and keeps only the string. The result depends on the already-loaded model and complete crop preparation; changing a checkpoint filename does not replace an existing model object.
+
+
+\Q{Method}{Current implementation}
+Train from complete line transcripts and recover transcript-constrained character locations for extraction. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def ReadText(image,model):
+    return ReadTextScored(image,model)[0]
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+CTC marginalises valid blank/repeat paths; greedy decoding selects a path cheaply; forced alignment maximises over paths for a supplied known transcript. \cite{graves2006,ctcdistill,torchctc}.
+
+
+\section*{Stage: Edit distance and evaluation metrics}
+\ReportEq{34}{Pooled character recovery}
+{$A_c=100[1-\sum_i d_i/\sum_i|t_i|]$.}
+{Weight characters rather than equally weighting lines. This differs from
+the clamped per-candidate CharAcc at extreme insertion counts. Case, spaces,
+punctuation and empty-reference handling must remain explicit.}
+{Report evaluation and server scoring.}
+{levenshtein1966,finalreport2026}
+
+
+\section{Method background: Edit distance and evaluation metrics}\label{method:metrics}
+\Q{Purpose}{The role in this system}
+Separate text recovery, writer decisions, geometric agreement and physical accuracy.
+
+
+\Q{Justification}{The reason for this construction}
+Each metric answers a different requirement. Pooled character edits weight characters; writer decisions are binary per line; geometric F measures thresholded point proximity.
+
+
+\Q{Alternatives}{What changes if another method is used}
+Exact-line match is stricter but less diagnostic. WER edits differ from word LCS recall. IoU, Pearson correlation and human judgements are distinct quantities and cannot be relabelled interchangeably.
+
+
+\Q{Library}{Implementation speed and accuracy}
+Edit-distance libraries can accelerate dynamic programming; SciPy spatial trees or distance transforms can compute nearest-point distances. Match normalisation, empty cases, tolerance and aggregation. Faster scoring does not improve handwriting. \cite{levenshtein1966,tanksmetric,nistinterval}.
+
+
+\section{Levenshtein}\label{fn:recognise:Levenshtein}
+\begin{lstlisting}[style=sig]
+def Levenshtein(a, b)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/recognise.py} line 305. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:metrics}.
+
+
+\Q{Purpose}{What this contributes}
+Separate text recovery, writer decisions, geometric agreement and physical accuracy.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{a}] \normalfont one string
+  \item[{b}] \normalfont the other string
+\end{description}
+
+\noindent\textbf{Output.} the smallest number of single-character insertions, deletions and substitutions that turn one string into the other.
+
+
+\Q{Purpose}{What it is for}
+Scoring a reader requires a way to say how wrong an answer is. Counting matching positions does not work, because a single missing letter shifts everything after it and would be scored as if every later letter were also wrong. What is needed is a measure that understands insertion and deletion, and that is the \textbf{edit distance}, or \textbf{Levenshtein distance} \cite{levenshtein1966}: the least number of single-character edits needed to turn one string into the other.
+
+
+\begin{itemize}\setlength\itemsep{0pt}
+  \item \textbf{Insertion:} add a character. \texttt{cat} to \texttt{cart} is one edit.
+  \item \textbf{Deletion:} remove a character. \texttt{cart} to \texttt{cat} is one edit.
+  \item \textbf{Substitution:} replace a character. \texttt{cat} to \texttt{cot} is one edit.
+\end{itemize}
+
+\Q{Method}{The recurrence}
+This is dynamic programming once more. Let the problem be solved for every pair of prefixes: how many edits turn the first i characters of one string into the first j of the other. The answer for a larger pair follows from three smaller ones, because the last edit must be one of the three kinds.
+
+
+\FormulaNote{Find the minimum insertions, deletions and substitutions between transcript prefixes.}{levenshtein1966,tanksmetric,nistinterval}
+\begin{equation}
+D[i,j] \;=\; \min \begin{cases} D[i-1,\,j] + 1 & \text{delete } a_i \\ D[i,\,j-1] + 1 & \text{insert } b_j \\ D[i-1,\,j-1] + \big[\,a_i \neq b_j\,\big] & \text{match or substitute} \end{cases}
+\end{equation}
+\noindent\emph{Source: }\cite{levenshtein1966}
+
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$D[i,j]$}] \normalfont the edit distance between the first i characters of a and the first j characters of b
+  \item[{$a_i,\, b_j$}] \normalfont the i-th and j-th characters of the two strings
+  \item[{$[\,a_i \neq b_j\,]$}] \normalfont 1 when the two characters differ and 0 when they match, so a match is free and a substitution costs one
+  \item[{$\min$}] \normalfont the cheapest of the three ways to arrive
+\end{description}
+The boundary cases are immediate: turning an empty string into a prefix of length j takes j insertions, and the reverse takes i deletions. From there the table fills row by row, and the bottom right corner is the answer for the whole strings.
+
+
+\Q{Method}{Two implementation economies}
+Only the previous row is kept, not the whole table. Each row depends only on the one before it, so storing all of them would use memory proportional to the product of the lengths for no purpose; this version uses memory proportional to the shorter string alone. That is possible because the distance itself is wanted and not the sequence of edits, which would require the full table to backtrack through, exactly as the seam does.
+
+The function also swaps its arguments so the shorter string controls the row length. The distance is symmetric, since every edit has an inverse of the same cost, so swapping cannot change the answer, and it makes the retained row as short as possible.
+
+
+
+\section{CharAcc}\label{fn:recognise:CharAcc}
+\begin{lstlisting}[style=sig]
+def CharAcc(pred, truth)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/recognise.py} line 319. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:metrics}.
+
+
+\Q{Purpose}{What this contributes}
+Separate text recovery, writer decisions, geometric agreement and physical accuracy.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{pred}] \normalfont the predicted text
+  \item[{truth}] \normalfont the correct text
+\end{description}
+
+\noindent\textbf{Output.} the fraction of characters correct, between 0 and 1.
+
+
+\Q{Method}{How it is defined}
+The edit distance counts errors; accuracy expresses them as a proportion of the length of the correct text.
+
+
+\FormulaNote{Normalise edit count by nonempty reference length and clamp the candidate character score.}{levenshtein1966,tanksmetric,nistinterval}
+\begin{equation}
+\mathrm{CharAcc} \;=\; \max\!\left(0,\; 1 - \frac{D(\mathrm{pred},\,\mathrm{truth})}{|\mathrm{truth}|}\right)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{CharAcc}$}] \normalfont the character accuracy
+  \item[{$D$}] \normalfont the edit distance between the two strings
+  \item[{$|\mathrm{truth}|$}] \normalfont the number of characters in the correct text
+  \item[{$\max(0,\,\cdot)$}] \normalfont the floor at zero, explained below
+\end{description}
+
+\Q{Justification}{Why it is divided by the truth length}
+The denominator is the length of the correct text, not of the prediction and not the longer of the two. That choice makes the figure answer "what fraction of what should have been written came out right", which is the question of interest, and it makes the measure comparable across lines of different lengths. Dividing by the prediction length instead would let a system improve its score by predicting less.
+
+
+\Q{Justification}{Why the floor at zero}
+The edit distance can exceed the length of the correct text, when the prediction is much longer than the truth: turning a two-character truth into a fifty-character prediction takes around fifty edits, giving a raw score around $-$24. Negative accuracy is meaningless and, more practically, averaging it across a page would let one runaway line dominate the mean and produce a negative overall accuracy. The floor caps the damage at zero, which is the honest statement that nothing on that line was right.
+
+
+\begin{quote}\small\itshape The empty-truth case is handled separately: an empty prediction scores 1, anything else scores 0. Without it the division would be by zero. This is the right convention, since correctly reading a blank line as blank is a success and reading text off a blank line is a complete failure.\end{quote}
+

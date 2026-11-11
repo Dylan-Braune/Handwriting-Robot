@@ -151,8 +151,16 @@ def LabelComponents(mask):
         return a
 
     prev = []
+    #one scratch row, filled and differenced in place.  np.r_ builds a new
+    #array and reparses its arguments on every one of the thousands of rows
+    #this loop walks; the runs it finds are the same ones
+    buf = np.zeros(W+2,np.int8)
+    dif = np.empty(W+1,np.int8)
+    rows = mask.view(np.int8) if mask.dtype==np.bool_ else mask.astype(np.int8)
     for y in range(H):
-        d = np.diff(np.r_[0,mask[y].view(np.int8),0])   #runs start at 0 to 1, end at 1 to 0
+        buf[1:W+1] = rows[y]
+        np.subtract(buf[1:],buf[:-1],out=dif)   #runs start at 0 to 1, end at 1 to 0
+        d = dif
         cur,k = [],0
         for a,b in zip(np.nonzero(d==1)[0].tolist(),np.nonzero(d==-1)[0].tolist()):
             while k<len(prev) and prev[k][1]<a:
@@ -252,15 +260,52 @@ def Resize(arr,newW,newH,kernel='linear'):
         return a[sy[:,None],sx[None,:]]
     f = a.astype(np.float64)
     if newH!=h:
-        f = np.tensordot(_Weights(h,newH,kernel),f,axes=([1],[0]))
+        f = _Along0(f,h,newH,kernel)
     if newW!=w:
-        f = np.tensordot(f,_Weights(w,newW,kernel).T,axes=([1],[0]))
-        if f.ndim==3:
-            f = np.moveaxis(f,-1,1)   #tensordot left width last, put it back
+        f = np.swapaxes(_Along0(np.swapaxes(f,0,1),w,newW,kernel),0,1)
     if np.issubdtype(a.dtype,np.integer):
         i = np.iinfo(a.dtype)
         return np.clip(np.rint(f),i.min,i.max).astype(a.dtype)
     return f.astype(a.dtype)
+
+#----------------------------------------------------------------------
+#_Taps: the same weights, kept as the few pixels each output draws on
+#a row of _Weights is almost all zeros: an output pixel is a blend of two
+#input pixels, or a handful when shrinking.  holding the indices and the
+#weights instead of the whole matrix turns the resampling from a product
+#against every input pixel into a few weighted reads
+#----------------------------------------------------------------------
+def _Taps(inSize,outSize,kernel):
+    scale = inSize/float(outSize)
+    filterScale = max(1.0,scale)
+    support = (1.0 if kernel=='linear' else 0.5)*filterScale
+    centres = (np.arange(outSize)+0.5)*scale
+    half = int(np.ceil(support))+1
+    cols = np.floor(centres)[:,None]+np.arange(-half,half+1)[None,:]
+    t = (cols+0.5-centres[:,None])/filterScale
+    if kernel=='linear':
+        w = np.where(np.abs(t)<1.0,1.0-np.abs(t),0.0)
+    else:
+        w = np.where(np.abs(t)<=0.5,1.0,0.0)
+    cc = np.clip(cols,0,inSize-1).astype(np.int64)   #a window off the edge folds back on
+    tot = w.sum(axis=1,keepdims=True)
+    w = w/np.where(tot>0,tot,1.0)   #each output pixel's weights sum to one
+    keep = w.any(axis=0)
+    return cc[:,keep],w[:,keep]
+
+
+#---_Along0: resample down the first axis with those taps---
+def _Along0(f,inSize,outSize,kernel):
+    cc,w = _Taps(inSize,outSize,kernel)
+    out = np.zeros((outSize,)+f.shape[1:],np.float64)
+    shape = (-1,)+(1,)*(f.ndim-1)
+    for k in range(cc.shape[1]):
+        wk = w[:,k]
+        nz = wk!=0
+        if nz.any():
+            out[nz] += wk[nz].reshape(shape)*f[cc[nz,k]]
+    return out
+
 
 #---Halve: exact two-to-one box average---
 def Halve(a):
@@ -518,16 +563,18 @@ def LeastCostSeam(cost,step=3):
     back = np.zeros((h,W),np.int8)
     idx = np.arange(h)
     shifts = range(-step,step+1)
+    #the candidates for a column are the previous column read at every
+    #offset in turn, which is one sliding window over a padded copy rather
+    #than one shifted array built per offset
+    n = 2*step+1
+    pen = (0.02*np.abs(np.arange(-step,step+1))).reshape(n,1)   #cost of moving off straight ahead
+    pp = np.empty(h+2*step)
+    st = pp.strides[0]
     for x in range(1,W):
-        p = acc[:,x-1]
-        cand = np.full((len(shifts),h),np.inf)
-        for i,d in enumerate(shifts):
-            if d<0:
-                cand[i,-d:] = p[:d]+0.02*abs(d)   #a small cost for moving off straight ahead
-            elif d>0:
-                cand[i,:-d] = p[d:]+0.02*d
-            else:
-                cand[i] = p
+        pp[:step] = np.inf
+        pp[step:step+h] = acc[:,x-1]
+        pp[step+h:] = np.inf
+        cand = np.lib.stride_tricks.as_strided(pp,shape=(n,h),strides=(st,st))+pen
         j = cand.argmin(0)
         acc[:,x]+=cand[j,idx]
         back[:,x] = j-step
@@ -951,6 +998,41 @@ def _SheetCrop(g):
     return g[yy.min():yy.max()+1,xx.min():xx.max()+1]
 
 #----------------------------------------------------------------------
+#----------------------------------------------------------------------
+#_CropWorkers: how many processes build the line crops
+#each line is cut from the same two arrays and touches no other line, so
+#the crops can be built at the same time.  only where the platform forks,
+#because a forked worker inherits the full-resolution page instead of
+#being sent a copy of it, and only when there are enough lines to pay for
+#starting the workers.  the sequential path is kept and gives the same
+#crops either way
+#----------------------------------------------------------------------
+import os as _os
+
+CROP_WORKERS = int(_os.environ.get("CROP_WORKERS","0"))
+MIN_LINES_FOR_POOL = 6
+_CTX = {}
+
+
+def _CropOne(n):
+    c = _CTX
+    return n,_BuildLineCrop(n,c["own"],c["norm"],c["P"],c["f"],c["H"],c["W"],c["minInk"])
+
+
+def _BuildCrops(L,own,norm,P,f,H,W,minInk):
+    _CTX.update(own=own,norm=norm,P=P,f=f,H=H,W=W,minInk=minInk)
+    nW = CROP_WORKERS if CROP_WORKERS>0 else (_os.cpu_count() or 1)
+    if CROP_WORKERS==1 or L<MIN_LINES_FOR_POOL or not hasattr(_os,"fork"):
+        return [_BuildLineCrop(n,own,norm,P,f,H,W,minInk) for n in range(L)]
+    try:
+        import multiprocessing as mp
+        with mp.get_context("fork").Pool(processes=min(nW,L)) as pool:
+            got = pool.map(_CropOne,range(L),chunksize=1)
+        return [c for _n,c in sorted(got,key=lambda r: r[0])]
+    except Exception:
+        return [_BuildLineCrop(n,own,norm,P,f,H,W,minInk) for n in range(L)]
+
+
 #LineAxisScore: the fraction of rows that are nearly empty, which is high only on the
 #axis the lines of writing run along
 #----------------------------------------------------------------------
@@ -1020,8 +1102,7 @@ def SegmentLines(page,mergeValley=None):
     perLine = np.bincount(own[own>=0],minlength=L)
     minInk = max(60,0.12*np.median(perLine[perLine>0]))
     lines = []
-    for n in range(L):
-        crop = _BuildLineCrop(n,own,norm,P,f,H,W,minInk)
+    for crop in _BuildCrops(L,own,norm,P,f,H,W,minInk):
         if crop is None:
             continue
         crop['order'] = len(lines)

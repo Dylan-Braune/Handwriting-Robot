@@ -1,0 +1,1643 @@
+recognise.py Conv2d [1] same=True
+eath it, and adds the products into one output number. Then it moves along and does it again, covering every position. The result is a new image, one value per position, recording how strongly the pattern in the filter was present there.
+
+
+
+\begin{equation}
+y[o,\,p,\,q] \;=\; b[o] \;+\; \sum_{c=0}^{C-1} \sum_{u=0}^{k_h-1} \sum_{v=0}^{k_w-1} w[o,\,c,\,u,\,v] \cdot x[c,\;p\,s+u,\;q\,s+v]
+\end{equation}
+
+recognise.py Conv2d [2] same=True
+ed in this network, the unpadded alternative would eat twelve pixels off the height, which is a fifth of a 64-pixel crop. Zero is the correct pad value because the input has been arranged so that zero means no ink; see TensorFromResized.
+
+
+
+\begin{equation}
+H_{\mathrm{out}} \;=\; \left\lfloor \frac{H + 2\,\mathrm{pad} - k_h}{s} \right\rfloor + 1
+\end{equation}
+
+recognise.py Conv2d [3] same=True
+ will see becomes one column of a large matrix. The convolution then becomes a single matrix multiplication, because that is exactly what a matrix product computes, a dot product of every row of one matrix with every column of the other.
+
+
+
+\begin{equation}
+Y \;=\; W_{\mathrm{flat}} \, X_{\mathrm{cols}}, \qquad W_{\mathrm{flat}} \in \mathbb{R}^{\,O \times (C k_h k_w)}, \qquad X_{\mathrm{cols}} \in \mathbb{R}^{\,(C k_h k_w) \times (H_{\mathrm{out}} W_{\mathrm{out}})}
+\end{equation}
+
+recognise.py BatchNorm2d [1] same=True
+ich is in the same units as the values themselves. To \textbf{standardise} is to subtract the mean and divide by the standard deviation, which leaves a quantity with mean 0 and standard deviation 1 regardless of what scale it started on.
+
+
+
+\begin{equation}
+\hat{x}[c] \;=\; \frac{x[c] - \mu[c]}{\sqrt{\sigma^{2}[c] + \epsilon}}
+\end{equation}
+
+recognise.py BatchNorm2d [2] same=True
+ including the original one. The point is not that the statistics are fixed at 0 and 1; it is that they are now set by two parameters the network controls directly, instead of emerging from the accumulated behaviour of every layer below.
+
+
+
+\begin{equation}
+y[c] \;=\; \gamma[c] \, \hat{x}[c] \;+\; \beta[c]
+\end{equation}
+
+recognise.py BatchNorm2d [3] same=True
+and an addition at every one of the hundreds of thousands of values in the array. But at inference time all four constants are fixed, so the whole thing is a linear function and can be rearranged into one multiplication and one addition.
+
+
+
+\begin{equation}
+y \;=\; \underbrace{\frac{\gamma}{\sqrt{\sigma^{2}+\epsilon}}}_{\textstyle a} \; x \;+\; \underbrace{\left(\beta - \frac{\gamma\,\mu}{\sqrt{\sigma^{2}+\epsilon}}\right)}_{\textstyle b}
+\end{equation}
+
+recognise.py Relu [1] same=True
+ by the product of the matrices. So a stack of a hundred linear layers computes exactly what a single one could, and depth buys nothing. Something non-linear must sit between them, and that is what an \textbf{activation function} is for.
+
+
+
+\begin{equation}
+\mathrm{ReLU}(x) \;=\; \max(x,\,0) \;=\; \begin{cases} x & x > 0 \\ 0 & x \le 0 \end{cases}
+\end{equation}
+
+recognise.py Sigmoid [1] same=True
+linearity, the sigmoid is used when a number has to be interpreted as a \textbf{proportion}: how much of something to let through, on a scale from none to all. In this file its only use is in the LSTM, whose gates each need exactly that.
+
+
+
+\begin{equation}
+\sigma(x) \;=\; \frac{1}{1 + e^{-x}}
+\end{equation}
+
+recognise.py MaxPool2d [1] same=True
+rinks the spatial size of a feature map by summarising each small window as a single number. With a 2 by 2 window and a stride of 2, the windows do not overlap and the map comes out half as tall and half as wide, a quarter of the values.
+
+
+
+\begin{equation}
+y[c,\,p,\,q] \;=\; \max_{0 \le u,v < k} \; x[c,\; p\,s+u,\; q\,s+v]
+\end{equation}
+
+recognise.py AdaptiveMaxPoolHeight [1] same=True
+imensional feature maps. After it, each column of the image is a single vector of features, and the line is a sequence of such vectors, left to right. That is the form the LSTM and CTC both require, and this is the step that produces it.
+
+
+
+\begin{equation}
+y[c,\,0,\,q] \;=\; \max_{0 \le p < H} \; x[c,\,p,\,q]
+\end{equation}
+
+recognise.py AdaptiveAvgPoolWidth [1] same=True
+roperty of the line as a whole, not of a position along it. So at the end of the namer's backbone the remaining axis is collapsed by averaging, turning a sequence of feature vectors into a single feature vector describing the whole line.
+
+
+
+\begin{equation}
+y[c] \;=\; \frac{1}{N} \sum_{q=0}^{N-1} x[c,\,q]
+\end{equation}
+
+recognise.py Linear [1] same=True
+tput is a weighted sum of every input, plus a constant. Where a convolution looks at a local patch and reuses one filter everywhere, a linear layer looks at the whole input vector and has an independent weight for each input-output pair.
+
+
+
+\begin{equation}
+y[j] \;=\; b[j] \;+\; \sum_{i=0}^{n-1} W[j,\,i] \, x[i]
+\end{equation}
+
+recognise.py LogSoftmax [1] same=True
+ties: they can be negative, and they need not sum to anything in particular. The \textbf{softmax} converts them into probabilities by exponentiating each, which makes them positive, and dividing by the total, which makes them sum to one.
+
+
+
+\begin{equation}
+p_{k} \;=\; \frac{e^{x_{k}}}{\sum_{j} e^{x_{j}}}
+\end{equation}
+
+recognise.py LogSoftmax [2] same=True
+nd all information is lost. This is \textbf{underflow}. Working with logarithms removes it entirely, because the logarithm of a product is the sum of the logarithms, and a sum of a hundred moderate negative numbers is an ordinary number.
+
+
+
+\begin{equation}
+\log\!\Big(\prod_{t} p_{t}\Big) \;=\; \sum_{t} \log p_{t}
+\end{equation}
+
+recognise.py LogSoftmax [3] same=True
+ subtracting a constant from every score, since the constant's exponential cancels between numerator and denominator. Subtracting the largest score makes the biggest exponential exactly 1 and every other smaller, so nothing can overflow.
+
+
+
+\begin{equation}
+\log p_{k} \;=\; (x_{k} - m) \;-\; \log \sum_{j} e^{\,x_{j} - m}, \qquad m \;=\; \max_{j} x_{j}
+\end{equation}
+
+recognise.py LstmForward [1] same=True
+a vector of numbers between 0 and 1 produced by a sigmoid. A gate value of 0 blocks completely, 1 lets everything through, and anything between is a proportion. A fourth quantity, the candidate, supplies the contents that might be added.
+
+
+
+\begin{equation}
+\begin{aligned}i_t &= \sigma\big(W_{ii} x_t + b_{ii} + W_{hi} h_{t-1} + b_{hi}\big) \\[2pt]f_t &= \sigma\big(W_{if} x_t + b_{if} + W_{hf} h_{t-1} + b_{hf}\big) \\[2pt]g_t &= \tanh\big(W_{ig} x_t + b_{ig} + W_{hg} h_{t-1} + b_{hg}\big) \\[2pt]o_t &= \sigma\big(W_{io} x_t + b_{io} + W_{ho} h_{t-1} + b_{ho}\big)\end{aligned}
+\end{equation}
+
+recognise.py LstmForward [2] same=True
+ output, plus biases. They differ only in their weights and in the squashing applied. That uniformity is what lets the implementation compute all four in a single matrix multiplication, described below.
+
+
+\paragraph{The two state updates}
+
+
+\begin{equation}
+c_t \;=\; f_t \odot c_{t-1} \;+\; i_t \odot g_t, \qquad h_t \;=\; o_t \odot \tanh(c_t)
+\end{equation}
+
+recognise.py BidirectionalLstmForward [1] same=True
+he two side by side. Each position then carries a summary of everything to its left, from the forward pass, and a summary of everything to its right, from the backward pass. The two have independent weights throughout; nothing is shared.
+
+
+
+\begin{equation}
+y_t \;=\; \big[\; \overrightarrow{h}_t \;;\; \overleftarrow{h}_t \;\big]
+\end{equation}
+
+recognise.py TensorFromResized [1] same=True
+bit integers from 0 to 255 with white high. A network expects floating-point numbers of a particular scale and sign convention. This function performs that conversion, in three steps that must match exactly what was done during training.
+
+
+
+\begin{equation}
+x \;=\; \frac{\big(1 - \frac{g}{255}\big) - 0.5}{0.5} \;=\; 1 - \frac{2g}{255}
+\end{equation}
+
+recognise.py StrokeNormalize [1] same=True
+eleton is dilated by a square of the chosen width, which draws a stroke of that width centred on the centre line, and the result is inverted back to dark ink on white paper.
+\end{itemize}
+
+\paragraph{Why the pen width is forced to be odd}
+
+
+\begin{equation}
+k \;=\; 2\left\lfloor \frac{w}{2} \right\rfloor + 1, \qquad w \;=\; \mathrm{clip}\big(\mathrm{round}(0.14 \cdot \mathrm{xh}),\; 2,\; 9\big)
+\end{equation}
+
+recognise.py DecodeCtc [1] same=True
+g is high. The alignment is never specified; it is whatever the network finds convenient.
+
+
+\paragraph{The collapsing rule}
+The rule has two steps, applied in this order: merge runs of the same character into one, then delete the blanks.
+
+
+
+\begin{equation}
+\mathcal{B}\big(\pi\big) \;:\; \text{merge repeats, then remove blanks}
+\end{equation}
+
+recognise.py DecodeCtc [2] same=True
+he same string. That is expensive. This function instead takes the most probable \emph{path}, by picking the best-scoring character independently in each column, and collapses that. This is \textbf{greedy} or \textbf{best-path} decoding.
+
+
+
+\begin{equation}
+\pi^{*}_t \;=\; \arg\max_{k} \; \log p_t(k), \qquad \hat{y} \;=\; \mathcal{B}\big(\pi^{*}\big)
+\end{equation}
+
+recognise.py CtcForcedAlign [1] same=True
+on rather than the reader's own output.
+
+
+\paragraph{The extended label sequence}
+The first step is to write out the target as a sequence that allows blanks everywhere they are permitted: a blank, then each character followed by a blank.
+
+
+
+\begin{equation}
+\mathrm{ext} \;=\; \big(\,\varnothing,\; \ell_1,\; \varnothing,\; \ell_2,\; \varnothing,\; \dots,\; \ell_n,\; \varnothing \,\big), \qquad S \;=\; 2n+1
+\end{equation}
+
+recognise.py CtcForcedAlign [2] same=True
+ again, with the same structure as the seam, but maximising a log probability instead of minimising a cost. Working in log space means the multiplication of probabilities along a path becomes an addition, as established under LogSoftmax.
+
+
+
+\begin{equation}
+\alpha[t,s] \;=\; \log p_t\big(\mathrm{ext}[s]\big) \;+\; \max\Big( \alpha[t-1,s],\; \alpha[t-1,s-1],\; \alpha[t-1,s-2] \Big)
+\end{equation}
+
+recognise.py CtcForcedAlign [3] same=True
+r occupied gets no span, which happens when the aligner had to pass through it in a single column shared with its neighbours; the caller handles that by skipping the glyph rather than cutting a zero-width one.
+
+
+\paragraph{The confidence}
+
+
+\begin{equation}
+\mathrm{conf} \;=\; \frac{1}{T} \sum_{t=1}^{T} \log p_t\big(\mathrm{ext}[\mathrm{path}[t]]\big)
+\end{equation}
+
+recognise.py FrameXToPixel [1] same=True
+ position.
+
+
+\paragraph{Reversing the fit}
+The fit applied one scale factor to both axes, chosen as the largest that lets the crop fit inside the canvas, which is the smaller of the two ratios. Undoing it is division by that same factor.
+
+
+
+\begin{equation}
+s \;=\; \min\!\left( \frac{H_{\mathrm{in}}}{H_{\mathrm{orig}}},\; \frac{W_{\mathrm{in}}}{W_{\mathrm{raw}}} \right), \qquad x_{\mathrm{orig}} \;=\; \mathrm{clip}\!\left( \frac{x_{\mathrm{canvas}}}{s},\; 0,\; W_{\mathrm{raw}} \right)
+\end{equation}
+
+recognise.py Levenshtein [1] same=True
+olved for every pair of prefixes: how many edits turn the first i characters of one string into the first j of the other. The answer for a larger pair follows from three smaller ones, because the last edit must be one of the three kinds.
+
+
+
+\begin{equation}
+D[i,j] \;=\; \min \begin{cases} D[i-1,\,j] + 1 & \text{delete } a_i \\ D[i,\,j-1] + 1 & \text{insert } b_j \\ D[i-1,\,j-1] + \big[\,a_i \neq b_j\,\big] & \text{match or substitute} \end{cases}
+\end{equation}
+
+recognise.py CharAcc [1] same=True
+\end{description}
+
+\noindent\textbf{Output.} the fraction of characters correct, between 0 and 1.
+
+
+\paragraph{How it is defined}
+The edit distance counts errors; accuracy expresses them as a proportion of the length of the correct text.
+
+
+
+\begin{equation}
+\mathrm{CharAcc} \;=\; \max\!\left(0,\; 1 - \frac{D(\mathrm{pred},\,\mathrm{truth})}{|\mathrm{truth}|}\right)
+\end{equation}
+
+reproduce.py GantryConfig [1] same=False
+This is the one piece of real reasoning in the record. Steps per millimetre is the number that converts a distance into motor steps, and it could simply be stated. It is instead computed from the parts the machine is actually built from.
+
+
+
+\begin{equation}
+\mathrm{stepsPerMm} \;=\; \frac{\mathrm{fullStepsPerRev} \times \mathrm{microstepping}}{\mathrm{mmPerRev}}
+\end{equation}
+
+reproduce.py ToMachine [1] same=False
+o put it, with its origin at the start of the first line. The bed has its own coordinates, its own extent, and a chosen place where text should begin. This function moves the drawing from one to the other.
+
+
+\paragraph{The transformation}
+
+
+\begin{equation}
+x_{\mathrm{bed}} \;=\; \mathrm{originX} + (x - x_0)\,k, \qquad y_{\mathrm{bed}} \;=\; \mathrm{originY} - (y_1 - y)\,k
+\end{equation}
+
+reproduce.py ToMachine [2] same=False
+ origin and later rows descend from there. Anchoring at the top rather than the bottom is what makes a one-line and a ten-line page both start in the same place, which is how a person writes on a sheet.
+
+
+\paragraph{Why it never enlarges}
+
+
+\begin{equation}
+k \;=\; \min\!\left(1,\; \frac{\mathrm{availW}}{w},\; \frac{\mathrm{availH}}{h}\right)
+\end{equation}
+
+reproduce.py OptimizeStrokeOrder [1] same=True
+ into a corner and leave a long move to the last stroke, but within one line of text the strokes are nearly collinear and the greedy route is close to the best.
+\end{itemize}
+
+\paragraph{Why the band tolerance is derived from the strokes}
+
+
+\begin{equation}
+\mathrm{rowTol} \;=\; \max\big(1,\; 1.2 \cdot \mathrm{median}\{\,h_s\,\}\big)
+\end{equation}
+
+reproduce.py SetPenLines [1] same=False
+produce nothing. Placing that check inside the function rather than at each call site is what guarantees it, since a single forgotten check at one call site would invert the rest of the file.
+
+
+\paragraph{Why a dwell follows every toggle}
+
+
+\begin{equation}
+\mathrm{dwell} \;=\; \frac{\mathrm{penPulseMs} + \mathrm{penSettleMs}}{1000}
+\end{equation}
+
+reproduce.py AxisDirValue [1] same=True
+olves}
+Turns a wanted direction into a pin level, accounting for the axis's wiring inversion. It is the single place the inversion is applied, so every motion routine inherits it by asking for a direction by meaning rather than by level.
+
+
+
+\begin{equation}
+\mathrm{forward} \;=\; \mathrm{positive} \;\oplus\; \mathrm{invert}
+\end{equation}
+
+reproduce.py BresenhamMove [1] same=False
+at is not exact.
+
+
+\paragraph{Bresenham's method}
+The algorithm \cite{bresenham1965} keeps a running error term instead, representing how far the minor axis has fallen behind the ideal line, and uses only integer addition and comparison.
+
+
+
+\begin{equation}
+\begin{aligned} e &\leftarrow \lfloor a_x / 2 \rfloor \\[3pt] \text{for each major step:} \quad e &\leftarrow e - a_y \\[3pt] \text{if } e < 0: \quad &\text{step the minor axis, } \; e \leftarrow e + a_x \end{aligned}
+\end{equation}
+
+reproduce.py Calibrate [1] same=True
+e point of homing: the carriage is at a switch, the switch is at a known place, so the count can be set rather than guessed. Every subsequent absolute move is measured from it.
+
+
+\paragraph{The usable area and the switch-travel allowance}
+
+
+\begin{equation}
+\mathrm{usable} \;=\; \mathrm{switchTravel} \;-\; 2 \cdot \mathrm{edgeTolerance}
+\end{equation}
+
+reproduce.py _GcodeLinearMove [1] same=False
+re at that rate.
+
+
+\paragraph{What it does}
+Converts a destination in millimetres into a step displacement, works out the step timing from the feed rate, and hands the move to the Bresenham stepper.
+
+
+\paragraph{The coordinate conversion}
+
+
+\begin{equation}
+\mathrm{targetSteps}_X \;=\; \mathrm{round}\big( (x_{\mathrm{mm}} + \mathrm{edgeTol}) \cdot \mathrm{stepsPerMm}_X \big)
+\end{equation}
+
+reproduce.py _GcodeLinearMove [2] same=False
+. If one applied the offset and the other did not, every move would be out by the margin, and because both appear in the same function the error would be a constant five-millimetre shift of the whole drawing.
+
+
+\paragraph{The step timing}
+
+
+\begin{equation}
+t_{\mathrm{step}} \;=\; \max\!\left( \frac{d_{\mathrm{mm}} / v}{\mathrm{majorSteps}},\; t_{\min} \right), \qquad v = \max\!\left(\frac{\mathrm{feed}}{60},\; v_{\min}\right)
+\end{equation}
+
+reproduce.py _GcodeArcMove [1] same=False
+t; for anticlockwise, increased until above. Without that, an arc crossing the point where the angle measurement wraps would be traced the long way round, sweeping nearly a full circle instead of a small arc.
+
+
+\paragraph{How many chords}
+
+
+\begin{equation}
+n \;=\; \max\!\left(4,\; \left\lfloor \frac{|\Delta\theta| \cdot r}{0.4} \right\rfloor \right)
+\end{equation}
+
+segment.py Integral [1] same=True
+ however long the stretch.
+
+A summed-area table, also called an integral image, is the same idea in two dimensions \cite{crow1984}. Each cell holds the total of the whole rectangle from the top-left corner of the image down to that cell:
+
+
+
+\begin{equation}
+\mathrm{ii}[y,x] \;=\; \sum_{i<y}\;\sum_{j<x} \mathrm{img}[i,j]
+\end{equation}
+
+segment.py Integral [2] same=True
+ corner, which removes the band above. Subtract the value at the bottom-left corner, which removes the band to the left. Those two subtractions each removed the top-left block, so it has been taken away twice and must be added back once:
+
+
+
+\begin{equation}
+S \;=\; \mathrm{ii}[y_2,x_2] \;-\; \mathrm{ii}[y_1,x_2]\;-\; \mathrm{ii}[y_2,x_1] \;+\; \mathrm{ii}[y_1,x_1]
+\end{equation}
+
+segment.py BoxMean [1] same=True
+ rather than against one number for the whole page, is what allows ink to be found correctly on a page that is brighter on one side, or has a shadow across it, or was photographed with the flash off to one side.
+
+
+\paragraph{How it works}
+
+
+\begin{equation}
+\mathrm{mean}[y,x] \;=\; \frac{\mathrm{BoxSum}[y,x]}{\mathrm{BoxCount}[y,x]}
+\end{equation}
+
+segment.py Dilate [1] same=True
+ould be turned on if any true pixel lies within its window. Asking whether any pixel in a region is true is the same as asking whether the number of true pixels is greater than zero, and that number is exactly what a window sum provides:
+
+
+
+\begin{equation}
+\mathrm{dilate}(m)[p] \;=\; \big(\,\mathrm{BoxSum}(m,r,r)[p] \;>\; 0 \,\big)
+\end{equation}
+
+segment.py Erode [1] same=True
+ works, and the one subtlety}
+Where dilation asks whether \emph{any} pixel in the window is set, erosion asks whether \emph{every} one is. That is true exactly when the number of set pixels equals the number of pixels the window covered:
+
+
+
+\begin{equation}
+\mathrm{erode}(m)[p] \;=\; \big(\,\mathrm{BoxSum}(m,r,r)[p]\;=\;\mathrm{BoxCount}(r,r)[p]\,\big)
+\end{equation}
+
+segment.py Close [1] same=True
+stroke fatter. The erosion then removes a layer of the same thickness, which restores the original width. What does not come back is the gap: once two sides have been joined, eroding the joined shape thins it but does not split it again.
+
+
+
+\begin{equation}
+\mathrm{close}(m,r) \;=\; \mathrm{erode}\big(\mathrm{dilate}(m,r),\, r\big)
+\end{equation}
+
+segment.py LongRunMask [1] same=True
+lative sums. The first finds where a long run begins. A stretch of n pixels starting at position i is entirely set exactly when the number of set pixels inside it equals n, and that count comes from one subtraction of the cumulative sum:
+
+
+
+\begin{equation}
+\mathrm{starts}[i] \;=\; \big(\, c[i+n] - c[i] \;=\; n \,\big)
+\end{equation}
+
+segment.py LongRunMask [2] same=True
+begin somewhere between n-1 places before j and j itself, and it cannot begin so late that it would run off the end. A second cumulative sum over the starts then answers "is there any start in that range" with another single subtraction:
+
+
+
+\begin{equation}
+\mathrm{covered}[j] \;=\; \big(\, cs[h_j+1] - cs[l_j] > 0 \,\big), \qquad l_j = \max(0,\,j-n+1),\; h_j = \min(j,\,L-n)
+\end{equation}
+
+segment.py Otsu [1] same=True
+nto something measurable. Any candidate threshold divides the pixels into two groups. A good threshold is one where the two groups are as different from each other as possible, which is measured by the variance \emph{between} the groups:
+
+
+
+\begin{equation}
+\sigma_B^2(t) \;=\; \omega_B(t)\,\omega_F(t)\,\big[\mu_B(t) - \mu_F(t)\big]^2
+\end{equation}
+
+segment.py Otsu [2] same=True
+How all 256 candidates are evaluated at once}
+Writing p for the histogram scaled so that its entries sum to one, the two quantities needed are themselves cumulative sums, and the criterion rearranges into a form built entirely from them:
+
+
+
+\begin{equation}
+\sigma_B^2(t)\;=\;\frac{\big[\mu_T\,\omega(t)-\mu(t)\big]^2}{\omega(t)\,\big(1-\omega(t)\big)}
+\end{equation}
+
+segment.py CoreBand [1] same=True
+tain ink from nearly every letter on the line; rows that contain only ascenders or only descenders contain ink from the few letters that have them. The band is therefore the set of rows whose ink count is a large fraction of the maximum:
+
+
+
+\begin{equation}
+\mathcal{B} \;=\; \Big\{\, y \;:\; \mathrm{prof}[y] \;\ge\; 0.45\,\max_{y'} \mathrm{prof}[y'] \,\Big\}
+\end{equation}
+
+segment.py Skeletonize [1] same=False
+l method of Zhang and Suen \cite{zhangsuen1984}.
+
+
+\paragraph{The two quantities the test is built from}
+Consider a pixel and its eight neighbours, numbered clockwise from the one directly above. Two numbers describe the local situation:
+
+
+
+\begin{equation}
+B(P_1) \;=\; \sum_{k=2}^{9} P_k, \qquad A(P_1) \;=\; \#\big\{\, k \;:\; P_k = 0 \;\wedge\; P_{k+1} = 1 \,\big\}
+\end{equation}
+
+segment.py Skeletonize [2] same=False
+eting it leaves that arc joined. If the answer is two or more, the pixel sits between separate groups and is the only thing holding them together, so deleting it would break the stroke apart or open a hole.
+
+
+\paragraph{The deletion test}
+
+
+\begin{equation}
+\begin{aligned}&\text{(a)}\quad && 2 \le B(P_1) \le 6 \\&\text{(b)}\quad && A(P_1) = 1 \\&\text{(c)}\quad && P_2 \cdot P_4 \cdot P_6 = 0 \\&\text{(d)}\quad && P_4 \cdot P_6 \cdot P_8 = 0\end{aligned}
+\end{equation}
+
+segment.py _Weights [1] same=True
+f code to get right: reducing a page for the skew search, fitting a crop to the networks' fixed input size, and rendering glyphs. This function builds the weights and \texttt{Resize} applies them.
+
+
+\paragraph{Where an output sample sits}
+
+
+\begin{equation}
+s \;=\; \frac{\mathrm{inSize}}{\mathrm{outSize}}, \qquad c_i \;=\; \big(i + \tfrac{1}{2}\big)\, s
+\end{equation}
+
+segment.py _Weights [2] same=True
+resized more than once.
+
+
+\paragraph{Why the filter widens when shrinking}
+This is the part that is easy to get wrong and expensive to get wrong. The width of the filter is multiplied by the scale factor whenever that factor exceeds one:
+
+
+
+\begin{equation}
+f \;=\; \max(1,\, s), \qquad \mathrm{support} \;=\; k_0\, f
+\end{equation}
+
+segment.py _Weights [3] same=True
+ion means every input sample contributes to some output sample \cite{wolberg1990}. The page reduction used by the skew search shrinks by exactly such a factor, so this is load bearing rather than theoretical.
+
+
+\paragraph{The two kernels}
+
+
+\begin{equation}
+w_{\mathrm{linear}}(t) = \begin{cases} 1 - |t| & |t| < 1 \\ 0 & \text{otherwise} \end{cases} \qquad\quad w_{\mathrm{box}}(t) = \begin{cases} 1 & |t| \le \tfrac{1}{2} \\ 0 & \text{otherwise} \end{cases}
+\end{equation}
+
+segment.py FitFixedCanvas [1] same=True
+use the number of weights in their final layers depends on it. Every crop therefore has to be brought to that size before it can be read, and how that is done affects the answer.
+
+
+\paragraph{The central rule: one scale factor, never two}
+
+
+\begin{equation}
+\sigma \;=\; \min\!\left(\frac{H_{\mathrm{canvas}}}{H_{\mathrm{crop}}},\; \frac{W_{\mathrm{canvas}}}{W_{\mathrm{crop}}}\right)
+\end{equation}
+
+segment.py _Sample [1] same=True
+ls is their weighted average, each weight given by how close the position is to that pixel. It is computed one axis at a time: blend the upper pair horizontally, blend the lower pair horizontally, then blend those two results vertically.
+
+
+
+\begin{equation}
+\begin{aligned}v_{\mathrm{top}} &= p_{00}\,(1-f_x) + p_{01}\, f_x \\[2pt]v_{\mathrm{bot}} &= p_{10}\,(1-f_x) + p_{11}\, f_x \\[2pt]v &= v_{\mathrm{top}}\,(1-f_y) + v_{\mathrm{bot}}\, f_y\end{aligned}
+\end{equation}
+
+segment.py Rotate [1] same=True
+me from in the input and read that position. Every output pixel is then visited exactly once, so holes are impossible \cite{wolberg1990}. The source position is fractional, which is what \texttt{\_Sample} is for.
+
+
+\paragraph{The mapping}
+
+
+\begin{equation}
+\begin{aligned}s_x &= \cos\theta\,(x - c_x) + \sin\theta\,(y - c_y) + c_x \\s_y &= -\sin\theta\,(x - c_x) + \cos\theta\,(y - c_y) + c_y\end{aligned}
+\end{equation}
+
+segment.py Warp [1] same=True
+raphy, additionally allows parallel lines to converge, so a rectangle becomes any four-sided shape. That is what happens when a flat page is photographed obliquely: the far edge appears shorter than the near one.
+
+
+\paragraph{The mapping}
+
+
+\begin{equation}
+s_x = \frac{a\,x + b\,y + c}{g\,x + h\,y + 1}, \qquad s_y = \frac{d\,x + e\,y + f}{g\,x + h\,y + 1}
+\end{equation}
+
+segment.py Blur [1] same=True
+isible edge at the limit of the window, because the weights reach zero gradually.
+
+
+\paragraph{Why it is done as two one-dimensional passes}
+A two-dimensional gaussian factorises exactly into the product of two one-dimensional gaussians:
+
+
+
+\begin{equation}
+G(x,y) \;=\; \exp\!\left(-\frac{x^2 + y^2}{2\sigma^2}\right) \;=\; \exp\!\left(-\frac{x^2}{2\sigma^2}\right)\cdot\exp\!\left(-\frac{y^2}{2\sigma^2}\right) \;=\; G(x)\,G(y)
+\end{equation}
+
+segment.py Elastic [1] same=True
+tead. For handwriting the most useful variation is the one that looks like the same person writing the same words again, which is not a rotation or a scaling but a local bending of the strokes \cite{simard2003}.
+
+
+\paragraph{How it works}
+
+
+\begin{equation}
+\begin{aligned}d_x &= \alpha \cdot \mathrm{Blur}\big(U(-1,1),\, \sigma\big) \\d_y &= \alpha \cdot \mathrm{Blur}\big(U(-1,1),\, \sigma\big) \\\mathrm{out}[y,x] &= \mathrm{sample}\big(\mathrm{img},\; y + d_y[y,x],\; x + d_x[y,x]\big)\end{aligned}
+\end{equation}
+
+segment.py DrawPolyline [1] same=True
+xel near the segment is tested by how far it lies from the nearest point \emph{on} the segment, and filled if that distance is within half the pen width. The nearest point is found by projecting onto the segment and clamping to its ends:
+
+
+
+\begin{equation}
+t \;=\; \mathrm{clamp}\!\left(\frac{(P-A)\cdot(B-A)}{\lVert B-A \rVert^2},\, 0,\, 1\right), \qquad Q \;=\; A + t\,(B-A)
+\end{equation}
+
+segment.py EstimateSlantDeg [1] same=True
+ angles and score the result}
+For each candidate angle the ink is sheared by that amount and the ink in each column is counted, giving a column profile. The angle whose profile is the \emph{sharpest} is the answer \cite{vinciarelli2001}:
+
+
+
+\begin{equation}
+x' \;=\; x - \tan(\theta)\,(y - \bar{y}), \qquad \mathrm{score}(\theta) \;=\; \sum_j \mathrm{prof}_\theta[j]^2
+\end{equation}
+
+segment.py PolylineLength [1] same=True
+ts main use is rejecting fragments: a piece cut out of a line of writing that contains far less pen path than a real example of that letter is a fragment rather than a letter, whatever its bounding box suggests.
+
+
+\paragraph{How it works}
+
+
+\begin{equation}
+L \;=\; \sum_{i} \sqrt{(x_{i+1}-x_i)^2 + (y_{i+1}-y_i)^2}
+\end{equation}
+
+segment.py InkMask [1] same=True
+rue reflectance of the page at that point multiplied by the local illumination, then dividing by an estimate of that local illumination cancels it and leaves the reflectance, which is the thing that actually distinguishes pen from paper.
+
+
+
+\begin{equation}
+\mathrm{ratio}[y,x] \;=\; \frac{\mathrm{gray}[y,x]}{\max\big(\mathrm{BoxMean}(\mathrm{gray},r)[y,x],\,1\big)}
+\end{equation}
+
+segment.py InkMask [2] same=True
+ declared paper. That failure has a name in this file: it is the "solid ink" case handled below. The radius must also be small enough that the illumination really is roughly constant across the window, which rules out making it enormous.
+
+
+
+\begin{equation}
+r \;=\; \mathrm{clip}\!\left(\mathrm{round}\!\left(\frac{H}{41}\right),\; 8,\; 40\right)
+\end{equation}
+
+segment.py InkMask [3] same=True
+se the illumination that was smearing them together has been removed: a tall narrow spike just below 1 for the paper, and a much smaller spread of low values for the ink. A pixel is ink when its ratio is below the threshold Otsu returns.
+
+
+
+\begin{equation}
+\mathrm{mask}[y,x] \;=\; \big[\;\mathrm{ratio}[y,x] \;<\; t_{\mathrm{Otsu}}(\mathrm{ratio})\;\big]
+\end{equation}
+
+segment.py InkMask [4] same=True
+ A pen stroke is thin, so any small window placed on the page contains some paper even when it contains a stroke; a window inside a binder shadow contains nothing but shadow. Averaging the mask itself measures exactly this fill fraction.
+
+
+
+\begin{equation}
+\mathrm{solid}[y,x] \;=\; \big[\;\mathrm{BoxMean}(\mathrm{mask},\,4)[y,x] \;>\; 0.999\;\big]
+\end{equation}
+
+segment.py PaperRegionMask [1] same=True
+rather than taking every fourth pixel, because taking every fourth pixel can land entirely in a gap and miss a thin dark rim completely, whereas an average over the block always registers it.
+
+
+\paragraph{Step two: find the dark surround}
+
+
+\begin{equation}
+\mathrm{dark}[y,x] \;=\; \big[\; c[y,x] \;<\; 0.45 \cdot \mathrm{median}(c) \;\big]
+\end{equation}
+
+segment.py PaperRegionMask [2] same=True
+t blocks. It returns an array in which every bright block carries an integer label, with all the blocks of one connected region sharing a label. Counting how many blocks carry each label and taking the largest count identifies the sheet.
+
+
+
+\begin{equation}
+\ell^{*} \;=\; \arg\max_{\ell \ge 1} \;\big|\{\,(y,x) : \mathrm{lab}[y,x] = \ell \,\}\big|
+\end{equation}
+
+segment.py LinePitch [1] same=False
+file is}
+A \textbf{projection profile} is what results from collapsing a 2-D image onto one axis by summing along the other. The horizontal projection profile used here has one number per image row: how many ink pixels that row contains.
+
+
+
+\begin{equation}
+\mathrm{prof}[y] \;=\; \sum_{x} \mathrm{mask}[y,x]
+\end{equation}
+
+segment.py LinePitch [2] same=False
+ster of small ones. Counting those as separate lines would be wrong. Smoothing replaces each value with a weighted average of its neighbours, which merges the cluster into one broad peak while leaving the large gaps between lines intact.
+
+
+
+\begin{equation}
+k[j] \;=\; \exp\!\left(-\tfrac{1}{2}\left(\frac{j}{\sigma}\right)^{\!2}\right),\qquad j = -12,\,\dots,\,12, \qquad \sigma = 4
+\end{equation}
+
+segment.py LinePitch [3] same=False
+on of the Gaussian in rows; it sets how far the smoothing reaches, here 4 rows
+  \item[{$\exp(\cdot)$}] \normalfont the exponential function, which here makes the weight fall away smoothly and symmetrically with distance
+\end{description}
+
+
+\begin{equation}
+\mathrm{sm}[y] \;=\; \frac{\sum_{j} k[j]\,\mathrm{prof}[y+j]}{\sum_{j} k[j]}
+\end{equation}
+
+segment.py LinePitch [4] same=False
+ere "at least as large", a flat-topped peak several rows wide would report every one of those rows as a separate peak.
+
+With two or more peaks found, the pitch is the \textbf{median} of the differences between consecutive peak positions.
+
+
+
+\begin{equation}
+P \;=\; \mathrm{median}\big(\,y_{i+1} - y_{i} \;:\; i = 1,\dots,m-1 \,\big)
+\end{equation}
+
+segment.py LinePitch [5] same=False
+of attack is needed. \textbf{Autocorrelation} asks how much a signal resembles a shifted copy of itself. For a repeating signal the resemblance is high when the shift equals the period of the repetition, because peaks then land on peaks.
+
+
+
+\begin{equation}
+\mathrm{ac}[\tau] \;=\; \sum_{y} a[y]\,a[y+\tau],\qquad a[y] \;=\; \mathrm{sm}[y] - \overline{\mathrm{sm}}
+\end{equation}
+
+segment.py LinePitch [6] same=False
+ of the letters themselves. Connected components are labelled, each one's height is measured, pieces smaller than 8 pixels in area or under 3 pixels tall are discarded as noise, and the median height of what remains is multiplied by 2.2.
+
+
+
+\begin{equation}
+P \;=\; \max\big(15,\; \mathrm{round}\,(2.2 \cdot \mathrm{median}(h))\big)
+\end{equation}
+
+segment.py LeastCostSeam [1] same=True
+s differ by no more than \texttt{step} rows, which is what makes the result a connected curve rather than a scatter of disconnected points. Its cost is the sum of the cost array along it. The task is to find the seam of least total cost.
+
+
+
+\begin{equation}
+\mathrm{Cost}(y_1,\dots,y_W) \;=\; \sum_{x=1}^{W} \mathrm{cost}[y_x,\,x], \qquad |y_{x+1} - y_{x}| \le \mathrm{step}
+\end{equation}
+
+segment.py LeastCostSeam [2] same=True
+e reached, the best arrival is just the smallest of those costs plus the price of the new pixel. Nothing about the earlier part of the route matters beyond its total cost. So the whole column can be solved from the previous column alone.
+
+
+
+\begin{equation}
+A[y,x] \;=\; \mathrm{cost}[y,x] \;+\; \min_{|d| \le \mathrm{step}} \Big( A[y-d,\,x-1] \;+\; \lambda\,|d| \Big)
+\end{equation}
+
+segment.py SkewScore [1] same=True
+ing rewards large values disproportionately: doubling a count quadruples its contribution. So for a fixed total, the sum of squares is largest when the total is piled into as few entries as possible and smallest when it is spread evenly.
+
+
+
+\begin{equation}
+S(\theta) \;=\; \sum_{k} \mathrm{prof}_{\theta}[k]^{2}
+\end{equation}
+
+segment.py SkewScore [2] same=True
+en angles tried. That is unnecessary. Only the row index each ink pixel would land in is needed, not an image, and that index follows from one line of trigonometry. The standard rotation of a point about a centre gives the rotated row as
+
+
+
+\begin{equation}
+k \;=\; \mathrm{round}\Big( (y - c_y)\cos\theta \;-\; (x - c_x)\sin\theta \;+\; c_y \Big)
+\end{equation}
+
+segment.py Deskew [1] same=False
+rid search}, which means simply trying every candidate in a fixed list and keeping the best. The candidates run from $-$4 to +4 degrees in steps of 0.5, which is seventeen angles, each scored by SkewScore, with the highest score winning.
+
+
+
+\begin{equation}
+\theta^{*} \;=\; \arg\max_{\theta \,\in\, \{-4,\,-3.5,\,\dots,\,4\}} \; S(\theta)
+\end{equation}
+
+segment.py RemovePrintedStructure [1] same=True
+e longest horizontal stroke in ordinary writing is the crossbar of a t or the join between two letters, neither more than a fraction of a line's height. So a threshold on run length, expressed in line pitches, separates the two reliably.
+
+
+
+\begin{equation}
+\mathrm{flat} \;=\; \mathrm{LongRunMask}\big(\mathrm{mask},\; \lfloor 1.25\,P \rfloor,\;\text{horizontal}\big)
+\end{equation}
+
+segment.py DropArtifactPieces [1] same=False
+shape, so the ratio image is brought in. The mean ratio over a piece measures how dark it is relative to the paper around it, and the comparison is made against the same Otsu threshold that decided what counted as ink in the first place.
+
+
+
+\begin{equation}
+\overline{\mathrm{ratio}}_{\ell} \;=\; \frac{1}{A_{\ell}}\sum_{(y,x)\,\in\,\ell} \mathrm{ratio}[y,x], \qquad \mathrm{faint}_{\ell} \;=\; \big[\;\overline{\mathrm{ratio}}_{\ell} > 0.85\,t_{\mathrm{Otsu}}\;\big]
+\end{equation}
+
+segment.py DropArtifactPieces [2] same=False
+ the curl at the top or bottom of the sheet. It is identified by five properties at once: it touches the top or bottom edge, it is no taller than 1.2 pitches, it is wider than a pitch, it is faint, and its \textbf{density} is below 0.15.
+
+
+
+\begin{equation}
+\mathrm{density}_{\ell} \;=\; \frac{A_{\ell}}{(\,\mathrm{bot}_{\ell}-\mathrm{top}_{\ell}+1\,)\cdot(\,\mathrm{xmax}_{\ell}-\mathrm{xmin}_{\ell}+1\,)}
+\end{equation}
+
+segment.py LineCentres [1] same=False
+ort the candidates by strength, take the strongest, discard anything too close to it, and repeat with what is left. It is called \textbf{greedy} because it commits to the best available option at each step and never revisits that choice.
+
+
+
+\begin{equation}
+\mathcal{C} \;\leftarrow\; \mathcal{C} \cup \{c\} \quad\text{if}\quad |c - o| \;\ge\; 0.6\,P \;\;\text{ for every } o \in \mathcal{C}
+\end{equation}
+
+segment.py SeamCuts [1] same=True
+r one, because at some column they overlap vertically.
+
+
+\paragraph{The cost landscape}
+A seam needs a cost array, and the art of this function is in building one whose cheapest path is the cut that a person would draw. It has two terms.
+
+
+
+\begin{equation}
+\mathrm{cost}[y,x] \;=\; 4.0 \cdot m[y,x] \;+\; 0.012 \left(\frac{y - y_{\mathrm{mid}}}{g}\right)^{\!2}
+\end{equation}
+
+segment.py _BandOwnership [1] same=True
+loop}
+Each cut is a curve, so asking which band a pixel is in means asking how many of the curves lie above it. That count is the band index directly, and it can be formed by adding up one comparison per cut over the whole image at once.
+
+
+
+\begin{equation}
+\mathrm{region}[y,x] \;=\; \sum_{n=1}^{L-1} \big[\; y \;\ge\; \mathrm{cuts}_{n}[x] \;\big]
+\end{equation}
+
+segment.py _BandOwnership [2] same=True
+iece-by-band table}
+Both problems need the same information: how much of each piece lies in each band. That is a two-dimensional table, pieces against bands, and it is built with one tally by packing the two indices into a single number.
+
+
+
+\begin{equation}
+\mathrm{key} \;=\; \ell \cdot L \;+\; b, \qquad \mathrm{cnt}[\ell,\,b] \;=\; \big|\{\,(y,x) : \mathrm{lab}[y,x]=\ell,\; \mathrm{region}[y,x]=b \,\}\big|
+\end{equation}
+
+segment.py _BandOwnership [3] same=True
+ragraph{Assigning each piece: the topmost substantial band}
+A band holds a \textbf{substantial} share of a piece when it contains at least 15 percent of that piece's ink. Among the substantial bands, the piece is assigned to the topmost.
+
+
+
+\begin{equation}
+\mathrm{major}(\ell) \;=\; \min\;\big\{\, b \;:\; \mathrm{cnt}[\ell,b] \;\ge\; 0.15 \textstyle\sum_{b'} \mathrm{cnt}[\ell,b'] \,\big\}
+\end{equation}
+
+segment.py _FragmentsToNeighbour [1] same=True
+low.
+
+
+\paragraph{How the test is made}
+For each band in turn, the ink currently owned by that band is labelled into connected pieces, and for each piece the number of its pixels lying within 0.28 pitches of the band's centre is counted.
+
+
+
+\begin{equation}
+\mathrm{inband}(c) \;=\; \big|\{\,(y,x) \in c \;:\; |y - \mathrm{centre}_{n}| \;\le\; 0.28\,P \,\}\big|
+\end{equation}
+
+segment.py _BuildLineCrop [1] same=True
+rey values still span whatever range the photograph happened to produce, and the recogniser was trained on images with ink near black and paper near white. A \textbf{contrast stretch} maps the observed range onto the full range linearly.
+
+
+
+\begin{equation}
+\mathrm{linear}[y,x] \;=\; \mathrm{clip}\!\left(\big(\mathrm{region}[y,x] - b\big)\cdot\frac{255}{\max(w - b,\,1)},\; 0,\; 255\right)
+\end{equation}
+
+segment.py _BuildLineCrop [2] same=True
+tretch alone leaves faint strokes faint, because a stroke at 70 percent of the way from ink to paper maps to 70 percent of the way from black to white. A \textbf{gamma correction} applies a power to the darkness, which bends the mapping.
+
+
+
+\begin{equation}
+d'[y,x] \;=\; \Big(\,d[y,x]\,\Big)^{\gamma}, \qquad d[y,x] \;=\; \frac{255 - \mathrm{linear}[y,x]}{255}, \qquad \gamma = 0.55
+\end{equation}
+
+segment.py SegmentLines [1] same=False
+sion that matters.
+
+
+\paragraph{Why the ink threshold adapts to the page}
+The minimum ink a band must own before it is accepted as a line is computed from the page itself: 12 percent of the median ink per band, with a floor of 60 pixels.
+
+
+
+\begin{equation}
+\mathrm{minInk} \;=\; \max\big(60,\; 0.12 \cdot \mathrm{median}\{\, I_n \,:\, I_n > 0 \,\}\big)
+\end{equation}
+
+style.py _Dir [1] same=True
+esolution is far too coarse to decide whether two strokes continue smoothly. Measuring from a point four steps back gives a chord over several pixels, whose angle is continuous and which averages out the staircase the pixel grid imposes.
+
+
+
+\begin{equation}
+\mathbf{d} \;=\; \frac{\mathbf{p}_{\mathrm{end}} - \mathbf{p}_{\mathrm{end}-n}}{\big\|\,\mathbf{p}_{\mathrm{end}} - \mathbf{p}_{\mathrm{end}-n}\,\big\|}
+\end{equation}
+
+style.py _JoinAtJunctions [1] same=True
+r is direction. If one path arrives at a junction heading one way and another leaves heading the same way, they were one stroke. If the second leaves at a sharp angle, the junction is a real corner or a crossing of two different strokes.
+
+
+
+\begin{equation}
+\cos\theta \;=\; -\,\mathbf{d}_i \cdot \mathbf{d}_j, \qquad \theta \;=\; \arccos\big(\mathrm{clip}(\cos\theta,\,-1,\,1)\big)
+\end{equation}
+
+style.py SimplifyPolyline [1] same=True
+oints if no point on it strays far from that line. So measure the furthest stray; if it is within tolerance, the whole path becomes two points, and if not, the path is split at the furthest point and each half is simplified the same way.
+
+
+
+\begin{equation}
+d_k \;=\; \frac{\big|\,(x_b-x_a)(y_k-y_a) - (y_b-y_a)(x_k-x_a)\,\big|}{\sqrt{(x_b-x_a)^2 + (y_b-y_a)^2}}
+\end{equation}
+
+style.py ExtractLineGlyphs [1] same=False
+o put boundaries anywhere in particular. Cutting exactly there often cuts through the thick part of a letter. So the boundary is moved to the best nearby column, where best is defined by a cost that encodes what an honest cut looks like.
+
+
+
+\begin{equation}
+\mathrm{cutCost}[x] \;=\; \mathrm{thin}[x] \;+\; 1.15 \cdot \mathrm{topAbove}[x]
+\end{equation}
+
+style.py ExtractLineGlyphs [2] same=False
+umn.
+
+
+\paragraph{Step three: snapping, with a pull toward the original}
+Within a search radius of half an x-height either side, the column of least cost is chosen, with a small penalty added for distance from the aligner's own boundary.
+
+
+
+\begin{equation}
+x^{*} \;=\; \arg\min_{|x - x_0| \le R} \Big( \mathrm{cutCost}[x] \;+\; 0.6 \cdot \frac{|x - x_0|}{R} \Big)
+\end{equation}
+
+style.py ExtractLineGlyphs [3] same=False
+e right extent, and it will be drawn as a mark rather than omitted.
+
+
+\paragraph{Step seven: normalising into the stored frame}
+Each surviving path is simplified and then converted into the stored convention, in one expression per point.
+
+
+
+\begin{equation}
+y_n \;=\; \frac{y_{\mathrm{base}} - y}{\mathrm{xh}}, \qquad x_n \;=\; \frac{x - x_{\mathrm{left}}}{\mathrm{xh}} \;-\; \tan(\mathrm{slant}) \cdot y_n
+\end{equation}
+
+style.py _ClassOk [1] same=True
+ove the x-height band in all of them, because otherwise it would not be an l. A test on reach is therefore almost free of false rejections while catching a large class of bad cuts, which is why it runs first.
+
+
+\paragraph{The three tests}
+
+
+\begin{equation}
+\begin{aligned}\text{x-only:} \quad & \mathrm{top} \le 1.42 \;\text{ and }\; \mathrm{bot} \ge -0.42 \\[2pt]\text{ascender:} \quad & \mathrm{top} \ge 1.25 \\[2pt]\text{descender:} \quad & \mathrm{bot} \le -0.20\end{aligned}
+\end{equation}
+
+style.py _ShapeGrid [1] same=True
+me descriptor. Size is already tested separately by the width and height gates, so there is nothing lost by removing it here, and a great deal gained: the descriptor then responds to shape alone.
+
+
+\paragraph{Step three: count, then damp}
+
+
+\begin{equation}
+G[i,j] \;=\; \sqrt{\,\big|\{\,\text{points falling in cell } (i,j)\,\}\big|\,}
+\end{equation}
+
+style.py _ShapeGrid [2] same=True
+te to the similarity instead of being lost. This is the same reasoning that puts tolerance into any grid-based descriptor, and without it the measure would be far too brittle to be useful.
+
+
+\paragraph{Step five: normalise to unit length}
+
+
+\begin{equation}
+\mathbf{v} \;=\; \frac{\mathbf{g}}{\|\mathbf{g}\|}, \qquad \|\mathbf{g}\| \;=\; \sqrt{\textstyle\sum_{k} g_k^2}
+\end{equation}
+
+style.py BuildLetterPrior [1] same=False
+istinction is the difference between using the pool as a quality check and using it as a source, and only the first is legitimate for a system whose purpose is to reproduce an individual's hand.
+
+
+\paragraph{Why the median across writers}
+
+
+\begin{equation}
+\mathbf{p}_c \;=\; \frac{\mathbf{m}_c}{\|\mathbf{m}_c\|}, \qquad \mathbf{m}_c[k] \;=\; \mathrm{median}\big\{\, \mathbf{v}^{(1)}[k],\, \dots,\, \mathbf{v}^{(N)}[k] \,\big\}
+\end{equation}
+
+style.py _PriorScore [1] same=True
+t it measures}
+How far this glyph's shape sits from the cross-writer idea of its letter. It is the quantity stored on each glyph as \texttt{priorD}, and synthesis later uses it to judge how far a writer's own stored shape can be trusted.
+
+
+
+\begin{equation}
+D \;=\; 1 \;-\; \mathbf{v} \cdot \mathbf{p}_c
+\end{equation}
+
+style.py _ConsensusFilter [1] same=True
+s pulled by the outliers. Instead the \textbf{medoid} is used: the member of the set whose total distance to all the others is least. It is an actual glyph, and it is the multidimensional analogue of the median, with the same robustness.
+
+
+
+\begin{equation}
+m \;=\; \arg\min_{i} \sum_{j} \big\| \mathbf{v}^{(i)} - \mathbf{v}^{(j)} \big\|_{1}, \qquad \big\|\mathbf{a} - \mathbf{b}\big\|_{1} \;=\; \sum_{k} \big| a_k - b_k \big|
+\end{equation}
+
+style.py _ResampleN [1] same=True
+uted, giving for each original point how far along the path it sits. That turns the path into a function of distance, and the new points are then read off at n equally spaced distances by linear interpolation between the original points.
+
+
+
+\begin{equation}
+s_i \;=\; \sum_{j<i} \big\| \mathbf{p}_{j+1} - \mathbf{p}_{j} \big\|, \qquad t_k \;=\; \frac{k}{n-1}\, s_{\mathrm{last}}, \qquad k = 0, \dots, n-1
+\end{equation}
+
+style.py _DenoisedPrototype [1] same=True
+h variant is shifted along x to whichever offset, among nine candidates spanning plus and minus 0.22 x-heights, brings it closest to the current median, and the median is then recomputed from the shifted variants. That is repeated twice.
+
+
+
+\begin{equation}
+\delta^{*}_c \;=\; \arg\min_{\delta} \; \frac{1}{N} \sum_{k=1}^{N} \Big\| \big(\mathbf{c}_k + \delta\,\hat{\mathbf{x}}\big) - \mathbf{m}_k \Big\|
+\end{equation}
+
+style.py SmoothStroke [1] same=True
+t with its neighbours by index, and if the points are unevenly spaced then that averaging reaches different distances in different places, smoothing the sparse parts far more than the dense ones.
+
+
+\paragraph{Step two: the smoothing pass}
+
+
+\begin{equation}
+q'_k \;=\; 0.25\,q_{k-1} \;+\; 0.5\,q_k \;+\; 0.25\,q_{k+1}
+\end{equation}
+
+style.py BuildAuthorProfile [1] same=False
+es. That trade-off between resembling the writer and being readable is the central tension of the whole project, and having both forms available is what lets synthesis navigate it.
+
+
+\paragraph{When the prototype is promoted to a variant}
+
+
+\begin{equation}
+\mathrm{promote} \;\Longleftrightarrow\; D_{\mathrm{proto}} < D_{\mathrm{raw}} - 0.02 \;\;\text{ and }\;\; D_{\mathrm{proto}} < 0.32
+\end{equation}
+
+style.py BuildAuthorProfile [2] same=False
+d the boundary.
+  \item \textbf{letterAdvance,} the median advance per character, which preserves this writer's own letter spacing per letter rather than one global figure.
+\end{itemize}
+
+\paragraph{Why connectedness is measured this way}
+
+
+\begin{equation}
+\mathrm{connectedness} \;=\; \frac{\big|\{\text{adjacent in-word pairs with ink crossing the cut}\}\big|}{\big|\{\text{adjacent in-word pairs}\}\big|}
+\end{equation}
+
+synthesise.py _BaselineGlyph [1] same=True
+ whose own ascenders reach 2.4 looks short, and in a hand that reaches only 1.4 it towers over its neighbours. The letterform itself is generic; its proportions should not be.
+
+
+\paragraph{Why only the zones outside the band are rescaled}
+
+
+\begin{equation}
+y' \;=\; \begin{cases} 1 + (y-1)\,\max\!\big(0.35,\, \tfrac{\mathrm{asc}-1}{0.75}\big) & y > 1 \\[4pt] y \cdot \max\!\big(0.35,\, \tfrac{|\mathrm{desc}|}{0.55}\big) & y < 0 \\[4pt] y & 0 \le y \le 1 \end{cases}
+\end{equation}
+
+synthesise.py _SwapProb [1] same=True
+ from what the letter should look like and how much the library as a whole is trusted, it returns the chance that the writer's own shape is set aside in favour of a clean one.
+
+
+\paragraph{The four cases, and the order they are tested in}
+
+
+\begin{equation}
+P_{\mathrm{swap}} \;=\; \begin{cases} 1 & d \ge 0.55 \\[3pt] 1 & \mathrm{lam} \ge 0.85 \\[3pt] 0 & \mathrm{lam} \le 0.001 \\[3pt] 0.06\,\mathrm{lam} & d \le 0.12 \\[3pt] \mathrm{clip}\big(\mathrm{lam}\,(0.55 + 0.9\,b),\,0,\,1\big) & \text{otherwise} \end{cases}
+\end{equation}
+
+synthesise.py _SwapProb [2] same=True
+ly then is lam 0 tested, which keeps every shape that survived the first test: this is what makes lam 0 mean "faithful reproduction, defects and all" rather than "no filtering whatever".
+
+
+\paragraph{The interpolation in the middle range}
+
+
+\begin{equation}
+b \;=\; \mathrm{clip}\!\left( \frac{d - 0.12}{0.55 - 0.12},\; 0,\; 1 \right)
+\end{equation}
+
+synthesise.py AutoLegibility [1] same=True
+ setting for that writer, from 0 to 1.
+
+
+\paragraph{What it is for}
+Derives the legibility setting from the profile instead of requiring it to be chosen. The question it answers is: how far can this writer's extracted library be trusted?
+
+
+
+\begin{equation}
+\mathrm{lam} \;=\; \mathrm{clip}\!\left( \frac{\mathrm{median}\{d_g\} - 0.24}{0.32 - 0.24},\; 0,\; 1\right)
+\end{equation}
+
+synthesise.py _CoreGlyph [1] same=False
+nted according to the writer's connectedness, scaled to their reach. This is a real loss of fidelity and is accepted only because the alternative is drawing a shape that is not a letter.
+
+
+\paragraph{Why the advance is taken as a maximum}
+
+
+\begin{equation}
+\mathrm{adv} \;=\; \max\big(\,\mathrm{adv}_{\mathrm{stored}},\;\; \mathrm{lead} + \mathrm{width} + 0.04 \,\big)
+\end{equation}
+
+synthesise.py _GlyphSource [1] same=False
+ is still a stored cut and can still be a bad one.
+
+
+\paragraph{How a variant is chosen: weighted sampling}
+The candidates are ranked by prior distance, cut to the eligible few, and one is drawn with probability proportional to a weight.
+
+
+
+\begin{equation}
+w_i \;=\; \frac{1}{1 + 1.4\,i} \;\cdot\; \exp\!\left(-\left(\frac{\Delta y_i}{0.45}\right)^{\!2}\right)
+\end{equation}
+
+synthesise.py _Jitter [1] same=True
+l letterforms are. Real writing never repeats a letter exactly, so a small random variation per glyph is not a flaw introduced into the output; it is a property of handwriting that must be put back.
+
+
+\paragraph{The three transformations}
+
+
+\begin{equation}
+\begin{pmatrix} x' \\ y' \end{pmatrix} \;=\; \begin{pmatrix} \cos\theta & -\sin\theta \\ \sin\theta & \cos\theta \end{pmatrix} \begin{pmatrix} s_x x \\ s_y y \end{pmatrix} \;+\; \begin{pmatrix} \delta_x \\ \delta_y \end{pmatrix}
+\end{equation}
+
+synthesise.py StyleCalibration [1] same=False
+ring a quantity measured one way with the same quantity measured another way would confound the measurement methods with the thing being measured; comparing like with like isolates the real discrepancy.
+
+
+\paragraph{The three corrections}
+
+
+\begin{equation}
+\begin{aligned} \Delta_{\mathrm{shear}} &\mathrel{+}= \tan(\mathrm{slant}_{\mathrm{ref}}) - \tan(\mathrm{slant}_{\mathrm{got}}) \\[3pt] k_{\mathrm{asc}} &\mathrel{\ast}= \frac{\mathrm{asc}_{\mathrm{ref}} - 1}{\mathrm{asc}_{\mathrm{got}} - 1} \\[3pt] k_{\mathrm{desc}} &\mathrel{\ast}= \frac{\mathrm{desc}_{\mathrm{ref}}}{\mathrm{desc}_{\mathrm{got}}} \end{aligned}
+\end{equation}
+
+synthesise.py _ApplyCal [1] same=True
+pressing only the parts of a glyph outside the x-height band. The shear correction is not applied here; it was folded into the slant before layout began, since shear depends on the final height and must be applied as the glyph is placed.
+
+
+
+\begin{equation}
+y' \;=\; \begin{cases} 1 + (y-1)\,k_{\mathrm{asc}} & y > 1 \\[3pt] y \cdot k_{\mathrm{desc}} & y < 0 \\[3pt] y & 0 \le y \le 1 \end{cases}
+\end{equation}
+
+synthesise.py _Ligature [1] same=False
+rawn between whatever pair of letters it actually placed. That is the advantage of trimming: the join suits the pair at hand rather than the pair the glyph was cut beside.
+
+
+\paragraph{The shape: a dip whose depth depends on the distance}
+
+
+\begin{equation}
+\mathrm{sag} \;=\; \min\big(0.11\,\mathrm{xh},\; 0.16\,|\Delta x|\big) \;+\; \varepsilon, \qquad \varepsilon \sim \mathcal{N}(0,\, 0.015\,\mathrm{xh})
+\end{equation}
+
+synthesise.py SynthesizeText [1] same=False
+ph's body and push right if needed.
+  \item \textbf{Identify the body stroke} and decide whether to join to the previous letter.
+  \item \textbf{Advance} the pen position.
+\end{itemize}
+
+\paragraph{Why the slant cap depends on legibility}
+
+
+\begin{equation}
+\mathrm{cap}_{\mathrm{author}} \;=\; 45 \;-\; 19 \cdot \mathrm{clip}(\mathrm{lam},\,0,\,1)
+\end{equation}
+
+synthesise.py SynthesizeText [2] same=False
+e lean exactly for the writers whose output most needs the help, while leaving a clean upright-ish hand free to keep its full measured slant. The anchor glyphs are capped harder again, at 22 or 30 degrees.
+
+
+\paragraph{The baseline drift}
+
+
+\begin{equation}
+v_{t} \;=\; 0.85\,v_{t-1} \;+\; \eta_t, \qquad \mathrm{drift}_t \;=\; \mathrm{clip}\big(\mathrm{drift}_{t-1} + v_t,\; -0.25,\; 0.25\big)
+\end{equation}
+
+synthesise.py _Draw [1] same=True
+ng the networks what they see. So the rasteriser is not a display convenience; it is part of the optimisation loop, and how faithfully it imitates a photograph determines whether the scores mean anything.
+
+
+\paragraph{The coordinate flip}
+
+
+\begin{equation}
+x_{\mathrm{px}} \;=\; (x - x_0 + \mathrm{pad}) \cdot \mathrm{ppm}, \qquad y_{\mathrm{px}} \;=\; (y_1 - y + \mathrm{pad}) \cdot \mathrm{ppm}
+\end{equation}
+
+synthesise.py _WeakChars [1] same=True
+and forced alignment provides it: it finds where each known character sits in the rendered line, after which the reader's own score for that character over exactly those columns is a direct measure of how legible that character came out.
+
+
+
+\begin{equation}
+s_i \;=\; \frac{1}{t_1 - t_0} \sum_{t=t_0}^{t_1-1} \log p_t\big(c_i\big)
+\end{equation}
+
+synthesise.py SynthesizeJointBestOf [1] same=False
+eneric handwriting. It would score well and would have abandoned the purpose of the project. Adding the namer puts a cost on that, so the search cannot buy readability with fidelity.
+
+
+\paragraph{The harmonic mean, and why not an average}
+
+
+\begin{equation}
+S \;=\; \frac{2\,a\,w}{a + w}
+\end{equation}
+
+train.py Conv2dBackward [1] same=True
+posed, and the gradient with respect to X is W transposed times the output gradient. Both the shapes and the transposes follow from requiring the result to have the same shape as the thing differentiated.
+
+
+\paragraph{The weight gradient}
+
+
+\begin{equation}
+\frac{\partial L}{\partial W} \;=\; \sum_{b} \frac{\partial L}{\partial Y_b} \; X_b^{\mathsf{T}}
+\end{equation}
+
+train.py Conv2dBackward [2] same=True
+in rule adds the contributions. This is the general rule for a shared parameter: wherever one value is used in several places, its gradient is the sum over those places.
+
+
+\paragraph{The input gradient, and the fold back into image shape}
+
+
+\begin{equation}
+\frac{\partial L}{\partial X} \;=\; W^{\mathsf{T}} \, \frac{\partial L}{\partial Y}
+\end{equation}
+
+train.py Conv2dBackward [3] same=True
+below knows nothing of the padding, so the border is discarded. That is correct rather than merely convenient: the padding was constant zeros, not data, so the gradient with respect to it has nowhere to go.
+
+
+\paragraph{The bias gradient}
+
+
+\begin{equation}
+\frac{\partial L}{\partial b_o} \;=\; \sum_{b,p,q} \frac{\partial L}{\partial Y[b,o,p,q]}
+\end{equation}
+
+train.py BatchNorm2dForwardTrain [1] same=True
+m the inference version}
+The inference version, in recognise.py, standardises using statistics stored in the checkpoint. This one standardises using the current batch's own mean and variance, and updates the stored ones as a side effect.
+
+
+
+\begin{equation}
+\mu_c \;=\; \frac{1}{N} \sum_{b,p,q} x[b,c,p,q], \qquad \sigma^2_c \;=\; \frac{1}{N} \sum_{b,p,q} \big(x[b,c,p,q] - \mu_c\big)^2
+\end{equation}
+
+train.py BatchNorm2dForwardTrain [2] same=True
+ated. Measuring it fresh from the current batch tracks those changes immediately, where stored statistics would always describe an earlier state of the network.
+
+
+\paragraph{The running statistics, and why they are an exponential average}
+
+
+\begin{equation}
+\hat{\mu} \;\leftarrow\; (1-m)\,\hat{\mu} \;+\; m\,\mu_c
+\end{equation}
+
+train.py BatchNorm2dForwardTrain [3] same=True
+ng is correct here: early batches were produced by a network whose weights were nearly random, so their statistics do not describe the trained network and should be forgotten.
+
+
+\paragraph{Why the stored variance is the unbiased estimate}
+
+
+\begin{equation}
+\sigma^2_{\mathrm{unbiased}} \;=\; \sigma^2_{\mathrm{biased}} \cdot \frac{N}{N-1}
+\end{equation}
+
+train.py BatchNorm2dBackward [1] same=True
+e input contributed to the variance, and the variance divides every value in the channel.
+\end{itemize}
+Differentiating each path and collecting the terms gives an expression that simplifies considerably, which is the form the code uses.
+
+
+
+\begin{equation}
+\frac{\partial L}{\partial x} \;=\; \frac{1}{N\sigma}\left( N \, \frac{\partial L}{\partial \hat{x}} \;-\; \sum \frac{\partial L}{\partial \hat{x}} \;-\; \hat{x} \sum \left( \frac{\partial L}{\partial \hat{x}} \, \hat{x} \right) \right)
+\end{equation}
+
+train.py BatchNorm2dBackward [2] same=True
+ion does: it makes the network's behaviour independent of the scale and offset of each channel, and the backward pass correspondingly refuses to pass down gradients that would only change those.
+
+
+\paragraph{The scale and shift gradients}
+
+
+\begin{equation}
+\frac{\partial L}{\partial \gamma} \;=\; \sum \frac{\partial L}{\partial y} \, \hat{x}, \qquad \frac{\partial L}{\partial \beta} \;=\; \sum \frac{\partial L}{\partial y}
+\end{equation}
+
+train.py ReluBackward [1] same=True
+ep{1pt}
+  \item[{dout}] \normalfont the gradient with respect to the output
+  \item[{cache}] \normalfont the positivity mask
+\end{description}
+
+\noindent\textbf{Output.} the gradient with respect to the input.
+
+
+\paragraph{The derivative}
+
+
+\begin{equation}
+\frac{\partial L}{\partial x} \;=\; \frac{\partial L}{\partial y} \cdot \begin{cases} 1 & x > 0 \\ 0 & x \le 0 \end{cases}
+\end{equation}
+
+train.py MaxPool2dBackward [1] same=True
+ through unchanged, so its derivative with respect to that element is one and with respect to every other element of the window is zero. The gradient is therefore routed entirely to the winner and the rest of the window receives nothing.
+
+
+
+\begin{equation}
+\frac{\partial L}{\partial x[b,c,i,j]} \;=\; \begin{cases} \dfrac{\partial L}{\partial y[b,c,p,q]} & (i,j) \text{ was the maximum of window } (p,q) \\[6pt] 0 & \text{otherwise} \end{cases}
+\end{equation}
+
+train.py AdaptiveAvgPoolWidthBackward [1] same=True
+malfont the gradient with respect to the pooled output
+  \item[{cache}] \normalfont how many values were averaged
+\end{description}
+
+\noindent\textbf{Output.} the gradient spread evenly back over those values.
+
+
+\paragraph{The derivative}
+
+
+\begin{equation}
+y \;=\; \frac{1}{N}\sum_{k} x_k \quad\Longrightarrow\quad \frac{\partial y}{\partial x_k} \;=\; \frac{1}{N} \quad\text{for every } k
+\end{equation}
+
+train.py LinearBackward [1] same=True
+radient with respect to the output
+  \item[{cache}] \normalfont the input and the weights
+\end{description}
+
+\noindent\textbf{Output.} three gradients: with respect to the input, the weights and the bias.
+
+
+\paragraph{The three gradients}
+
+
+\begin{equation}
+\frac{\partial L}{\partial W} \;=\; \frac{\partial L}{\partial Y}^{\mathsf{T}} X, \qquad \frac{\partial L}{\partial X} \;=\; \frac{\partial L}{\partial Y} \, W, \qquad \frac{\partial L}{\partial b} \;=\; \sum_{\text{rows}} \frac{\partial L}{\partial Y}
+\end{equation}
+
+train.py DropoutForward [1] same=True
+tion of the values at each training step, so no feature can be depended on: it may not be there. The network is forced to spread its evidence across several features, which generalises better.
+
+
+\paragraph{Why the survivors are scaled up}
+
+
+\begin{equation}
+\mathrm{mask} \;=\; \frac{[\,u \ge p\,]}{1 - p}, \qquad u \sim \mathrm{Uniform}(0,1)
+\end{equation}
+
+train.py LstmForwardTrain [1] same=True
+et gate needs the previous cell value and the gradient with respect to the previous cell needs the forget gate. None of it can be recomputed cheaply either, because recomputing the state at step t requires replaying every step before it.
+
+
+
+\begin{equation}
+\mathrm{memory} \;\approx\; T \times B \times \big(\,\mathrm{inputSize} + 6H\,\big)
+\end{equation}
+
+train.py LstmBackward [1] same=True
+ the gradient with respect to the cell state. The hidden gradient is combined with the gradient arriving directly from the layer above, because the hidden state at step t is used twice, as that step's output and as the next step's input.
+
+
+
+\begin{equation}
+\mathrm{d}h_t \;=\; \frac{\partial L}{\partial y_t} \;+\; \mathrm{d}h_{t+1}^{\mathrm{carried}}
+\end{equation}
+
+train.py LstmBackward [2] same=True
+dot$ tanh(c) and c = f $\cdot$ c\_prev + i $\cdot$ g, and everything else follows from differentiating them. Each gate's gradient is the gradient of whatever it multiplied, and then each is passed back through its own squashing function.
+
+
+
+\begin{equation}
+\begin{aligned} \mathrm{d}o &= \mathrm{d}h \odot \tanh(c_t) \\[2pt] \mathrm{d}c &= \mathrm{d}c^{\mathrm{carried}} + \mathrm{d}h \odot o \odot \big(1 - \tanh^2(c_t)\big) \\[2pt] \mathrm{d}f &= \mathrm{d}c \odot c_{t-1} \\[2pt] \mathrm{d}i &= \mathrm{d}c \odot g \\[2pt] \mathrm{d}g &= \mathrm{d}c \odot i \\[2pt] \mathrm{d}c_{t-1} &= \mathrm{d}c \odot f \end{aligned}
+\end{equation}
+
+train.py LogSumExp [1] same=True
+ities are held as logarithms to avoid underflow, as explained under LogSoftmax. But a logarithm turns a \emph{product} into a sum, not a \emph{sum} into anything simple: adding two probabilities held as logarithms requires this function.
+
+
+
+\begin{equation}
+\log(e^a + e^b) \;=\; m + \log\!\big(e^{a-m} + e^{b-m}\big), \qquad m = \max(a,b)
+\end{equation}
+
+train.py CtcLoss [1] same=True
+re the output to a target column by column. Instead CTC \cite{graves2006} defines the probability of the target text as the total probability of \emph{every} alignment of it to the columns, and the loss is the negative logarithm of that.
+
+
+
+\begin{equation}
+L \;=\; -\log P(\mathbf{y} \mid \mathbf{x}) \;=\; -\log \!\!\sum_{\pi \,\in\, \mathcal{B}^{-1}(\mathbf{y})} \prod_{t=1}^{T} p_t\big(\pi_t\big)
+\end{equation}
+
+train.py CtcLoss [2] same=True
+erating them is as impossible as enumerating the seam paths in segment.py, and for the same reason. The remedy is also the same: dynamic programming over a quantity that can be built up column by column.
+
+
+\paragraph{The forward variable}
+
+
+\begin{equation}
+\alpha_t(s) \;=\; \Big(\alpha_{t-1}(s) + \alpha_{t-1}(s-1) + \alpha_{t-1}(s-2)\Big) \cdot p_t\big(\mathrm{ext}[s]\big)
+\end{equation}
+
+train.py CtcLoss [3] same=True
+ght text, and the alignment emerges from training rather than being imposed.
+
+In log space the sum is performed by LogSumExp, applied twice to combine the three terms, which is why that function exists.
+
+
+\paragraph{The backward variable}
+
+
+\begin{equation}
+\beta_t(s) \;=\; \sum_{s' \in \{s,\,s+1,\,s+2\}} \beta_{t+1}(s') \cdot p_{t+1}\big(\mathrm{ext}[s']\big)
+\end{equation}
+
+train.py CtcLoss [4] same=True
+ at the final column, in either of the two states a valid alignment may end in, the last character or the trailing blank, summed. The loss is its negative logarithm.
+
+
+\paragraph{The gradient, and why it takes this remarkably simple form}
+
+
+\begin{equation}
+\frac{\partial L}{\partial z_t(k)} \;=\; p_t(k) \;-\; \frac{1}{P(\mathbf{y}\mid\mathbf{x})} \!\!\sum_{s \,:\, \mathrm{ext}[s] = k} \!\! \alpha_t(s)\,\beta_t(s)
+\end{equation}
+
+train.py CrossEntropyLoss [1] same=True
+ the gradient with respect to the logits.
+
+
+\paragraph{What it is for}
+The loss for the writer namer, which is an ordinary classification: one correct answer per example, and its position is known, so none of the CTC machinery is needed.
+
+
+
+\begin{equation}
+L \;=\; -\frac{1}{B}\sum_{b=1}^{B} \log p_b\big(c_b\big)
+\end{equation}
+
+train.py CrossEntropyLoss [2] same=True
+nd as the probability approaches zero the loss grows without bound. So being confidently wrong is punished far more than being uncertain, which is the behaviour wanted from a classifier that reports confidences.
+
+
+\paragraph{The gradient}
+
+
+\begin{equation}
+\frac{\partial L}{\partial z_b(k)} \;=\; \frac{1}{B}\Big( p_b(k) - [\,k = c_b\,] \Big)
+\end{equation}
+
+train.py RMSprop [1] same=True
+are habitually large is divided by a large number and takes a small step; one with habitually small gradients takes a comparatively large one. The effect is that every weight moves at a comparable rate regardless of its gradient's scale.
+
+
+
+\begin{equation}
+v \;\leftarrow\; \alpha\,v + (1-\alpha)\,g^2, \qquad w \;\leftarrow\; w - \eta\,\frac{g}{\sqrt{v} + \epsilon}
+\end{equation}
+
+train.py AdamW [1] same=True
+ successive gradients cancels the part that fluctuates between batches and keeps the part that is consistent, so the step follows the persistent downhill direction rather than the noise of whichever examples happened to be in this batch.
+
+
+
+\begin{equation}
+\begin{aligned} m &\leftarrow \beta_1 m + (1-\beta_1)\,g \\[2pt] v &\leftarrow \beta_2 v + (1-\beta_2)\,g^2 \\[2pt] \hat{m} &= \frac{m}{1-\beta_1^{\,t}}, \qquad \hat{v} = \frac{v}{1-\beta_2^{\,t}} \\[2pt] w &\leftarrow w - \eta\left(\frac{\hat{m}}{\sqrt{\hat{v}}+\epsilon} + \lambda w\right) \end{aligned}
+\end{equation}
+
+train.py CosineAnnealingLr [1] same=True
+\section{CosineAnnealingLr}
+\begin{lstlisting}[style=sig]
+class CosineAnnealingLr
+\end{lstlisting}
+
+\noindent\textbf{Output.} a scheduler object that eases the learning rate down a cosine curve.
+
+
+\paragraph{The schedule}
+
+
+\begin{equation}
+\eta_t \;=\; \frac{\eta_0}{2}\left(1 + \cos\!\left(\frac{\pi t}{T}\right)\right)
+\end{equation}
+
+train.py ClipGradNorm [1] same=True
+oves the weights so far that everything learned so far is destroyed. Training then has to recover from near-random weights, and hours of work are lost to one batch. This is the \textbf{exploding gradient} problem.
+
+
+\paragraph{The remedy}
+
+
+\begin{equation}
+\|g\| \;=\; \sqrt{\sum_{k} \sum_{i} g_k[i]^2}, \qquad g \;\leftarrow\; g \cdot \min\!\left(1,\; \frac{\tau}{\|g\| + \delta}\right)
+\end{equation}
+
+train.py FindPeaks [1] same=True
+} measures how much a peak stands out from its surroundings, as opposed to how tall it is. It is defined as the peak's height above the higher of the two lowest points reached before the profile rises above the peak again on either side.
+
+
+
+\begin{equation}
+\mathrm{prom}(i) \;=\; \mathrm{sm}[i] \;-\; \max\big(\min_{j \in \mathrm{left}} \mathrm{sm}[j],\; \min_{j \in \mathrm{right}} \mathrm{sm}[j]\big)
+\end{equation}
+
+train.py MyAffine [1] same=True
+ordinates are expressed in \textbf{homogeneous} form, which means appending a 1 to each point so that a translation becomes part of the matrix rather than a separate addition.
+
+
+\paragraph{Why the transformations are composed as matrices}
+
+
+\begin{equation}
+M \;=\; T_{+c} \; R \; S \; T_{-c}
+\end{equation}
+
+train.py FindPerspectiveCoeffs [1] same=True
+ than the near one, so its sides converge. A \textbf{perspective} or \textbf{projective} transformation is the more general map that allows that convergence, and it is what actually happens when a flat page is photographed from an angle.
+
+
+
+\begin{equation}
+x' \;=\; \frac{a x + b y + c}{g x + h y + 1}, \qquad y' \;=\; \frac{d x + e y + f}{g x + h y + 1}
+\end{equation}
+
+train.py InitConv [1] same=True
+ to learn from. If too large, it grows and saturates. With twelve convolutional layers either effect compounds twelve times, so the scale of the initial weights determines whether the network trains at all.
+
+
+\paragraph{He initialisation}
+
+
+\begin{equation}
+w \;\sim\; \mathcal{N}\!\left(0,\; \sqrt{\frac{2}{\mathrm{fanIn}}}\,\right), \qquad \mathrm{fanIn} \;=\; \mathrm{inCh} \times k_h \times k_w
+\end{equation}
+
+train.py InitLinear [1] same=False
+ndom generator
+  \item[{outF}] \normalfont the output size
+  \item[{inF}] \normalfont the input size
+\end{description}
+
+\noindent\textbf{Output.} a pair: the randomly initialised weight matrix and bias.
+
+
+\paragraph{The distribution used}
+
+
+\begin{equation}
+w,\, b \;\sim\; \mathrm{Uniform}\!\left(-\frac{1}{\sqrt{\mathrm{inF}}},\; +\frac{1}{\sqrt{\mathrm{inF}}}\right)
+\end{equation}

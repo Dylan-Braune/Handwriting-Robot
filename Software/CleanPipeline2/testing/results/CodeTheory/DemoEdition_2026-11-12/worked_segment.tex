@@ -1,0 +1,238 @@
+\section{Expanded reasoning: page-to-line segmentation}
+\label{sec:expand-segment}
+\subsection{The measurement model and why normalise lighting}
+The input is a grey image $G(y,x)$, with row $y$ increasing downwards and
+column $x$ increasing rightwards. A pixel is an area sample, not a physical
+point. A useful approximate model is $G=L\,R_s+\eta$: $L$ is slowly varying
+illumination, $R_s$ surface reflectance and $\eta$ sensor/readout noise.
+Paper and ink have different reflectance. The method estimates the local
+paper level $B_r$ and divides by it. If $B_r\simeq L R_{\rm paper}$,
+then $G/B_r\simeq R_s/R_{\rm paper}$ and the multiplicative illumination
+approximately cancels. This algebra is the reason for using a ratio rather
+than a fixed grey threshold; it is not proof that strong shadows or glare
+are removed. Additive glare, saturation, texture and a window mostly filled
+with ink violate the approximation. Sauvola's local mean/variance threshold
+is a published alternative~\cite{sauvola2000}; choosing it would change the
+measurement model and require independent comparison.
+
+\Q{Method}{Window size and edges.}
+A window must be wider than an individual stroke so that it estimates paper
+rather than that stroke, yet narrower than the illumination variation it
+is supposed to track. Too small a window follows and cancels ink; too large
+a window misses local shadows. Edge replication extends the nearest edge
+pixel outside the image. Zero padding would invent black borders. Reflection
+and reduced edge windows are alternatives. The selected radius is an
+implementation setting, not a universal imaging constant.
+
+\subsection{Integral image: four lookups, with an arithmetic example}
+For a zero-padded prefix-sum array define
+\FormulaNote{Purpose in this explanation: Integral image: four lookups, with an arithmetic example}{otsu1979,crow1984,code2026}
+\[
+S(y,x)=\sum_{0\leq i<y}\sum_{0\leq j<x}G(i,j),\qquad S(0,x)=S(y,0)=0.
+\]
+The half-open rectangle $[y_0,y_1)\times[x_0,x_1)$ has sum
+\FormulaNote{Purpose in this explanation: Integral image: four lookups, with an arithmetic example}{otsu1979,crow1984,code2026}
+\[
+Q=S(y_1,x_1)-S(y_0,x_1)-S(y_1,x_0)+S(y_0,x_0).
+\]
+The two strips are subtracted, and the doubly subtracted intersection is
+added back. This is inclusion--exclusion. Crow introduced summed-area tables
+for efficient area aggregation~\cite{crow1984}. Constructing $S$ takes
+$O(HW)$ additions and memory; each subsequent rectangle sum takes constant
+work regardless of radius. The complete image filter still takes $O(HW)$.
+It does not mean the whole operation takes constant time.
+
+For $G=\left[\begin{smallmatrix}1&2&3\\4&5&6\\7&8&9\end{smallmatrix}\right]$,
+the padded $S$ is
+$\left[\begin{smallmatrix}0&0&0&0\\0&1&3&6\\0&5&12&21\\0&12&27&45\end{smallmatrix}\right]$.
+The lower-right $2\times2$ sum is $45-6-12+1=28$, equal to $5+6+8+9$.
+Its mean is $28/4=7$. Rectangle boundaries and padding must use the same
+convention: an off-by-one error changes the area and its denominator.
+Prefix sums should accumulate in a type large enough to avoid overflow.
+
+\subsection{Ratio, ink/paper distinction and Otsu's criterion}
+The report's ratio is $R=G/\max(B_r,1)$, with grey levels on the 0--255
+scale. The floor of 1 is a numerical guard measured in grey-level units;
+it is not a claim that a near-black local background is reliable. For the
+reported example $G=100$, $B_r=161.43$, $R\simeq0.6195<0.80$, so the pixel
+is ink~\cite{finalreport2026}. The brightness ratio is different from an
+\emph{ink-area fraction} $\sum M/(HW)$, which counts classified pixels.
+
+For histogram probabilities $p_i=n_i/N$, split at bin $t$. Set
+\FormulaNote{Purpose in this explanation: Ratio, ink/paper distinction and Otsu's criterion}{otsu1979,crow1984,code2026}
+\[
+\omega_0=\sum_{i\le t}p_i,\quad \omega_1=1-\omega_0,\quad
+\mu_0={\sum_{i\le t}i p_i\over\omega_0},\quad
+\mu_1={\sum_{i>t}i p_i\over\omega_1}.
+\]
+Otsu selects $t$ maximising $\omega_0\omega_1(\mu_0-\mu_1)^2$.
+This is between-class variance; total variance equals within-class plus
+between-class variance, so maximising one minimises the other for a fixed
+histogram~\cite{otsu1979}. Empty classes are excluded. ``Optimal'' here
+means optimal for that histogram objective, not for true character recovery.
+The project bins ratios into 256 bins over 0--1.2, giving bin width
+$1.2/256=0.0046875$. Bin count and range are numerical resolution choices.
+
+Constructed example: four samples at $0.4$ and six at $1.0$ have
+$\omega_0=0.4$, $\omega_1=0.6$, and between-class variance
+$0.4(0.6)(0.4-1)^2=0.0864$. Any threshold strictly between the two levels
+gives the same partition. Thus an Otsu threshold need not be unique.
+On a unimodal almost-blank image it can separate paper noise rather than ink.
+Inspecting the resulting mask remains necessary.
+
+\subsection{Orientation, deskew, run limits and the line-pitch estimate}
+A quarter-turn and a small-angle deskew solve different problems. A 90-degree
+turn changes which image axis follows the lines. A fine rotation corrects a
+small slope. The report requires the nearly-empty-row score to improve by
+a factor 1.35 before accepting the quarter-turn. If scores are $0.20$ and
+$0.28$, the ratio is 1.4 and passes; $0.20$ and $0.25$ do not. The margin
+expresses conservatism when evidence is weak. Neither 1.35 nor this score
+distinguishes upright text from upside-down text in general.
+
+For each trial angle $\theta$, the row projection is
+$p_\theta(y)=\sum_x M_\theta(y,x)$ and the objective is
+$E(\theta)=\sum_y p_\theta(y)^2$~\cite{postl1986}.
+For fixed total ink, concentrating it gives a larger squared sum:
+$(8,0)$ scores 64 whereas $(4,4)$ scores 32. Horizontal rows therefore tend
+to win. The 17-point grid from $-4$ to $4$ degrees in half-degree steps
+is a search range and resolution choice. If the true optimum lies inside
+the grid and the objective is well behaved, nearest-grid angular error is
+at most 0.25 degrees. That does not bound estimation error on curved text.
+Rotating sparse coordinates during the search saves resampling; the chosen
+full grey image must then be rotated and binarised consistently.
+
+The line pitch $P$ is a typical centre-to-centre distance in working-image
+pixels. It is not x-height. Pitch-normalised guards adapt to image scale.
+The report's horizontal and vertical run limits are $1.25P$ and $1.4P$;
+at $P=80$ pixels these are 100 and 112 pixels. Long straight ruling is
+more likely to exceed them than an ordinary stroke. Long underlines and
+vertical letter strokes can nevertheless be removed. These are heuristics,
+and estimating $P$ again after mark removal reduces circular dependence.
+
+For a smoothed row profile, the 6\%-of-maximum candidate floor rejects weak
+peaks. A maximum of 200 implies a candidate floor of 12, in the same units
+as the profile. If one dark line dominates, faint genuine lines may fall
+below the floor. Sorting peaks by strength and suppressing others within
+$0.6P$ avoids treating one tall text body as multiple lines. At $P=80$,
+the separation is 48 pixels. Increasing it merges tightly spaced real lines;
+decreasing it admits duplicate centres. Median peak spacing resists isolated
+bad gaps. Autocorrelation $A(k)=\sum_y p(y)p(y+k)$ instead seeks a repeated
+spacing; strong ruling or harmonics can select the wrong multiple. Component
+heights supply a fallback scale when peak evidence is sparse. None of these
+fallbacks independently verifies the transcript's line count.
+
+\subsection{Seam cost, closing and dynamic programming, fully unpacked}
+The seam is one row $s_x$ for every column $x$, constrained to the corridor
+between neighbouring line centres. For the report's cost
+\FormulaNote{Purpose in this explanation: Seam cost, closing and dynamic programming, fully unpacked}{otsu1979,crow1984,code2026}
+\[
+C(y,x)=4M_c(y,x)+0.012\left({y-y_m\over h_g}\right)^2,
+\]
+$M_c$ is the closed binary mask; $y_m$ is the corridor midpoint and $h_g$
+its half-height. Both terms are dimensionless. The quadratic prior mildly
+favours the gap's middle; the ink term strongly discourages stroke crossings.
+Within $|y-y_m|\le h_g$, the prior is at most 0.012 while one ink pixel
+costs 4. This 333-to-1 local ratio explains priority, not an experimentally
+proved optimum. Total route cost depends on every column, so a long detour
+can outweigh one local penalty.
+
+Closing is dilation followed by erosion with a chosen structuring element.
+A square radius $r$ has side $2r+1$. The report uses
+$r=\max(2,\lfloor0.07P\rfloor)$; $P=80$ gives $r=5$ and side 11.
+It discourages a seam from slipping through tiny holes in a stroke. Too
+large a radius joins neighbouring lines and destroys real passages. The
+maximum here is a \emph{lower bound} of 2 on radius, not a maximum permitted
+radius. The phrase ``max closing radius'' in the supplied list should not be
+read as an upper cap unless a particular implementation adds one.
+
+For allowed vertical changes $d\in\mathcal D$, accumulated cost is
+\FormulaNote{Purpose in this explanation: Seam cost, closing and dynamic programming, fully unpacked}{otsu1979,crow1984,code2026}
+\[
+D(y,x)=C(y,x)+\min_{d\in\mathcal D}
+       [D(y+d,x-1)+0.02|d|].
+\]
+The 0.02 term prices vertical movement and reduces jagged seams. Displacement
+is measured in working-image rows. Restricting $\mathcal D$ constrains slope;
+its exact contents belong to the implementation. Store each minimising
+predecessor, choose the lowest-cost final state, and backtrack. Without the
+predecessors, the minimum cost alone is not a path. This is Bellman's optimal
+substructure principle on an acyclic graph~\cite{bellman1954,seampaperlink}.
+
+Constructed arithmetic, for $\mathcal D=\{-1,0,1\}$: if predecessor costs
+at rows $y-1,y,y+1$ are $0.10,0.16,0.11$, the transition candidates are
+$0.12,0.16,0.13$. A blank pixel with prior 0.003 then has $D=0.123$.
+An ink pixel at that location has $D=4.123$. Greedily choosing the cheapest
+pixel in each column can fail because it ignores a later blocked corridor.
+Dynamic programming compares complete prefixes. Its optimum is global only
+within this corridor, step set and cost function, not over all conceivable
+line separations. With $W$ columns, $H_g$ corridor rows and $q$ transitions,
+time is $O(WH_gq)$; backtracking storage is $O(WH_g)$.
+
+\subsection{Component ownership and the 15\% substantial-band rule}
+Seam bands assign space, not semantic identity. Let $a_{C,n}$ be the ink
+pixels of connected component $C$ inside band $n$. A substantial band obeys
+$a_{C,n}\ge0.15\sum_j a_{C,j}$. With overlaps $(80,15,5)$ and total 100,
+the first two qualify; the third does not. The topmost substantial band is
+a reference owner for eligible corrections, not an instruction to transfer
+the whole component blindly. With threshold 0.15, at most six disjoint bands
+can qualify because seven would require at least 105\% of the component.
+This bound follows from the definition; it does not justify choosing 0.15.
+
+Eight-connectivity includes diagonal neighbours. Run-based labelling stores
+contiguous horizontal ink intervals and unions runs touching the row above,
+including diagonal overlap~\cite{he2008,tarjan1975}. It avoids recursively
+visiting every pixel in Python. Raw components are revisited because closing
+can create artificial connections. Dot-to-stem, ring and residual-fragment
+rules use size/proximity guards to avoid moving a genuine detached feature
+to another line. A dot's meaning cannot be recovered from proximity alone.
+The report's 462 reassigned pixels describe one recorded example; they are
+not 462 verified corrections and not an accuracy percentage.
+
+\subsection{Contrast, darkness exponent and solid-crop rejection}
+Contrast stretching maps chosen dark/light endpoints to a wider output range.
+For darkness $D=1-G/255$ in $[0,1]$, the transformation
+$G'=255(1-D^{0.55})$ strengthens intermediate darkness: $D=0.25$ becomes
+approximately 0.467. Applying the same exponent directly to brightness
+would have a different effect. Always identify which variable is exponentiated.
+The coefficient 0.55 is a project contrast heuristic, not a gamma correction
+derived from a known camera response.
+
+The supplied list also asks about a dark-pixel fraction exceeding 15\% and
+three times the page median. In the inspected \texttt{DropSolidCrops}, this
+applies to whole candidate line crops, not individual pixel rows: darkness
+is grey level below 128, and the median is taken across candidate crops.
+For median
+0.04, the operative threshold is $\max(0.15,0.12)=0.15$; for median 0.08
+it is 0.24. Source comments report 668 crops with densest genuine crop 12.37\%,
+largest genuine-to-page-median ratio 2.18, and one artefact at 37.5\% and
+7.2 times its median. That supplies documented local intent, not independently
+rerun validation or a literature optimum. If every crop would be rejected,
+the inspected function returns the original list. These tests target unusually
+dense artefacts and can also reject heavy handwriting. A factor of three is a relative guard, not a
+three-standard-deviation statistical test. The 15\% in this test has a
+different denominator and purpose from the 15\% ownership test.
+
+\subsection{Complete algorithm, alternatives and verification meaning}
+The conceptual order is: decode greyscale; reduce the working resolution;
+estimate background and ink; choose quarter-turn and fine skew; estimate pitch;
+remove eligible long marks; re-estimate pitch and centres; close a mask for
+seam costs; compute and backtrack boundaries; assign initial bands; refine
+ownership using raw and closed components; crop each line from the grey image;
+exclude neighbouring ink; apply the chosen crop preparation; sort by page order.
+The crop used for classification must preserve the mapping back to the original
+pixels used for glyph extraction.
+
+Straight projection cuts are simpler but cannot bend around ascenders;
+connected-component clustering is natural for print but cursive joins and
+detached dots complicate it; learned segmentation needs labelled boundaries
+and another trained model. Seams offer explicit, inspectable geometry.
+That is a defensible method trade-off, not proof of superiority on every page.
+
+Verification asks whether sums, rotations, DP recurrence and ownership obey
+their definitions. Validation asks whether the resulting lines contain the
+intended handwriting under the photographed conditions. Equal crop counts
+can conceal a missing line and a duplicated line. A useful seam plot shows
+the raw mask, closed mask, cost scale, centre corridor, final path and ownership
+colours. A path in a low-cost valley explains the optimisation; only comparison
+with labelled ink establishes correct separation. No old-segmenter comparison,
+new lighting test or sweep was performed for this edition.

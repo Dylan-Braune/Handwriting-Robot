@@ -1,0 +1,164 @@
+\section{Expanded reasoning: placement, joins, anchors and candidate search}
+\label{sec:expand-synth}
+\subsection{From stored glyph coordinates to new $x,y$ positions}
+For glyph point $(u,v)$, lead $l$, shear $s$, baseline drift $d$, origin
+$(p_x,p_y)$ and physical x-height $H$ in millimetres,
+\FormulaNote{Purpose in this explanation: From stored glyph coordinates to new \$x,y\$ positions}{code2026}
+\[
+x=p_x+H(l+u+sv),\qquad y=p_y+H(v+d).
+\]
+Only $p_x,p_y,H$ carry millimetres; other quantities are dimensionless.
+If $H=4,p_x=10,p_y=20,l=0.1,u=0.5,v=1,s=0.2,d=0.05$, the placed
+point is $(13.2,24.2)$ mm. Setting shear to zero removes slant but does
+not remove writer-specific stroke shape. Setting drift to zero straightens
+the baseline but does not erase advance/word-gap variation.
+
+Character advance moves the placement cursor; it is not necessarily the
+glyph's bounding width. Overhanging strokes may extend beyond the advance.
+Word gap is a separate measurement. Before placing a word, estimate its
+advance sum and compare with remaining line width. If it does not fit, wrap
+and start a new baseline. A word wider than a whole line requires a defined
+overflow policy; wrapping alone cannot make it fit. Image-down coordinates
+and physical-up glyph coordinates require an explicit vertical transformation
+later, rather than silently changing this equation.
+
+The reported line step is $(a_{\rm asc}-a_{\rm desc}+0.85)H$, where a
+descender extent is signed negative. For ascender 1.7, descender $-0.6$,
+$H=4$, the pitch is $3.15(4)=12.6$ mm. The added 0.85 is line clearance
+in x-height units, not the drift persistence that happens to share the same
+number. Source comments give later ruling-specific refinements; they should
+not be retroactively read into every reported physical run.
+
+\subsection{Random variation, slow drift and collision guards}
+Small random translation/rotation/scale perturbations reduce mechanical
+repetition. Their amplitude must remain small enough not to change character
+identity. A fixed pseudorandom seed reproduces the same choices under the
+same algorithm and iteration order; it does not make them naturally human.
+
+The inspected drift update is conceptually
+$v_t=0.85v_{t-1}+\eta_t$ followed by
+$d_t=\operatorname{clip}(d_{t-1}+v_t,-0.25,0.25)$.
+Thus persistence acts on drift \emph{velocity}, not simply on baseline
+position. If noise stopped, velocity retains $0.85^k$ after $k$ glyphs;
+its half-life is $\log(0.5)/\log(0.85)\simeq4.27$ glyphs.
+Position is an integrated, clipped process and does not inherit a simple
+stationary AR(1) variance formula. The $\pm0.25$ limit means $\pm1$ mm
+at $H=4$ mm. Larger persistence produces longer correlated runs; larger
+bounds allow more baseline wander. The precise values are project heuristics.
+
+A $0.05H$ clearance is 0.2 mm at that size. It limits unwanted collisions
+between separate glyph extents; legitimate cursive attachment is a different
+case. Bounds-based clearance can be conservative because two overlapping
+boxes need not contain overlapping strokes. Removing the guard may let
+letters collide; increasing it can create unnatural loose spacing. This is
+an explainable trade-off, not a demonstrated perceptual optimum.
+
+\subsection{Automatic anchoring: piecewise formula and provenance}
+Let $d$ be median stored prior distance, where low means agreement with
+the character reference. The reported automatic anchoring strength is
+\FormulaNote{Purpose in this explanation: Automatic anchoring: piecewise formula and provenance}{code2026}
+\[
+\lambda=\operatorname{clip}\left({d-0.24\over0.32-0.24},0,1\right).
+\]
+It equals zero for $d\le0.24$, rises linearly through 0.5 at $d=0.28$,
+and saturates at one for $d\ge0.32$. The interior slope is 12.5, so a
+0.01 distance change gives 0.125 in $\lambda$ before clipping. These endpoints
+encode a sensitive quality transition; they are project settings, not values
+derived from the cosine-distance definition.
+
+Anchoring strength controls fallback selection policy. It is not necessarily
+the interpolation weight between corresponding vertices of two strokes.
+A writer's medoid, a separately stored prototype, a case-related glyph and a generic anchor
+have different provenance. A generic anchor with the writer's slant applied
+does not become an observed sample of that writer. If the pooled prior is
+missing and the score routine returns a guarded zero, that is an absence of
+evidence, not proof of a perfect glyph. Alternative policies could use
+per-character confidence or a learned quality predictor, requiring labelled
+quality examples and validation.
+
+\subsection{Connectedness suppression, source compatibility and gap limits}
+Measured connectedness can include accidental touching or bad character cuts.
+The report suppresses automatic joins below 0.45. Unlike most exact constants,
+this one has a documented \emph{intent} in source comments: example measured
+values include Dylan 0.195, Owen 0.319 and Yeukita 0.417, described as mostly
+print, versus writer 384 at 0.500 and 551 at 0.557, described as joined.
+The chosen 0.45 lies between the two groups~\cite{code2026}.
+Those comments supply a local rationale, not a newly verified dataset study
+or proof that the threshold transfers to new writers. Rebuilding profiles
+with different extraction can change the measurement even if the nominal
+formula is unchanged.
+
+A gap at most 0.80 x-heights limits a connector to a local relation. With
+$H=4$ mm the limit is 3.2 mm. Joining additionally checks compatible sources,
+eligible body strokes and endpoint geometry, so passing distance alone is
+insufficient. Dots and crossbars should not become entry/exit anchors.
+Height-compatible variants can be weighted more strongly without forcing
+every pair to join. A shallow connector preserves readable body connections;
+long straight spans can introduce false strokes or cross other glyphs.
+The 0.80 limit is a geometric heuristic, not a physiological maximum.
+
+These synthesis joins differ from the G-code writer's 0.6 mm stroke join.
+The former encodes handwriting structure in x-height units; the latter
+avoids a physical pen toggle between sufficiently close path endpoints.
+The second can add a connector even after the first stage has finished.
+Confusing them hides where a visible extra mark originated.
+
+\subsection{Character score $A$, probability $P$ and joint score $J$}
+For intended text $t$ and recognised text $\hat t$,
+$A=\max(0,1-d_{\rm edit}(\hat t,t)/|t|)$ for nonempty $t$.
+$P$ is the requested writer's softmax probability from the chosen classifier.
+The reported combination is
+\FormulaNote{Purpose in this explanation: Character score \$A\$, probability \$P\$ and joint score \$J\$}{code2026}
+\[
+J=\begin{cases}2AP/(A+P),&A+P>0,\\0,&A+P=0.\end{cases}
+\]
+This is the harmonic mean. For positive $A,P$,
+$1/J=\tfrac12(1/A+1/P)$. The smaller quantity therefore has stronger
+influence than under an arithmetic mean. With $A=1,P=0.1$, $J\simeq0.182$
+while the arithmetic mean is 0.55. A zero in either input gives zero.
+This is a project objective joining two differently interpreted scores,
+not a likelihood or a percentage of physically correct handwriting.
+
+For the report's example $A=18/19\simeq0.9474,P=0.58$, $J\simeq0.7195$.
+The displayed 0.72 is rounding. Derivatives
+$\partial J/\partial A=2P^2/(A+P)^2$ and
+$\partial J/\partial P=2A^2/(A+P)^2$ show that when $A$ is large and
+$P$ small, improving $P$ matters more. This algebra explains the preference;
+it does not establish that raw writer probabilities are calibrated or
+commensurate with edit accuracy.
+
+Alternatives include a product, a weighted mean, minimum score, or maximising
+one subject to a threshold on the other. Each encodes different priorities.
+A product penalises two middling values more strongly; a weighted mean can
+hide failure in one term; a hard constraint has a discontinuity. The harmonic
+choice is defensible as a balanced preference, while its exact practical
+benefit remains an empirical question.
+
+\subsection{Full candidate and repair algorithm, with limitations}
+Generate at least one candidate, using seed $s+977k$ for trial $k$;
+render at controlled ink width; recognise its text; obtain writer probability;
+compute $J$; retain the strictly better complete candidate. Stop at the trial
+budget or the configured near-perfect score. The integer 977 spaces seeds
+deterministically. Being prime does not prove statistically independent draws.
+The direct joint function defaults use six tries, three repair rounds and two new
+weak positions per round, with early thresholds 0.99 and 0.995. These are
+search-cost limits and stopping preferences, not character-accuracy targets
+guaranteed on paper.
+
+Repair aligns the known text to find weak positions, strengthens selected
+anchors, regenerates a complete trajectory and rescores it. Commit the
+new anchor assignments only if the complete joint score improves. The
+result's best score is then nondecreasing for deterministic scoring, but
+there is no global-optimum guarantee: regenerated geometry, wrapping and
+writer cues interact. A failed local change does not prove that character
+cannot be improved by another choice. The removed older legibility-only routine had
+different defaults and acceptance bookkeeping; it must not be described as
+the joint algorithm merely because names are similar.
+
+The same reader/classifier selecting candidates cannot provide an independent
+post-selection validation. More trials can exploit model preferences and
+raise $J$ without improving human legibility or physical reproduction.
+The reported diagnostic candidate plots should be read as optimisation
+examples. Photos, held-out read-back or separately specified geometric
+measurements answer different questions. No candidate search, rendering
+inference or physical reproduction was run in preparing these explanations.

@@ -1,0 +1,1373 @@
+\chapter{Glyph extraction and writer profiles}\label{module:style}
+\Q{Evidence}{Current implementation boundary}
+\path{Software/DemoCode/style.py}. Exact file hashes are in the accompanying source manifest. Names, declarations and source locations below come from the captured source, not a runtime import.
+\Q{Purpose}{Input-to-output reading flow}
+Thin and trace labelled line ink; align transcript frames and cut characters; normalise glyph coordinates; reject implausible shapes; select medoids and optional prototypes; assemble the writer profile consumed by synthesis.
+
+
+\input{worked_style}
+\section*{Current function reference}
+\Q{Evidence}{Selected current module settings}
+These are declarations or expressions, not recovered environment values. Source comments do not establish a measured optimum. Larger glyph coordinate tables are designed data in the bundled source.
+\begin{lstlisting}[style=plain]
+MAX_VARIANTS_PER_CHAR = 12
+ALIGN_CONF_PCT = 25
+FRAGMENT_PEN_FRAC = 0.5
+MIN_PEN_ABS = 0.3
+MIN_LONGEST_STROKE = 0.55
+DOT_MIN_AREA = 0.004
+MAX_GLYPH_W = 2.1
+MAX_GLYPH_W_WIDE = 2.9
+_WIDE_CHARS = set('mwMW')
+_BAR_CHARS = set('tfTF')
+BAR_MIN_W = 0.25
+BAR_MAX_W = 2.0
+BAR_FLATNESS = 2.5
+BAR_MIN_HEIGHT = 0.6
+_OFFS = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+_ASCEND = set('bdfhklt') | set('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789')
+_DESCEND = set('gjpqy')
+_XONLY = set('acemnorsuvwxz')
+\end{lstlisting}
+\section*{Stage: Skeleton graph tracing and continuation}
+\section{Method background: Skeleton graph tracing and continuation}\label{method:trace}
+\Q{Purpose}{The role in this system}
+Turn centreline pixels into ordered polylines, then prune stubs and reconnect plausible continuations.
+
+
+\Q{Justification}{The reason for this construction}
+Endpoints, degrees and edge visitation provide explicit topology. Angle tests use opposing endpoint directions to distinguish continuation from a sharp turn.
+
+
+\Q{Alternatives}{What changes if another method is used}
+Contour tracing follows an outline, not this graph. Euler or route optimisation changes traversal, not the original unknown pen order. A learned tracer adds training and ambiguity.
+
+
+\Q{Library}{Implementation speed and accuracy}
+Graph packages could manage connectivity but per-pixel object graphs add overhead. Image libraries can supply skeletons/contours, not guaranteed original pen chronology. The project uses diagonal suppression and project thresholds. \cite{zhangsuen1984,code2026}.
+
+
+\section{TracePolylines}\label{fn:style:TracePolylines}
+\begin{lstlisting}[style=sig]
+def TracePolylines(skel)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/style.py} line 56. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:trace}.
+
+
+\Q{Purpose}{What this contributes}
+The current implementation is the split-at-junction tracer directly; the older alternate through-junction tracer and feature switch are absent. It builds a pixel graph, suppresses redundant diagonal edges when an orthogonal connection exists, visits edges, prunes short chains and rejoins compatible endpoint directions. It estimates a useful drawing order, not the historical pen chronology.
+
+
+\Q{Method}{Current implementation}
+Turn centreline pixels into ordered polylines, then prune stubs and reconnect plausible continuations. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def TracePolylines(skel):
+    pts = set((int(y),int(x)) for y,x in zip(*np.nonzero(skel)))
+    if not pts:
+        return []
+
+    def Nbrs(p):
+        y,x = p
+        out = []
+        for dy,dx in _OFFS:
+            q = (y+dy,x+dx)
+            if q not in pts:
+                continue
+            if dy and dx and ((y+dy,x) in pts or (y,x+dx) in pts):
+                continue
+            out.append(q)
+        return out
+
+    deg = {p: len(Nbrs(p)) for p in pts}
+    usedEdges = set()
+    polylines = []
+
+    def Walk(start,first):
+        chain = [start,first]
+        usedEdges.add((start,first))
+        usedEdges.add((first,start))
+        cur,prev = first,start
+        while deg[cur]==2:
+            nxt = [n for n in Nbrs(cur) if n!=prev]
+            if not nxt:
+                break
+            n = nxt[0]
+            if (cur,n) in usedEdges:
+                break
+            usedEdges.add((cur,n))
+            usedEdges.add((n,cur))
+            chain.append(n)
+            prev,cur = cur,n
+        return chain
+
+    seeds = sorted([p for p in pts if deg[p]!=2]) or sorted(pts)[:1]
+    for p in seeds:
+        for n in Nbrs(p):
+            if (p,n) not in usedEdges:
+                polylines.append(Walk(p,n))
+    covered = {q for ch in polylines for q in ch}
+    for p in sorted(pts-covered):
+        if deg.get(p,0)==2:
+            ns = Nbrs(p)
+            if ns and (p,ns[0]) not in usedEdges:
+                polylines.append(Walk(p,ns[0]))
+
+    chains = [[(float(x),float(y)) for (y,x) in ch] for ch in polylines
+              if len(ch)>=2]
+    chains = _PruneSpurs(chains)
+    return _JoinAtJunctions(chains)
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Endpoints, degrees and edge visitation provide explicit topology. Angle tests use opposing endpoint directions to distinguish continuation from a sharp turn. \cite{zhangsuen1984,code2026}.
+
+
+\section{\_Dir}\label{fn:style:-Dir}
+\begin{lstlisting}[style=sig]
+def _Dir(pts, fromEnd, n=4)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/style.py} line 115. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:trace}.
+
+
+\Q{Purpose}{What this contributes}
+Turn centreline pixels into ordered polylines, then prune stubs and reconnect plausible continuations.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{pts}] \normalfont a polyline
+  \item[{fromEnd}] \normalfont true for the direction at the last point, false for the first
+  \item[{n}] \normalfont how many points back to look, default 4
+\end{description}
+
+\noindent\textbf{Output.} a unit vector giving the direction the path is heading at that end.
+
+
+\Q{Purpose}{What it is for}
+Deciding whether two traced paths were one pen stroke requires knowing which way each is heading where they meet. This measures that direction at either end of a path.
+
+
+\Q{Justification}{Why it looks several points back}
+The direction could be taken from the last two points, but those are adjacent pixels, so the step between them is one of only eight possible directions, each 45 degrees apart. That resolution is far too coarse to decide whether two strokes continue smoothly. Measuring from a point four steps back gives a chord over several pixels, whose angle is continuous and which averages out the staircase the pixel grid imposes.
+
+
+\FormulaNote{Estimate a short endpoint direction for a junction-continuation decision.}{zhangsuen1984,code2026}
+\begin{equation}
+\mathbf{d} \;=\; \frac{\mathbf{p}_{\mathrm{end}} - \mathbf{p}_{\mathrm{end}-n}}{\big\|\,\mathbf{p}_{\mathrm{end}} - \mathbf{p}_{\mathrm{end}-n}\,\big\|}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathbf{d}$}] \normalfont the returned direction, a vector of length 1
+  \item[{$\mathbf{p}_{\mathrm{end}}$}] \normalfont the point at the end being measured
+  \item[{$\mathbf{p}_{\mathrm{end}-n}$}] \normalfont the point n steps in from that end
+  \item[{$n$}] \normalfont how far back to look, 4 by default
+  \item[{$\|\cdot\|$}] \normalfont the length of the vector, by Pythagoras
+\end{description}
+
+\Q{Justification}{Why it is normalised to unit length}
+Dividing by the length leaves only the direction, discarding how far apart the two points were. That is what makes two directions comparable by a dot product, as the next function does: for unit vectors the dot product is the cosine of the angle between them, with no dependence on the lengths. Without normalisation the same comparison would confound the angle with how long the paths happened to be.
+
+
+\begin{quote}\small\itshape A degenerate path whose endpoints coincide has no direction, and a default pointing along the positive x axis is returned. The value is arbitrary; what matters is that it is a unit vector, so the caller's angle arithmetic stays well defined instead of producing a division by zero.\end{quote}
+
+
+\section{\_PruneSpurs}\label{fn:style:-PruneSpurs}
+\begin{lstlisting}[style=sig]
+def _PruneSpurs(chains, minLen=2.5)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/style.py} line 126. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:trace}.
+
+
+\Q{Purpose}{What this contributes}
+Turn centreline pixels into ordered polylines, then prune stubs and reconnect plausible continuations.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{chains}] \normalfont the traced polylines
+  \item[{minLen}] \normalfont the shortest a dangling path may be before it is removed, default 2.5 pixels
+\end{description}
+
+\noindent\textbf{Output.} the polylines with the short dangling ones removed.
+
+
+\Q{Method}{The artefact it removes}
+Thinning a shape where strokes cross leaves a characteristic defect. Where the ink is thick, as at the junction of a t or where a cursive join meets a letter body, the thinning does not produce a clean crossing but a small cluster from which short stubs project, going nowhere. These are \textbf{spurs}, and they are an artefact of the thinning rather than anything the pen did.
+
+They matter because they are traced as polylines like any other, so a letter that should have two strokes acquires five, three of which are two-pixel whiskers. That inflates the stroke count, which several filters test, it disturbs the stroke ordering, and it confuses the averaging that forms a prototype, which matches strokes between variants by position.
+
+
+\Q{Method}{How a spur is recognised}
+Two conditions together. It is short, under 2.5 pixels of path length. And it is \textbf{dangling}, meaning at least one of its two endpoints is not shared with any other path, so it leads nowhere. Requiring both is what makes the test safe: a short path joined at both ends is a genuine short connection between two strokes and must be kept, while a long dangling path is a real stroke with a free end, such as the stem of a t.
+
+The sharing is determined by counting how many paths have an endpoint at each coordinate. A count of one means that endpoint belongs to this path alone.
+
+
+\Q{Justification}{Why the threshold is in pixels and not x-heights}
+Almost every threshold in this file is in x-heights, for the scale-independence reasons given in the introduction. This one is deliberately not, because the artefact it targets is not a property of the writing at all: it is a property of the thinning algorithm, whose spurs are a few pixels long whatever the resolution, because thinning works pixel by pixel. A threshold in x-heights would grow with resolution and start removing real strokes from high-resolution crops.
+
+
+\begin{quote}\small\itshape If the pruning would remove everything, the original paths are returned instead. A glyph consisting entirely of short dangling paths is most likely debris, but returning nothing would hide it from the filters that are designed to judge it; returning it unchanged lets them do so.\end{quote}
+
+
+\section{\_JoinAtJunctions}\label{fn:style:-JoinAtJunctions}
+\begin{lstlisting}[style=sig]
+def _JoinAtJunctions(chains, maxAngleDeg=75.0)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/style.py} line 146. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:trace}.
+
+
+\Q{Purpose}{What this contributes}
+Merges two paths that meet at a junction and continue in roughly the same direction, which means they were one pen stroke before thinning split them.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{chains}] \normalfont the traced polylines
+  \item[{maxAngleDeg}] \normalfont how much the direction may change at a join and still count as one stroke, default 75 degrees
+\end{description}
+
+\noindent\textbf{Output.} the polylines with those that continue through a junction merged into one.
+
+
+\Q{Purpose}{The problem it solves}
+The tracer stops at every junction, because locally there is no way to know which way to continue. But a pen usually does continue. Where a cursive join meets the body of a letter, or where one stroke crosses another, the tracer produces several short paths where the pen drew one long one. Leaving them separate misrepresents the writing: the glyph appears to have more strokes than it does, and a plotter drawing it would lift the pen where the writer did not.
+
+
+\Q{Method}{The criterion: continuation of direction}
+What distinguishes a continuation from a genuine corner is direction. If one path arrives at a junction heading one way and another leaves heading the same way, they were one stroke. If the second leaves at a sharp angle, the junction is a real corner or a crossing of two different strokes.
+
+
+\FormulaNote{Measure deflection between opposing endpoint directions and reconnect plausible continuations.}{zhangsuen1984,code2026}
+\begin{equation}
+\cos\theta \;=\; -\,\mathbf{d}_i \cdot \mathbf{d}_j, \qquad \theta \;=\; \arccos\big(\mathrm{clip}(\cos\theta,\,-1,\,1)\big)
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\theta$}] \normalfont the turn angle: 0 for a path continuing perfectly straight through the junction
+  \item[{$\mathbf{d}_i,\, \mathbf{d}_j$}] \normalfont the unit directions at the two ends being considered, each from \_Dir
+  \item[{$\cdot$}] \normalfont the dot product, which for unit vectors equals the cosine of the angle between them
+  \item[{$-$}] \normalfont the negation, explained below
+  \item[{$\arccos$}] \normalfont the inverse cosine, converting a cosine back to an angle
+  \item[{$\mathrm{clip}(\cdot,-1,1)$}] \normalfont the cosine forced into its valid range before the inverse cosine is taken
+\end{description}
+
+\Q{Justification}{Why the dot product is negated}
+This is the step most easily got wrong. Both directions are measured \emph{outward} from their own path's end. Two paths that continue through a junction therefore point in opposite directions: one arrives pointing into the junction, the other leaves pointing away, and as outward measurements those are roughly antiparallel. So perfect continuation gives a dot product of $-$1, not +1, and negating it turns continuation into a cosine of +1, which is what the angle formula expects.
+
+
+\Q{Justification}{Why the cosine is clipped}
+The inverse cosine is defined only on the range $-$1 to 1. Two unit vectors cannot mathematically produce a dot product outside it, but floating-point rounding can: a vector whose length is stored as 1.0000000001 yields a dot product a fraction beyond 1, and the inverse cosine of that is not a number. The result would then propagate silently through every comparison, since comparisons involving it are all false. Clipping first costs nothing and removes the possibility.
+
+
+\Q{Justification}{Why 75 degrees is generous}
+A threshold of 75 degrees permits substantial direction change at a skeleton junction. The qualitative trade-off is between leaving a plausible continuation split and joining branches that were separate. Incorrect joining can alter stroke order, connections and shape, not merely the stroke count. The exact 75-degree value is a project heuristic; its optimality and asymmetric error costs are not established by the algorithm citation.
+
+
+\Q{Justification}{Why it repeats until nothing changes}
+One merge can create a new opportunity. Three paths meeting in a line are joined by first merging two, after which the merged path has a new free end that may continue into the third. So the search repeats until a pass finds nothing to merge. Each pass also takes the single best candidate, the pair with the smallest turn angle, rather than merging everything that qualifies. That matters at a junction where three or more paths meet and more than one pairing is permissible: taking the best first means the most convincing continuation is committed to before the others are considered, which is the greedy strategy used for the line centres in segment.py, but this greedy order does not prove globally correct reconstruction.
+
+
+\begin{quote}\small\itshape The search compares every pair of ends on every pass, which is quadratic in the number of paths and runs inside a loop. That would matter for hundreds of paths; here it runs on the handful belonging to one letter, where the cost is irrelevant and the clarity of an exhaustive search is worth having.\end{quote}
+
+
+\section*{Stage: Douglas Peucker simplification}
+Method rationale, alternatives and library comparison: Section~\ref{method:simplify}.
+\section{SimplifyPolyline}\label{fn:style:SimplifyPolyline}
+\begin{lstlisting}[style=sig]
+def SimplifyPolyline(poly, eps=0.6)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/style.py} line 180. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:simplify}.
+
+
+\Q{Purpose}{What this contributes}
+Reduce path vertices and command count while retaining meaningful geometric detail.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{poly}] \normalfont a polyline
+  \item[{eps}] \normalfont how far a point may sit from the simplified path before it must be kept, default 0.6 pixels
+\end{description}
+
+\noindent\textbf{Output.} the polyline with the points that add nothing removed.
+
+
+\Q{Purpose}{What it is for}
+A traced path has one point per pixel, so a straight stroke fifty pixels long is stored as fifty points when two would describe it exactly. Removing the redundant points shrinks the stored profile, speeds up everything that iterates over points, and removes the pixel staircase, leaving a path described by where it actually changes direction.
+
+
+\Q{Method}{The Douglas-Peucker method}
+The algorithm \cite{douglaspeucker1973} is recursive and rests on one idea: a path can be replaced by the straight line between its endpoints if no point on it strays far from that line. So measure the furthest stray; if it is within tolerance, the whole path becomes two points, and if not, the path is split at the furthest point and each half is simplified the same way.
+
+
+\FormulaNote{Measure deviation from the endpoint supporting line when deciding whether to retain a vertex.}{douglaspeucker1973,opencvshape}
+\begin{equation}
+d_k \;=\; \frac{\big|\,(x_b-x_a)(y_k-y_a) - (y_b-y_a)(x_k-x_a)\,\big|}{\sqrt{(x_b-x_a)^2 + (y_b-y_a)^2}}
+\end{equation}
+\noindent\emph{Source: }\cite{douglaspeucker1973}
+
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$d_k$}] \normalfont the perpendicular distance from point k to the straight line joining the two endpoints
+  \item[{$(x_a,y_a)$}] \normalfont the first point of the path
+  \item[{$(x_b,y_b)$}] \normalfont the last point of the path
+  \item[{$(x_k,y_k)$}] \normalfont the point whose distance is being measured
+  \item[{$|\cdot|$}] \normalfont the absolute value, since a distance has no sign
+  \item[{$\sqrt{\cdot}$}] \normalfont the length of the line segment, which turns the numerator into a true distance
+\end{description}
+The numerator is the \textbf{cross product} of the vector along the line and the vector to the point. Its magnitude equals the area of the parallelogram the two vectors span, and that area also equals the base times the height. The base is the length of the line segment, so dividing by it leaves the height, which is the perpendicular distance. This is why the formula computes a distance without any trigonometry.
+
+
+\Q{Justification}{Why the tolerance is 0.6 pixels}
+The 0.6-pixel tolerance is a project simplification setting, not a proven boundary between sampling noise and intentional writing. Nearest rounding can move a point by up to half a pixel on each axis, or about 0.707 pixels in Euclidean distance; error relative to a line reconstructed from rounded endpoints is a different quantity again. Raising epsilon generally removes more vertices and may erase real small features; lowering it retains more detail and more sampling noise. No literature result or reviewed sweep here establishes 0.6 as optimal.
+
+
+\Q{Method}{The closed-path special case}
+A loop, such as the body of an o, defeats the basic method. Its endpoints coincide or nearly so, which makes the reference line a point rather than a line, and every distance measured from it is meaningless. The function detects this by checking whether the far end of the path returns close to the start, and if so splits the path first at the point furthest from the start, simplifying the two halves separately. Each half is then an ordinary open path with distinct endpoints, and the method applies.
+
+
+\begin{quote}\small\itshape The two halves are rejoined by dropping the last point of the first before concatenating, since the split point belongs to both and would otherwise be stored twice. A duplicated point is a zero-length segment, which is harmless to draw but divides by zero in any calculation that normalises by segment length.\end{quote}
+
+
+\section*{Stage: Alignment guided glyph extraction}
+\ReportEq{25}{Forced transcript alignment}
+{$V(t,s)=\log p_t(\ell'_s)+\max_{r\in\mathcal P(s)}V(t-1,r)$.}
+{Recover a high-scoring legal path consistent with the known label before
+extracting characters. Replacing path summation by maximisation gives a hard
+alignment, not proof of correct geometric boundaries.}
+{CtcForcedAlign and ExtractLineGlyphs.}
+{graves2006,viterbi1967}
+
+\ReportEq{26}{Character cut cost}
+{$C_x=p_x/q_{0.60}(p_j:p_j>0)+1.15\,\mathrm{clip}[(b-y_{\rm top}(x))/h_x,0,3]$.}
+{Prefer thin low connectors over stems near the recogniser's suggested cut.
+Blank columns have zero cost. Ordered boundaries and minimum cell width
+prevent neighbouring cuts collapsing. All exact weights/percentiles are
+project heuristics, not derived from CTC.}
+{ExtractLineGlyphs.}
+{code2026}
+
+\ReportEq{27}{Stored glyph coordinates}
+{$v=(b-y)/h_x$, $u_0=(x-x_L)/h_x-v\tan\phi$, and $u=u_0-\delta$.}
+{Flip image-down to glyph-up, remove source scale and slant, and store trim
+as lead spacing. Shear is not rotation. The inverse placement must restore
+the same conventions.}
+{ExtractLineGlyphs and SynthesizeText.}
+{wolberg1990,vinciarelli2001,code2026}
+
+\ReportEq{28}{Measured connectedness}
+{$c=N_{\rm cross}/\max(1,N_{\rm adj})$.}
+{Summarise eligible in-word boundaries crossed by a traced centreline. It is
+not measured original pen-lift probability: touching and bad cuts can inflate
+it. Current synthesis suppresses joins below 0.45 and chooses cursive fallback
+style at 0.5.}
+{BuildAuthorProfile, \_CoreGlyph and SynthesizeText.}
+{code2026,bulacu2007}
+
+
+\section{Method background: Alignment guided glyph extraction}\label{method:glyph}
+\Q{Purpose}{The role in this system}
+Recover labelled character geometry from offline lines without manually supplied character boxes.
+
+
+\Q{Justification}{The reason for this construction}
+The known transcript constrains CTC; shared ordered cuts, body-band estimates and shear normalisation separate shape from source size and spacing.
+
+
+\Q{Alternatives}{What changes if another method is used}
+Connected-component letters work mainly for separated print. Independent cuts can collapse into the same gap. Direct generative synthesis needs extra training and does not expose these stored shapes.
+
+
+\Q{Library}{Implementation speed and accuracy}
+A library OCR aligner can supply another alignment distribution, but changing it changes extraction quality and provenance. NumPy, OpenCV or SciPy supply parts; the complete cut/ownership/profile policy is project-specific. \cite{graves2006,vinciarelli2001,code2026}.
+
+
+\section{\_TrimLigatureTails}\label{fn:style:-TrimLigatureTails}
+\begin{lstlisting}[style=sig]
+def _TrimLigatureTails(strokes, connL=True, connR=True, lowY=0.42, minKeep=0.18, climbY=1.6, climbSlope=2.2)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/style.py} line 205. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:glyph}.
+
+
+\Q{Purpose}{What this contributes}
+Removes eligible low outward tails left at character cuts and records connection endpoints. Guards retain a minimum body and reject suspicious climbing tails. These local rules can confuse genuine flourishes with connectors; the thresholds are project heuristics.
+
+
+\Q{Method}{Current implementation}
+Recover labelled character geometry from offline lines without manually supplied character boxes. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def _TrimLigatureTails(strokes,connL=True,connR=True,lowY=0.42,minKeep=0.18,
+                       climbY=1.6,climbSlope=2.2):
+    if not strokes:
+        return strokes,(0.0,0.0),(0.0,0.0)
+    allPts = [p for s in strokes for p in s]
+    entry,exitPt = strokes[0][0],strokes[-1][-1]
+    xs = [p[0] for p in allPts]
+    span = max(xs)-min(xs)
+    if span<=1e-6:
+        return strokes,entry,exitPt
+
+    def RunLen(s,connected,maxHeight,maxSlope):
+        if not connected:
+            return 0
+        i = 0
+        while i+1<len(s):
+            dx = s[i+1][0]-s[i][0]
+            dy = s[i+1][1]-s[i][1]
+            if s[i][1]>=maxHeight or dx<0 or abs(dy)>maxSlope*max(dx,1e-6):
+                break
+            i+=1
+        return i
+
+    out = []
+    for k,s in enumerate(strokes):
+        t = list(s)
+        if k==0:
+            i = RunLen(t,connL,lowY,0.7) or RunLen(t,connL,climbY,climbSlope)
+            if i and (t[-1][0]-t[i][0])>minKeep*span:
+                t = t[i:]
+        if k==len(strokes)-1 and len(t)>=2:
+            rev = [(-x,y) for (x,y) in t[::-1]]
+            r = RunLen(rev,connR,lowY,0.7) or RunLen(rev,connR,climbY,climbSlope)
+            if r and (t[len(t)-1-r][0]-t[0][0])>minKeep*span:
+                t = t[:len(t)-r]
+        if len(t)>=2:
+            out.append(t)
+    if not out:
+        return strokes,entry,exitPt
+    return out,out[0][0],out[-1][-1]
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+The known transcript constrains CTC; shared ordered cuts, body-band estimates and shear normalisation separate shape from source size and spacing. \cite{graves2006,vinciarelli2001,code2026}.
+
+
+\section{ExtractLineGlyphs}\label{fn:style:ExtractLineGlyphs}
+\begin{lstlisting}[style=sig]
+def ExtractLineGlyphs(gray, text, model)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/style.py} line 254. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:glyph}.
+
+
+\Q{Purpose}{What this contributes}
+Uses model.Forward, forced CTC alignment, an estimated body band and slant, then one shared strictly increasing cut array. It thins the full line before cell splitting, traces paths, handles dots/crossbars and stores upright x-height coordinates plus lead/advance metadata. A legal transcript alignment is not a verified character boundary.
+
+
+\Q{Method}{Current implementation}
+Recover labelled character geometry from offline lines without manually supplied character boxes. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def ExtractLineGlyphs(gray,text,model):
+    rawW = gray.shape[1]
+    t = TensorFromResized(ResizeLineImageFixed(gray))
+    lp = model.Forward(t)[:,0,:]
+    res = CtcForcedAlign(lp,text)
+    if res is None:
+        return None, None
+    align,conf = res
+    T = lp.shape[0]
+
+    ink = BinarizeLine(gray)
+    band = CoreBand(ink)
+    if band is None:
+        return None, None
+    top,base = band
+    xh = float(base-top)
+    slant = EstimateSlantDeg(ink)
+    shear = np.tan(np.radians(slant))
+
+    colProf = ink.sum(axis=0).astype(np.float64)
+    k = max(3,int(round(xh*0.12)))|1
+    colSm = np.convolve(colProf,np.ones(k)/k,mode='same')
+    rowsIdx = np.arange(ink.shape[0])[:, None]
+    hiY = np.where(ink,rowsIdx,ink.shape[0]).min(axis=0).astype(np.float64)
+    topAbove = np.clip((base-hiY)/max(1.0,xh),0.0,3.0)   #highest ink per column, above the baseline
+    thin = colSm/max(1e-6,float(np.percentile(colSm[colSm>0],60))
+                       if (colSm>0).any() else 1.0)
+
+    cutCost = thin+1.15*topAbove
+    cutCost[colProf==0] = 0.0   #a true gap is always a free cut
+    snapR = max(3,int(round(xh*0.5)))
+
+    def _Snap(x,floor=None):
+        a = int(np.clip(round(x)-snapR,0,rawW-1))
+        b = int(np.clip(round(x)+snapR+1,1,rawW))
+        if b-a<2:
+            return float(x)
+        win = cutCost[a:b].copy()
+        off = np.abs(np.arange(a,b)-x)/max(1.0,snapR)
+        return float(a+int(np.argmin(win+0.6*off)))
+
+    origH = gray.shape[0]
+    charXs = []
+    for ch,sp in align:
+        if sp is None:
+            charXs.append((ch, None, None))
+            continue
+        x0 = FrameXToPixel(sp[0]/T*INPUT_WIDTH,rawW,origH)
+        x1 = FrameXToPixel(sp[1]/T*INPUT_WIDTH,rawW,origH)
+        charXs.append((ch,x0,x1))
+    valid = [(i,c) for i,c in enumerate(charXs) if c[1] is not None]
+    centres = [0.5*(c[1]+c[2]) for _,c in valid]
+
+    nV = len(valid)
+    minCell = max(1.0,0.08*xh)
+    bnd = [0.0]*(nV+1)
+    bnd[0] = max(0.0,centres[0]-(0.5*(centres[1]-centres[0])
+                                    if nV>1 else xh))
+# Excerpt ends; full definition continues in bundled source.
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+The known transcript constrains CTC; shared ordered cuts, body-band estimates and shear normalisation separate shape from source size and spacing. \cite{graves2006,vinciarelli2001,code2026}.
+
+
+\section{\_ClassOk}\label{fn:style:-ClassOk}
+\begin{lstlisting}[style=sig]
+def _ClassOk(ch, top, bot)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/style.py} line 505. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:glyph}.
+
+
+\Q{Purpose}{What this contributes}
+Recover labelled character geometry from offline lines without manually supplied character boxes.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{ch}] \normalfont the character this glyph is supposed to be
+  \item[{top}] \normalfont its highest point, in x-heights above the baseline
+  \item[{bot}] \normalfont its lowest point, negative below the baseline
+\end{description}
+
+\noindent\textbf{Output.} true if the glyph reaches where that character should reach.
+
+
+\Q{Justification}{Why this is the cheapest and most reliable gate}
+The height class of a letter is one of the few facts about a letterform that is true for every writer. Individual hands vary enormously in slant, width, roundness and how joined they are, but an l reaches above the x-height band in all of them, because otherwise it would not be an l. A test on reach is therefore almost free of false rejections while catching a large class of bad cuts, which is why it runs first.
+
+
+\Q{Method}{The three tests}
+
+\FormulaNote{Apply character-height expectations without forcing all letters to have the same extent.}{graves2006,vinciarelli2001,code2026}
+\begin{equation}
+\begin{aligned}\text{x-only:} \quad & \mathrm{top} \le 1.42 \;\text{ and }\; \mathrm{bot} \ge -0.42 \\[2pt]\text{ascender:} \quad & \mathrm{top} \ge 1.25 \\[2pt]\text{descender:} \quad & \mathrm{bot} \le -0.20\end{aligned}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathrm{top}$}] \normalfont the glyph's highest point, in x-heights, where 1.0 is the top of the x-height band
+  \item[{$\mathrm{bot}$}] \normalfont its lowest point, negative below the baseline
+  \item[{$1.42$}] \normalfont how far above the band an x-only letter may stray before it is judged to have collected a neighbour's ascender
+  \item[{$1.25$}] \normalfont how far above the band an ascender letter must reach
+  \item[{$-0.20$}] \normalfont how far below the baseline a descender letter must drop
+  \item[{$-0.42$}] \normalfont how far below an x-only letter may stray
+\end{description}
+
+\Q{Justification}{Why the thresholds are not at 1.0}
+The band is nominally 0 to 1, but its measured boundaries are uncertain. Margins can tolerate that uncertainty. The code uses different admissible extents for x-height, ascender and descender classes; these are heuristic gates rather than confidence intervals inferred from a measured error distribution.
+
+The 1.42 and 1.25 upper-band tests serve different classes: rejecting excess height in an x-height letter versus demanding some extension for an ascender. Their overlap means a height between these values may be admissible under either class test. It does not prove a measured ambiguity interval or establish that contamination always exceeds a particular height. No reviewed source establishes these exact cutoffs as universal.
+
+
+
+\section{\_PenLength}\label{fn:style:-PenLength}
+\begin{lstlisting}[style=sig]
+def _PenLength(g)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/style.py} line 515. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:glyph}.
+
+
+\Q{Purpose}{What this contributes}
+Recover labelled character geometry from offline lines without manually supplied character boxes.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{g}] \normalfont a glyph dictionary
+\end{description}
+
+\noindent\textbf{Output.} the total length of all its strokes, in x-heights.
+
+
+\Q{Method}{What it measures}
+How far the pen travelled to draw this glyph, obtained by summing the lengths of every stroke, each of which is the sum of the straight-line distances between its consecutive points. It is the quantity the fragment test compares against a per-character floor, for the reasons set out under FRAGMENT\_PEN\_FRAC.
+
+
+\Q{Justification}{Why total rather than per stroke}
+A letter may legitimately be drawn in one stroke or several, depending on the hand and on whether the pen lifted. The same letter from the same writer can appear with two strokes on one line and one on the next, where a join happened to survive the thinning. The total is invariant to that, so it measures the letter rather than the accident of how it came out.
+
+
+
+\section{\_LongestStroke}\label{fn:style:-LongestStroke}
+\begin{lstlisting}[style=sig]
+def _LongestStroke(g)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/style.py} line 524. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:glyph}.
+
+
+\Q{Purpose}{What this contributes}
+Recover labelled character geometry from offline lines without manually supplied character boxes.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{g}] \normalfont a glyph dictionary
+\end{description}
+
+\noindent\textbf{Output.} the length of its single longest stroke, in x-heights.
+
+
+\Q{Justification}{What it measures, and why it is a separate test}
+The longest single continuous stroke. Where the total pen length asks how much writing is present, this asks whether any of it is a real stroke. The two are independent: a scatter of eight short scraps passes the total test and fails this one, while a single clean stroke that is slightly short passes this and fails the total. Keeping them separate means each can be set to catch its own defect, rather than one compromise threshold catching neither well.
+
+
+\begin{quote}\small\itshape Both measures ignore strokes of fewer than two points, which have no length to contribute. A single isolated point can survive into a glyph from the dot recovery, and including it as a zero-length stroke would be harmless here but would divide by zero in the resampling that forms prototypes.\end{quote}
+
+
+\section{RenderRefStats}\label{fn:style:RenderRefStats}
+\begin{lstlisting}[style=sig]
+def RenderRefStats(gray)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/style.py} line 724. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:glyph}.
+
+
+\Q{Purpose}{What this contributes}
+Measures one real line as the networks see it, ink density, aspect, paper and ink levels, word gap, slant and reach.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{gray}] \normalfont one real line crop from this writer
+\end{description}
+
+\noindent\textbf{Output.} a dictionary of measurements describing how that line looks, both to the networks and geometrically.
+
+
+\Q{Purpose}{What it is for, and the idea behind it}
+Reproducing a hand is not only a matter of letter shapes. The output must also \emph{look} like a photograph of handwriting to the networks that judge it, and that involves properties no glyph library captures: how much of the image is ink, how dark the ink is, how bright the paper is, the proportions of the line. This function measures those on a real line, so that synthesis has a target to match rather than having to guess.
+
+
+\Q{Method}{Background: domain shift}
+\textbf{Domain shift} is the name for the situation where a model is used on data drawn from a different distribution than it was trained on. A network trained on photographs of handwriting has learned the statistics of photographs: paper that is not pure white, ink that is not pure black, and soft grey edges where the two meet. Rendering a synthetic line as pure black on pure white produces an image that is correct as geometry but statistically unlike anything in training, and the network's response to it is unreliable, which would corrupt the judgement of the output.
+
+This is why the paper and ink levels are measured as percentiles of the real crop rather than assumed: the median of the bright pixels is what this writer's paper actually is, and the median of the dark pixels is what their ink actually is. The fraction of intermediate greys is measured too, since that describes the softness of the stroke edges.
+
+
+\Q{Justification}{Why the word gap is measured from the ink, not the recogniser}
+The width of the space character as the aligner reports it is not a reliable measure of how widely this writer spaces their words. CTC concentrates its output and tends to assign a space a narrow territory, well inside the actual gap. So the gap is measured directly instead: the columns with no ink are found, the runs between inked columns are collected, those under half an x-height are discarded as being gaps within a word, and the median of the rest is taken.
+
+The half-x-height threshold is what separates the two kinds of gap. Within a word the pen may lift, leaving a small gap, but a word boundary is a deliberate space and is substantially wider. The median of the wide gaps therefore describes word spacing, and the median again rather than the mean, so that one unusually wide gap at a paragraph end does not inflate it.
+
+
+\Q{Justification}{Why slant, ascender and descender are measured here too}
+These are also measured in the profile from the glyphs themselves, so measuring them again on the rendered line looks redundant. It is not, and the comment in the code gives the reason: these are measured \emph{the same way} they will be measured on the synthesised output. A quantity measured by two different methods is not comparable with itself, so to check whether the synthesis reproduced the writer's slant, both sides must be measured by the same procedure. These values exist to be the reference half of that comparison.
+
+
+\begin{quote}\small\itshape Fields that cannot be measured are filled with a not-a-number value rather than a plausible default. That is deliberate: the caller takes a median across lines with those values excluded, so a line that could not be measured contributes nothing, whereas a default would contribute a fabricated measurement that is indistinguishable from a real one.\end{quote}
+
+
+\section{\_MedianWordGap}\label{fn:style:-MedianWordGap}
+\begin{lstlisting}[style=sig]
+def _MedianWordGap(refs, spaceAdvs)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/style.py} line 763. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:glyph}.
+
+
+\Q{Purpose}{What this contributes}
+Recover labelled character geometry from offline lines without manually supplied character boxes.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{refs}] \normalfont the per-line reference statistics
+  \item[{spaceAdvs}] \normalfont the widths the aligner gave to space characters
+\end{description}
+
+\noindent\textbf{Output.} the typical gap this writer leaves between words, in x-heights.
+
+
+\Q{Method}{The preference order}
+Three sources are tried in order. The measured ink gaps from RenderRefStats are preferred, because they measure the real thing. If none is available, the aligner's space widths are used, which are biased narrow for the reason given above but are at least derived from this writer. If there are no spaces at all, 1.2 x-heights is returned as a generic value.
+
+
+\Q{Justification}{Why the fallback order is this way round}
+It descends from the most direct evidence to the least. The same cascade pattern appears in LinePitch and in the checkpoint selection: try the best-informed method, fall back only when it cannot apply. The consequence worth noting is that the fallback is known to be biased, so a profile built from a writer with no measurable gaps will have word spacing that is too narrow, and that is a better failure than having none at all.
+
+
+\begin{quote}\small\itshape Not-a-number values are dropped by testing whether each value equals itself, which is false only for not-a-number. That is the standard idiom and it works without importing anything, which is why it is used in a file that avoids dependencies.\end{quote}
+
+
+\section{ExtractAuthorRaw}\label{fn:style:ExtractAuthorRaw}
+\begin{lstlisting}[style=sig]
+def ExtractAuthorRaw(authorId, lineItems, model)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/style.py} line 774. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:glyph}.
+
+
+\Q{Purpose}{What this contributes}
+Runs the cutting over every line of a writer, returning the uncut, unfiltered result per line.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{authorId}] \normalfont which writer these lines belong to
+  \item[{lineItems}] \normalfont pairs of a line crop and its known text
+  \item[{model}] \normalfont a loaded reader for alignment
+\end{description}
+
+\noindent\textbf{Output.} a list of per-line results, each a pair of the glyphs cut from that line and its statistics.
+
+
+\Q{Purpose}{What it is for}
+Runs the cutter over every line of one writer and collects the results. It is the expensive half of profile building, and the half that gets cached.
+
+
+\Q{Justification}{Why the output is deliberately unfiltered}
+Nothing is rejected here. Every glyph the cutter produced is kept, including the fragments and the over-wide cuts. This is the design decision that makes the filters tunable: the filtering happens in BuildAuthorProfile, which runs on this output, so a threshold can be changed and the effect measured in seconds against a cache that is still valid. Had filtering happened here, every change to a filter would require re-reading and re-cutting every page.
+
+It is also what made the project's rejection statistics possible. Reporting what fraction of cuts were discarded, and why, requires having kept the discarded ones; a pipeline that filtered as it extracted could report only what survived.
+
+
+\begin{quote}\small\itshape A line whose extraction returned nothing is skipped rather than recorded as empty. Those are the lines where alignment failed outright or no x-height band could be found, which carry no glyphs and no usable statistics, so an entry for them would only have to be filtered out again by every consumer.\end{quote}
+
+
+\section{BuildAuthorProfile}\label{fn:style:BuildAuthorProfile}
+\begin{lstlisting}[style=sig]
+def BuildAuthorProfile(authorId, parsed, refs=None, prior=None, verbose=True)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/style.py} line 789. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:glyph}.
+
+
+\Q{Purpose}{What this contributes}
+Rejects low-confidence source lines when enough are available, accumulates measured style, filters each character pool, computes prior and consensus, and stores variants, denoised prototypes and medoids. The profile stores ink-related reference statistics even though current RenderTrajectory uses uniform ink. Such stored metadata is not evidence that a live branch consumes it.
+
+
+\Q{Method}{Current implementation}
+Recover labelled character geometry from offline lines without manually supplied character boxes. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def BuildAuthorProfile(authorId,parsed,refs=None,prior=None,
+                       verbose=True):
+    store = {}
+    slants,xhs,strokeWs = [],[],[]
+    ascRatios,descRatios = [],[]
+    advances = {}
+    spaceAdvs = []
+    connPairs,adjPairs = 0,0
+
+    if not parsed:
+        return None
+    confs = [st['alignConf'] for _,st in parsed]
+    confCut = (float(np.percentile(confs,ALIGN_CONF_PCT))
+               if len(confs)>=8 else -1e9)
+
+    for glyphs,stats in parsed:
+        if stats['alignConf']<confCut:
+            continue
+        slants.append(stats['slant'])
+        xhs.append(stats['xh'])
+        strokeWs.append(stats['strokeW']/max(1.0,stats['xh']))
+        for k,g in enumerate(glyphs):
+            if g is None:
+                continue
+            ch = g['char']
+            if ch==' ':
+                spaceAdvs.append(g['width'])
+                continue
+            if ch.islower():
+                if g['top']>1.35:
+                    ascRatios.append(g['top'])
+                if g['bot']<-0.25:
+                    descRatios.append(g['bot'])
+            advances.setdefault(ch,[]).append(g['advance'])
+            store.setdefault(ch,[]).append(g)
+            if k+1<len(glyphs) and glyphs[k+1] is not None and \
+                    glyphs[k+1].get('char',' ')!=' ' and 'connR' in g:
+                adjPairs+=1
+                if g['connR']:
+                    connPairs+=1
+
+    if not xhs:
+        return None
+
+    storeKept = {}
+    for ch,insts in store.items():
+        wMax = MAX_GLYPH_W_WIDE if ch in _WIDE_CHARS else MAX_GLYPH_W
+        penFloor = max(MIN_PEN_ABS,FRAGMENT_PEN_FRAC*
+                       float(np.median([_PenLength(g) for g in insts])))
+        good = [g for g in insts
+                if 0.05<g['width']<wMax and (g['top']-g['bot'])>0.25
+                and len(g['strokes'])<=6
+                and _ClassOk(ch,g['top'],g['bot'])
+                and g['lead']+g['width']<=1.45*g['advance']+0.25
+                and _PenLength(g)>=penFloor
+                and _LongestStroke(g)>=MIN_LONGEST_STROKE]
+        if not good:
+            continue
+# Excerpt ends; full definition continues in bundled source.
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+The known transcript constrains CTC; shared ordered cuts, body-band estimates and shear normalisation separate shape from source size and spacing. \cite{graves2006,vinciarelli2001,code2026}.
+
+
+\section*{Stage: Occupancy descriptors and shape distances}
+\Q{Method}{Writer texture allographs and ink width}
+Textural edge-direction distributions summarise local stroke orientations;
+allographs are alternative realisations of a character. The explicit glyph
+pool stores allographic variation, while the CNN learns discriminative maps.
+Ink width can carry writer evidence but changes when the robot uses one pen.
+That motivates shape normalisation, without proving all ink information is
+undesirable or every normalised prediction is more accurate
+~\cite{bulacu2007,brink2012}.
+
+
+\section{Method background: Occupancy descriptors and shape distances}\label{method:descriptor}
+\Q{Purpose}{The role in this system}
+Reject malformed cuts and compare stored shapes without requiring matching vertex counts.
+
+
+\Q{Justification}{The reason for this construction}
+A sampled twelve-by-twelve occupancy grid, square-root compression, blur and unit norm provide a compact shift-tolerant representation. Width gates separately retain aspect information lost by box normalisation.
+
+
+\Q{Alternatives}{What changes if another method is used}
+Raw pixel differences are sensitive to translation; point-set distances require registration; learned embeddings need training. Higher grid resolution keeps detail but is less tolerant of shifts.
+
+
+\Q{Library}{Implementation speed and accuracy}
+SciPy distances and image resizers offer primitives; a learned embedding is not an arithmetic replacement. Faster distance computation preserves the metric only if normalisation and sampling are identical. \cite{code2026,bulacu2007}.
+
+
+\section{\_ShapeGrid}\label{fn:style:-ShapeGrid}
+\begin{lstlisting}[style=sig]
+def _ShapeGrid(g, n=12)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/style.py} line 536. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:descriptor}.
+
+
+\Q{Purpose}{What this contributes}
+Describes a shape as a normalised 12 by 12 grid of ink counts, blurred a little so two writings of one letter need not line up exactly.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{g}] \normalfont a glyph dictionary
+  \item[{n}] \normalfont the grid resolution, default 12
+\end{description}
+
+\noindent\textbf{Output.} a vector of 144 numbers describing the glyph's shape, scaled to unit length; or nothing if the glyph has no points.
+
+
+\Q{Purpose}{What it is for}
+Several filters need to ask how similar two glyphs are, and one needs to ask how similar a glyph is to the general idea of a letter. Comparing two lists of strokes directly is not workable: they may have different numbers of strokes, different numbers of points, and the points need not correspond. What is needed is a \textbf{descriptor}, a fixed-length vector computed from a shape such that similar shapes give similar vectors. Then comparing shapes becomes comparing vectors, which is arithmetic.
+
+
+\Q{Method}{Step one: turn strokes into points}
+Each segment of each stroke is filled in with evenly spaced points along it, at a density of about 24 per unit length. This is necessary because the stored strokes have been simplified, so a long straight run is two points, and counting points directly would weight a simplified stroke far less than a wiggly one of the same length. Filling in restores the proportionality between a stroke's length and the number of points representing it.
+
+
+\Q{Method}{Step two: scale the shape into the grid}
+The points are rescaled so the shape exactly fills the grid in both directions, and each point is assigned to a cell. This discards absolute size and aspect ratio deliberately, so that the same letter written large and small gives the same descriptor. Size is already tested separately by the width and height gates, so there is nothing lost by removing it here, and a great deal gained: the descriptor then responds to shape alone.
+
+
+\Q{Method}{Step three: count, then damp}
+
+\FormulaNote{Map sampled glyph coordinates into a compact occupancy grid.}{code2026,bulacu2007}
+\begin{equation}
+G[i,j] \;=\; \sqrt{\,\big|\{\,\text{points falling in cell } (i,j)\,\}\big|\,}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$G[i,j]$}] \normalfont the value stored for grid cell i, j
+  \item[{$|\{\cdot\}|$}] \normalfont the number of points that landed in that cell
+\end{description}
+The square root is a \textbf{damping} transformation. Without it, a cell where the pen dwelt, at a sharp corner or where two strokes overlap, accumulates many times the count of an ordinary cell and dominates the whole descriptor, so two glyphs would be judged similar or not chiefly by where their pen dwelt. Taking the square root compresses large counts toward small ones while keeping the ordering, so a cell with ink still counts for more than an empty one but not overwhelmingly more.
+
+
+\Q{Method}{Step four: blur}
+The grid is blurred with a small 3 by 3 kernel, weight 0.25 in the centre and 0.09375 at each of the eight neighbours. The problem it solves is that a grid is a hard partition: two writings of the same letter that differ by a hair can put corresponding ink in adjacent cells, which as vectors makes them share nothing at all in those positions. Blurring spreads each cell's value into its neighbours, so near-misses contribute to the similarity instead of being lost. This is the same reasoning that puts tolerance into any grid-based descriptor, and without it the measure would be far too brittle to be useful.
+
+
+\Q{Method}{Step five: normalise to unit length}
+
+\FormulaNote{Normalise the descriptor so comparisons focus on relative occupancy rather than total count.}{code2026,bulacu2007}
+\begin{equation}
+\mathbf{v} \;=\; \frac{\mathbf{g}}{\|\mathbf{g}\|}, \qquad \|\mathbf{g}\| \;=\; \sqrt{\textstyle\sum_{k} g_k^2}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\mathbf{v}$}] \normalfont the returned descriptor, of length 1
+  \item[{$\mathbf{g}$}] \normalfont the blurred grid flattened into a 144-element vector
+  \item[{$\|\mathbf{g}\|$}] \normalfont its Euclidean length, the square root of the sum of the squares of its entries
+\end{description}
+Scaling to unit length removes the total amount of ink from the descriptor, leaving only how it is distributed. The decisive benefit is what it does to the comparison: for two unit vectors, the dot product is exactly the cosine of the angle between them, which is 1 for identical shapes and falls toward 0 as they diverge. So similarity becomes a single multiplication and sum, with a value on a fixed and interpretable scale. This is \textbf{cosine similarity}, and it is the standard way to compare descriptors precisely because normalisation makes magnitude irrelevant.
+
+
+\begin{quote}\small\itshape The resolution of 12 by 12 is a compromise. Coarser would stop distinguishing letters that differ in a small region, such as a and o, which agree everywhere but the stem. Finer would make the descriptor sensitive to exactly the variation between two writings of one letter that it is meant to tolerate, and the blur would have to widen to compensate, which gives back the resolution that was bought.\end{quote}
+
+
+\section{BuildLetterPrior}\label{fn:style:BuildLetterPrior}
+\begin{lstlisting}[style=sig]
+def BuildLetterPrior(storeByAuthor, minSamples=12)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/style.py} line 570. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:descriptor}.
+
+
+\Q{Purpose}{What this contributes}
+Pools descriptors across writers by character, requires a minimum sample count, takes a componentwise median and unit-normalises it. It supplies a rejection reference, not another writer glyph to be copied. Absent priors must not be interpreted as evidence of a perfect glyph.
+
+
+\Q{Method}{Current implementation}
+Reject malformed cuts and compare stored shapes without requiring matching vertex counts. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def BuildLetterPrior(storeByAuthor,minSamples=12):
+    byChar = {}
+    for store in storeByAuthor.values():
+        for ch,vs in store.items():
+            byChar.setdefault(ch,[]).extend(vs)
+    prior = {}
+    for ch,vs in byChar.items():
+        grids = [g for g in (_ShapeGrid(v) for v in vs) if g is not None]
+        if len(grids)<minSamples:
+            continue
+        G = np.vstack(grids)
+        proto = np.median(G,axis=0)
+        nrm = float(np.linalg.norm(proto))
+        if nrm>1e-9:
+            prior[ch] = proto/nrm
+    return prior
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+A sampled twelve-by-twelve occupancy grid, square-root compression, blur and unit norm provide a compact shift-tolerant representation. Width gates separately retain aspect information lost by box normalisation. \cite{code2026,bulacu2007}.
+
+
+\section{\_PriorScore}\label{fn:style:-PriorScore}
+\begin{lstlisting}[style=sig]
+def _PriorScore(g, ch, prior)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/style.py} line 588. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:descriptor}.
+
+
+\Q{Purpose}{What this contributes}
+Reject malformed cuts and compare stored shapes without requiring matching vertex counts.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{g}] \normalfont a glyph dictionary
+  \item[{ch}] \normalfont the character it claims to be
+  \item[{prior}] \normalfont the mapping of reference descriptors
+\end{description}
+
+\noindent\textbf{Output.} a distance from 0, identical to the reference, upward; 0 when no comparison can be made.
+
+
+\Q{Method}{What it measures}
+How far this glyph's shape sits from the cross-writer idea of its letter. It is the quantity stored on each glyph as \texttt{priorD}, and synthesis later uses it to judge how far a writer's own stored shape can be trusted.
+
+
+\FormulaNote{Measure disagreement between a unit glyph descriptor and its pooled character reference.}{code2026,bulacu2007}
+\begin{equation}
+D \;=\; 1 \;-\; \mathbf{v} \cdot \mathbf{p}_c
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$D$}] \normalfont the returned distance: 0 when the glyph matches the reference exactly, larger as it diverges
+  \item[{$\mathbf{v}$}] \normalfont the glyph's own descriptor, a unit vector
+  \item[{$\mathbf{p}_c$}] \normalfont the reference descriptor for that character, also a unit vector
+  \item[{$\cdot$}] \normalfont the dot product, which for unit vectors is the cosine of the angle between them
+\end{description}
+Subtracting the cosine similarity from 1 converts a similarity into a distance, so that small means good. This is the \textbf{cosine distance}. Since both descriptors have non-negative entries, their dot product cannot be negative, so the result lies between 0 and 1.
+
+
+\Q{Justification}{Why a missing reference scores zero rather than failing}
+When no reference exists for a character, or the glyph yields no descriptor, the score returned is 0, which is the value meaning a perfect match. That is deliberate: it makes the gate abstain. Every filter in this file can only reject, so the safe value in the absence of evidence is the one that rejects nothing. Returning a large value instead would quietly delete every glyph of every rare character, since those are exactly the characters without enough examples to have a reference.
+
+
+
+\section{PriorFilter}\label{fn:style:PriorFilter}
+\begin{lstlisting}[style=sig]
+def PriorFilter(variants, ch, prior, keepFrac=0.7, minKeep=3)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/style.py} line 596. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:descriptor}.
+
+
+\Q{Purpose}{What this contributes}
+Reject malformed cuts and compare stored shapes without requiring matching vertex counts.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{variants}] \normalfont this writer's glyphs for one character
+  \item[{ch}] \normalfont that character
+  \item[{prior}] \normalfont the mapping of reference descriptors
+  \item[{keepFrac}] \normalfont the fraction to keep, default 0.7
+  \item[{minKeep}] \normalfont the least number to keep, default 3
+\end{description}
+
+\noindent\textbf{Output.} the kept variants, sorted best first.
+
+
+\Q{Method}{What it does}
+Sorts this writer's variants of one character by their distance from the cross-writer reference and keeps the best 70 percent. The worst 30 percent are the ones least like the letter is supposed to look, which is where the mis-cuts that survived the geometric gates are concentrated.
+
+
+\Q{Justification}{Why a proportion rather than a threshold}
+A percentile gate ranks variants within a writer instead of imposing one absolute distance cutoff across all writers. This can tolerate a writer whose whole pool differs from the cross-writer reference, but also retains poor samples if every variant is poor. Tie handling, small-pool exceptions and earlier filters mean a stated retained fraction is not necessarily the fraction of all original glyphs kept.
+
+
+\Q{Method}{The floor, and the abstention}
+At least three variants are kept whatever the proportion says, and the filter does nothing at all when fewer than three exist or when no reference is available for the character. Three is the smallest number from which the consensus filter downstream can work and from which a prototype can be formed, so dropping below it costs more than the bad variant does. For a rare character, having three imperfect examples is better than having one perfect one, because synthesis needs something to choose among and a prototype needs several shapes to average.
+
+
+\begin{quote}\small\itshape The variants come back sorted best first, which is not incidental. Later stages take the first few, and the ranking established here is part of what determines which of a writer's shapes actually get drawn.\end{quote}
+
+
+\section*{Stage: Consensus medoids and prototypes}
+\section{Method background: Consensus medoids and prototypes}\label{method:medoid}
+\Q{Purpose}{The role in this system}
+Choose representative writer glyphs while rejecting fragmented outliers.
+
+
+\Q{Justification}{The reason for this construction}
+A medoid minimises summed within-pool L1 descriptor distance and remains an actual sample. A denoised prototype combines compatible resampled strokes; it is a separate constructed object.
+
+
+\Q{Alternatives}{What changes if another method is used}
+A mean descriptor can be unrepresentative and supplies no pen path directly. Clustering handles multiple modes but needs a cluster rule. One arbitrarily chosen sample has no consensus guarantee.
+
+
+\Q{Library}{Implementation speed and accuracy}
+Pairwise-distance libraries can compute the same matrix; generic clustering is a different selection policy. Small pools limit the possible speed benefit. No library can fix a pool whose samples all contain bad cuts. \cite{code2026,haines2016}.
+
+
+\section{\_ConsensusFilter}\label{fn:style:-ConsensusFilter}
+\begin{lstlisting}[style=sig]
+def _ConsensusFilter(variants, keepFrac=0.75)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/style.py} line 604. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:medoid}.
+
+
+\Q{Purpose}{What this contributes}
+Choose representative writer glyphs while rejecting fragmented outliers.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{variants}] \normalfont this writer's glyphs for one character
+  \item[{keepFrac}] \normalfont the fraction to keep, default 0.75
+\end{description}
+
+\noindent\textbf{Output.} the kept variants, ordered by how typical they are.
+
+
+\Q{Method}{What it adds that the prior filter cannot}
+The prior filter compares a writer against everyone else, which catches a shape that is not really the letter. This one compares a writer against themselves, which catches a shape that is not really \emph{their} letter. The two find different faults. A glyph carrying half of its neighbour may still resemble the general idea of the letter closely enough to pass the prior, while differing clearly from the writer's own twenty other examples, because those twenty agree with each other and it does not.
+
+
+\Q{Method}{Background: the medoid}
+The most typical member must be identified before the outliers can be found. A mean cannot serve, because the mean of several descriptors is not itself any real glyph and, being an average, is pulled by the outliers. Instead the \textbf{medoid} is used: the member of the set whose total distance to all the others is least. It is an actual glyph, and it is the multidimensional analogue of the median, with the same robustness.
+
+
+\FormulaNote{Select the actual stored glyph minimising total within-pool L1 disagreement.}{code2026,haines2016}
+\begin{equation}
+m \;=\; \arg\min_{i} \sum_{j} \big\| \mathbf{v}^{(i)} - \mathbf{v}^{(j)} \big\|_{1}, \qquad \big\|\mathbf{a} - \mathbf{b}\big\|_{1} \;=\; \sum_{k} \big| a_k - b_k \big|
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$m$}] \normalfont the index of the medoid variant
+  \item[{$\mathbf{v}^{(i)}$}] \normalfont the descriptor of variant i
+  \item[{$\|\cdot\|_{1}$}] \normalfont the \textbf{L1 distance}, or Manhattan distance: the sum of the absolute differences, as opposed to the square root of the sum of squares
+  \item[{$k$}] \normalfont which descriptor position
+  \item[{$\arg\min_i$}] \normalfont the variant for which that total is smallest
+\end{description}
+The L1 distance is used rather than the ordinary straight-line distance because squaring amplifies large differences, so a single badly disagreeing cell would dominate the comparison. Summing absolute differences treats every cell's disagreement in proportion to its size, which is the behaviour wanted when the question is overall typicality rather than worst-case mismatch. It is the same robustness argument that favours the median over the mean.
+
+
+\Q{Method}{The filter itself}
+With the medoid identified, the variants are ordered by distance from it and the furthest quarter is dropped. Ordering by distance from the most typical member means the kept variants are the ones that agree with the writer's own consensus, and the ordering also survives into the output, so later stages taking the first few get the most typical ones.
+
+
+\Q{Justification}{Why both filters are run, in this order}
+The prior filter runs first and the consensus filter second. The order matters because the consensus filter trusts the set it is given: it finds the most typical member of whatever it receives. If most of the variants were mis-cuts, the medoid would be a mis-cut and the filter would discard the correct letters as outliers. Running the prior filter first removes the glyphs that are not the letter at all, using an external reference that cannot be corrupted by this writer's cuts, so the consensus filter operates on a set in which the majority really is correct, which is the condition it needs.
+
+
+\begin{quote}\small\itshape The distance matrix is computed between every pair, which is quadratic in the number of variants. With at most a few dozen variants per character that is trivial, and the whole matrix is wanted anyway, since the medoid is defined by row sums of exactly that matrix.\end{quote}
+
+
+\section{\_ResampleN}\label{fn:style:-ResampleN}
+\begin{lstlisting}[style=sig]
+def _ResampleN(poly, n)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/style.py} line 620. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:medoid}.
+
+
+\Q{Purpose}{What this contributes}
+Choose representative writer glyphs while rejecting fragmented outliers.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{poly}] \normalfont a polyline
+  \item[{n}] \normalfont how many points to produce
+\end{description}
+
+\noindent\textbf{Output.} an array of n points evenly spaced along the path.
+
+
+\Q{Purpose}{What it is for}
+Averaging several writings of a letter requires adding corresponding points together, which requires that they correspond. Traced strokes have no correspondence at all: one may have 40 points and another 55, placed wherever the pixel grid and the simplification happened to put them. Resampling puts every stroke on the same footing, n points spaced equally along its length, so that the k-th point of one stroke and the k-th of another both sit at the same fraction of the way along.
+
+
+\Q{Method}{How it works: arc-length parameterisation}
+The cumulative distance along the path is computed, giving for each original point how far along the path it sits. That turns the path into a function of distance, and the new points are then read off at n equally spaced distances by linear interpolation between the original points.
+
+
+\FormulaNote{Place a fixed number of samples along cumulative path length before comparing strokes.}{code2026,haines2016}
+\begin{equation}
+s_i \;=\; \sum_{j<i} \big\| \mathbf{p}_{j+1} - \mathbf{p}_{j} \big\|, \qquad t_k \;=\; \frac{k}{n-1}\, s_{\mathrm{last}}, \qquad k = 0, \dots, n-1
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$s_i$}] \normalfont the cumulative distance from the start of the path to its i-th point
+  \item[{$\mathbf{p}_j$}] \normalfont the j-th original point
+  \item[{$\|\cdot\|$}] \normalfont the straight-line distance between two consecutive points
+  \item[{$t_k$}] \normalfont the distance at which the k-th new point is placed
+  \item[{$s_{\mathrm{last}}$}] \normalfont the total path length
+  \item[{$n$}] \normalfont how many points are wanted
+\end{description}
+This is called \textbf{arc-length parameterisation}, and the alternative makes clear why it is necessary. Spacing the new points evenly by index rather than by distance would place them densely wherever the original happened to be dense, so two strokes resampled that way would still not correspond. Distance is the only parameterisation that both strokes share.
+
+
+\begin{quote}\small\itshape A path of zero length, which a dot recovery can produce, returns n copies of its single point. That is the correct degenerate answer and it keeps the array shape uniform, so the averaging that follows needs no special case.\end{quote}
+
+
+\section{\_AlignStroke}\label{fn:style:-AlignStroke}
+\begin{lstlisting}[style=sig]
+def _AlignStroke(s, N)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/style.py} line 632. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:medoid}.
+
+
+\Q{Purpose}{What this contributes}
+Choose representative writer glyphs while rejecting fragmented outliers.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{s}] \normalfont one stroke
+  \item[{N}] \normalfont the number of points to resample to
+\end{description}
+
+\noindent\textbf{Output.} the stroke resampled to N points with a consistent starting point and direction, or nothing if it is too short.
+
+
+\Q{Purpose}{The problem beyond resampling}
+Resampling makes two strokes have the same number of points, but corresponding points still need to be at corresponding places, and two things can spoil that. A stroke may be traced in either direction, so one writing of a letter may run left to right and another right to left, in which case point 0 of one corresponds to point N$-$1 of the other. And a closed loop has no inherent starting point at all, so two tracings of the same o may begin anywhere on the circle.
+
+
+\Q{Method}{The two fixes}
+
+\begin{itemize}\setlength\itemsep{0pt}
+  \item \textbf{Open strokes are oriented left to right.} If the stroke ends left of where it began, it is reversed. Left to right is chosen because it is the direction of writing, so it is the orientation most strokes already have.
+  \item \textbf{Closed strokes are rotated to begin at their leftmost point.} A stroke is recognised as closed when its two ends come within 0.3 x-heights of each other. The points are then rotated so the leftmost becomes first, and the original start is appended to close the loop. The leftmost point is used because it is well defined for any loop and is found identically in every tracing of it.
+\end{itemize}
+Both fixes work by choosing a canonical form: a rule that picks, from among the several equivalent ways of representing the same stroke, one particular way that depends only on the shape. Any such rule works provided every stroke obeys the same one, which is the real requirement.
+
+
+\begin{quote}\small\itshape Without these fixes the averaging would not merely be inaccurate; it would be nonsense. Averaging a stroke with a reversed copy of itself yields a shape collapsing toward its own midpoint, since the first point of one is averaged with the last of the other. The prototype would be a smear through the middle of the letter.\end{quote}
+
+
+\section{\_DenoisedPrototype}\label{fn:style:-DenoisedPrototype}
+\begin{lstlisting}[style=sig]
+def _DenoisedPrototype(variants, minN=3, N=44)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/style.py} line 647. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:medoid}.
+
+
+\Q{Purpose}{What this contributes}
+Averages several writings of a letter into one clean shape by taking the median point of the aligned, respaced variants.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{variants}] \normalfont this writer's kept glyphs for one character
+  \item[{minN}] \normalfont the least variants needed, default 3
+  \item[{N}] \normalfont the number of points per stroke, default 44
+\end{description}
+
+\noindent\textbf{Output.} one clean letterform as a list of strokes, or nothing if no reliable prototype can be formed.
+
+
+\Q{Purpose}{What it is for}
+Every individual variant carries noise: the staircase left by the pixel grid, a boundary placed a little wrongly, a tremor in the hand. Those errors differ between variants while the letter does not, so averaging several writings cancels the noise and leaves the shape the writer meant. The result is the \textbf{prototype}, the cleanest available statement of how this writer forms this letter.
+
+
+\Q{Method}{Step one: group by stroke count}
+Only variants with the same number of strokes can be averaged, because the averaging matches strokes one to one. The variants are grouped by stroke count and the largest group is used. Taking the largest rather than any particular count lets the data decide how the writer usually forms the letter: if most of their a's are one stroke, the prototype is a one-stroke a.
+
+A group with fewer than three members, or with more than five strokes, is refused outright. Three is the least from which an average means anything. The five-stroke limit guards against averaging glyphs whose stroke counts are high because the tracing fragmented them, where the stroke-to-stroke matching would be matching pieces that do not correspond.
+
+
+\Q{Method}{Step two: match strokes between variants}
+Within the group, each variant's strokes are sorted by their leftmost point and matched by position in that order, then aligned and resampled to a common 44 points. Sorting by position is a weak way to establish correspondence, but a sound one for this case: the strokes of one letter written by one person occur in a consistent left-to-right arrangement, so the leftmost stroke of one a is the same stroke as the leftmost of another.
+
+
+\Q{Method}{Step three: iterative alignment to the median}
+This is the step that distinguishes the method from a plain average. The variants are not yet aligned horizontally, because each was cut at a slightly different boundary, so one may sit a tenth of an x-height right of another. Averaging them in that state blurs the prototype horizontally. So each variant is shifted along x to whichever offset, among nine candidates spanning plus and minus 0.22 x-heights, brings it closest to the current median, and the median is then recomputed from the shifted variants. That is repeated twice.
+
+
+\FormulaNote{Combine geometrically compatible resampled strokes into a separate prototype.}{code2026,haines2016}
+\begin{equation}
+\delta^{*}_c \;=\; \arg\min_{\delta} \; \frac{1}{N} \sum_{k=1}^{N} \Big\| \big(\mathbf{c}_k + \delta\,\hat{\mathbf{x}}\big) - \mathbf{m}_k \Big\|
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$\delta^{*}_c$}] \normalfont the best horizontal shift for variant c
+  \item[{$\mathbf{c}_k$}] \normalfont the k-th point of that variant's stroke
+  \item[{$\mathbf{m}_k$}] \normalfont the k-th point of the current median stroke
+  \item[{$\hat{\mathbf{x}}$}] \normalfont the unit vector along the horizontal axis, so the shift moves x only
+  \item[{$\delta$}] \normalfont a candidate shift, one of nine values from $-$0.22 to +0.22 x-heights
+  \item[{$N$}] \normalfont the number of points per stroke, 44
+\end{description}
+Aligning variants to an estimate and then recomputing that estimate is iterative refinement. It can reduce misregistration, but this implementation does not establish a monotone decrease for every quality measure or a global optimum. Two rounds are the implementation budget, not a demonstrated sufficient number for every writer or variant pool.
+
+
+\Q{Method}{Step four: reject the worst fifth, then take the median}
+After alignment, each variant's mean deviation from the median is computed, and the worst 20 percent are dropped before the final median is taken. This is a second line of defence: a variant that survived every earlier gate but is still wrong will disagree with the aligned consensus, and here it is identified by that disagreement alone, with no reference to what kind of defect it has.
+
+The median, not the mean, at every stage. Its robustness is exactly what is wanted: a prototype must not be bent toward a single bad variant, and with the median one outlier among several has no influence at all on the result rather than a proportional one.
+
+
+\begin{quote}\small\itshape Returning nothing is common and is not a failure. A character with few examples, or whose examples disagree about stroke count, has no reliable prototype, and inventing one from two variants would produce a shape less trustworthy than either. The caller falls back on the writer's actual variants, which is the right behaviour: a real if imperfect letterform beats a confidently wrong average.\end{quote}
+
+
+\section{SmoothStroke}\label{fn:style:SmoothStroke}
+\begin{lstlisting}[style=sig]
+def SmoothStroke(pts, step=0.055, passes=2)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/style.py} line 703. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:medoid}.
+
+
+\Q{Purpose}{What this contributes}
+Respaces a path evenly and runs a three-point average over it, taking the pixel staircase out.
+
+
+
+
+\noindent\textbf{Inputs}
+\begin{description}[leftmargin=2.2em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{pts}] \normalfont a stroke
+  \item[{step}] \normalfont the spacing to resample to, in x-heights, default 0.055
+  \item[{passes}] \normalfont how many smoothing passes, default 2
+\end{description}
+
+\noindent\textbf{Output.} the stroke resampled evenly and smoothed, as rounded coordinates.
+
+
+\Q{Purpose}{What it is for}
+A traced stroke still carries the pixel staircase: it was assembled from whole-pixel positions, so it zigzags at the scale of one pixel even where the writer's stroke was smooth. Drawn by a plotter that staircase is visible, and it also misrepresents the writing, since the writer drew a curve. This function removes it.
+
+
+\Q{Method}{Step one: resample evenly}
+The stroke is first resampled to points about 0.055 x-heights apart. Even spacing is required before smoothing, because the smoothing averages each point with its neighbours by index, and if the points are unevenly spaced then that averaging reaches different distances in different places, smoothing the sparse parts far more than the dense ones.
+
+
+\Q{Method}{Step two: the smoothing pass}
+
+\FormulaNote{Reduce local path noise through a weighted neighbouring-point average.}{code2026,haines2016}
+\begin{equation}
+q'_k \;=\; 0.25\,q_{k-1} \;+\; 0.5\,q_k \;+\; 0.25\,q_{k+1}
+\end{equation}
+
+\noindent where
+\begin{description}[leftmargin=2.4em,style=nextline,font=\normalfont\ttfamily]\setlength\itemsep{1pt}
+  \item[{$q'_k$}] \normalfont the new position of the k-th point
+  \item[{$q_k$}] \normalfont its current position
+  \item[{$q_{k-1},\, q_{k+1}$}] \normalfont its neighbours along the stroke
+  \item[{$0.25,\,0.5,\,0.25$}] \normalfont the weights, which sum to 1 and preserve a constant coordinate signal; curved geometry can still shrink
+\end{description}
+This is convolution along the sampled path with a three-point kernel. Unit-sum weights preserve constant coordinate sequences and make the operation equivariant to translating the whole path. They do not preserve every curve's size: averaging can round corners and shrink curved structures even when the weights sum to one.
+
+Two passes are applied. Away from endpoint handling, repeated convolution is equivalent to convolution with the combined kernel. Additional passes smooth more strongly and can also remove genuine small features. The exact pass count is not supported here by an independent optimum or a universal curvature-preservation bound.
+
+
+\Q{Justification}{Why the endpoints are held fixed}
+Only the interior points are smoothed; the first and last are kept exactly. The endpoints carry meaning that the interior does not: they are where the pen entered and left, they are what a join is drawn to, and they define the glyph's extent. Smoothing them would pull them inward, shortening every stroke slightly with each pass and, worse, moving the attachment points that synthesis relies on.
+
+
+\begin{quote}\small\itshape Coordinates are rounded to three decimal places on output. At a scale where 1 is the x-height, three decimals is a thousandth of a letter's height, far finer than any plotter can draw or any descriptor can distinguish. The rounding roughly halves the size of the stored profile, which runs to thousands of strokes, at no cost in fidelity.\end{quote}
+

@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Handwriting Robot — Curate Letterforms</title>
+<link rel="stylesheet" href="style.css" />
+<style>
+/* ---------- Curation grid ----------
+   One block per character, every variant drawn as a clickable tile.  Marked
+   tiles are not removed from the page: nothing leaves the profile until Save
+   is pressed, so a mark has to be visibly undoable. */
+.char-block {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px 14px;
+  margin-bottom: 14px;
+}
+.char-block > header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+.char-block .ch {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--cyan);
+  min-width: 1.4em;
+  text-align: center;
+}
+.char-block .count { color: var(--silver-dim); font-size: 0.85rem; }
+.char-block .mini {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--silver);
+  border-radius: 6px;
+  padding: 3px 9px;
+  font-size: 0.76rem;
+  cursor: pointer;
+  font-family: var(--font);
+}
+.char-block .mini:hover { color: var(--cyan); border-color: var(--cyan-dim); }
+
+.tiles { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.tile {
+  width: 104px;
+  background: var(--bg-panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px;
+  cursor: pointer;
+  position: relative;
+  transition: border-color 0.12s, background 0.12s;
+}
+.tile:hover { border-color: var(--cyan-dim); }
+.tile svg { display: block; width: 96px; height: 96px; }
+.tile .lbl {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.68rem;
+  color: var(--silver-dim);
+  padding: 2px 3px 0;
+}
+.tile .lbl .i { color: var(--silver); font-weight: 600; }
+.tile.proto { border-style: dashed; }
+.tile.proto .lbl .i::after { content: " proto"; color: var(--cyan-dim); font-weight: 400; }
+
+/* a marked tile keeps its drawing visible, dimmed, so the judgement can be
+   checked and reversed before anything is written */
+.tile.marked { border-color: var(--danger); background: #2a1618; }
+.tile.marked svg { opacity: 0.3; }
+.tile.marked::after {
+  content: "\2715";
+  position: absolute;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  color: var(--danger);
+  font-size: 2rem;
+  font-weight: 700;
+  pointer-events: none;
+}
+.tile.only {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+/* ---------- The action bar ----------
+   It follows the page down, because the grid is long and the decision to save
+   is made while looking at a letter near the bottom of it. */
+.action-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  margin-top: 18px;
+  background: linear-gradient(0deg, #0b0d10f2, #14171be6);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.action-bar .tally { font-weight: 600; }
+.action-bar .tally.none { color: var(--silver-dim); font-weight: 400; }
+.action-bar .tally.some { color: var(--danger); }
+.action-bar .spacer { flex: 1; }
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+.toolbar label { color: var(--silver-dim); font-size: 0.85rem; }
+.toolbar select, .toolbar input[type="text"] {
+  background: var(--bg-panel-2);
+  color: var(--white);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 10px;
+  font-family: var(--font);
+}
+.danger-btn { border-color: var(--danger) !important; color: var(--danger) !important; }
+</style>
+</head>
+<body>
+<div id="topbar"></div>
+
+<main>
+  <h1>Curate letterforms</h1>
+  <p class="subtitle">
+    The filters that choose which variants to keep score how typical a shape is, and that cannot
+    tell a badly cut letter from an unusual one &mdash; so a glyph that is simply wrong can survive.
+    Click any variant to mark it for removal, then save. The original profile is never written over.
+  </p>
+
+  <div class="error-banner" id="loadError"></div>
+
+  <div class="toolbar">
+    <label for="writerSel">Writer</label>
+    <select id="writerSel"></select>
+    <label for="sourceSel">Work from</label>
+    <select id="sourceSel">
+      <option value="original">the original profile</option>
+      <option value="curated">the curated profile</option>
+    </select>
+    <button id="reloadBtn">Reload</button>
+    <span class="hint" id="sourceHint"></span>
+  </div>
+
+  <div id="summaryLine" class="hint" style="margin-bottom:14px;"></div>
+  <div id="grid"></div>
+
+  <div class="action-bar">
+    <span class="tally none" id="tally">nothing marked</span>
+    <button id="clearBtn">Clear all marks</button>
+    <div class="spacer"></div>
+    <button class="danger-btn" id="revertBtn">Delete curated profile</button>
+    <button id="saveBtn">Save curated profile</button>
+  </div>
+
+  <div class="result-box" id="result"></div>
+
+  <p class="hint" style="margin-top:22px;">
+    Saving writes <code>&lt;writer&gt;_curated.json</code> beside the original and rebuilds the three
+    things derived from the variant set &mdash; the prototype letterform, the most typical real
+    variant, and the letter advances &mdash; using the same code the profile builder uses. It appears
+    in the Write page's writer list straight away, so the two can be compared without a restart.
+    <code>connectedness</code> is carried over unchanged: it counts adjacent letter pairs seen while
+    reading the pages, and which letter sat next to which is not stored in the profile, so it cannot
+    be recomputed here. The saved file records that in a <code>curatedNote</code> field.
+  </p>
+</main>
+
+<script src="app.js"></script>
+<script>
+renderTopbar("curate");
+
+// ---------------------------------------------------------------------------
+// State.  `view` is what the server last sent, `marks` is what has been
+// clicked since: a character to a Set of variant indices.  The indices are the
+// server's own, so there is no mapping between what is seen and what is sent.
+// ---------------------------------------------------------------------------
+let view = null;
+const marks = new Map();
+
+function markedCount() {
+  let n = 0;
+  for (const s of marks.values()) n += s.size;
+  return n;
+}
+
+// ---------------------------------------------------------------------------
+// Drawing.  Every variant of one character is scaled by the same factor, taken
+// from the largest of them, rather than each being fitted to its own tile: a
+// glyph that came out far too big or too small is a fault worth seeing, and
+// fitting each one separately would hide exactly that.
+// ---------------------------------------------------------------------------
+function glyphSvg(variant, scale, size) {
+  const pts = variant.strokes.flat();
+  if (!pts.length) return `<svg viewBox="0 0 ${size} ${size}"></svg>`;
+  const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
+  const minX = Math.min(...xs), minY = Math.min(...ys);
+  const w = Math.max(...xs) - minX, h = Math.max(...ys) - minY;
+  const pad = 10;
+  const k = scale > 0 ? (size - 2 * pad) / scale : 1;
+  const ox = (size - w * k) / 2, oy = (size - h * k) / 2;
+  const paths = variant.strokes
+    .filter(s => s.length > 1)
+    .map(s => "M" + s.map(p =>
+        `${(ox + (p[0] - minX) * k).toFixed(1)},${(size - oy - (p[1] - minY) * k).toFixed(1)}`
+      ).join("L"))
+    .join(" ");
+  return `<svg viewBox="0 0 ${size} ${size}"><path d="${paths}" fill="none"
+    stroke="#f2f4f6" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+}
+
+function charExtent(variants) {
+  let m = 0;
+  for (const v of variants) {
+    const pts = v.strokes.flat();
+    if (!pts.length) continue;
+    const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
+    m = Math.max(m, Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
+  }
+  return m;
+}
+
+function render() {
+  const grid = document.getElementById("grid");
+  if (!view) { grid.innerHTML = ""; return; }
+  grid.innerHTML = view.characters.map(c => {
+    const scale = charExtent(c.variants);
+    const set = marks.get(c.ch) || new Set();
+    const left = c.variants.length - set.size;
+    const tiles = c.variants.map(v => {
+      const cls = ["tile"];
+      if (v.denoised) cls.push("proto");
+      if (set.has(v.index)) cls.push("marked");
+      // the last one standing is not clickable: a character with no variants
+      // left is dropped from the profile altogether, which is a bigger
+      // decision than it looks when made by one more click
+      else if (left <= 1) cls.push("only");
+      return `<div class="${cls.join(" ")}" data-ch="${encodeURIComponent(c.ch)}" data-i="${v.index}"
+          title="variant ${v.index}, prior distance ${v.priorD.toFixed(3)}, advance ${v.advance}">
+        ${glyphSvg(v, scale, 96)}
+        <div class="lbl"><span class="i">${v.index}</span><span>${v.priorD.toFixed(2)}</span></div>
+      </div>`;
+    }).join("");
+    return `<div class="char-block">
+      <header>
+        <span class="ch">${escapeHtml(c.ch)}</span>
+        <span class="count">${left} of ${c.variants.length} kept</span>
+        <button class="mini" data-all="${encodeURIComponent(c.ch)}">mark all but the closest</button>
+        <button class="mini" data-none="${encodeURIComponent(c.ch)}">clear</button>
+      </header>
+      <div class="tiles">${tiles}</div>
+    </div>`;
+  }).join("");
+  renderTally();
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+function renderTally() {
+  const n = markedCount();
+  const el = document.getElementById("tally");
+  el.className = "tally " + (n ? "some" : "none");
+  el.textContent = n
+    ? `${n} variant${n === 1 ? "" : "s"} marked for removal, in ${marks.size} character${marks.size === 1 ? "" : "s"}`
+    : "nothing marked";
+}
+
+// ---------------------------------------------------------------------------
+// Clicks.  Delegated from the grid, so the handlers survive a re-render.
+// ---------------------------------------------------------------------------
+document.getElementById("grid").addEventListener("click", e => {
+  const all = e.target.closest("[data-all]");
+  if (all) return markAllBut(decodeURIComponent(all.dataset.all));
+  const none = e.target.closest("[data-none]");
+  if (none) { marks.delete(decodeURIComponent(none.dataset.none)); return render(); }
+
+  const tile = e.target.closest(".tile");
+  if (!tile || tile.classList.contains("only")) return;
+  const ch = decodeURIComponent(tile.dataset.ch), i = Number(tile.dataset.i);
+  const set = marks.get(ch) || new Set();
+  if (set.has(i)) set.delete(i); else set.add(i);
+  if (set.size) marks.set(ch, set); else marks.delete(ch);
+  render();
+});
+
+// mark everything except the variant closest to the usual shape, as a starting
+// point for a character that is mostly rubbish: it is quicker to un-mark the
+// two or three good ones than to mark the nine bad ones
+function markAllBut(ch) {
+  const c = view.characters.find(x => x.ch === ch);
+  if (!c || c.variants.length < 2) return;
+  const best = c.variants.reduce((a, b) => (b.priorD < a.priorD ? b : a));
+  marks.set(ch, new Set(c.variants.filter(v => v.index !== best.index).map(v => v.index)));
+  render();
+}
+
+document.getElementById("clearBtn").onclick = () => { marks.clear(); render(); };
+
+// ---------------------------------------------------------------------------
+// Loading and saving
+// ---------------------------------------------------------------------------
+async function loadWriters() {
+  const authors = await apiFetch("/api/authors");
+  // the curated files are profiles in their own right and show up in this
+  // list, but they are the output of this page, not a thing to curate from
+  // scratch, so they are reached through Work from instead
+  const base = authors.map(a => a.id).filter(id => !id.endsWith("_curated"));
+  const sel = document.getElementById("writerSel");
+  sel.innerHTML = base.map(id => `<option value="${id}">${id}</option>`).join("");
+  return base;
+}
+
+async function load() {
+  clearError("loadError");
+  const writer = document.getElementById("writerSel").value;
+  const curated = document.getElementById("sourceSel").value === "curated";
+  if (!writer) return;
+  document.getElementById("grid").innerHTML = '<div class="spinner"></div>';
+  try {
+    const v = await apiFetch(`/api/curate/${writer}?curated=${curated ? 1 : 0}`);
+    if (v.error) throw new Error(v.error);
+    view = v;
+    marks.clear();
+    document.getElementById("summaryLine").textContent =
+      `${v.source}: ${v.nChars} characters, ${v.nVariants} variants`
+      + (v.curatedFrom ? `, curated from ${v.curatedFrom}` : "");
+    document.getElementById("sourceHint").textContent =
+      v.hasCurated ? "a curated profile exists for this writer" : "no curated profile yet";
+    render();
+  } catch (e) {
+    view = null;
+    document.getElementById("grid").innerHTML = "";
+    showError("loadError", e.message);
+  }
+}
+
+document.getElementById("writerSel").onchange = load;
+document.getElementById("sourceSel").onchange = load;
+document.getElementById("reloadBtn").onclick = load;
+
+document.getElementById("saveBtn").onclick = async () => {
+  if (!markedCount()) return showResult("Nothing is marked, so there is nothing to save.", false);
+  const writer = document.getElementById("writerSel").value;
+  const curated = document.getElementById("sourceSel").value === "curated";
+  const drop = {};
+  for (const [ch, s] of marks) drop[ch] = [...s];
+  try {
+    const r = await apiFetch(`/api/curate/${writer}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ drop, curated }),
+    });
+    if (r.error) return showResult(r.error, false);
+    showResult(
+      `Removed ${r.removed} variant${r.removed === 1 ? "" : "s"}. `
+      + `${r.nChars} characters and ${r.nVariants} variants remain. `
+      + (r.emptied.length ? `Characters dropped entirely: ${r.emptied.join(" ")}. ` : "")
+      + `Rebuilt the prototype, medoid and advance for: ${r.rebuilt.join(" ")}. `
+      + `Written to ${r.out}.`, true);
+    // show the file that was just written, so a second pass narrows it further
+    // rather than silently re-reading the original
+    document.getElementById("sourceSel").value = "curated";
+    await load();
+  } catch (e) {
+    showResult(e.message, false);
+  }
+};
+
+document.getElementById("revertBtn").onclick = async () => {
+  const writer = document.getElementById("writerSel").value;
+  if (!confirm(`Delete ${writer}_curated.json? The original profile is untouched either way.`)) return;
+  try {
+    const r = await apiFetch(`/api/curate/${writer}`, { method: "DELETE" });
+    showResult(r.deleted ? `Deleted ${r.file}.` : `There was no ${r.file} to delete.`, true);
+    document.getElementById("sourceSel").value = "original";
+    await load();
+  } catch (e) {
+    showResult(e.message, false);
+  }
+};
+
+function showResult(msg, ok) {
+  const box = document.getElementById("result");
+  box.textContent = msg;
+  box.style.borderColor = ok ? "var(--ok)" : "var(--danger)";
+  box.classList.add("show");
+}
+
+(async () => {
+  try {
+    await loadWriters();
+    await load();
+  } catch (e) {
+    showError("loadError", e.message);
+  }
+})();
+</script>
+</body>
+</html>

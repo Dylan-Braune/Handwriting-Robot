@@ -65,11 +65,21 @@ def _CapThreads():
         root = os.path.dirname(os.path.dirname(os.path.abspath(numpy.__file__)))
         pats = [os.path.join(root, "numpy.libs", "*openblas*.so*"),
                 os.path.join(root, "numpy", ".libs", "*openblas*.so*")]
+        #the wheel renames its symbols, so the plain name is not there: the
+        #board carries libscipy_openblas64_, whose entry point is
+        #scipy_openblas_set_num_threads64_.  every spelling seen in the
+        #numpy and scipy builds is tried in turn
+        names = ("scipy_openblas_set_num_threads64_",
+                 "scipy_openblas_set_num_threads_64_",
+                 "scipy_openblas_set_num_threads",
+                 "openblas_set_num_threads64_",
+                 "openblas_set_num_threads",
+                 "scipy_goto_set_num_threads64_",
+                 "goto_set_num_threads")
         for pat in pats:
             for so in glob.glob(pat):
                 lib = ctypes.CDLL(so)
-                for fn in ("openblas_set_num_threads",
-                           "openblas_set_num_threads64_"):
+                for fn in names:
                     if hasattr(lib, fn):
                         getattr(lib, fn)(1)
                         return True

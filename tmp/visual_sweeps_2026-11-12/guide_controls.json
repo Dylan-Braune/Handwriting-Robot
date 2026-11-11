@@ -1,0 +1,660 @@
+[
+  {
+    "id": 1,
+    "table": 0,
+    "control": "profile['connectedness'] within 0 to 0.44",
+    "question": "Why does increasing connectedness show no joins",
+    "expected": "Automatic inter-letter joins remain suppressed below JOIN_PRINT_CONN_FLOOR. Changing 0.1 to 0.3 may therefore show no joining difference."
+  },
+  {
+    "id": 2,
+    "table": 0,
+    "control": "Cross JOIN_PRINT_CONN_FLOOR = 0.45",
+    "question": "When does joining begin",
+    "expected": "Eligible pairs become candidates for joining. Distance, source compatibility, letter type and attachment geometry must still pass."
+  },
+  {
+    "id": 3,
+    "table": 0,
+    "control": "Cross CORE_CURSIVE_CONN = 0.5",
+    "question": "Why did the letter shapes change too",
+    "expected": "Generic fallback selection can switch towards cursive forms. This changes more than the number of connectors."
+  },
+  {
+    "id": 4,
+    "table": 0,
+    "control": "Increase connectedness above the gates",
+    "question": "Can you make this hand more connected",
+    "expected": "More eligible joins are likely. Even connectedness of 1 does not force every adjacent character to connect."
+  },
+  {
+    "id": 5,
+    "table": 0,
+    "control": "JOIN_PROB_CAP = 0 versus 1",
+    "question": "Show only the contribution of added joins",
+    "expected": "Zero suppresses probabilistic synthesis joins while retaining the profile's print or cursive classification. This is a cleaner isolation than crossing the profile thresholds."
+  },
+  {
+    "id": 6,
+    "table": 0,
+    "control": "MAX_JOIN_GAP_XH",
+    "question": "Stop long unnatural connections",
+    "expected": "Reducing it rejects longer horizontal reaches between letters. Increasing it permits more distant eligible attachments. Other gates still apply."
+  },
+  {
+    "id": 7,
+    "table": 1,
+    "control": "profile['slantDeg']",
+    "question": "Make the writer upright and then more slanted",
+    "expected": "Increasing magnitude increases horizontal shear with height, moving tall strokes more than baseline points. Slant caps and style calibration can limit or modify the result."
+  },
+  {
+    "id": 8,
+    "table": 1,
+    "control": "mmPerXh",
+    "question": "Write the same text at two sizes",
+    "expected": "Larger physical x-height enlarges glyphs and advances, generally increases path length and causes earlier wrapping. Ruling and bounds fitting can override the apparent requested size."
+  },
+  {
+    "id": 9,
+    "table": 1,
+    "control": "lineWidthMm",
+    "question": "Fit the paragraph into a narrower area",
+    "expected": "Narrower width causes more line breaks. It does not simply squeeze every glyph horizontally."
+  },
+  {
+    "id": 10,
+    "table": 1,
+    "control": "profile['wordSpaceXh']",
+    "question": "Separate the words more clearly",
+    "expected": "Larger values increase word gaps and can cause additional wrapping. They change layout rather than the captured character shapes."
+  },
+  {
+    "id": 11,
+    "table": 1,
+    "control": "MIN_LETTER_GAP_XH and MAX_LETTER_GAP_XH",
+    "question": "Make the writing tighter or looser",
+    "expected": "These constrain the gap used in advancing between stored glyphs. Tightening can increase collisions; loosening can fragment the appearance of words and increase width."
+  },
+  {
+    "id": 12,
+    "table": 1,
+    "control": "COLLISION_MIN_GAP_XH = 0.05",
+    "question": "What prevents overlapping letters",
+    "expected": "Increasing it pushes overlapping glyph extents farther apart. Reducing it permits closer placement. The guard uses geometric extents rather than semantic understanding of letters."
+  },
+  {
+    "id": 13,
+    "table": 1,
+    "control": "jitter",
+    "question": "Make the writing mechanical or variable",
+    "expected": "Increasing it increases positional, angular and scale perturbations and baseline drift. It does not control only one kind of variation."
+  },
+  {
+    "id": 14,
+    "table": 1,
+    "control": "Position jitter multiplier 0.022",
+    "question": "Change position variation alone",
+    "expected": "Increasing it increases glyph displacement without directly changing the rotation and scale multipliers."
+  },
+  {
+    "id": 15,
+    "table": 1,
+    "control": "Rotation jitter multiplier 2.2",
+    "question": "Vary individual letter angles",
+    "expected": "Increasing it increases local angular variation, distinct from the writer's overall slant."
+  },
+  {
+    "id": 16,
+    "table": 1,
+    "control": "Scale jitter multiplier 0.05",
+    "question": "Vary individual character sizes",
+    "expected": "Increasing it increases local size variation, potentially changing clearance and appearance."
+  },
+  {
+    "id": 17,
+    "table": 1,
+    "control": "Drift persistence 0.85",
+    "question": "Make the baseline wander gradually",
+    "expected": "Higher persistence retains drift velocity longer and produces more correlated movement. It acts on velocity, not simply on baseline position."
+  },
+  {
+    "id": 18,
+    "table": 1,
+    "control": "Drift bound plus or minus 0.25 x-heights",
+    "question": "Keep the writing near its baseline",
+    "expected": "Smaller bounds restrict wander. Larger bounds permit greater vertical displacement and can reduce clearance between lines."
+  },
+  {
+    "id": 19,
+    "table": 1,
+    "control": "Line clearance addition 0.85",
+    "question": "Increase separation between lines",
+    "expected": "Increasing the addition in (ascender - descender + clearance) times x-height increases synthesis pitch. Later ruling placement can alter final spacing."
+  },
+  {
+    "id": 20,
+    "table": 1,
+    "control": "seed",
+    "question": "Repeat exactly the same generation",
+    "expected": "Fixes pseudorandom choices for the same inputs and execution path. Changing it changes variants and perturbations. Branch changes can still alter random-number consumption."
+  },
+  {
+    "id": 21,
+    "table": 1,
+    "control": "USE_STYLE_CALIBRATION",
+    "question": "Show the uncorrected extracted style",
+    "expected": "Disabling it removes the automatic shear and extent correction. The visible effect depends on the writer's stored reference measurements and cache state."
+  },
+  {
+    "id": 22,
+    "table": 2,
+    "control": "legibility or profile['legibilityLambda']",
+    "question": "Prefer personal variants and then readable fallbacks",
+    "expected": "Higher anchoring strength generally favours cleaner representative or fallback forms. It can reduce personal variation and changes the permitted slant. It is not a universal vertex interpolation."
+  },
+  {
+    "id": 23,
+    "table": 2,
+    "control": "_AUTO_LAM_GOOD = 0.24 and _AUTO_LAM_BAD = 0.32",
+    "question": "Why does this profile use many anchors",
+    "expected": "Moving the thresholds changes how median prior distance maps to automatic anchoring. An explicit stored legibilityLambda can bypass the automatic calculation."
+  },
+  {
+    "id": 24,
+    "table": 2,
+    "control": "IDEAL_SOURCE",
+    "question": "Use a real representative instead of a prototype",
+    "expected": "Selects the preferred stored representative, medoid or prototype, where available. Missing or rejected representatives still trigger fallback."
+  },
+  {
+    "id": 25,
+    "table": 2,
+    "control": "IDEAL_ANCHOR_MAX_PRIORD = 0.30",
+    "question": "Accept more of the writer's own shapes",
+    "expected": "Increasing the limit permits less typical representatives. Decreasing it can cause more generic fallback use."
+  },
+  {
+    "id": 26,
+    "table": 2,
+    "control": "Variant pool for one character",
+    "question": "Use only one version of the letter a",
+    "expected": "Reducing the pool makes the character more repetitive. The retained glyph's quality matters more than the count alone."
+  },
+  {
+    "id": 27,
+    "table": 2,
+    "control": "Remove one character from a temporary profile",
+    "question": "What happens when this letter was never captured",
+    "expected": "Exercises missing-character fallback. The output may remain readable while becoming less specific to that writer."
+  },
+  {
+    "id": 28,
+    "table": 2,
+    "control": "perCharLam",
+    "question": "Repair one ambiguous letter",
+    "expected": "Applies stronger anchoring at selected text positions. Neighbouring joins and spacing can change too."
+  },
+  {
+    "id": 29,
+    "table": 2,
+    "control": "nTries",
+    "question": "Generate quickly and then search more",
+    "expected": "More trials provide more candidate opportunities and cost more inference time. The internal best score cannot worsen if the original candidate set is retained, but physical quality need not improve."
+  },
+  {
+    "id": 30,
+    "table": 2,
+    "control": "repair False or True",
+    "question": "What does automatic repair contribute",
+    "expected": "Disabling it reveals the best initial candidate. Enabling it permits targeted regeneration accepted by the full joint score."
+  },
+  {
+    "id": 31,
+    "table": 2,
+    "control": "repairRounds",
+    "question": "Allow more correction attempts",
+    "expected": "Increases the repair budget without guaranteeing improvement or a global optimum."
+  },
+  {
+    "id": 32,
+    "table": 2,
+    "control": "repairWorstK",
+    "question": "Repair one weak position or several",
+    "expected": "Larger values modify more positions per trial, potentially improving readability while changing more personal geometry."
+  },
+  {
+    "id": 33,
+    "table": 2,
+    "control": "Joint score weighting or form",
+    "question": "Prioritise text over writer identity",
+    "expected": "Requires a small scoring-logic edit. A weighted or alternative combination can select different candidates from the same pool without changing trained weights."
+  },
+  {
+    "id": 34,
+    "table": 3,
+    "control": "PAGE_NAMER",
+    "question": "Compare the ink and shape classifiers",
+    "expected": "Changes which saved checkpoint judges photographed lines. Labels and confidence can change without retraining. Use that model's corresponding class mapping."
+  },
+  {
+    "id": 35,
+    "table": 3,
+    "control": "PAGE_NAMER_STROKE_NORM",
+    "question": "Does identity depend on pen thickness",
+    "expected": "Enabling normalisation removes much of the original stroke-width information. It can improve robustness or discard useful cues, depending on the checkpoint and image."
+  },
+  {
+    "id": 36,
+    "table": 3,
+    "control": "StrokeNormalize penWidthXh argument",
+    "question": "Classify the same skeleton at different widths",
+    "expected": "Larger widths thicken the reconstructed image and can close gaps. Smaller widths can lose small details after resizing. Changes occur in discrete kernel-size steps."
+  },
+  {
+    "id": 37,
+    "table": 3,
+    "control": "Text checkpoint selection",
+    "question": "Compare saved text recognition models",
+    "expected": "Changes the existing reader and potentially its transcript and confidence. The model object must actually be reloaded; a filename edit alone is insufficient."
+  },
+  {
+    "id": 38,
+    "table": 3,
+    "control": "Ink weighted versus equal line pooling",
+    "question": "Why should a long line count more",
+    "expected": "Equal weighting increases short lines' influence. Ink weighting increases dense or long lines' influence. The page result can change while every line prediction stays unchanged."
+  },
+  {
+    "id": 39,
+    "table": 3,
+    "control": "Lines included in the page vote",
+    "question": "What if a crop is poor",
+    "expected": "Excluding a crop changes the evidence and pooled probabilities. Keep the excluded crop visible rather than presenting removal as an unexplained accuracy gain."
+  },
+  {
+    "id": 40,
+    "table": 3,
+    "control": "Pooling ink threshold currently below 128",
+    "question": "What counts as evidence for weighting",
+    "expected": "Raising the threshold counts more grey pixels as ink and can change relative line weights. It does not itself alter the classifier input pixels."
+  },
+  {
+    "id": 41,
+    "table": 3,
+    "control": "Whole line versus a shorter crop",
+    "question": "How much handwriting is needed",
+    "expected": "Less content generally supplies less evidence, but confidence is not guaranteed to fall smoothly. Keep crop preparation consistent."
+  },
+  {
+    "id": 42,
+    "table": 3,
+    "control": "Explicit blur contrast or brightness transformation",
+    "question": "What happens with a poor photograph",
+    "expected": "Can reveal recognition sensitivity without retraining. Stronger transformations may erase strokes, close gaps or change background estimates. These are explicit input edits rather than existing universal request sliders."
+  },
+  {
+    "id": 43,
+    "table": 3,
+    "control": "Confidence based abstention",
+    "question": "Can the system say it does not know",
+    "expected": "Requires decision-logic addition. Reject below a threshold instead of always naming the maximum-softmax class. Raising the threshold increases abstention without improving the probabilities themselves."
+  },
+  {
+    "id": 44,
+    "table": 4,
+    "control": "Background estimation window radius",
+    "question": "Handle a stronger local shadow",
+    "expected": "Smaller windows follow local illumination more closely but can follow ink itself. Larger windows preserve broader structures but miss rapid lighting changes."
+  },
+  {
+    "id": 45,
+    "table": 4,
+    "control": "Ink ratio threshold adjustment",
+    "question": "Retain faint handwriting",
+    "expected": "A higher ratio threshold generally retains more foreground, including noise. A lower threshold can erase faint strokes. Requires a local decision edit rather than a currently exposed request field."
+  },
+  {
+    "id": 46,
+    "table": 4,
+    "control": "Darkness exponent 0.55",
+    "question": "Make the crop darker or lighter",
+    "expected": "For darkness between zero and one, reducing the exponent strengthens intermediate darkness. Increasing it weakens darkness. The exponent acts on darkness, not directly on brightness."
+  },
+  {
+    "id": 47,
+    "table": 4,
+    "control": "AXIS_TURN_MARGIN = 1.35",
+    "question": "Why did the page rotate by ninety degrees",
+    "expected": "Lowering the margin accepts weaker quarter-turn evidence. Raising it makes turning more conservative."
+  },
+  {
+    "id": 48,
+    "table": 4,
+    "control": "Deskew range minus four to plus four degrees",
+    "question": "Read a more tilted page",
+    "expected": "A wider search handles greater global tilt at extra work, but may admit other objective maxima. It does not fix perspective or curved baselines."
+  },
+  {
+    "id": 49,
+    "table": 4,
+    "control": "Deskew increment 0.5 degrees",
+    "question": "Straighten the page more precisely",
+    "expected": "Smaller increments provide finer angular search and more computation. They do not guarantee a better estimate on an ambiguous page."
+  },
+  {
+    "id": 50,
+    "table": 4,
+    "control": "Peak floor 0.06 times maximum",
+    "question": "Recover a faint line",
+    "expected": "Lowering it admits weaker peaks and possible false lines. Raising it can drop faint genuine lines."
+  },
+  {
+    "id": 51,
+    "table": 4,
+    "control": "Centre separation 0.6P",
+    "question": "Separate two close lines",
+    "expected": "Lowering it allows closer centres but can split one line's ascender, body and descender bands. Raising it can merge nearby true lines. P is estimated line pitch."
+  },
+  {
+    "id": 52,
+    "table": 4,
+    "control": "mergeValley or LINE_MERGE_VALLEY",
+    "question": "Stop splitting one line into several",
+    "expected": "Lowering the threshold makes shallow-valley merging more aggressive. At 1.0, this merging loop is effectively disabled."
+  },
+  {
+    "id": 53,
+    "table": 4,
+    "control": "PEAK_MIN_PITCH_XH",
+    "question": "Avoid mistaking letter height for line spacing",
+    "expected": "Raising the pitch floor rejects more letter-sized peak gaps, but can reject genuinely tight line spacing."
+  },
+  {
+    "id": 54,
+    "table": 4,
+    "control": "Run limits 1.25P and 1.4P",
+    "question": "Remove ruling while keeping handwriting",
+    "expected": "Smaller limits remove shorter straight structures and may remove genuine underlines or strokes. Larger limits retain more printed marks."
+  },
+  {
+    "id": 55,
+    "table": 4,
+    "control": "Seam ink penalty 4.0",
+    "question": "Make the cut avoid ink more strongly",
+    "expected": "Increasing it gives closed-mask ink a stronger penalty relative to other costs. The path may make longer detours."
+  },
+  {
+    "id": 56,
+    "table": 4,
+    "control": "Seam midpoint weight 0.012",
+    "question": "Keep boundaries near the middle",
+    "expected": "Increasing it resists detours. Reducing it allows low-ink routes farther from the midpoint."
+  },
+  {
+    "id": 57,
+    "table": 4,
+    "control": "Seam movement penalty 0.02",
+    "question": "Make the boundary smoother",
+    "expected": "Increasing it penalises vertical movement more. Reducing it permits locally jagged routes."
+  },
+  {
+    "id": 58,
+    "table": 4,
+    "control": "Caller seam step allowance 7",
+    "question": "Bend around a narrow tall stroke",
+    "expected": "Increasing it permits steeper row changes between columns. Reducing it limits how quickly the seam can react. The called function's default is not necessarily the active caller value."
+  },
+  {
+    "id": 59,
+    "table": 4,
+    "control": "Closing radius near 0.07P",
+    "question": "Stop cuts threading through tiny stroke gaps",
+    "expected": "Larger closing seals more gaps but can join neighbouring structures. Smaller closing preserves narrow passages."
+  },
+  {
+    "id": 60,
+    "table": 4,
+    "control": "Ownership substantial overlap fraction 0.15",
+    "question": "Why was a fragment assigned to this line",
+    "expected": "Raising it recognises fewer overlaps as substantial. Lowering it lets smaller overlaps affect reference ownership. This is not simply a more-correction slider."
+  },
+  {
+    "id": 61,
+    "table": 4,
+    "control": "Minimum crop ink",
+    "question": "Keep short lines or punctuation",
+    "expected": "Lowering it retains smaller candidates and more artefacts. Raising it can discard genuine short lines."
+  },
+  {
+    "id": 62,
+    "table": 4,
+    "control": "Solid crop limits 15 percent and three times median",
+    "question": "Why was a dark block rejected",
+    "expected": "Lowering limits makes rejection more aggressive. Raising them retains denser crops. Both conditions must pass; an all-rejected fallback returns the original candidates."
+  },
+  {
+    "id": 63,
+    "table": 5,
+    "control": "drawFeedMmMin",
+    "question": "Draw the same path more slowly",
+    "expected": "Changes pen-down command feed. Digital geometry should remain the same; physical time, ink deposition and tracking can change."
+  },
+  {
+    "id": 64,
+    "table": 5,
+    "control": "travelFeedMmMin",
+    "question": "Spend less time between strokes",
+    "expected": "Changes pen-up feed. It should preserve intended drawn geometry, but carriage dynamics still matter."
+  },
+  {
+    "id": 65,
+    "table": 5,
+    "control": "penDownDwellMs",
+    "question": "Start before the pen settles",
+    "expected": "Shorter dwell reduces waiting and can produce weak or missing stroke starts. It does not directly command contact pressure."
+  },
+  {
+    "id": 66,
+    "table": 5,
+    "control": "penUpDwellMs",
+    "question": "Travel sooner after lifting",
+    "expected": "Shorter dwell reduces waiting but can produce travel marks if clearance has not been achieved."
+  },
+  {
+    "id": 67,
+    "table": 5,
+    "control": "joinStrokesMm = 0.6",
+    "question": "Avoid unnecessary pen lifts",
+    "expected": "Increasing it keeps the pen down over more short endpoint gaps, reducing toggles and adding connectors. This is separate from synthesis connectedness."
+  },
+  {
+    "id": 68,
+    "table": 5,
+    "control": "closeRingMm = 0.6",
+    "question": "Close an almost complete loop",
+    "expected": "Increasing it closes more near-loops. Excessive values can add unwanted closing strokes."
+  },
+  {
+    "id": 69,
+    "table": 5,
+    "control": "minSegmentMm = 0.12",
+    "question": "Reduce tiny movement commands",
+    "expected": "Increasing it removes more short moves through decimation and can lose detail. It is not the extraction-stage Douglas Peucker tolerance."
+  },
+  {
+    "id": 70,
+    "table": 5,
+    "control": "Stroke order optimisation",
+    "question": "Reduce pen-up travel",
+    "expected": "Can reorder or reverse strokes while retaining much of the visible geometry. It changes execution order and potentially joins and physical ink effects."
+  },
+  {
+    "id": 71,
+    "table": 5,
+    "control": "pageMarginXmm and pageMarginYmm",
+    "question": "Move writing away from an edge",
+    "expected": "Changes placement and usable space. A narrower usable width can also change wrapping."
+  },
+  {
+    "id": 72,
+    "table": 5,
+    "control": "line or lineOffsetMm",
+    "question": "Put the next result below the previous one",
+    "expected": "Moves the job vertically. It is a placement change rather than a writer-style change."
+  },
+  {
+    "id": 73,
+    "table": 5,
+    "control": "lineHeightMm and rulingXhFrac",
+    "question": "Fit a different paper ruling",
+    "expected": "Changes ruling-based sizing. Line height can affect both letter size and placement."
+  },
+  {
+    "id": 74,
+    "table": 5,
+    "control": "ignoreRuling",
+    "question": "Compare natural clearance with ruled spacing",
+    "expected": "Changes line placement. Tighter ruling can bring adjacent ascenders and descenders together."
+  },
+  {
+    "id": 75,
+    "table": 5,
+    "control": "Bounds fitting behaviour",
+    "question": "What happens when text does not fit",
+    "expected": "Automatic fitting can shrink the output and mask an earlier size increase. Inspect the reported placement and scale."
+  },
+  {
+    "id": 76,
+    "table": 5,
+    "control": "PEN_UP_OVERRUN_S",
+    "question": "Why run the cam after the switch changes",
+    "expected": "Alters extra motor run after confirmed pen-up. It is distinct from the generated G-code settling dwell."
+  },
+  {
+    "id": 77,
+    "table": 6,
+    "control": "SimplifyPolyline tolerance 0.6 source pixels",
+    "question": "",
+    "expected": "Larger tolerance retains fewer vertices and can remove fine curvature. Smaller tolerance retains more raster detail and noise."
+  },
+  {
+    "id": 78,
+    "table": 6,
+    "control": "Junction continuation angle 75 degrees",
+    "question": "",
+    "expected": "Larger angles permit sharper chain reconnections. Smaller angles leave more separate strokes."
+  },
+  {
+    "id": 79,
+    "table": 6,
+    "control": "Body band threshold 45 percent",
+    "question": "",
+    "expected": "Changes estimated baseline and x-height, affecting many downstream normalised measurements."
+  },
+  {
+    "id": 80,
+    "table": 6,
+    "control": "Cut cost height weight 1.15",
+    "question": "",
+    "expected": "Increasing it favours cuts through lower connectors more strongly."
+  },
+  {
+    "id": 81,
+    "table": 6,
+    "control": "Minimum cell width 0.08 times x-height",
+    "question": "",
+    "expected": "Increasing it prevents narrow cells but can force boundaries away from the best local gap."
+  },
+  {
+    "id": 82,
+    "table": 6,
+    "control": "Glyph width limits 2.1 and 2.9 x-heights",
+    "question": "",
+    "expected": "Larger limits admit broad valid forms and more multi-letter bad cuts. Smaller limits can reject genuine wide glyphs. Both numbers are width limits."
+  },
+  {
+    "id": 83,
+    "table": 6,
+    "control": "MAX_VARIANTS_PER_CHAR",
+    "question": "",
+    "expected": "Larger pools preserve more variety and potentially poor variants. Smaller pools increase repetition."
+  },
+  {
+    "id": 84,
+    "table": 6,
+    "control": "Prior and consensus filtering strength",
+    "question": "",
+    "expected": "Stricter filtering can improve consistency while discarding valid personal variation."
+  },
+  {
+    "id": 85,
+    "table": 6,
+    "control": "Smoothing step and passes",
+    "question": "",
+    "expected": "More smoothing can remove jitter and flatten distinctive corners or small features."
+  },
+  {
+    "id": 86,
+    "table": 7,
+    "control": "PROFILES in server memory",
+    "question": "A JSON edit has no immediate effect",
+    "expected": "The active in-memory profile is the intended temporary version."
+  },
+  {
+    "id": 87,
+    "table": 7,
+    "control": "Loaded model objects",
+    "question": "A checkpoint filename changes while the old weights remain loaded",
+    "expected": "The actual model object and its class mapping have been replaced consistently."
+  },
+  {
+    "id": 88,
+    "table": 7,
+    "control": "_STYLE_CAL cache",
+    "question": "An edited profile reuses an older correction",
+    "expected": "The cache key uses author and rendering scale, not every profile value. Recompute the affected correction where required."
+  },
+  {
+    "id": 89,
+    "table": 7,
+    "control": "Profile _gapRange cache",
+    "question": "New spacing limits or glyph metadata appear ineffective",
+    "expected": "The cached gap range has been recalculated for the comparison."
+  },
+  {
+    "id": 90,
+    "table": 7,
+    "control": "Function default arguments",
+    "question": "Changing a module variable does not change a bound default",
+    "expected": "The active call passes the intended value, or the function has been redefined through an appropriate reload."
+  },
+  {
+    "id": 91,
+    "table": 7,
+    "control": "Existing G-code job",
+    "question": "New settings do not affect a saved job",
+    "expected": "A new job was generated with the changed settings."
+  },
+  {
+    "id": 92,
+    "table": 7,
+    "control": "Candidate search and repair",
+    "question": "Automatic selection compensates for a deliberate change",
+    "expected": "The direct comparison uses one candidate and repair disabled before full-system search is restored."
+  },
+  {
+    "id": 93,
+    "table": 7,
+    "control": "Shared pseudorandom generator",
+    "question": "A branch change alters subsequent random choices",
+    "expected": "The seed is fixed, while recognising that this does not guarantee every later glyph choice remains identical."
+  },
+  {
+    "id": 94,
+    "table": 7,
+    "control": "Ruling and bounds fitting",
+    "question": "An explicit size or pitch change is rescaled later",
+    "expected": "Final machine placement and scale are inspected as well as synthesis output."
+  }
+]

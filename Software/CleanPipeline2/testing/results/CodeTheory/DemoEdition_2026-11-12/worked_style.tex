@@ -1,0 +1,233 @@
+\section{Expanded reasoning: alignment to a defensible writer profile}
+\label{sec:expand-style}
+\subsection{Body-band estimation: what the horizontal profile guesses}
+Let $M$ be a binary line mask and $p(y)=\sum_x M(y,x)$ its horizontal ink
+projection. The body-band heuristic takes the first and last rows above
+$0.45\max_y p(y)$ as top and baseline $b$, with $h_x=b-y_{\rm top}$.
+The baseline here is an image-derived estimate, not an anatomical fact about
+every glyph. Capitals, long descenders, isolated punctuation and uneven ink
+can bias the threshold. Bands narrower than three pixels are rejected because
+normalised measurements would become unstable. A 45\% profile threshold is
+different from a threshold on an individual pixel's brightness.
+
+Constructed profile $(0,2,8,10,9,3,0)$ has cutoff 4.5, so rows 2 through 4
+define the dense band. Using half-open row edges would give a different
+height by one pixel; the convention must follow the implementation. Changing
+0.45 changes estimated x-height, and therefore changes all later quantities
+expressed in x-heights. A percentile of ink rows, fitted baseline, or
+character-specific estimates are alternatives, with different assumptions.
+The exact 0.45 and three-pixel guard are project heuristics~\cite{code2026}.
+
+\subsection{Refining shared character cuts: every term and its purpose}
+CTC alignment gives approximate character spans. Their adjacent centres
+provide initial shared cuts. For column profile $p_x$ smoothed over a short
+window, the report uses
+\FormulaNote{Purpose in this explanation: Refining shared character cuts: every term and its purpose}{douglaspeucker1973,zhangsuen1984,code2026}
+\[
+C_x={p_x\over q_{0.60}(p_j:p_j>0)}+
+1.15\operatorname{clip}\left({b-y_{\rm top}(x)\over h_x},0,3\right).
+\]
+The first term measures how much ink a cut would cross relative to a typical
+nonempty column. Excluding zero columns avoids a zero scale on sparse text;
+the numerical denominator floor handles degenerate cases. The second term
+penalises columns containing tall ink, favouring low connectors near the
+baseline over stems. Clip bounds limit the influence of extreme ascenders.
+The two terms are dimensionless; 1.15 sets their relative priority.
+
+For smoothed ink count 2, positive-column percentile 8, height above baseline
+4 and $h_x=20$, the terms are 0.25 and $1.15(0.2)=0.23$, total 0.48.
+A taller column with the same count and height 20 scores 1.40. A true blank
+column is explicitly assigned zero cost. This is a constructed arithmetic
+example, not a measured cut. There is no published reason why 1.15 rather
+than 1.0 is optimal for these writers.
+
+Read-only inspection also shows a smoothing width near $0.12h_x$, snapped to
+an odd integer of at least three; a search radius near $0.5h_x$ of at least
+three; and a proximity penalty $0.6|x-x_{\rm CTC}|/r$ inside that search.
+This last 0.6 is dimensionless and is unrelated to the 0.6 source-pixel
+polyline tolerance or the 0.6 mm hardware join. Ordered boundaries must
+leave $\max(1,0.08h_x)$ pixels per cell. At $h_x=25$ that minimum is 2
+pixels. Without ordering, two neighbouring boundaries can snap to the same
+gap and create an empty character. Increasing minimum width may instead
+force a cut into a narrow genuine glyph. These are interacting heuristics;
+a local cost minimum alone cannot establish correct character ownership.
+
+\subsection{Binarisation, square dilation and Zhang--Suen thinning}
+Binarisation maps grey values to an ink/not-ink decision. It discards
+intensity information; later thinning cannot restore a faint stroke lost at
+this step. Dilation with square radius $r$ sets a pixel if any mask pixel
+within $\max(|\Delta x|,|\Delta y|)\le r$ is on. For radius one, an isolated
+pixel becomes a $3\times3$ block. Erosion requires all neighbourhood pixels
+to be on; closing combines the two in order. Boundary padding changes their
+behaviour at the edge.
+
+For Zhang--Suen thinning, label the clockwise neighbours
+$p_2=N,p_3=NE,p_4=E,p_5=SE,p_6=S,p_7=SW,p_8=W,p_9=NW$.
+Let $B=\sum_{i=2}^9p_i$, and $A$ be the number of 0-to-1 transitions in
+that circular list. A foreground pixel is eligible when $2\le B\le6$
+and $A=1$. In the first subiteration also require
+$p_2p_4p_6=0$ and $p_4p_6p_8=0$; in the second require
+$p_2p_4p_8=0$ and $p_2p_6p_8=0$. Delete marked pixels simultaneously
+within each subiteration and repeat until stable~\cite{zhangsuen1984,zhanglink}.
+The rules protect endpoints and local connectivity while eroding boundaries.
+Sequential in-place deletion would implement a different algorithm.
+
+The skeleton approximates stroke geometry; it does not reconstruct pen
+pressure, velocity, original stroke order or an exactly equidistant medial
+axis. Thinning the complete line before splitting cells avoids artificial
+end conditions at every character boundary. Nearby strokes may still form
+ambiguous junctions. A distance-transform medial axis and vector contour
+fitting are alternatives, but they have different branch/noise behaviour.
+
+\subsection{Graph tracing, junction continuation and detached marks}
+Treat skeleton pixels as vertices and touching neighbours as edges. Degree
+one suggests an endpoint; degree two suggests continuation; larger degree
+indicates a junction. Short chains can be raster artefacts or real dots.
+Therefore a length filter must be combined with location/character context.
+At a junction the tracer chooses compatible continuations rather than
+claiming the original hand followed that order.
+
+For outward endpoint directions $u$ and $v$, straight continuation means
+they point oppositely. A continuation deflection can be written
+$\alpha=\arccos[(-u)\cdot v/(\|u\|\|v\|)]$, zero for straight passage.
+The report's limit is 75 degrees. If directions were instead both measured
+along travel, the minus sign would be omitted; mixing these conventions
+reverses the test. The threshold prevents a sharp turn from being accepted
+as a smooth continuation. It is permissive compared with 30 degrees and
+restrictive compared with 90, but no universal optimum follows from geometry.
+Detached dots are recovered as short strokes; crossbars require association
+rules so they are not mistaken for inter-character connectors. There is
+inherent ambiguity without online pen traces.
+
+\subsection{Douglas--Peucker: bounded simplification, units and example}
+Given endpoints $A,B$ and intermediate point $P$, point-to-segment distance is
+\FormulaNote{Purpose in this explanation: Douglas--Peucker: bounded simplification, units and example}{douglaspeucker1973,zhangsuen1984,code2026}
+\[
+t=\operatorname{clip}\left({(P-A)\cdot(B-A)\over\|B-A\|^2},0,1\right),
+\qquad d(P,AB)=\|P-[A+t(B-A)]\|.
+\]
+If $A=B$, use $\|P-A\|$. Find the farthest intermediate point. If its
+distance exceeds $\epsilon$, retain it and recurse on the two subpaths;
+otherwise replace that subpath by its chord. This is the
+Douglas--Peucker principle~\cite{douglaspeucker1973,douglaslink}.
+The inspected project uses the infinite supporting-line distance
+$|\Delta x(P_y-A_y)-\Delta y(P_x-A_x)|/(\|B-A\|+10^{-9})$, rather than
+the clipped-segment formula above. The distinction matters near endpoints:
+distance to a supporting line can be small beyond a chord's endpoints.
+Consequently the project's tolerance is not an unrestricted symmetric
+Hausdorff bound between original and simplified curves.
+
+For $(0,0),(1,0.2),(2,0)$, the intermediate distance is 0.2. At
+$\epsilon=0.6$ it can be removed; at 0.1 it must be retained. At source
+x-height 30 pixels, 0.6 pixels is $0.02$ x-heights; drawing at 4 mm per
+x-height gives a nominal source-to-output scale of 0.08 mm. This is a
+scale conversion of the simplification tolerance, not a bound on physical
+pen error. Resampling, skeleton error, smoothing, joining and machine error
+all add different distortions.
+
+The report records 3738 vertices reduced to 974 at 0.6 source pixels,
+leaving about 26.1\% and removing about 73.9\%. That demonstrates compression
+for one line, not why 0.6 is optimal. Larger tolerances reduce G-code segments
+and can erase small loops/corners; smaller ones preserve raster jitter and
+increase work. Closed loops require care because identical endpoints make
+the initial chord degenerate; the inspected routine treats near-closed paths
+specially. Polygon topology and curvature are not generally guaranteed by
+ordinary Douglas--Peucker simplification.
+
+\subsection{Coordinate normalisation and shear: a worked transformation}
+For source pixel $(x,y)$, left cut $x_L$, baseline $b$, estimated x-height
+$h_x>0$, slant $\phi$ and trim $\delta$,
+\FormulaNote{Purpose in this explanation: Coordinate normalisation and shear: a worked transformation}{douglaspeucker1973,zhangsuen1984,code2026}
+\[
+v={b-y\over h_x},\qquad u={x-x_L\over h_x}-v\tan\phi-\delta.
+\]
+The first equation flips image-down to glyph-up. Division removes source
+scale. Subtracting $v\tan\phi$ removes slant; subtracting $\delta$ trims
+empty lead space, recorded separately so spacing can be restored. Shear is
+an affine transformation, not rotation: it shifts horizontal position in
+proportion to vertical height~\cite{wolberg1990}.
+
+Take $x=40,y=30,x_L=20,b=50,h_x=20,\phi=10$ degrees and $\delta=0.1$.
+Then $v=1$ and $u=1-0.17633-0.1\simeq0.72367$. Restoring lead 0.1
+and the same shear at $H=4$ mm gives horizontal offset
+$4(0.1+0.72367+0.17633)=4$ mm and vertical offset 4 mm.
+If slant were applied both during extraction and placement without undoing
+it, the letter would be sheared twice. A negative or tiny estimated x-height
+invalidates all these units, hence explicit guards.
+
+\subsection{Size gates: 2.1 and 2.9 are widths, not heights}
+In the inspected source, ordinary glyph width is limited to 2.1 x-heights
+and designated wide glyphs to 2.9~\cite{code2026}. The supplied list calls
+these height/width factors; the report and named constants identify both
+as \emph{width} limits. At $h_x=30$ pixels, they correspond to 63 and 87
+pixels of normalised source span. They target bad cuts containing neighbouring
+letters while allowing wider forms such as $m$ and $w$. They do not derive
+from typography as universal ratios.
+
+Other gates inspect height class, longest stroke, total length, stroke count,
+advance and within-character distributions. Ascenders and descenders should
+not be filtered by the same height expectation as a dot. Relative distributions
+allow writer-specific scale, but small samples can make them unreliable.
+Relaxing gates retains more personal variation and more fragments; tightening
+them reduces corruption and can eliminate rare valid forms. Missing characters
+then need explicit fallbacks whose provenance must remain visible.
+
+\subsection{The $12\times12$ descriptor and two different distances}
+The inspected shape-grid routine samples points along each segment, maps
+the glyph's bounding box to a $12\times12$ grid, accumulates counts, takes
+their square roots, applies a small blur, flattens to 144 values and normalises
+to unit Euclidean length. Sampling avoids representing a long straight segment
+by only its endpoints. Square roots reduce dominance by heavily sampled cells.
+The blur weights are centre 0.25 and eight neighbours 0.09375 each, summing
+to one. Flattening changes storage shape, not geometry.
+
+Independent horizontal/vertical bounding-box scaling reduces translation and
+size sensitivity but also removes aspect-ratio information. Width/height gates
+therefore provide information the descriptor deliberately discards. Grid size
+12 is a resolution/cost compromise: coarse grids alias details, fine grids
+become more sensitive to alignment and sampling. It is a project choice.
+
+The pooled class reference is a componentwise median of descriptors followed
+by unit normalisation. For unit vectors $v_g,r_c$, prior distance is
+$d=1-v_g^Tr_c$. Identical descriptors give zero. Because these descriptors
+are nonnegative, their dot products lie in $[0,1]$, so this distance lies in
+$[0,1]$ (up to rounding), rather than the $[0,2]$ range of arbitrary signed
+unit vectors. A cosine distance need not obey the triangle inequality, so
+``distance'' does not automatically mean a mathematical metric.
+
+Within-writer consensus instead uses $D_{ij}=\|v_i-v_j\|_1$, the sum of
+absolute coordinate differences. The medoid is
+$i^*=\arg\min_i\sum_jD_{ij}$. With scalar examples $0,0.1,0.9$, the sums
+are $1.0,0.9,1.7$, so the second observed sample is selected.
+The mean is 0.333 and is not an observed sample. A medoid therefore is
+\emph{not} a geometrical average shape. The denoised prototype is a separate
+constructed shape combining compatible strokes; incompatible stroke counts
+or order make naive vertex averaging invalid. The implementation's L1
+consensus and cosine prior should not be silently substituted for one another.
+
+\subsection{Feature extraction, connectedness and complete profile algorithm}
+Slant comes from a shear search that concentrates ink into columns. Ascender
+and descender extents, advances, lead spacing and word gaps are measured in
+x-height units; robust summaries reduce isolated extraction errors. These
+features are explicit geometric measurements, unlike learned CNN features.
+Their meaning still depends on body-band and alignment quality.
+
+Connectedness $c=N_{\rm cross}/\max(1,N_{\rm adj})$ counts eligible adjacent
+non-space boundaries crossed by a traced centreline. Nine crossed boundaries
+out of twelve give $c=0.75$. It is not fraction of ink pixels touching,
+probability every new pair must join, or proof of original pen continuity.
+A bad cut can manufacture a crossing, and detached crossbars can produce
+false joins. If there are no eligible pairs the guarded formula returns zero;
+that represents no observed crossings, not strong evidence of printing.
+
+The full profile process is: pair source lines with labels; prepare the
+reader input; force-align each label; estimate the body band/slant; reject
+unusable alignments; refine one ordered boundary array; thin and trace the
+full line; split chains at cuts; associate detached marks; normalise geometry;
+record spacing and boundary crossings; cache extraction; reject weak lines;
+filter each character's pool; compute prior and consensus; retain ranked
+variants and representative forms; store robust style summaries and provenance.
+Caching changes cost, not correctness, and stale cached preprocessing can
+make a profile incompatible with current source. A usable glyph pool proves
+only that the filters accepted it. It does not establish that all letters
+or every writer's full style were captured.

@@ -1,0 +1,1704 @@
+\chapter{Web orchestration and evaluation}\label{module:web-server}
+\Q{Evidence}{Current implementation boundary}
+\path{Software/DemoCode/web/server.py}. Exact file hashes are in the accompanying source manifest. Names, declarations and source locations below come from the captured source, not a runtime import.
+\Q{Purpose}{Input-to-output reading flow}
+Load the networks and profiles; ingest and orient an image; segment/read/name its lines; orchestrate classification, generation or retracing; expose reports, G-code, calibration and writing routes. API endpoints are alternative request paths, not a single sequential call chain.
+
+
+\Q{Evidence}{Selected current module settings}
+These are declarations or expressions, not recovered environment values. Source comments do not establish a measured optimum. Larger glyph coordinate tables are designed data in the bundled source.
+\begin{lstlisting}[style=plain]
+HERE = Path(__file__).resolve().parent
+CP3 = HERE.parent
+FRONTEND = HERE / 'frontend'
+UPLOADS = paths.Cache / 'WebUploads'
+JOBS = paths.Cache / 'WebJobs'
+REPORTS = paths.Cache / 'WebReports'
+CAPTURE_ROTATE_DEG = 90
+NAME_FROM_LINES = 0
+ORIENT_PROBE_LINES = 3
+API_KEY = os.environ.get('WEBAPP_API_KEY', '')
+PORT = int(os.environ.get('PORT', '5000'))
+DEFAULT_TRIES = int(os.environ.get('WEBAPP_TRIES', '14'))
+READER_PATH = paths.Weights / _reader if _reader else REC.DEFAULT_TEXT_WEIGHTS
+TEXT_MODEL = REC.PaperCRNNNumpy(checkpointPath=READER_PATH)
+INK_MODEL = REC.AuthorClassifierCNNNumpy(checkpointPath=REC.DEFAULT_AUTHOR_WEIGHTS)
+INK_MAP = INK_MODEL.authorMapping
+INK_BY_INDEX = {v: k for k, v in INK_MAP.items()}
+SHAPE_MODEL = INK_MODEL
+SHAPE_MAP = SHAPE_MODEL.authorMapping
+PAGE_NAMER = SHAPE_MODEL
+PAGE_NAMER_STROKE_NORM = False
+PAGE_BY_INDEX = {v: k for k, v in PAGE_NAMER.authorMapping.items()}
+PROFILES = LoadProfiles()
+TIMINGS = []
+TIMINGS_LOCK = threading.Lock()
+\end{lstlisting}
+\section*{Stage: Orientation and skew estimation}
+Method rationale, alternatives and library comparison: Section~\ref{method:deskew}.
+\section{OpenUpright}\label{fn:web-server:OpenUpright}
+\begin{lstlisting}[style=sig]
+def OpenUpright(src)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/server.py} line 125. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:deskew}.
+
+
+\Q{Purpose}{What this contributes}
+Align the page line axis while preserving the writer slant needed for reproduction.
+
+
+\Q{Method}{Current implementation}
+Align the page line axis while preserving the writer slant needed for reproduction. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def OpenUpright(src):
+    """See source snapshot for the original docstring."""
+    return ImageOps.exif_transpose(Image.open(src))
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+The row-profile concentration objective is inexpensive and distinct from deslanting. Quarter turns resolve axis; reader-based inversion resolves which end is up. \cite{postl1986,wolberg1990,opencvtransform,pillowops}.
+
+
+\section{IngestImage}\label{fn:web-server:IngestImage}
+\begin{lstlisting}[style=sig]
+def IngestImage(src)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/server.py} line 149. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:deskew}.
+
+
+\Q{Purpose}{What this contributes}
+Align the page line axis while preserving the writer slant needed for reproduction.
+
+
+\Q{Method}{Current implementation}
+Align the page line axis while preserving the writer slant needed for reproduction. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def IngestImage(src):
+    """See source snapshot for the original docstring."""
+    img = OpenUpright(src)
+    deg = int(CAPTURE_ROTATE_DEG) % 360
+    if deg:
+        img = img.rotate(deg, expand=True)
+    return img
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+The row-profile concentration objective is inexpensive and distinct from deslanting. Quarter turns resolve axis; reader-based inversion resolves which end is up. \cite{postl1986,wolberg1990,opencvtransform,pillowops}.
+
+
+\section{StandUp}\label{fn:web-server:StandUp}
+\begin{lstlisting}[style=sig]
+def StandUp(gray)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/server.py} line 388. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:deskew}.
+
+
+\Q{Purpose}{What this contributes}
+Urned by a fixed CAPTURE\_ROTATE\_DEG while an upload was not turned at all, on the assumption that an uploaded file is a phone photograph and so already upright.  the webcam on the gantry writes no EXIF orientation tag, so the SAME photograph read correctly through the camera button and as nonsense when its saved file was uploaded: 91.1 per cent of characters against 19.8. both paths go through this now, so they cannot disagree.  it is also idempotent, which is why the camera path can go on standing its capture up as it saves it: a page that is already upright is left alone.
+
+
+\Q{Method}{Current implementation}
+Align the page line axis while preserving the writer slant needed for reproduction. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def StandUp(gray):
+    """See source snapshot for the original docstring."""
+    up, deg, s0, s90 = SEG.UprightPage(gray)
+    return up, deg, {"axis_0": round(s0, 3), "axis_90": round(s90, 3)}
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+The row-profile concentration objective is inexpensive and distinct from deslanting. Quarter turns resolve axis; reader-based inversion resolves which end is up. \cite{postl1986,wolberg1990,opencvtransform,pillowops}.
+
+
+\section{ReadAllLines}\label{fn:web-server:ReadAllLines}
+\begin{lstlisting}[style=sig]
+def ReadAllLines(crops)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/server.py} line 394. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:deskew}.
+
+
+\Q{Purpose}{What this contributes}
+Reads up to three sampled crops upright and inverted using mean best-frame log score. It reuses the chosen probe reads and maps remaining jobs over LW.Map. If inversion wins it reverses line order and rotates each crop to keep text and metadata consistent.
+
+
+\Q{Method}{Current implementation}
+Align the page line axis while preserving the writer slant needed for reproduction. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def ReadAllLines(crops):
+    """See source snapshot for the original docstring."""
+    def Read(c, flip):
+        img = np.rot90(c, 2) if flip else c
+        return REC.ReadTextScored(Image.fromarray(img).convert("L"), TEXT_MODEL)
+
+    n = len(crops)
+    probe = list(np.unique(np.linspace(0, n-1, min(ORIENT_PROBE_LINES, n))
+                           .round().astype(int)))
+    fwd = {i: Read(crops[i], False) for i in probe}
+    rev = {i: Read(crops[i], True) for i in probe}
+    sF = float(np.mean([fwd[i][1] for i in probe]))
+    sR = float(np.mean([rev[i][1] for i in probe]))
+
+    flip = sR > sF
+    cache = rev if flip else fwd
+    todo = [(i, crops[i], flip) for i in range(n) if i not in cache]
+    done = {i: (t, sc) for i, t, sc in LW.Map(LW.ReadOne, todo)}
+    out = [cache[i] if i in cache else done[i] for i in range(n)]
+    if flip:
+        idx = list(range(n))[::-1]
+        return ([np.rot90(crops[i], 2) for i in idx], [out[i][0] for i in idx],
+                [out[i][1] for i in idx], idx, 180, sF, sR)
+    idx = list(range(n))
+    return (list(crops), [t for t, _s in out], [s for _t, s in out], idx, 0, sF, sR)
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+The row-profile concentration objective is inexpensive and distinct from deslanting. Quarter turns resolve axis; reader-based inversion resolves which end is up. \cite{postl1986,wolberg1990,opencvtransform,pillowops}.
+
+
+\section*{Stage: Edit distance and evaluation metrics}
+Method rationale, alternatives and library comparison: Section~\ref{method:metrics}.
+\section{NameWriter}\label{fn:web-server:NameWriter}
+\begin{lstlisting}[style=sig]
+def NameWriter(crops)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/server.py} line 439. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:metrics}.
+
+
+\Q{Purpose}{What this contributes}
+Maps independent crops through the configured namer, then averages full class-probability vectors weighted by counts of pixels below 128. The current LW configuration inherits the same model and stroke-normalisation flag. A page probability is a weighted arithmetic pool, not a product of independent likelihoods.
+
+
+\Q{Method}{Current implementation}
+Separate text recovery, writer decisions, geometric agreement and physical accuracy. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def NameWriter(crops):
+    """See source snapshot for the original docstring."""
+    got = LW.Map(LW.NameOne, [(i, c) for i, c in enumerate(crops)])
+    per = [p for _i, p in sorted(got, key=lambda r: r[0])]
+    w = np.array([float((c < 128).sum()) for c in crops], dtype=np.float64)
+    if w.sum() <= 0:
+        w = np.ones(len(crops), dtype=np.float64)
+    avg = (np.vstack(per)*w[:, None]).sum(axis=0)/w.sum()
+    return per, avg, w
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Each metric answers a different requirement. Pooled character edits weight characters; writer decisions are binary per line; geometric F measures thresholded point proximity. \cite{levenshtein1966,tanksmetric,nistinterval}.
+
+
+\section{SplitExpected}\label{fn:web-server:SplitExpected}
+\begin{lstlisting}[style=sig]
+def SplitExpected(expectedText, n)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/server.py} line 468. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:metrics}.
+
+
+\Q{Purpose}{What this contributes}
+Separate text recovery, writer decisions, geometric agreement and physical accuracy.
+
+
+\Q{Method}{Current implementation}
+Separate text recovery, writer decisions, geometric agreement and physical accuracy. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def SplitExpected(expectedText, n):
+    """See source snapshot for the original docstring."""
+    got = [l.strip() for l in (expectedText or "").splitlines() if l.strip()]
+    return got if len(got) == n and n > 0 else None
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Each metric answers a different requirement. Pooled character edits weight characters; writer decisions are binary per line; geometric F measures thresholded point proximity. \cite{levenshtein1966,tanksmetric,nistinterval}.
+
+
+\section{WordAcc}\label{fn:web-server:WordAcc}
+\begin{lstlisting}[style=sig]
+def WordAcc(pred, truth)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/server.py} line 517. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:metrics}.
+
+
+\Q{Purpose}{What this contributes}
+Computes case-insensitive word-level longest-common-subsequence recall divided by reference word count. It is not standard word error rate and is not strict positional exact-word accuracy. The function now resides in the server rather than recognise.py.
+
+
+\Q{Method}{Current implementation}
+Separate text recovery, writer decisions, geometric agreement and physical accuracy. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def WordAcc(pred,truth):
+    tw,pw = truth.split(),pred.split()
+    if not tw:
+        return 1.0
+    m,n = len(tw),len(pw)
+    dp = [[0]*(n+1) for _ in range(m+1)]
+    for i in range(m):
+        for j in range(n):
+            dp[i+1][j+1] = (dp[i][j]+1 if tw[i].lower()==pw[j].lower()
+                            else max(dp[i][j+1],dp[i+1][j]))
+    return dp[m][n]/m
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Each metric answers a different requirement. Pooled character edits weight characters; writer decisions are binary per line; geometric F measures thresholded point proximity. \cite{levenshtein1966,tanksmetric,nistinterval}.
+
+
+\section*{Stage: Coordinate mapping and path planning}
+Method rationale, alternatives and library comparison: Section~\ref{method:motion}.
+\section{\_Clamp}\label{fn:web-server:-Clamp}
+\begin{lstlisting}[style=sig]
+def _Clamp(value, default, lo, hi)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/server.py} line 715. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:motion}.
+
+
+\Q{Purpose}{What this contributes}
+Place and fit the generated trajectory into the measured machine work area.
+
+
+\Q{Method}{Current implementation}
+Place and fit the generated trajectory into the measured machine work area. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def _Clamp(value, default, lo, hi):
+    """See source snapshot for the original docstring."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    return float(min(max(v, lo), hi))
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Uniform scaling preserves shape while margins/origin define placement. Row grouping and nearest-end stroke order reduce travel; clamping makes out-of-bounds points explicit. \cite{bresenham1965,code2026}.
+
+
+\section*{Stage: Web orchestration and job state}
+\section{Method background: Web orchestration and job state}\label{method:server}
+\Q{Purpose}{The role in this system}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests.
+
+
+\Q{Justification}{The reason for this construction}
+Separate stages and saved jobs make the flow reviewable. Shared models/profiles avoid reloading on every request; current imports determine the real API contract.
+
+
+\Q{Alternatives}{What changes if another method is used}
+A monolithic request is simpler but couples generation and hardware execution. A queue/worker service scales differently and needs explicit state/failure handling.
+
+
+\Q{Library}{Implementation speed and accuracy}
+Flask handles routing and responses, Pillow handles images, and NumPy performs arithmetic. These are actual dependencies; the complete demo cannot truthfully be called library-free. File sanitisation/API keys do not constitute full external-service security. \cite{flaskdocs,pillowops,code2026}.
+
+
+\section{BaseAuthor}\label{fn:web-server:BaseAuthor}
+\begin{lstlisting}[style=sig]
+def BaseAuthor(name)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/server.py} line 242. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:server}.
+
+
+\Q{Purpose}{What this contributes}
+Curate.py writes <writer>\_curated.json beside the original, and the server lists every profile it finds, so these names reach the endpoints.  the writer models were trained on the plain names and know nothing of the suffix, so anything asking them has to ask about the writer.
+
+
+\Q{Method}{Current implementation}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def BaseAuthor(name):
+    return name[:-8] if name.endswith("_curated") else name
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Separate stages and saved jobs make the flow reviewable. Shared models/profiles avoid reloading on every request; current imports determine the real API contract. \cite{flaskdocs,pillowops,code2026}.
+
+
+\section{LoadProfiles}\label{fn:web-server:LoadProfiles}
+\begin{lstlisting}[style=sig]
+def LoadProfiles()
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/server.py} line 247. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:server}.
+
+
+\Q{Purpose}{What this contributes}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests.
+
+
+\Q{Method}{Current implementation}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def LoadProfiles():
+    out = {}
+    for f in sorted(paths.Profiles.glob("*.json")):
+        try:
+            out[f.stem] = json.load(open(f, encoding="utf-8"))
+        except Exception as e:
+            print("[server] skipping profile %s: %s" % (f.name, e))
+    return out
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Separate stages and saved jobs make the flow reviewable. Shared models/profiles avoid reloading on every request; current imports determine the real API contract. \cite{flaskdocs,pillowops,code2026}.
+
+
+\section{Remember2}\label{fn:web-server:Remember2}
+\begin{lstlisting}[style=sig]
+def Remember2(d)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/server.py} line 265. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:server}.
+
+
+\Q{Purpose}{What this contributes}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests.
+
+
+\Q{Method}{Current implementation}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def Remember2(d):
+    """See source snapshot for the original docstring."""
+    with TIMINGS_LOCK:
+        TIMINGS.append(d)
+        del TIMINGS[:-200]
+    return d
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Separate stages and saved jobs make the flow reviewable. Shared models/profiles avoid reloading on every request; current imports determine the real API contract. \cite{flaskdocs,pillowops,code2026}.
+
+
+\section{Remember}\label{fn:web-server:Remember}
+\begin{lstlisting}[style=sig]
+def Remember(run)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/server.py} line 273. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:server}.
+
+
+\Q{Purpose}{What this contributes}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests.
+
+
+\Q{Method}{Current implementation}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def Remember(run):
+    d = run.AsDict()
+    with TIMINGS_LOCK:
+        TIMINGS.append(d)
+        del TIMINGS[:-200]        #keep the last two hundred, no more
+    print(run.Report(), flush=True)
+    return d
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Separate stages and saved jobs make the flow reviewable. Shared models/profiles avoid reloading on every request; current imports determine the real API contract. \cite{flaskdocs,pillowops,code2026}.
+
+
+\section{CheckApiKey}\label{fn:web-server:CheckApiKey}
+\begin{lstlisting}[style=sig]
+def CheckApiKey()
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/server.py} line 283. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:server}.
+
+
+\Q{Purpose}{What this contributes}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests.
+
+
+\Q{Method}{Current implementation}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def CheckApiKey():
+    if API_KEY and request.headers.get("X-API-Key") != API_KEY:
+        abort(401)
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Separate stages and saved jobs make the flow reviewable. Shared models/profiles avoid reloading on every request; current imports determine the real API contract. \cite{flaskdocs,pillowops,code2026}.
+
+
+\section{Index}\label{fn:web-server:Index}
+\begin{lstlisting}[style=sig]
+def Index()
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/server.py} line 292. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:server}.
+
+
+\Q{Purpose}{What this contributes}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests.
+
+
+\Q{Method}{Current implementation}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def Index():
+    return send_from_directory(FRONTEND, "index.html")
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Separate stages and saved jobs make the flow reviewable. Shared models/profiles avoid reloading on every request; current imports determine the real API contract. \cite{flaskdocs,pillowops,code2026}.
+
+
+\section{Static}\label{fn:web-server:Static}
+\begin{lstlisting}[style=sig]
+def Static(name)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/server.py} line 297. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:server}.
+
+
+\Q{Purpose}{What this contributes}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests.
+
+
+\Q{Method}{Current implementation}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def Static(name):
+    if (FRONTEND/name).exists():
+        return send_from_directory(FRONTEND, name)
+    abort(404)
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Separate stages and saved jobs make the flow reviewable. Shared models/profiles avoid reloading on every request; current imports determine the real API contract. \cite{flaskdocs,pillowops,code2026}.
+
+
+\section{ApiAuthors}\label{fn:web-server:ApiAuthors}
+\begin{lstlisting}[style=sig]
+def ApiAuthors()
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/server.py} line 307. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:server}.
+
+
+\Q{Purpose}{What this contributes}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests.
+
+
+\Q{Method}{Current implementation}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def ApiAuthors():
+    out = []
+    for a in sorted(PROFILES):
+        p = PROFILES[a]
+        out.append(dict(id=a,
+                        glyphs=len(p.get("glyphs") or {}),
+                        legibility=p.get("legibilityLambda"),
+                        inGantryModels=a in SHAPE_MAP))
+    return jsonify(out)
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Separate stages and saved jobs make the flow reviewable. Shared models/profiles avoid reloading on every request; current imports determine the real API contract. \cite{flaskdocs,pillowops,code2026}.
+
+
+\section{ApiGetImage}\label{fn:web-server:ApiGetImage}
+\begin{lstlisting}[style=sig]
+def ApiGetImage(imageId)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/server.py} line 319. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:server}.
+
+
+\Q{Purpose}{What this contributes}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests.
+
+
+\Q{Method}{Current implementation}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def ApiGetImage(imageId):
+    safe = "".join(c for c in imageId if c.isalnum() or c == "_")
+    if safe.startswith("job_"):
+        p = JOBS/safe[4:]/"preview.png"
+    else:
+        p = UPLOADS/("%s.jpg" % safe)
+    if not p.exists():
+        abort(404)
+    return send_file(str(p))
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Separate stages and saved jobs make the flow reviewable. Shared models/profiles avoid reloading on every request; current imports determine the real API contract. \cite{flaskdocs,pillowops,code2026}.
+
+
+\section{ApiCameraCapture}\label{fn:web-server:ApiCameraCapture}
+\begin{lstlisting}[style=sig]
+def ApiCameraCapture()
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/server.py} line 331. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:server}.
+
+
+\Q{Purpose}{What this contributes}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests.
+
+
+\Q{Method}{Current implementation}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def ApiCameraCapture():
+    try:
+        captured = CAM.CaptureImage()
+    except Exception as e:
+        return jsonify({"error": "Camera failed: %s" % e}), 200
+    imageId = uuid.uuid4().hex
+    IngestImage(captured).convert("RGB").save(UPLOADS/("%s.jpg" % imageId))
+    return jsonify({"image_id": imageId, "image_url": "/api/images/%s" % imageId})
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Separate stages and saved jobs make the flow reviewable. Shared models/profiles avoid reloading on every request; current imports determine the real API contract. \cite{flaskdocs,pillowops,code2026}.
+
+
+\section{ApiPreviewStart}\label{fn:web-server:ApiPreviewStart}
+\begin{lstlisting}[style=sig]
+def ApiPreviewStart()
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/server.py} line 342. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:server}.
+
+
+\Q{Purpose}{What this contributes}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests.
+
+
+\Q{Method}{Current implementation}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def ApiPreviewStart():
+    try:
+        CAM.PreviewStart()
+    except Exception as e:
+        return jsonify({"active": False, "error": str(e)}), 200
+    return jsonify({"active": True})
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Separate stages and saved jobs make the flow reviewable. Shared models/profiles avoid reloading on every request; current imports determine the real API contract. \cite{flaskdocs,pillowops,code2026}.
+
+
+\section{ApiPreviewStop}\label{fn:web-server:ApiPreviewStop}
+\begin{lstlisting}[style=sig]
+def ApiPreviewStop()
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/server.py} line 351. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:server}.
+
+
+\Q{Purpose}{What this contributes}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests.
+
+
+\Q{Method}{Current implementation}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def ApiPreviewStop():
+    CAM.PreviewStop()
+    return jsonify({"active": False})
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Separate stages and saved jobs make the flow reviewable. Shared models/profiles avoid reloading on every request; current imports determine the real API contract. \cite{flaskdocs,pillowops,code2026}.
+
+
+\section{ApiPreviewStream}\label{fn:web-server:ApiPreviewStream}
+\begin{lstlisting}[style=sig]
+def ApiPreviewStream()
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/server.py} line 357. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:server}.
+
+
+\Q{Purpose}{What this contributes}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests.
+
+
+\Q{Method}{Current implementation}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def ApiPreviewStream():
+    if not CAM.PreviewActive():
+        abort(409)
+    def Frames():
+        while CAM.PreviewActive():
+            try:
+                jpeg = CAM.PreviewFrameJpeg()
+            except RuntimeError:
+                break
+            yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"+jpeg+b"\r\n")
+    return Response(Frames(),
+                    mimetype="multipart/x-mixed-replace; boundary=frame")
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Separate stages and saved jobs make the flow reviewable. Shared models/profiles avoid reloading on every request; current imports determine the real API contract. \cite{flaskdocs,pillowops,code2026}.
+
+
+\section{WriteReport}\label{fn:web-server:WriteReport}
+\begin{lstlisting}[style=sig]
+def WriteReport(reportId, payload)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/server.py} line 479. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:server}.
+
+
+\Q{Purpose}{What this contributes}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests.
+
+
+\Q{Method}{Current implementation}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def WriteReport(reportId, payload):
+    """See source snapshot for the original docstring."""
+    (REPORTS/("%s.json" % reportId)).write_text(json.dumps(payload, indent=2),
+                                                encoding="utf-8")
+    cols = ["line", "author_named", "author_confidence_pct",
+            "page_author_probability_pct", "char_accuracy_pct",
+            "word_accuracy_pct", "read_confidence", "ink_pct",
+            "text_read", "text_expected"]
+    with (REPORTS/("%s.csv" % reportId)).open("w", newline="", encoding="utf-8") as fh:
+        w = csv.writer(fh)
+        for k in ("image_id", "predicted_author", "author_confidence_pct",
+                  "author_line_agreement_pct", "author_line_correct_pct",
+                  "text_accuracy_pct", "word_accuracy_pct",
+                  "mean_line_char_accuracy_pct", "lines_detected",
+                  "lines_dropped_as_blots", "orientation_applied_deg"):
+            w.writerow(["# %s" % k, payload.get(k)])
+        w.writerow([])
+        w.writerow(cols)
+        for r in payload["lines"]:
+            w.writerow([r.get(c) for c in cols])
+    return "/api/reports/%s" % reportId
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Separate stages and saved jobs make the flow reviewable. Shared models/profiles avoid reloading on every request; current imports determine the real API contract. \cite{flaskdocs,pillowops,code2026}.
+
+
+\section{ApiReport}\label{fn:web-server:ApiReport}
+\begin{lstlisting}[style=sig]
+def ApiReport(reportId, ext='csv')
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/server.py} line 504. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:server}.
+
+
+\Q{Purpose}{What this contributes}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests.
+
+
+\Q{Method}{Current implementation}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def ApiReport(reportId, ext="csv"):
+    safe = "".join(c for c in reportId if c.isalnum())
+    if ext not in ("csv", "json"):
+        abort(404)
+    p = REPORTS/("%s.%s" % (safe, ext))
+    if not p.exists():
+        abort(404)
+    return send_file(str(p), as_attachment=True,
+                     download_name="per_line_report_%s.%s" % (safe, ext))
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Separate stages and saved jobs make the flow reviewable. Shared models/profiles avoid reloading on every request; current imports determine the real API contract. \cite{flaskdocs,pillowops,code2026}.
+
+
+\section{ApiClassify}\label{fn:web-server:ApiClassify}
+\begin{lstlisting}[style=sig]
+def ApiClassify()
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/server.py} line 535. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:server}.
+
+
+\Q{Purpose}{What this contributes}
+Applies upload/capture orientation handling, times SegmentLines as one combined stage, resolves inversion, reads and names lines, and emits paired metrics only where supplied truth is compatible. It does not report the earlier three separate conditioning/segmenting/cropping timings from the core API.
+
+
+\Q{Method}{Current implementation}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def ApiClassify():
+    expectedText = (request.form.get("expected_text") or "").strip()
+    expectedAuthor = request.form.get("expected_author") or ""
+
+    run = TIMING.Run("classify")
+    with run.Step("loading", chars=0):
+        if "image" in request.files and request.files["image"].filename:
+            page = OpenUpright(request.files["image"].stream).convert("L")
+            imageId = uuid.uuid4().hex
+        elif request.form.get("image_id"):
+            imageId = "".join(c for c in request.form["image_id"] if c.isalnum())
+            p = UPLOADS/("%s.jpg" % imageId)
+            if not p.exists():
+                return jsonify({"error": "Unknown image_id"}), 400
+            page = Image.open(p).convert("L")
+        else:
+            return jsonify({"error": "Provide either 'image' or 'image_id'"}), 400
+        gray, axisDeg, axisScores = StandUp(np.asarray(page, dtype=np.uint8))
+        Image.fromarray(gray).convert("RGB").save(UPLOADS/("%s.jpg" % imageId))
+
+    with run.Step("segmenting", chars=0):
+        lines, _dbg, info = SEG.SegmentLines(gray)
+    crops = [np.asarray(ln["image"]) for ln in lines]
+    if not crops:
+        return jsonify({"error": "No handwriting lines were detected.",
+                        "timing": Remember(run)}), 422
+
+    with run.Step("reading", chars=0) as step:
+        crops, readLines, readScores, order, flipDeg, sF, sR = ReadAllLines(crops)
+        lines = [lines[i] for i in order]   #keep the crop metadata in step
+        step.chars = sum(len(t) for t in readLines)
+    predictedText = " ".join(readLines)
+
+    with run.Step("naming", chars=len(predictedText)):
+        perLineProbs, avg, inkWeights = NameWriter(crops)
+        bestIdx = int(np.argmax(avg))
+        predictedAuthor = PAGE_BY_INDEX[bestIdx]
+
+    truthLines = SplitExpected(expectedText, len(crops))
+    named = [PAGE_BY_INDEX[int(np.argmax(p))] for p in perLineProbs]
+    agree = sum(1 for n in named if n == predictedAuthor)
+    correct = (sum(1 for n in named if n == expectedAuthor)
+               if expectedAuthor else None)
+
+    lineRows = []
+    for i, p in enumerate(perLineProbs):
+        t = truthLines[i] if truthLines else None
+        lineRows.append({
+            "line": i+1,
+            "author_named": named[i],
+            "author_confidence_pct": round(100*float(p[int(np.argmax(p))]), 1),
+            "page_author_probability_pct": round(100*float(p[bestIdx]), 1),
+            "author_matches_page": named[i] == predictedAuthor,
+            "author_correct": (named[i] == expectedAuthor) if expectedAuthor else None,
+            "char_accuracy_pct": (round(100*REC.CharAcc(readLines[i], t), 1)
+                                  if t is not None else None),
+            "word_accuracy_pct": (round(100*WordAcc(readLines[i], t), 1)
+                                  if t is not None else None),
+# Excerpt ends; full definition continues in bundled source.
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Separate stages and saved jobs make the flow reviewable. Shared models/profiles avoid reloading on every request; current imports determine the real API contract. \cite{flaskdocs,pillowops,code2026}.
+
+
+\section{ReadBackText}\label{fn:web-server:ReadBackText}
+\begin{lstlisting}[style=sig]
+def ReadBackText(previewImg, pxPerMm)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/server.py} line 656. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:server}.
+
+
+\Q{Purpose}{What this contributes}
+WRITING TEXT IN A WRITER'S HAND the joint search draws nTries candidates and keeps whichever scores best on the harmonic mean of how readable it is and how much it looks like the requested writer, which is the selection that lifted both figures.
+
+
+\Q{Method}{Current implementation}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def ReadBackText(previewImg, pxPerMm):
+    """See source snapshot for the original docstring."""
+    arr = np.asarray(previewImg, dtype=np.uint8)
+    pad = max(8, int(8.0*float(pxPerMm or 8.0)))   #8 mm of paper, as the writers' own sheets have
+    padded = np.full((arr.shape[0]+2*pad, arr.shape[1]+2*pad), 255, np.uint8)
+    padded[pad:pad+arr.shape[0], pad:pad+arr.shape[1]] = arr
+    try:
+        lines, _dbg, _info = SEG.SegmentLines(padded, mergeValley=0.72)
+    except Exception:
+        return REC.ReadText(previewImg, TEXT_MODEL)
+    if len(lines) <= 1:
+        return REC.ReadText(previewImg, TEXT_MODEL)
+    return " ".join(filter(None, (
+        REC.ReadText(Image.fromarray(np.asarray(ln["image"])).convert("L"), TEXT_MODEL)
+        for ln in lines)))
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Separate stages and saved jobs make the flow reviewable. Shared models/profiles avoid reloading on every request; current imports determine the real API contract. \cite{flaskdocs,pillowops,code2026}.
+
+
+\section{JobResponse}\label{fn:web-server:JobResponse}
+\begin{lstlisting}[style=sig]
+def JobResponse(jobId, written, previewImg, run, expectedText=None, pxPerMm=8.0, **extra)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/server.py} line 696. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:server}.
+
+
+\Q{Purpose}{What this contributes}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests.
+
+
+\Q{Method}{Current implementation}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def JobResponse(jobId, written, previewImg, run, expectedText=None,
+                pxPerMm=8.0, **extra):
+    with run.Step("reading back", chars=len(expectedText or "")):
+        readBack = ReadBackText(previewImg, pxPerMm)
+    body = {
+        "job_id": jobId,
+        "gcode_url": "/api/gcode/%s" % jobId,
+        "preview_url": "/api/images/job_%s" % jobId,
+        "gcode_line_count": written.get("lines"),
+        "pen_pulses": written.get("penPulses"),
+        "read_back_text": readBack,
+        "text_accuracy_pct": (round(100*REC.CharAcc(readBack, expectedText), 1)
+                              if expectedText else None),
+    }
+    body.update(extra)
+    body["timing"] = Remember(run)
+    return jsonify(body)
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Separate stages and saved jobs make the flow reviewable. Shared models/profiles avoid reloading on every request; current imports determine the real API contract. \cite{flaskdocs,pillowops,code2026}.
+
+
+\section{ApiGenerate}\label{fn:web-server:ApiGenerate}
+\begin{lstlisting}[style=sig]
+def ApiGenerate()
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/server.py} line 727. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:server}.
+
+
+\Q{Purpose}{What this contributes}
+This endpoint expresses the intended full synthesis-to-job flow but has static interface conflicts in the captured tree: GantryConfig has no ignoreRuling field and RenderTrajectory accepts neither profile nor uniformInk. Explain the intended stages without claiming this snapshot successfully completes generation. No fix is made for this manual.
+
+
+\Q{Method}{Current implementation}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def ApiGenerate():
+    data = request.get_json(force=True) or {}
+    text = (data.get("text") or "").strip()
+    author = data.get("author")
+    nTries = int(data.get("nTries", DEFAULT_TRIES))
+    if not text:
+        return jsonify({"error": "text is required"}), 400
+    if author not in PROFILES:
+        return jsonify({"error": "Unknown author %r" % author}), 400
+    judged = BaseAuthor(author)
+    if judged not in SHAPE_MAP:
+        return jsonify({"error": "No writer model for %r, so its output cannot be "
+                                 "judged during the search" % author}), 400
+
+    profile = PROFILES[author]
+    cfg = REP.GantryConfig()
+    lineH = float(data.get("lineHeightMm") or cfg.lineHeightMm)
+    lineIdx = max(0, int(data.get("line", 0)))
+    drawFeed = _Clamp(data.get("drawFeedMmMin"), cfg.drawFeedMmMin, 60.0, 3000.0)
+    travelFeed = _Clamp(data.get("travelFeedMmMin"), cfg.travelFeedMmMin, 60.0, 6000.0)
+    penUpDwell = _Clamp(data.get("penUpDwellMs"), cfg.penUpDwellMs, 0.0, 1000.0)
+    penDownDwell = _Clamp(data.get("penDownDwellMs"), cfg.penDownDwellMs, 0.0, 1000.0)
+    ignore = data.get("ignoreRuling")
+    ignore = cfg.ignoreRuling if ignore is None else bool(ignore)
+    cfg = dataclasses.replace(cfg, lineHeightMm=lineH, lineOffsetMm=lineIdx*lineH,
+                              ignoreRuling=ignore,
+                              drawFeedMmMin=drawFeed, travelFeedMmMin=travelFeed,
+                              penUpDwellMs=penUpDwell, penDownDwellMs=penDownDwell)
+    run = TIMING.Run("reproduce", chars=len(text), lines=1)
+
+    with run.Step("synthesis"):
+        traj = SYN.SynthesizeJointBestOf(
+            judged, text, profile, nTries=nTries,
+            mmPerXh=REP.XhForRuling(profile, cfg, text),
+            lineWidthMm=cfg.usableWidthMm,
+            reader=TEXT_MODEL, authorModel=SHAPE_MODEL, authorMapping=SHAPE_MAP)
+
+    jobId = uuid.uuid4().hex
+    jobDir = JOBS/jobId
+    jobDir.mkdir(parents=True, exist_ok=True)
+
+    with run.Step("rendering"):
+        preview = SYN.RenderTrajectory(traj, pxPerMm=18.0, profile=profile, uniformInk=True)
+        Image.fromarray(np.asarray(preview, dtype=np.uint8)).save(jobDir/"preview.png")
+
+    with run.Step("gcode"):
+        written = REP.WriteGcode(traj, cfg, str(jobDir/"job.gcode"),
+                                 title="web job %s" % author)
+
+    (jobDir/"meta.json").write_text(json.dumps({"text": text, "author": author,
+                                                "nTries": nTries, "line": lineIdx,
+                                                "lineHeightMm": lineH,
+                                                "ignoreRuling": ignore,
+                                                "drawFeedMmMin": drawFeed,
+                                                "travelFeedMmMin": travelFeed,
+                                                "penUpDwellMs": penUpDwell,
+                                                "penDownDwellMs": penDownDwell,
+                                                "generateStages": run.stages}),
+# Excerpt ends; full definition continues in bundled source.
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Separate stages and saved jobs make the flow reviewable. Shared models/profiles avoid reloading on every request; current imports determine the real API contract. \cite{flaskdocs,pillowops,code2026}.
+
+
+\section{ApiRetrace}\label{fn:web-server:ApiRetrace}
+\begin{lstlisting}[style=sig]
+def ApiRetrace()
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/server.py} line 839. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:server}.
+
+
+\Q{Purpose}{What this contributes}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests.
+
+
+\Q{Method}{Current implementation}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def ApiRetrace():
+    if "image" in request.files and request.files["image"].filename:
+        imageId = uuid.uuid4().hex
+        srcPath = UPLOADS/("%s.jpg" % imageId)
+        OpenUpright(request.files["image"].stream).convert("RGB").save(srcPath)
+    elif request.form.get("image_id"):
+        imageId = "".join(c for c in request.form["image_id"] if c.isalnum())
+        srcPath = UPLOADS/("%s.jpg" % imageId)
+        if not srcPath.exists():
+            return jsonify({"error": "Unknown image_id"}), 400
+    else:
+        return jsonify({"error": "Provide either 'image' or 'image_id'"}), 400
+
+    jobId = uuid.uuid4().hex
+    jobDir = JOBS/jobId
+    jobDir.mkdir(parents=True, exist_ok=True)
+    try:
+        result = RETRACE.RetracePage(srcPath, jobDir/"job.gcode",
+                                     cfg=REP.GantryConfig(),
+                                     previewPath=jobDir/"preview.png")
+    except SystemExit as e:
+        return jsonify({"error": str(e)}), 422
+
+    (jobDir/"meta.json").write_text(json.dumps(
+        {"text": "", "author": "retrace", "source": str(srcPath),
+         "generateStages": result["timing"]["stages"]}), encoding="utf-8")
+    Remember2(result["timing"])
+    return jsonify({
+        "job_id": jobId,
+        "gcode_url": "/api/gcode/%s" % jobId,
+        "preview_url": "/api/images/job_%s" % jobId,
+        "source_url": "/api/images/%s" % imageId,
+        "lines_traced": result["timing"]["lines"],
+        "strokes_traced": result["tracedStrokes"],
+        "gcode_line_count": result["lines"],
+        "pen_pulses": result["penPulses"],
+        "scale": round(result["scale"], 4),
+        "clamped_points": result["clipped"],
+        "timing": result["timing"],
+    })
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Separate stages and saved jobs make the flow reviewable. Shared models/profiles avoid reloading on every request; current imports determine the real API contract. \cite{flaskdocs,pillowops,code2026}.
+
+
+\section{IsConnected}\label{fn:web-server:IsConnected}
+\begin{lstlisting}[style=sig]
+def IsConnected()
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/server.py} line 889. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:server}.
+
+
+\Q{Purpose}{What this contributes}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests.
+
+
+\Q{Method}{Current implementation}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def IsConnected():
+    return getattr(REP,"req",None) is not None
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Separate stages and saved jobs make the flow reviewable. Shared models/profiles avoid reloading on every request; current imports determine the real API contract. \cite{flaskdocs,pillowops,code2026}.
+
+
+\section{WriteGcodeFile}\label{fn:web-server:WriteGcodeFile}
+\begin{lstlisting}[style=sig]
+def WriteGcodeFile(path)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/server.py} line 896. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:server}.
+
+
+\Q{Purpose}{What this contributes}
+The three flags are read back off the module after the run, because RunGcodeFile sets them as it goes and returns nothing itself.
+
+
+\Q{Method}{Current implementation}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def WriteGcodeFile(path):
+    REP.Connect()
+    REP.RunGcodeFile(path)
+    return {"estopped": REP.estopped,
+            "tripped_switch": REP.TrippedSwitch,
+            "aborted": REP.lastJobAborted}
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Separate stages and saved jobs make the flow reviewable. Shared models/profiles avoid reloading on every request; current imports determine the real API contract. \cite{flaskdocs,pillowops,code2026}.
+
+
+\section{ParseGcode}\label{fn:web-server:ParseGcode}
+\begin{lstlisting}[style=sig]
+def ParseGcode(path)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/server.py} line 910. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:server}.
+
+
+\Q{Purpose}{What this contributes}
+Read a g-code file back into strokes written as its own reader rather than sharing code with the writer, so that comparing the two actually tests the file instead of testing one shared assumption twice over.
+
+
+\Q{Method}{Current implementation}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def ParseGcode(path):
+    strokes = []
+    cur = []
+    penDown = False
+    x = y = 0.0
+    with open(path,encoding="utf-8") as f:
+        for raw in f:
+            line = raw.split(";")[0].strip()
+            if not line:
+                continue
+            up = line.upper()
+            code = up.split()[0]
+            if code=="M5":
+                if penDown and len(cur)>=2:
+                    strokes.append(cur)
+                cur,penDown = [],False
+                continue
+            if code=="M3":
+                penDown = True
+                cur = [(x,y)]
+                continue
+            if code in ("G0","G1"):
+                nx = re.search(r"X(-?\d+\.?\d*)",up)
+                ny = re.search(r"Y(-?\d+\.?\d*)",up)
+                if nx:
+                    x = float(nx.group(1))
+                if ny:
+                    y = float(ny.group(1))
+                if (nx or ny) and penDown:
+                    cur.append((x,y))
+    if penDown and len(cur)>=2:
+        strokes.append(cur)
+    return strokes
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Separate stages and saved jobs make the flow reviewable. Shared models/profiles avoid reloading on every request; current imports determine the real API contract. \cite{flaskdocs,pillowops,code2026}.
+
+
+\section{ApiGcodeUpload}\label{fn:web-server:ApiGcodeUpload}
+\begin{lstlisting}[style=sig]
+def ApiGcodeUpload()
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/server.py} line 946. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:server}.
+
+
+\Q{Purpose}{What this contributes}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests.
+
+
+\Q{Method}{Current implementation}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def ApiGcodeUpload():
+    if "gcode" not in request.files or not request.files["gcode"].filename:
+        return jsonify({"error": "Provide a 'gcode' file"}), 400
+    expectedText = (request.form.get("expected_text") or "").strip()
+
+    jobId = uuid.uuid4().hex
+    jobDir = JOBS/jobId
+    jobDir.mkdir(parents=True, exist_ok=True)
+    gcodePath = jobDir/"job.gcode"
+    request.files["gcode"].save(str(gcodePath))
+
+    run = TIMING.Run("reproduce", chars=len(expectedText), lines=1)
+    with run.Step("parsing gcode"):
+        strokes = ParseGcode(str(gcodePath))
+        traj = SYN.Trajectory(strokes, dict(author="uploaded",
+                                            source=request.files["gcode"].filename))
+    with run.Step("rendering"):
+        preview = SYN.RenderTrajectory(traj, pxPerMm=8.0)
+        Image.fromarray(np.asarray(preview, dtype=np.uint8)).save(jobDir/"preview.png")
+    written = dict(lines=sum(1 for _ in open(gcodePath, encoding="utf-8", errors="replace")),
+                   penPulses=None)
+    return JobResponse(jobId, written, preview, run, pxPerMm=8.0,
+                       expectedText=expectedText or None)
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Separate stages and saved jobs make the flow reviewable. Shared models/profiles avoid reloading on every request; current imports determine the real API contract. \cite{flaskdocs,pillowops,code2026}.
+
+
+\section{ApiGetGcode}\label{fn:web-server:ApiGetGcode}
+\begin{lstlisting}[style=sig]
+def ApiGetGcode(jobId)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/server.py} line 976. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:server}.
+
+
+\Q{Purpose}{What this contributes}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests.
+
+
+\Q{Method}{Current implementation}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def ApiGetGcode(jobId):
+    safe = "".join(c for c in jobId if c.isalnum())
+    p = JOBS/safe/"job.gcode"
+    if not p.exists():
+        abort(404)
+    return send_file(str(p), mimetype="text/plain",
+                     as_attachment=True, download_name="%s.gcode" % safe)
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Separate stages and saved jobs make the flow reviewable. Shared models/profiles avoid reloading on every request; current imports determine the real API contract. \cite{flaskdocs,pillowops,code2026}.
+
+
+\section{ApiGantryStatus}\label{fn:web-server:ApiGantryStatus}
+\begin{lstlisting}[style=sig]
+def ApiGantryStatus()
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/server.py} line 992. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:server}.
+
+
+\Q{Purpose}{What this contributes}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests.
+
+
+\Q{Method}{Current implementation}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def ApiGantryStatus():
+    if not IsConnected():
+        try:
+            REP.Connect()
+        except REP.GantryNotConnectedError as e:
+            return jsonify({"connected": False, "calibrated": False, "detail": str(e)})
+    return jsonify({"connected": True,
+                    "calibrated": REP.Calibration["done"],
+                    "calibration": REP.Calibration if REP.Calibration["done"] else None})
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Separate stages and saved jobs make the flow reviewable. Shared models/profiles avoid reloading on every request; current imports determine the real API contract. \cite{flaskdocs,pillowops,code2026}.
+
+
+\section{ApiGantryCalibrate}\label{fn:web-server:ApiGantryCalibrate}
+\begin{lstlisting}[style=sig]
+def ApiGantryCalibrate()
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/server.py} line 1004. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:server}.
+
+
+\Q{Purpose}{What this contributes}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests.
+
+
+\Q{Method}{Current implementation}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def ApiGantryCalibrate():
+    run = TIMING.Run("calibrate")
+    try:
+        REP.Connect()
+        with run.Step("homing"):
+            result = REP.Calibrate()
+    except REP.GantryNotConnectedError as e:
+        return jsonify({"calibrated": False, "message": "Gantry not connected: %s" % e})
+    except RuntimeError as e:
+        return jsonify({"calibrated": False, "message": "Calibration failed: %s" % e})
+    return jsonify({"calibrated": True, "calibration": result, "timing": Remember(run)})
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Separate stages and saved jobs make the flow reviewable. Shared models/profiles avoid reloading on every request; current imports determine the real API contract. \cite{flaskdocs,pillowops,code2026}.
+
+
+\section{ApiGantryStop}\label{fn:web-server:ApiGantryStop}
+\begin{lstlisting}[style=sig]
+def ApiGantryStop()
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/server.py} line 1025. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:server}.
+
+
+\Q{Purpose}{What this contributes}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests.
+
+
+\Q{Method}{Current implementation}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def ApiGantryStop():
+    try:
+        result = REP.EmergencyStop()
+    except REP.GantryNotConnectedError as e:
+        return jsonify({"stopped": False, "gantry_connected": False,
+                        "message": "Gantry not connected: %s" % e})
+    except RuntimeError as e:
+        return jsonify({"stopped": False, "gantry_connected": True,
+                        "message": "Stop failed: %s" % e})
+    bits = ["pen up" if result["pen_up"] else "PEN DID NOT LIFT"]
+    bits.append("parked at the corner" if result["parked"] else "not parked")
+    msg = "Stopped -- " + ", ".join(bits) + "."
+    if result.get("detail"):
+        msg += " " + result["detail"][0].upper() + result["detail"][1:] + "."
+    result.update({"gantry_connected": True, "message": msg})
+    return jsonify(result)
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Separate stages and saved jobs make the flow reviewable. Shared models/profiles avoid reloading on every request; current imports determine the real API contract. \cite{flaskdocs,pillowops,code2026}.
+
+
+\section{ApiWriteGcode}\label{fn:web-server:ApiWriteGcode}
+\begin{lstlisting}[style=sig]
+def ApiWriteGcode(jobId)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/server.py} line 1044. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:server}.
+
+
+\Q{Purpose}{What this contributes}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests.
+
+
+\Q{Method}{Current implementation}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def ApiWriteGcode(jobId):
+    safe = "".join(c for c in jobId if c.isalnum())
+    jobDir = JOBS/safe
+    gcodePath = jobDir/"job.gcode"
+    if not gcodePath.exists():
+        return jsonify({"error": "Unknown job_id"}), 404
+
+    meta = {}
+    if (jobDir/"meta.json").exists():
+        meta = json.loads((jobDir/"meta.json").read_text(encoding="utf-8"))
+    chars = len(meta.get("text", ""))
+
+    priorStages = meta.get("generateStages") or []
+    run = TIMING.Run("reproduce", chars=chars, lines=1)
+    for s in priorStages:
+        run.Carry(s.get("stage", "earlier"), s.get("seconds", 0.0), s.get("characters", 0) or 0)
+    try:
+        with run.Step("drawing", chars=chars):
+            result = WriteGcodeFile(str(gcodePath))
+    except REP.GantryNotConnectedError as e:
+        return jsonify({"sent": False, "gantry_connected": False,
+                        "message": "Gantry not connected: %s" % e})
+    except REP.NotCalibratedError as e:
+        return jsonify({"sent": False, "gantry_connected": True, "calibrated": False,
+                        "message": "Calibration required: %s" % e})
+
+    if result.get("aborted"):
+        return jsonify({"sent": False, "gantry_connected": True, "aborted": True,
+                        "message": "Job stopped before it finished. The page is "
+                                   "incomplete -- do not measure it.",
+                        "timing": Remember(run)})
+    if result.get("estopped"):
+        return jsonify({"sent": False, "gantry_connected": True,
+                        "message": "Job aborted by end-stop %r mid-run. Clear it on the "
+                                   "gantry before sending another job."
+                                   % result.get("tripped_switch"),
+                        "timing": Remember(run)})
+    return jsonify({"sent": True, "gantry_connected": True, "message": "Job completed.",
+                    "timing": Remember(run)})
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Separate stages and saved jobs make the flow reviewable. Shared models/profiles avoid reloading on every request; current imports determine the real API contract. \cite{flaskdocs,pillowops,code2026}.
+
+
+\section{ApiModelInfo}\label{fn:web-server:ApiModelInfo}
+\begin{lstlisting}[style=sig]
+def ApiModelInfo()
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/server.py} line 1096. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:server}.
+
+
+\Q{Purpose}{What this contributes}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests.
+
+
+\Q{Method}{Current implementation}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def ApiModelInfo():
+    def Params(model):
+        return int(sum(arr.size for arr in model.sd.values()))
+
+    def Mb(path):
+        return round(path.stat().st_size/(1024*1024), 2) if path and path.exists() else None
+
+    return jsonify({
+        "text_recognizer": {
+            "architecture": "CNN-BiLSTM-CTC, 12 convolutions then 2 bidirectional LSTM layers",
+            "weights_file": TEXT_MODEL.checkpointPath.name,
+            "parameters": Params(TEXT_MODEL),
+            "file_size_mb": Mb(TEXT_MODEL.checkpointPath),
+            "measured_accuracy": {
+                "real_ink_characters_pct": 98.61,
+                "real_ink_words_pct": 94.17,
+                "note": "669 real line crops from five photographed writers. The "
+                        "same measurement on the from-scratch checkpoint gives 24.1%, "
+                        "which is why the joint checkpoint is the one loaded.",
+            },
+        },
+        "writer_id_ink_based": {
+            "architecture": "CNN classifier on raw grey crops",
+            "weights_file": INK_MODEL.checkpointPath.name,
+            "parameters": Params(INK_MODEL),
+            "file_size_mb": Mb(INK_MODEL.checkpointPath),
+            "measured_accuracy": {
+                "real_photographed_pages_pct": 99.70,
+                "note": "Use only on real photographed pages. A drawn line has one "
+                        "pen width everywhere, so there is no ink evidence to judge.",
+            },
+        },
+        "writer_id_stroke_normalised": {
+            "architecture": "CNN classifier on stroke-normalised crops, ink-density invariant",
+            "weights_file": SHAPE_MODEL.checkpointPath.name,
+            "parameters": Params(SHAPE_MODEL),
+            "file_size_mb": Mb(SHAPE_MODEL.checkpointPath),
+            "measured_accuracy": {
+                "real_ink_pct": 98.20,
+                "note": "This is the judge used for drawn and synthesised output.",
+            },
+        },
+        "reproduction_pipeline": {
+            "authors": sorted(PROFILES),
+            "n_authors": len(PROFILES),
+            "measured_on_novel_sentences": {
+                "writer_id_direct_pct": 77.86,
+                "writer_id_gcode_pct": 77.86,
+                "text_char_direct_pct": 80.07,
+                "text_char_gcode_pct": 80.07,
+                "text_word_pct": None,
+                "writers_identified": "12 of 13",
+                "seconds_per_line": 10.9,
+                "method": "SynthesizeJointBestOf: %d candidates per line, scored by the "
+                          "harmonic mean of text accuracy and writer-ID confidence "
+                          "together, with the C1 join" % DEFAULT_TRIES,
+                "measured_via": "testing/results/RESULTS.md, 13 writers on novel sentences",
+            },
+# Excerpt ends; full definition continues in bundled source.
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Separate stages and saved jobs make the flow reviewable. Shared models/profiles avoid reloading on every request; current imports determine the real API contract. \cite{flaskdocs,pillowops,code2026}.
+
+
+\section{ApiTimings}\label{fn:web-server:ApiTimings}
+\begin{lstlisting}[style=sig]
+def ApiTimings()
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/server.py} line 1167. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:server}.
+
+
+\Q{Purpose}{What this contributes}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests.
+
+
+\Q{Method}{Current implementation}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def ApiTimings():
+    with TIMINGS_LOCK:
+        rows = list(TIMINGS)
+    summary = {}
+    for r in rows:
+        s = summary.setdefault(r["kind"], dict(runs=0, totalSeconds=0.0, characters=0))
+        s["runs"] += 1
+        s["totalSeconds"] += r["totalSeconds"]
+        s["characters"] += r["characters"] or 0
+    for kind, s in summary.items():
+        s["meanSeconds"] = round(s["totalSeconds"]/s["runs"], 3)
+        s["meanSecondsPerChar"] = (round(s["totalSeconds"]/s["characters"], 4)
+                                   if s["characters"] else None)
+        formula = TIMING.ALLOWANCE.get(kind)
+        meanChars = s["characters"]/s["runs"] if s["runs"] else 0
+        s["meanAllowanceSeconds"] = round(formula(meanChars), 2) if formula and meanChars else None
+        s["allowanceFormula"] = TIMING.ALLOWANCE_TEXT.get(kind)
+        s["meanWithinAllowance"] = (bool(s["meanSeconds"] <= s["meanAllowanceSeconds"])
+                                    if s["meanAllowanceSeconds"] else None)
+    return jsonify({"summary": summary, "runs": rows})
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Separate stages and saved jobs make the flow reviewable. Shared models/profiles avoid reloading on every request; current imports determine the real API contract. \cite{flaskdocs,pillowops,code2026}.
+
+
+\section{ApiSamples}\label{fn:web-server:ApiSamples}
+\begin{lstlisting}[style=sig]
+def ApiSamples(author)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/server.py} line 1192. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:server}.
+
+
+\Q{Purpose}{What this contributes}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests.
+
+
+\Q{Method}{Current implementation}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def ApiSamples(author):
+    if author not in PROFILES:
+        abort(404)
+    try:
+        pairs = RENDER.SampleCrops(author, n=2)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 200
+    return jsonify([{"image_url": "/api/samples/%s/%s" % (author, p.name), "text": t}
+                    for p, t in pairs])
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Separate stages and saved jobs make the flow reviewable. Shared models/profiles avoid reloading on every request; current imports determine the real API contract. \cite{flaskdocs,pillowops,code2026}.
+
+
+\section{ApiSampleFile}\label{fn:web-server:ApiSampleFile}
+\begin{lstlisting}[style=sig]
+def ApiSampleFile(author, filename)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/server.py} line 1205. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:server}.
+
+
+\Q{Purpose}{What this contributes}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests.
+
+
+\Q{Method}{Current implementation}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def ApiSampleFile(author, filename):
+    safe = "".join(c for c in filename if c.isalnum() or c in "._-")
+    p = RENDER.CACHE_DIR/safe
+    if not safe.startswith("sample_%s_" % author) or not p.exists():
+        abort(404)
+    return send_file(str(p))
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Separate stages and saved jobs make the flow reviewable. Shared models/profiles avoid reloading on every request; current imports determine the real API contract. \cite{flaskdocs,pillowops,code2026}.
+
+
+\section{ApiGlyphs}\label{fn:web-server:ApiGlyphs}
+\begin{lstlisting}[style=sig]
+def ApiGlyphs(author)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/server.py} line 1214. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:server}.
+
+
+\Q{Purpose}{What this contributes}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests.
+
+
+\Q{Method}{Current implementation}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def ApiGlyphs(author):
+    if author not in PROFILES:
+        abort(404)
+    try:
+        return send_file(str(RENDER.GlyphGridPath(author, PROFILES[author])))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Separate stages and saved jobs make the flow reviewable. Shared models/profiles avoid reloading on every request; current imports determine the real API contract. \cite{flaskdocs,pillowops,code2026}.
+
+
+\section{ApiCurateGet}\label{fn:web-server:ApiCurateGet}
+\begin{lstlisting}[style=sig]
+def ApiCurateGet(author)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/server.py} line 1233. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:server}.
+
+
+\Q{Purpose}{What this contributes}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests.
+
+
+\Q{Method}{Current implementation}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def ApiCurateGet(author):
+    base = author[:-8] if author.endswith("_curated") else author
+    if base not in PROFILES and author not in PROFILES:
+        abort(404)
+    curated = request.args.get("curated") in ("1", "true", "yes")
+    try:
+        return jsonify(CUR.Variants(base, curated))
+    except SystemExit as e:
+        return jsonify({"error": str(e)}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Separate stages and saved jobs make the flow reviewable. Shared models/profiles avoid reloading on every request; current imports determine the real API contract. \cite{flaskdocs,pillowops,code2026}.
+
+
+\section{ApiCuratePost}\label{fn:web-server:ApiCuratePost}
+\begin{lstlisting}[style=sig]
+def ApiCuratePost(author)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/server.py} line 1247. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:server}.
+
+
+\Q{Purpose}{What this contributes}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests.
+
+
+\Q{Method}{Current implementation}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def ApiCuratePost(author):
+    if author not in PROFILES:
+        abort(404)
+    body = request.get_json(silent=True) or {}
+    drop = {k: [int(i) for i in v] for k, v in (body.get("drop") or {}).items()}
+    keep = {k: [int(i) for i in v] for k, v in (body.get("keep") or {}).items()}
+    if not drop and not keep:
+        return jsonify({"error": "nothing was marked for removal"}), 200
+    try:
+        summary = CUR.Apply(author, drop, keep,
+                            curated=bool(body.get("curated")),
+                            outName=body.get("out") or None)
+    except SystemExit as e:
+        return jsonify({"error": str(e)}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    PROFILES.clear()
+    PROFILES.update(LoadProfiles())
+    summary["authorsNow"] = sorted(PROFILES)
+    return jsonify(summary)
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Separate stages and saved jobs make the flow reviewable. Shared models/profiles avoid reloading on every request; current imports determine the real API contract. \cite{flaskdocs,pillowops,code2026}.
+
+
+\section{ApiCurateDelete}\label{fn:web-server:ApiCurateDelete}
+\begin{lstlisting}[style=sig]
+def ApiCurateDelete(author)
+\end{lstlisting}
+\Q{Evidence}{Source and method link}
+\path{Software/DemoCode/web/server.py} line 1272. Implementation evidence: \cite{code2026}. Related method, alternatives and library discussion: Section~\ref{method:server}.
+
+
+\Q{Purpose}{What this contributes}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests.
+
+
+\Q{Method}{Current implementation}
+Connect capture, inference, profile selection, files and calibrated drawing through explicit requests. The excerpt below is from the current definition; the complete function is in the source snapshot. Its constants and branches, rather than an older signature, govern this path.
+
+
+\begin{lstlisting}[style=plain]
+def ApiCurateDelete(author):
+    p = paths.Profiles/("%s_curated.json" % author)
+    existed = p.exists()
+    if existed:
+        p.unlink()
+    PROFILES.clear()
+    PROFILES.update(LoadProfiles())
+    return jsonify({"deleted": existed, "file": p.name, "authorsNow": sorted(PROFILES)})
+\end{lstlisting}
+\Q{Justification}{Interpret the method rather than infer a benchmark}
+Separate stages and saved jobs make the flow reviewable. Shared models/profiles avoid reloading on every request; current imports determine the real API contract. \cite{flaskdocs,pillowops,code2026}.
+
