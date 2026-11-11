@@ -73,6 +73,7 @@ import retrace as RETRACE
 import timing as TIMING
 
 import camera as CAM
+import lineworkers as LW
 import render as RENDER
 
 FRONTEND = HERE/"frontend"
@@ -223,6 +224,10 @@ SHAPE_MAP = SHAPE_MODEL.authorMapping
 #======================================================================
 PAGE_NAMER = SHAPE_MODEL
 PAGE_NAMER_STROKE_NORM = False
+
+#the per-line pool uses exactly these, so a pooled page and a sequential
+#page are the same computation
+LW.Configure(TEXT_MODEL, PAGE_NAMER, PAGE_NAMER_STROKE_NORM)
 PAGE_BY_INDEX = {v: k for k, v in PAGE_NAMER.authorMapping.items()}
 print("[server] naming photographed pages with %s, strokeNormalise=%s"
       % ("the shape namer" if PAGE_NAMER is SHAPE_MODEL else "the ink namer",
@@ -416,7 +421,11 @@ def ReadAllLines(crops):
 
     flip = sR > sF
     cache = rev if flip else fwd
-    out = [cache[i] if i in cache else Read(crops[i], flip) for i in range(n)]
+    #the probed lines are already read; the rest are independent of one
+    #another and go out to the pool
+    todo = [(i, crops[i], flip) for i in range(n) if i not in cache]
+    done = {i: (t, sc) for i, t, sc in LW.Map(LW.ReadOne, todo)}
+    out = [cache[i] if i in cache else done[i] for i in range(n)]
     if flip:
         #the order the lines come back in changes too, so the caller is
         #given it and can put everything else it holds per line in step
@@ -447,11 +456,8 @@ def NameWriter(crops):
     writing is less evidence than a full line and should not count the
     same as one.
     """
-    per = []
-    for c in crops:
-        _i, p = REC.ClassifyImage(Image.fromarray(c).convert("L"), PAGE_NAMER,
-                                  strokeNormalise=PAGE_NAMER_STROKE_NORM)
-        per.append(np.asarray(p, dtype=np.float64))
+    got = LW.Map(LW.NameOne, [(i, c) for i, c in enumerate(crops)])
+    per = [p for _i, p in sorted(got, key=lambda r: r[0])]
     w = np.array([float((c < 128).sum()) for c in crops], dtype=np.float64)
     if w.sum() <= 0:
         w = np.ones(len(crops), dtype=np.float64)
