@@ -1,5 +1,14 @@
 # Block C — Style extraction, synthesis and G-code
 
+> **Written against `Software/CleanPipeline` (v1); the live system is
+> `Software/CleanPipeline3`.** `BuildStyleProfile.py` → **`style.py`**
+> (23 of 26 definitions), `SynthesizeHandwriting.py` → **`synthesise.py`**
+> (21) with the machine-coordinate and G-code half in **`reproduce.py`** (7).
+> The forced alignment it depends on is now `recognise.CtcForcedAlign`.
+> `Evaluate.py` has no direct successor. Two new files sit alongside:
+> **`curate.py`** and **`retrace.py`**, for glyph curation and recutting.
+> The algorithms are unchanged. Checked 2026-10-31.
+
 This block answers two questions: *what does this person's handwriting look like, as data?* and *given that data and a new sentence, what pen path should the robot draw?*
 
 | File | Lines | Role |

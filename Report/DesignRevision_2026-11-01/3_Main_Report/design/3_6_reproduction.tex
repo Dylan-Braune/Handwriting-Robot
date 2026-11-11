@@ -1,0 +1,261 @@
+\subsection{Style extraction and handwriting reproduction}
+\label{sec:des-reproduction}
+Recognising a line does not provide the motion needed to write it. The reproduction stage must recover usable pen paths from a writer's examples, store the properties that distinguish that writer, and assemble the paths into text that was not necessarily present in the examples. The chosen representation is a library of normalised glyph trajectories accompanied by line-level style measurements. It provides explicit control over scale and movement, while making the limits of character-based reproduction visible.
+
+\subsubsection{Character alignment and glyph extraction}
+\label{sec:des-alignment}
+The extraction input is a line image and its known transcript. Character boundaries are not supplied as labels. Instead, the trained reader gives a probability distribution for every output frame, and forced alignment finds the highest-scoring CTC path consistent with the supplied text. This is a localisation problem: the transcript constrains which labels must occur, while the frame scores indicate where they most plausibly occur.
+
+The alignment uses the same permitted transitions as the CTC training lattice, but maximises a path score instead of summing all path probabilities. Equation~\ref{eq:des-viterbi} gives the recurrence by replacing path summation in the CTC lattice with maximisation~\cite[PDF pp.~4--5]{graves2006}.
+\begin{equation}
+V(t,s)=\log p_t(\ell'_s)+\max_{r\in\mathcal P(s)}V(t-1,r).
+\label{eq:des-viterbi}
+\end{equation}
+Here $\ell'$ is the blank-interleaved transcript and $\mathcal P(s)$ is the permitted predecessor set: stay, advance one state, or skip an admissible blank. Backtracking yields the frames assigned to each character. Equation~\ref{eq:des-viterbi} makes clear why correct text does not guarantee correct boundaries: several spatial allocations can remain plausible under the same transcript.
+
+An output frame is converted through the network canvas to the original crop using the inverse of its aspect-preserving scale. If a frame edge is $t$ out of $T$ and the crop was scaled by $a$, its initial horizontal location is approximately $(640t/T)/a$, clamped to the source width. This undoes the resize rather than assuming that every crop occupied the complete 640-pixel width.
+
+The initial boundaries are refined by looking for thin, low ink near the expected cut. Equation~\ref{eq:des-cutcost} describes the principal column cost in \texttt{ExtractLineGlyphs}.
+\begin{equation}
+C_x=\frac{\overline p_x}{q_{0.60}(\{\overline p_j:\overline p_j>0\})}
++1.15\operatorname{clip}\left(\frac{b-y_{\mathrm{top}}(x)}{h_x},0,3\right).
+\label{eq:des-cutcost}
+\end{equation}
+Here $\overline p_x$ is smoothed column ink count, the denominator is its 60th percentile over positive counts, $b$ is baseline position, and $y_{\mathrm{top}}(x)$ is the highest ink row in that column. A denominator floor prevents division by zero. A true blank column is assigned zero cost. The search radius is approximately half an x-height, with a smaller penalty for distance from the initial boundary. The two terms in Equation~\ref{eq:des-cutcost} favour a narrow connector near the baseline over cutting through the body of a letter.
+
+One shared boundary array is enforced to remain increasing, with a minimum cell width of $\max(1,0.08h_x)$ pixels. Independently snapping neighbouring boundaries could place both at the same gap and create an empty glyph. Figure~\ref{fig:des-alignment} relates the initial alignment and refined cuts to the resulting character shapes.
+\begin{figure}[!htbp]\centering
+\designasset{design-glyph-alignment.pdf}{0.96}{Known transcript above two real line crops; initial CTC locations and refined cut columns distinguished; show resulting glyphs beneath, including a difficult cursive boundary.}
+\caption{Transcript-constrained character localisation and refinement of glyph boundaries.}
+\label{fig:des-alignment}
+\end{figure}
+
+\subsubsection{Skeleton tracing and pen path construction}
+Ink is an area, whereas the gantry needs a path. Zhang--Suen thinning reduces the line mask to a one-pixel centreline~\cite[p.~237]{zhang1984}. The complete line is thinned before character cells are separated. Thinning each cut cell independently would introduce an artificial image edge at every character boundary and could change the recovered centreline there.
+
+The skeleton is treated as a graph: adjacent ink pixels form edges, and endpoints and junctions determine where paths begin or split. Redundant diagonal edges are suppressed when an orthogonal route already connects the same local pixels. The default tracer first splits paths at junctions, prunes short dangling spurs, then greedily rejoins nearby ends with a continuation angle below $75^\circ$. Thus the default is not simply one pen lift per junction. A separate through-junction tracer exists but is not enabled by default. Neither procedure establishes natural pen order: the image records final ink, and several stroke sequences can create the same graph.
+
+Traced paths are divided at the character boundaries and simplified while limiting geometric deviation, following the polyline-simplification principle of Douglas and Peucker~\cite{douglas1973}\designsourceflag{douglas1973}. Short spurs and cut ligature tails require care because a genuine small stroke can resemble a skeleton artefact. Isolated dots may thin to a single point with no traceable edge; these are recovered as short paths rather than silently discarded.
+
+A detached \texttt{t} or \texttt{f} crossbar can extend over the next character cell. The extractor checks its width, flatness and height and, when the configured crossbar rule applies, assigns the complete bar to the corresponding letter instead of splitting it at a vertical cut. Such an overlap is not recorded as an in-word pen connection. Without this distinction, a crossbar would both contaminate the next glyph and inflate the profile's connectedness.
+
+Each glyph is stored relative to its left boundary and the line baseline. Equation~\ref{eq:des-glyphcoords} defines the normalised coordinate frame.
+\begin{equation}
+v=\frac{b-y}{h_x},\qquad
+u=\frac{x-x_L}{h_x}-v\tan\phi.
+\label{eq:des-glyphcoords}
+\end{equation}
+Here $x_L$ is the cell's left edge, $h_x$ is x-height and $\phi$ is the estimated writing slant. In Equation~\ref{eq:des-glyphcoords}, image rows increasing downwards become glyph height increasing upwards. Removing slant at storage allows the writer's slant to be reapplied during placement without making every spacing measurement depend on shear. The glyph can then be drawn at a chosen physical x-height instead of a fixed number of source pixels.
+
+Entry and exit positions are recorded along with whether the skeleton crosses a character boundary. This distinguishes a measured original connection from a merely small visual gap. The extracted paths still represent a geometric reconstruction, rather than the writer's true pen trajectory: retracing, pressure and movement direction cannot generally be recovered uniquely from a static image.
+
+\subsubsection{Glyph selection and library quality}
+The library must retain variation without giving every cut equal credibility. A recogniser can assign the correct transcript while placing one boundary inside a letter, so alignment is followed by geometric and consistency checks. Low-confidence lines are filtered relative to the writer's own alignment distribution. Per-glyph checks reject implausible width, height, stroke count, pen length and disagreement between ink width and the allocated character advance.
+
+The width gate allows up to 2.1 x-heights for ordinary characters and 2.9 for wide characters such as \texttt{m} and \texttt{w}. Further width and height checks use the character's own distribution, rather than applying one absolute size to every letter. The 40th-percentile width provides a reference less easily enlarged by a few cuts that contain part of a neighbour. Tightening is retained only when enough variants survive to form a usable pool. These gates encode plausible glyph geometry; their exact values are engineering heuristics, not universal typographic laws.
+
+A cross-writer shape prior supplies a second check. Each variant is represented by a smoothed, normalised $12\times12$ occupancy descriptor. Pooling descriptors of the same character across writers gives a robust reference shape. Its role is to reject malformed cuts from a writer's own library, not to copy another writer's letter into it. Internal consensus then favours variants close to the writer's typical form. Up to twelve variants per character are retained.
+
+For unit-length descriptor $v_g$ and the normalised median reference $r_c$ for character $c$, the prior distance is $d(g,c)=1-v_g^Tr_c$. Internal consensus instead uses pairwise $L_1$ descriptor distances and chooses the medoid with the lowest total distance. These are two distinct comparisons: resemblance to a pooled character reference and resemblance to this writer's own forms. Algorithm~\ref{alg:des-profile} gives their place in the complete profile-building procedure.
+\begin{designalgorithm}
+\caption{Labelled handwriting to a persistent writer profile}
+\label{alg:des-profile}
+\textbf{Input:} original line images, known transcripts and a trained reader.
+\begin{designsteps}
+\item Force-align each transcript; estimate baseline, x-height and slant. Skip unusable alignments or body bands.
+\item Refine a shared increasing cut array; thin the full line and trace its skeleton.
+\item Divide paths into cells, preserve eligible crossbars and recover untraced dots.
+\item Normalise coordinates; record advance, lead, extents and actual boundary crossings.
+\item Cache raw extraction; filter low-scoring lines relative to that writer's alignment distribution.
+\item Reject malformed glyphs by size, height class, stroke count, allocated cell and path length.
+\item Refine per-character size ranges; apply the cross-writer prior and writer-specific consensus filters.
+\item Rank and smooth retained variants; construct the real medoid and compatible median-stroke prototype.
+\item Store the glyph library and robust line/style measurements under the writer identifier.
+\end{designsteps}
+\end{designalgorithm}
+
+Two additional representatives support stable generation: a medoid that is an actual extracted example, and a denoised prototype formed from compatible variants. Prototype strokes are aligned and resampled before taking robust summaries; different stroke counts are not averaged indiscriminately. A prototype is admitted as an additional candidate only when the implemented shape-prior test improves sufficiently. The accepted and rejected variants in Figure~\ref{fig:des-glyphquality} illustrate the distinction between retaining handwriting variation and retaining extraction errors.
+\begin{figure}[!htbp]\centering
+\designasset{design-glyph-quality.pdf}{0.91}{One real writer's character variants, identifying retained forms, neighbour-contaminated or fragmented cuts, the medoid and any accepted denoised prototype. Include the rejection criterion.}
+\caption{Example of glyph-library filtering and representative selection.}
+\label{fig:des-glyphquality}
+\end{figure}
+
+Synthesis preferentially samples well-formed variants and can favour a compatible entry height when joining. Where the requested character is unavailable, the code can use a case-related shape, a similar form, an anchor glyph or a simple fallback. These options preserve the ability to generate text, but they do not establish that the missing character was reproduced in the writer's own style. The trajectory records glyph-source information so that fallback use can be distinguished from genuine extracted forms.
+
+The final stored profiles supply the glyph geometry used during the demonstration. Figure~\ref{fig:des-profile-example} shows actual variants from Dylan's final library alongside its representative forms. These paths can be inspected independently of a photograph or a generated sentence, making it possible to distinguish the stored shape from later slant, jitter and connector operations.
+\begin{figure}[!htbp]\centering
+\designasset{design-glyph-profile-example.pdf}{0.98}{Four actual Dylan glyph variants from the final stored profile, its real medoid and median prototype, at matching scale.}
+\caption{Actual glyph variants and representative forms in the final writer profile.}
+\label{fig:des-profile-example}
+\end{figure}
+This final \texttt{a} pool contains nine variants. The four displayed examples retain recognisable loop geometry while differing in closure and curvature. The medoid and median prototype remain distinct: one selects a real variant, while the other combines compatible paths. A low prior distance expresses resemblance to the character reference, not proof of a better match to the writer.
+
+\subsubsection{Writer style measurement and storage}
+\label{sec:des-profile}
+Letter shapes alone do not determine the appearance of a line. The profile also stores slant, x-height, ascender and descender extent, word spacing, per-character advance and connectedness. Measurements use medians where a few unusual cuts could otherwise dominate the result. Table~\ref{tab:des-styleparameters} relates the main quantities to their effect on reproduction.
+\begin{table}[!htbp]\centering\small
+\begin{tabularx}{\linewidth}{|p{0.22\linewidth}|X|X|}
+\hline\textbf{Quantity}&\textbf{Source}&\textbf{Use in synthesis}\\\hline
+Slant&Projection concentration under trial shears&Reapplied to stored upright glyphs\\\hline
+Ascender/descender extent&Relative glyph heights&Vertical proportions and line spacing\\\hline
+Letter advance&Character-cell and ink geometry&Placement of following characters\\\hline
+Word spacing&Measured gaps in real line ink&Separation of words\\\hline
+Connectedness&Observed skeleton crossings between adjacent characters&Probability of eligible in-word joins\\\hline
+Glyph variants&Filtered normalised trajectories&Writer-specific letterforms and variation\\\hline
+\end{tabularx}
+\caption{Principal stored style quantities and their roles.}
+\label{tab:des-styleparameters}
+\end{table}
+
+Slant is estimated by shearing the ink through candidate angles and measuring concentration of the resulting column profile. The stored angle is the one that most nearly aligns the dominant strokes. This treats slant as a property measured over a line, so it is less dependent on one unusual letter. It remains an estimate affected by letter content; it is not a direct observation of the writer's hand motion.
+
+Connectedness is measured using Equation~\ref{eq:des-connectedness}.
+\begin{equation}
+c=\frac{N_{\mathrm{cross}}}{\max(1,N_{\mathrm{adj}})}.
+\label{eq:des-connectedness}
+\end{equation}
+Here $N_{\mathrm{adj}}$ counts eligible adjacent non-space glyph pairs and $N_{\mathrm{cross}}$ counts boundaries actually crossed by a traced centreline. Equation~\ref{eq:des-connectedness} measures connections in the source writing; counting pen lifts in a generated file would instead measure the extractor and synthesiser's decisions. The difference is important when assessing how faithfully the library represents cursive writing.
+
+Profiles are stored as structured files containing the writer identifier, measurements and glyph paths. The permanent representation supports the proposal's multiple-writer requirement without re-extracting the source pages for each request. Cached raw extraction also permits a change to filtering without repeating all tracing. The extraction cache and final profile have different purposes: the former preserves intermediate work, while the latter is the version selected for reproduction.
+
+\subsubsection{Text layout and connected handwriting synthesis}
+\label{sec:des-layout}
+The synthesiser receives digital text, a profile, a physical x-height and a line-width limit. It selects a variant for each character, applies controlled shape variation and places the resulting paths into words and lines. Character advance and word spacing are taken from the profile rather than placing every letter at a fixed cell width. A word is moved to the next line when its predicted width exceeds the remaining space.
+
+Equation~\ref{eq:des-placement} expresses the main placement operation before machine-coordinate conversion.
+\begin{equation}
+x=p_x+h_x^{\mathrm{mm}}(l+u+sv),\qquad
+y=p_y+h_x^{\mathrm{mm}}(v+d).
+\label{eq:des-placement}
+\end{equation}
+Here $(u,v)$ is a stored glyph point, $l$ is its lead-in offset, $s$ is the applied slant shear, $d$ is local baseline drift, and $(p_x,p_y)$ is the placement origin. The physical x-height $h_x^{\mathrm{mm}}$ converts the normalised path to millimetres. Equation~\ref{eq:des-placement} keeps the source shape, line layout and physical scale as separate quantities.
+
+Small random translations, rotations and scale changes avoid using identical paths for every occurrence of a letter. A correlated drift term changes the baseline gradually instead of introducing unrelated vertical jumps. The implemented drift update uses a persistence factor of 0.85 and bounds displacement to $\pm0.25$ x-heights. Such variation is controlled rather than unrestricted: too much jitter degrades letter identity and can cause neighbouring glyphs to collide. A collision guard maintains a nominal 0.05 x-height clearance where appropriate.
+
+Variant choice is weighted rather than uniform: the best-ranked forms receive greater probability, and a compatible entry height is preferred when joining. The legibility anchoring strength is also profile-dependent. In the automatic setting, Equation~\ref{eq:des-anchor} maps the median stored prior distance $\widetilde d$ into a value $\lambda$.
+\begin{equation}
+\lambda=\operatorname{clip}\left(\frac{\widetilde d-0.24}{0.32-0.24},0,1\right).
+\label{eq:des-anchor}
+\end{equation}
+A clean library therefore retains more sampled personal variants; a library with poor descriptor agreement uses stronger anchors. The anchor first prefers an acceptable representative from the writer's own profile, then uses a generic form when necessary. Equation~\ref{eq:des-anchor} is a heuristic for allocation of trust, not a learned probability that a glyph is correct. Source tags identify own, case-related, similar, core, fallback or blank output. In particular, ``core'' can represent either a personal representative or a generic anchor; that tag alone cannot quantify how much personal geometry was preserved.
+
+For connected writing, the profile's connection fraction is used as a probability for eligible neighbouring letters. The code suppresses joining for profiles below a 0.45 connection threshold. A proposed join also requires a compatible glyph source and a gap no greater than 0.80 x-heights. This prevents a generic print fallback from being treated as a natural cursive attachment and prevents a long flat connector across an unusually large space. The body stroke is distinguished from a dot or crossbar so that the next letter does not connect to a detached mark.
+
+The default connector uses a shallow curved path between the exit and entry points, with sag limited relative to x-height and separation. A tangent-based alternative exists, but its flag is disabled in the current configuration. When a join is accepted, the connector and both bodies form one continuous pen-down path. Figure~\ref{fig:des-joins} relates endpoint selection to the resulting paths, including a pair for which a connector is unsuitable.
+\begin{figure}[!htbp]\centering
+\designasset{design-glyph-joining.pdf}{0.94}{Enlarged real glyph pair with body, dot/crossbar, entry and exit labelled; show accepted connector and one rejected large-gap or incompatible-source case.}
+\caption{Assembly of eligible glyph bodies into connected pen paths.}
+\label{fig:des-joins}
+\end{figure}
+
+Line-level style calibration compensates for differences between measurements of individual stored glyphs and measurements of the assembled line. A probe is rendered without jitter, measured using the same style functions, and compared with the reference slant and vertical proportions. Limited shear and extent corrections are applied over three iterations. This improves internal consistency of the representation, but it remains calibration against the project's own measurements; independent evaluation is needed to establish physical stylistic fidelity.
+
+\subsubsection{Candidate selection for legibility and writer identity}
+\label{sec:des-selection}
+One set of random variant choices can be more readable than another without being more characteristic of the writer. Candidate selection therefore evaluates both quantities. Each candidate trajectory is rendered at constant ink width, read by the text recogniser, and judged by the stroke-normalised writer classifier introduced in Section~\ref{sec:des-shapenamer}. Rendering every writer with one pen-width convention avoids deliberately supplying ink differences that the physical pen cannot preserve.
+
+The score in Equation~\ref{eq:des-jointscore} combines text recovery and the requested writer's probability.
+\begin{equation}
+A=\max\left(0,1-\frac{d_{\mathrm{edit}}(\widehat t,t)}{|t|}\right),\qquad
+J=\begin{cases}2AP/(A+P),&A+P>0,\\0,&\text{otherwise}.\end{cases}
+\label{eq:des-jointscore}
+\end{equation}
+Here $t$ is intended text, $\widehat t$ is recognised text, $d_{\mathrm{edit}}$ is the minimum number of insertions, deletions and substitutions, using the reader error convention~\cite[PDF p.~2, Sec.~2.1]{graves2006}, and $P$ is the model probability of the selected writer. The harmonic mean $J$ in Equation~\ref{eq:des-jointscore} penalises a weak component. For example, $A=0.95$ and $P=0.30$ give $J\approx0.456$, whereas $A=P=0.65$ give $J=0.65$. An arithmetic mean would give the former candidate 0.625 and obscure much of its poor writer score.
+
+Algorithm~\ref{alg:des-joint} gives the bounded search and repair procedure. The server default is fourteen candidates, with the number configurable. Because an entire candidate is rerendered and rescored, a repair is judged in its assembled context rather than by an isolated character score.
+\begin{designalgorithm}
+\caption{Joint candidate search and bounded legibility repair}
+\label{alg:des-joint}
+\textbf{Input:} requested text, writer profile, reader, shape classifier and trial limit $K$.
+\begin{designsteps}
+\item Determine the configured or profile-derived anchoring strength; initialise best score below zero.
+\item For each trial $k=0,\ldots,\max(1,K)-1$, synthesise with seed $s+977k$, render at uniform ink width and perform steps 3--4.
+\item Compute recovered-text accuracy $A$, requested-writer posterior $P$ and joint score $J$ (Equation~\ref{eq:des-jointscore}).
+\item Retain the highest-scoring trajectory; end initial search if $J\geq0.99$.
+\item For at most the configured repair rounds (default three), stop if $J\geq0.995$.
+\item Identify weak aligned character positions in the best render; propose stronger anchors for up to two previously unpinned positions.
+\item Regenerate with the trial repair map, rerender and rescore both objectives.
+\item Commit the repair map and trajectory only if the joint score improves; return the best retained trajectory and metadata.
+\end{designsteps}
+\end{designalgorithm}
+The joint route does not promise that every proposed repair is accepted, nor that weak characters will all be corrected. Its repair state is committed only on improvement. A separate reader-only synthesis helper exists, but its more aggressive print-escalation behaviour is not the joint procedure described in Algorithm~\ref{alg:des-joint}.
+
+More trials increase the opportunities to find a useful combination, but also add recogniser and writer-model calls. Search quality therefore has a computational cost for fixed text and profiles. The repaired or fallback glyph proportion also matters: legibility gained by replacing distinctive forms has a stylistic cost. Figure~\ref{fig:des-candidates} relates the individual candidate scores to the selected trajectory.
+\begin{figure}[!htbp]\centering
+\designasset{design-candidate-selection.pdf}{0.95}{Three to five candidates for one writer and sentence, labelled with reader accuracy A, requested-writer probability P and joint score J; mark the selected candidate and any anchor replacements.}
+\caption{Example of joint candidate selection for a fixed writer, input text and search configuration.}
+\label{fig:des-candidates}
+\end{figure}
+
+The same models guide selection, so their scores cannot independently prove the output's quality. A classifier can prefer an image for model-specific reasons, and its posterior is not an 85\% stylistic correlation measurement. The search is a design mechanism; final physical handwriting must be qualified separately. Increasing the search budget also does not recover a letterform that is absent or incorrectly extracted from the source library.
+
+\subsubsection{Machine coordinate mapping and G-code generation}
+\label{sec:des-gcode}
+The selected trajectory is mapped into the calibrated workspace. Normalised glyph size, line spacing and machine margins are handled separately: fitting the height of a tall descender should not silently change the meaning of the ruling or move a line outside the available area. Robust extent measurements limit the effect of a single unusually tall glyph on the scale of the complete passage.
+
+The physical x-height is first chosen from the page ruling and a stored x-height-to-pitch ratio where available. Otherwise the code uses a fraction of 0.46, giving an illustrative $8.4(0.46)=3.864$\,mm x-height at the default 8.4\,mm ruling. A probe of the actual requested text can reduce that value if robust line extent exceeds 1.60 rulings. The extent is measured using the 98th-percentile stroke tops and second-percentile bottoms, with exact extremes for fewer than eight strokes. It limits the influence of a few outlying strokes, but is not a guarantee that every extreme lies inside the nominal band.
+
+Two placement modes are supported. Ruled placement adjusts each line's measured centre to the configured ruling independently of the character scale. Free placement preserves the synthesised pitch after scaling, which can avoid forcing large ascenders and descenders from neighbouring lines into contact. A line offset selects a later starting position and reduces the remaining page height. Algorithm~\ref{alg:des-machine} summarises the conversion before file generation.
+\begin{designalgorithm}
+\caption{Trajectory placement and motion-file preparation}
+\label{alg:des-machine}
+\textbf{Input:} selected trajectory, page margins, line offset and calibrated workspace configuration.
+\begin{designsteps}
+\item Measure trajectory bounds and available width/height after margins and line offset.
+\item Compute a uniform fit scale; apply the robust extent cap when ruled fitting is enabled.
+\item Group strokes by synthesised line pitch; determine per-line shifts from measured centres and the selected pitch mode.
+\item Map points to machine millimetres using Equation~\ref{eq:des-machinecoords}; decimate short segments and order strokes within rows.
+\item Clamp remaining out-of-bounds points and record their count for inspection.
+\item Close eligible near-rings and join nearby strokes within the configured distance, counting the additional ink.
+\item Emit absolute millimetre moves, explicit modal feeds and pen-state transitions with configured dwells.
+\item Save G-code, placement information and the separate drawing, travel and dwell budgets.
+\end{designsteps}
+\end{designalgorithm}
+
+For the basic mapping, Equation~\ref{eq:des-machinecoords} places a trajectory with bounds $(x_0,y_0,x_1,y_1)$ within the page margins.
+\begin{equation}
+x_m=o_x+m_x+a(x-x_0),\qquad
+y_m=o_y-m_y-d_y-a(y_1-y)+\Delta_y.
+\label{eq:des-machinecoords}
+\end{equation}
+Here $(o_x,o_y)$ is the configured machine origin, $m_x,m_y$ are margins, $a$ is a fit scale, $d_y$ selects the line offset and $\Delta_y$ is any line-spacing adjustment. Both stored trajectories and machine coordinates use upward-increasing $y$; Equation~\ref{eq:des-machinecoords} positions later lines lower on the page rather than introducing another arbitrary image flip. Requested points are restricted to the usable travel, but clamping is a last boundary protection: it can distort a letter and must not be treated as successful layout.
+
+Strokes are ordered within text rows so that path shortening does not scramble reading order. Short path segments can be decimated, and nearby consecutive strokes may be joined without a lift. The current default distance is 0.6\,mm for such joins and for closing a near-complete ring. These operations save travel and pen changes, but can also introduce unintended ink if set too aggressively; their scale relative to the chosen writing size matters. The code retains clipped-point and stroke information to make these effects inspectable.
+
+The generated file selects millimetres and absolute positioning. A travel move reaches the start of a stroke with the pen raised, the pen is lowered, drawing moves follow, and the pen is raised before the next travel. Figure~\ref{fig:des-gcode-excerpt} gives an illustrative 10\,mm segment; it is not a claim of a measured hardware test. The interpreter assigns \texttt{M3} and \texttt{M5} to pen down and pen up respectively.
+\begin{figure}[!htbp]
+\begin{lstlisting}[style=designcode]
+G21
+G90
+G0 F4000 X20.000 Y30.000
+M3
+G4 P0.350
+G1 F800
+G1 X30.000 Y30.000
+M5
+G4 P0.350
+M2
+\end{lstlisting}
+\caption{Illustrative G-code sequence for positioning, lowering the pen, drawing one line and raising the pen.}
+\label{fig:des-gcode-excerpt}
+\end{figure}
+
+Feed is modal, so the travel feed is restated after drawing rather than assuming that the first \texttt{G0 F} remains active. Pen dwell defaults to 350\,ms in each direction and is configurable separately for raising and lowering. This dwell is additional to the switch-confirmed actuation performed by the interpreter. A timing estimate that counted only geometric travel would omit those repeated state-change costs. Conversely, a trapezoidal acceleration parameter in a configuration object does not establish that the actual GPIO loop executes acceleration ramps.
+
+Equation~\ref{eq:des-timebudget} expresses a nominal job budget from the generated geometry.
+\begin{equation}
+t_{\mathrm{nom}}=\frac{60D_d}{F_d}+\frac{60D_u}{F_u}
++\frac{N_p(t_{\mathrm{up}}+t_{\mathrm{down}})}{2}.
+\label{eq:des-timebudget}
+\end{equation}
+Here $D_d,D_u$ are drawing and pen-up distances in millimetres, $F_d,F_u$ their feeds in mm/min, $N_p$ is the number of pen transitions and the dwell times are in seconds. The last term assumes alternating up/down events. Equation~\ref{eq:des-timebudget} separates settings that affect ink quality from settings that mainly affect non-writing time. It excludes synthesis, switch-confirmed motor actuation, GPIO overhead and the directional pulse-delay effect in Equation~\ref{eq:des-pulsetime}; the saved estimate is therefore not the measured R3 completion time.
+
+\subsubsection{Reproduction verification and design limitations}
+The most informative design example follows one source line through alignment, extraction, storage, assembly, candidate selection and machine mapping. Each representation can then be checked against the preceding one. Re-rendering the emitted G-code can reveal a coordinate inversion, scale change, missing stroke or additional joining segment before drawing. Comparing that render with the selected trajectory checks conversion; comparing the physical drawing with the render checks execution. These comparisons localise errors without substituting for end-to-end qualification.
+
+The representation's main advantage is that its geometry is explicit and inspectable. A defective glyph can be traced to a source crop, stored paths can be viewed independently of the machine, and physical size follows from a defined transformation. The main limitation is the loss of context when a connected word is divided into reusable characters. Real letterforms change with their neighbours, whereas a finite glyph pool and join rules approximate that dependence. Skeletons also omit pressure and true temporal order. These losses explain why a plausible letter library need not reproduce every connected style equally well.
+
+Possible extensions include context-dependent multi-character units, better alignment, trajectory acquisition and a verified alternative junction tracer. Each addresses a different loss: multi-character units preserve local letter interactions, trajectory acquisition restores temporal information, and improved tracing changes how an existing skeleton becomes strokes. Their implementation would require corresponding changes to extraction, storage or the source data, rather than a larger candidate search alone.
+\designgap{Add the actual reason for retaining the present glyph representation and default tracer after these alternatives were considered. Do not infer that reason from the existence of an experimental function.}
+\FloatBarrier

@@ -1,0 +1,1375 @@
+
+=== PDF PAGE 1 ===
+Sequential Operations in Digital Picture Processing 
+AZRIEL ~:~OSENFELD A~D JOHN L. PFALTZ 
+University of Maryland,* College Park, Maryland 
+Abstract. The relative merits of performing local operations on ~ digitized picture in 
+parallel or sequentially are discussed. Sequential local operations are described which l~bel the 
+connected components of a given subset of the picture and compute u "distance" from every 
+picture element to the subset. In terms of the "distance" function, ~ "skeleton" subset is de- 
+fined which, in a certain sense, minimally determines the original subset. Some applications of 
+the connected component and distance functions are also presented. 
+1. Introduction 
+Computer programs for processing digitized pictorial information have received 
+increasing attention in recent years. Much of the work done in this field has in- 
+volvcd performing "local" operations on picture "neighborhoods." As several in- 
+vestigators have shown, a wide variety of picture processing transformations c~m be 
+accomplished by applying such operations independently, or "in parallel," to each 
+element of the given picture. 
+In this paper it is suggested that local operations performed on picture elements 
+taken in a definite sequence, using at each step the results obtained by operating on 
+the preceding elements in the sequence, may be preferable to the parallel approach 
+m some cases. It is shown that the parallel and sequential approaches are mathe- 
+matically equivalent, and that the latter should be competitive in processing time 
+required if a sequential computer is used. 
+"Sequential" local operations for performing two basic picture transformations 
+are next described. The first of these labels the connected components of any given 
+picture subset, while the second determines the "distance" (in a certain sense) from 
+every picture element to the nearest element of a given subset. In connection with 
+the latter transformation, a "skeleton" subset is defined which can be used in place 
+Of the given subset to generate the same transformed picture by applying t}ie "re- 
+;Verse" local operations sequentially. Examples of the outputs of sequential com- 
+puter programs which perform these transformations are given. 
+In the concluding sections of this paper, various applications of these basic 
+picture transformations to the analysis of picture subsets are indicated. Programs 
+are described which construct the graphs corresponding to dissections of a picture 
+into regions and which determine the orders of connectivity of the multiply con- 
+nected regions. Two approaches to the discrimination of elongated from non- 
+i ~longated regions or parts of regions using the distance transformation are pre- 
+Sented, one of them involving components of the skeleton subset. 
+Sequential and Parallel Neighborhood Operations 
+2.1. Operations on digitized pictures 
+A digitized picture, for the purposes of this discussion, is a finite rectangular 
+array of "points" or elements, each of which has associated with it one of a dis- 
+Computer Science Center. The research described in this paper was supported in part by 
+~ASA Grant NsG-398 to the University of Maryland, and in part under NASA Contract 
+NAS5-3461 with the Budd Company, McLean, Virginia. 
+471 
+Journal of the Association for Computing Machinery, Vol. 13, No. 4 (October, 1966), pp. 471-494 
+
+
+=== PDF PAGE 2 ===
+~7~ AZRIEL ROSENFELD AND JOHN L. PFALTZ 
+crete finite set of "values." If the array has m rows and n columns, any "point" in 
+it is specified by a pair of numbers i, j (1 ~ i _-< m, 1 _-< j < n) denoting its row 
+and column. The picture can thus be represented as an m by n matrix in which 
+each entry a~j has one of the "values," say vl, • • • , vk. In practice, m and n are 
+usually not greater than 2 ~°, and k is rarely greater than 2 8. We assume in what 
+follows that the values are nonnegative integers. 
+By an operation on a digitized picture is meant a function which transforms a 
+given picture matrix into another one. A general function of this type has mn 
+numerical arguments (one for each position in the matrix), and is correspondingly 
+difficult to handle computationally. For practical purposes, it is desirable to work 
+with operations on digitized pictures which can be defined in terms of functions 
+having considerably fewer arguments. 
+By a local operation or neighborhood operation on a picture is meant a function 
+which defines a value for each element in the transformed picture in terms of the 
+values of the corresponding element and a small set of its neighbors in the given 
+picture. For example, such operations can be defined using a neighborhood which 
+consists of the given element and its eight immediate neighbors; an operation of 
+this type has only nine arguments and is of the form 
+a~,i = f(a~_~,j_~ , a~-~,i , a~_~,~+~ , a~,~_~ , a~,i , a~,j+~ , a~+~,j_~ , a~+z,i , a~+~,~+~). 
+In what follows only operations of this type are considered. ~ 
+Local operations can also be used to define local properties of a picture. Iff:a~,j --~ 
+a~a" is a local operation, one can speak of the property that * a~,j --- v, where v is a 
+picture element v~lue. 
+It is sometimes convenient to consider operations which involve more than one 
+picture at a time. Strictly speaking, however, this is no more general than operat- 
+ing on a single picture. In fact, we have: 
+LEMMA. Let (au), (b~]) be m by n pictures; then there exist an m by n picture 
+(ci~) and two functions g, h such that g(c~ i) = a~j , h(c~s) = b~ for all i, j. 
+PROOF. Let co' - 2~°'3 b°', so that cu is a positive integer; let g -- ¢2, h = ¢~, 
+where ¢~, ¢3 are defined for positive integer x by 
+¢2(x) -- max/k I ]~ nonnegative integer; 2 k divides x}, 
+¢3(x) -- max {/¢ ] k nonnegative integer; 3 ~ divides x}. 
+COROLL~aV. Let f be any function which takes a pair of m by n pictures into an m 
+by n picture, say f( (a~i), (b~i) ) = (d~]). Then there exist a picture (c~i) and a func- 
+tion f* such that f*(c~) = (d~). 
+PROOF. Take (coO, g, h, as in the proof of the Lemma and define f*(c~.) = 
+](g( c~), h( c~) ). 
+Evidently this '~rgument generalizes immediately to operations on any number 
+of pictures. Note also that if f is loeal~in other words, if d~ depends only on a~_l,j_~, 
+The function f is not defined for "border" picture elements which do not h~ve all eight 
+neighbors. To avoid such exceptions, one can "~ugment" the picture m~trix by adding a 
+zeroth row and column, an (m-~l)-st row and an (n+l)-st column, giving these fictitious ele- 
+ments ~ value which does not occur in the "re~l" picture array, and defining the function ap- 
+propriately when some of its arguments h~ve this v~lue. In many of the cases considered in 
+what follows, one can avoid this complication by simply ~dding to the definition off the phrase 
+"for whichever of these elements is defined," 
+
+
+=== PDF PAGE 3 ===
+SEQUENTIAL OPERATIONS IN DIGITAL PICTURE PROCESSING 473 
+• .- , a~+1.j+l and on b~-l.j-1, . • • , b~+ld+l--then f* is also local, since c~ depends 
+only on a~j and b~. 
+When processing a picture using local operations, it is often convenient to store 
+the results of intermediate processing steps as auxiliary pictures. By the Lemma and 
+the last remark, local operations involving such auxiliary pictures can be regarded 
+as operations on a single picture. In Section 3 and in the Appendix repeated ad- 
+vantage is taken of this convenience. 
+2.2 Parallel operations 
+Many useful transformations of a given picture can be achieved by performing a 
+single local operation, or at most a few of them in succession, on each poi~lt of the 
+picture. For example, a "noisy" picture can often be effectively "smoothed," or an 
+"unsharp" picture "enhanced," by a single neighborhood operation which takes a 
+local average or computes a finite-difference Laplacian. Similarly, a picture which 
+contains thick "roads" (lines or curves of points having given wflues) can be 
+"thinned" by iterating a "border element deletion" operation, perhaps alternated 
+with a smoothing operation, where the number of iterations required is relatively 
+small since the roads are narrow compared to the picture size. Transformations of 
+these types have been demonstrated by Dinueen [1], Kirsch [2], Unger [3], Nara- 
+simhan [4] and others. These operations can also be used to define picture subsets 
+consisting of points which have smooth or broken neighborhoods, lie on edges or 
+roads, and so on. 
+Each of the local operations used in the examples just given is performed inde- 
+pendently on every point of the picture. The ~rguments (a~_.~,~--~, ... , a~+~.j+~) 
+~re always the original picture matrix values; the new values alj = f(ai-ld-1, 
+... , a~+~.:'+l) are stored, but are not used until the operation has been performed 
+for every (i, j), when they then become arguments for the next operation (if any). 
+Since the sequence in which the points are processed is thus entirely irrelevant, the 
+operation can be thought of as being performed "in parallel," simultaneously for 
+every picture point. Extensive consideration has in fact been given to the design 
+of computers which actually do perform identical operations simultaneously on 
+each of a large number of stored quantities. Even when processing digitized pic- 
+tures on conventional sequential computers, many investigators have used pro- 
+grams which simulate the operation of such "parallel" machines. 
+The wide variety of picture transformations which can be performed using local 
+operations applied in parallel has given rise to the widespread belief that this ap- 
+proach is optimum for local picture processing in general. In this paper the counter- 
+suggestion is made that an alternative type of processing, in which sequential appli- 
+cation of local operations plays a crucial role, is equally general in scope, and may 
+even have significant advantages, particularly when processing is being done on a 
+sequential computer. 
+The concept of a sequentially applied neighborhood operation will be defined in 
+what follows, ~nd the relative merits of the parallel and sequential approaches 
+considered. 
+2.3 Sequential operations 
+Suppose that a local operation is applied to the points of a digitized picture in 
+some definite sequence. For simplicity, suppose that the points are processed row 
+by row beginning at the upper left--that is, in the sequence an, a~2, • .-, a~,,, 
+
+
+=== PDF PAGE 4 ===
+474 AZRIEL f{OSENFELD AND JOHN L. t°FALTZ 
+a21,..., a2,,... , aml, "", a ...... Unlike the cases described in Section 2.2, 
+however, suppose that as soon as a point is processed, its new value rather tt~an, the 
+original value is used in processing any succeeding points which have it as neighbor. 
+If this is done, the general form of the operation becomes 
+# g q: * g 
+ai,j = f(a¢-l,i-1, , ai-l,i , ai-l,5+l , ai, i-1 , ai,i , ai,]+t , ai+i,j-i , ai.q-l,j ~ ai-51.j+l ) 
+since points (i-1, j--l), (i-1, j), (i--1, jq-1) and (i, j--l) have already beerl 
+processed, while the remaining points have not yet been processed. Such aa opera- 
+tion will be called sequential. 
+The particular processing sequence just described will be called the (for,ava~'d) 
+raster sequence. There will be occasion in the next {we sections to use other se- 
+quences as well. 
+At first glance, this type of operatioa seems more complex, and hence presumably 
+less basic, than the "parallel" type, which uniformly uses "old" values u~ltil the 
+entire picture has been processed. However, it is easily shown that the two types 
+of operation are entirely equivalent in the sense of the following. 
+THEOREM. Any picture tran.sformation that can be accomplished by a series of paral- 
+lel local operations can also be accomplished by a series of sequential local operations, 
+and conversely. 
+A proof of this Theorem is given in Appendix A. 
+In the proof, it is shown that any parallel local operation is equivalent to just 
+two sequential local operations; but to guarantee that a sequential local operation 
+is matched by parallel local operations, a long sequence of the latter may be re- 
+quired. In t)ractice, one can often obtain the result of a sequential operation using 
+relatively few parallel operations which produce the result without following the 
+stepwise progress of the sequential operation. However, it at least appears pla~usibtc 
+that there exist picture transformations which are more efficiently performed using 
+sequentially applied operations, particularly if a sequent, ial computer must be used. 
+As an illustration, consider the distance transformation defined in Section 4. 
+It (;an be performed by two sequentially applied local operations, involving a total 
+of 2ran individual local operations. On the other hand, it is easily verified that this 
+transformation can also be accomplished by applying the local operation 
+f(a<~) = rain (ai-Li, a~+t.i, a<i-1, a<i+1) q- 1 if aid ¢ 0, f(0) = 0, 
+m+n times in parallel to every picture element. If this is done on a sequential com- 
+puter, it involves ran(re+n) individual local operations--that is, (m~-n)/2 times 
+as many as required by the method of Section 4. Note, however, that if a paralM 
+computer is awtilable, it need perfor:m only m+n local operations on the picture in 
+parallel, a saving by a factor of 2mn/(m÷n) over the method of Section 4. Thus 
+if m = n, parallel processing on a parallel computer is n times faster than sequen- 
+tial processing on a sequential computer; but this in turn is n times faster than 
+parallel processing on a sequential computer even when this efficient paralM 
+method of performing the transformation is used. 
+3. Sequential Operations for Connected Camponent Discrimination 
+A set of sequentially applied local operations which "labels" the connected com- 
+ponents of any given picture subset is described in this section. For simplicity, it is 
+
+
+=== PDF PAGE 5 ===
+J 
+}t i,,},!/, 
+SEQUENq;IAL OPEI¢AT[ONS IN DIGITAL PICTURE PROCESSING 
+}'. X X XXX 
+X X X 
+X x x 
+X X 
+XXXXX X 
+(,~) (b) 
+t,'m, i. 
+X 
+X 
+X X X 
+X 
+X 
+(e) (d) 
+Extra, pies of connected and noneonnected sets 
+X 
+X 
+X 
+475 
+assumed th.tt the given subset consists of picture elements which have value 0, 
+while every other etelaent has value 1. The results (;an be immediately extended to 
+subsets eo~sisting of eleme~ts whic]~ have any given property; it suffices to first 
+)transform the picture usit~g the characteristic function of the complementary 
+property. 
+3.1 
+A subset of a digitized picture is called connected if for any two points P and Q 
+of the subset there exists a sequence of points P = P0, P~, P~, "" , P,~-~, P, = Q 
+:Of the subset su('.h that P~ is a neighbor of Pi-t, 1 < i < n. In Figure l(a), the set 
+:of s and the set of blank points are both connected; in Figure l(b), the a's are con- 
+: netted but, the blanks are not; in Figure 1@), the blanks are connected but the 
+'S are r~ot. For these examples, the definition agrees with the intuitive concept of 
+On the other hand, both the x's and blanks in Figure l(d) are con- 
+) :neeted, which runs counter to intuition. This results from the fact that a point is 
+; connected to any of its eight neighbors, including the diagonal ones. If connec- 
+tivity were redefined to require that P4 be one of the four horizontal and verticM 
+neighbors of P~_,, both the x's and blanks in Figure 1 d would become disconnected, 
+which is still not consistent with intuition. The "paradox" of Figure ld can be 
+as follows: If the "curve" of shaded points is connected ("gapless"), 
+does not disconnect its interior from its exterior; if it is totally disconnected, it 
+disconnect them. This is of course not a mathematical paradox, but it is un- 
+satisfying intuitively; nevertheless, connectivity is still a useful concept. It should 
+be noted that,if a digitized picture is defined as an array of hexagonal, rather than 
+:square, elements, the paradox disappears; this is because in the hexagonal case an 
+element has an edge in common with every one of its six neighbors. 
+In general, a subset of a picture (say the subset of "0" points) consists of a sum- 
+: her of connected parts or components. ~ The problem of distinguishing among these 
+i eompone~ts is now to be considered. Specifically, it is desired to construct a truss- 
+picture in which the 0 points have new values v~, .. • , v~ (positive integers 
+greater than 1), two points having the same value if and only if they belong 
+the same connected component of 0 points on the original picture. 
+Neighborhood operations lend themselves naturally to the study of connectivity, 
+it is defined in terms of neighbors. If the operations are applied in parallel, 
+it is not easy to distinguish among connected components, since the parallel opera- 
+tions treat every point of the given set identically. Using sequentially applied 
+operations, however, one can "track" each connected region, assigning a value to 
+each point of it as the tracking proceeds. If two of the tracked regions merge, a 
+2 Formally, these components are the equivalence classes of picture points defined by the 
+relation "is connected to" (that is: "is a neighbor of ~ neighbor.., of a neighbor of"), which 
+is evidently an equivalence relation. i 
+
+
+=== PDF PAGE 6 ===
+476 AZRIEL ROSENFELD AND JOHN L. PFALTZ 
+special value is assigned. Further processing is then applied to these special values 
+so as to eliminate redundant values from the picture. 
+In Section 3.2 a set of sequential Meal operations is defined which assigns to evew 
+point of each connected region on the picture a value which labels the region. In 
+Section 3.3 a computer program is described which generally follows this sequence 
+of operations but which does not adhere strictly to the requirement that only local 
+operations are permitted, and which in consequence is considerably more efficient. 
+3.2 Sequential operations for determining connected components of a picture 
+Let f be the local operation which takes a~,~ into a~.~ defined by: 
+(a) If a~.~ = 1, then ai,i, = 1. , 
+(b) If a<i = 0, and a~_,.j-1 = a~-l.i = a~-t,i+l = a~,j_l = 1, then a'i, ] = ~)k, 
+where vk is one of a set of as yet unused labels. (This indicates that a~,j is possibly the 
+start of a new connected component of O's. If it is not desired to allow an operation 
+which can draw on a set of labels in this way, one can simply use 2~3 i as the tabel; 
+these labels are automatically distinct for all i, j.) / I ? 
+(c) If ai.j = 0 and each of a'~_l.j._~, a~-1,i, a~_1.¢+~ and ai,j_l is either 1 or some 
+vk (but not all of them are 1), then a~o' is the smallest of the vk's. (If there is only 
+one vk, this indicates that a'~,i belongs to that same component. If there is more 
+than one, it indicates that two or more components were actually parts of the 
+same component.) 
+Furthermore, let f also create an auxiliary picture (b.~i) in which b~.j = 1 when 
+more than one v~ is involved in case (c), and b.z,i = 0 otherwise. (These l's thus 
+label points at which two or more components have "merged." It is clear that (b~j) 
+could be combined with (a'o'), if desired, by the method of the Lemma in Section 
+2.1.) When f is applied to a binary picture sequentially, e.g., in forward raster se- 
+quence, it labels the O's in such a way that O's which get the same label must belong 
+to the same connected component; note, however, that the O's in a given component 
+may have several labels. 
+To complete the task of labeling the connected components, it remains only to 
+eliminate all labels which have merged with other ones. For ex~'mlple, if v~ has 
+"met" v,, where v~ < v~, one should replace all the v,'s prior to the meeting point 
+with v,'s. 
+If one were not restricted to performing only local operations on the picture, it 
+would be fairly easy to eliminate the redundant labels by processing a list of the 
+redundant pairs. A method for doing this is described in Section 4. In the remainder 
+of this section, elimination of redundancies using local operations only is described. 
+After f has been performed, the redundancies are identified by l's in (b~i) at the 
+points where they were detected. To eliminate a redundancy, say of v~ with v~, 
+using only local operations, it is necessary to convey the information that v~ "equals" 
+v~ to the neighborhood of every point (i, j) of the picture, so that if a'~ .5 has value 
+v~, it can be replaced by v~. This is done for one redundancy at a time by proceed- 
+ing as follows. 
+(1) Pick the first redundancy not yet processed. This can be done by applying a 
+localoperation to (bli) inzigzag sequence (1, 1), ... , (1,n), (2,n), ... , (2, 1), (3, 1), 
+• ..,(3, n),...,(m, 1),...,(m,n)ifmisodd; ...,(m,n),...,(m, 1)ifm 
+is even. This operation g takes (b~j) into (b~j), and also generates an auxiliary pie- 
+
+
+=== PDF PAGE 7 ===
+SEQUENTIAL OPEI¢ATIONS IN DIGITAL PICTURE PROCESSING 477 
+lure (¢~j), such that b'l,~ .... cL~ = 0 and the suee~eeding etements are defin<.v:l as 
+follows: 
+1;'or (i, j) > (1, 1 ), let (i', j') denote the predeeesvsor of (i, j) in the zigzag 
+sequence. 
+If c~,j, = be0 = 0, then b{,j" = c~i =: 0. 
+If c~,,r = 0 and b~,j = 1, then b~,j = 0 and c{,j = 1. 
+If c~..r = 1 or 2, then b$~j = b<j and ce,~ = 2. 
+Thus g "erases" ~he first 1 in (b~j) ("first" in 0~e se~se of the zigzag s~.~.lue~ee) 
+and stores a 1. in the corresponding position in (c~), (No~:.e that, the flint, I in (b~.) 
+cannot be in the first row, since components cmmo{> yet,, have merged; hence setting 
+b~,1 = c,.~ = 0 is safe.) As soon as it has done ~,his, it st, ores 2% in (cq) thereafter; 
+this keeps it from mistaking subsequent 1% in (b~a~) for '~fi~>t." The rea~)n for 
+using the zigzag sequence is m ensure ~i~at. (i', f) is Mw'ays a neighbor of (*/:, j), so 
+that g is local. 
+(2) "75"ar~sw~it" the :i~f(yrmaI&n abe~t thi;s redu~&mc~ to ~,t'ergJ FolnL Le~ e~ ..... 1, 
+express the fae~ that the labels ~'v, v,, v~ are m be replaced by s~. This can be do~e 
+by using the integer v .... 2~"<Y'~5~"T ~'* as a label, since gtfis integer ean%s the values 
+v~, vq, v~, v., iu retrievable ferns, as weil as indicating w}deh of them is to rc, Dlaee 
+the others. To get this infom~ation to every" point, (m.e censtmcts an auxilia.ry 
+picture every element of which hag value v. Specifically, one defines the local opera- 
+tion ht, taking (c~) int.o (&~) such that d~a ~ 0 and: 
+If &'.r = 0 and c~,s ¢ t, ttmn d<~ = 0. 
+If &,,, == 0 and c<i = 1, ~hen d<~ = v, where s is defined N terms of the ele- 
+ments o,~..a.~.-:~, c~_~.,~, a~_~,~+:~ and a<~_~ as described just above. 
+If d;,~, -~ ~', then d;,l = v. 
+Thus k~, applied in zigzag sequence, cons~rnc~s a pictm~'~ (d,~t) in which every 
+element after the t in (c~i) is v. (In particular, d ...... = v.) To mf~ke the ~maining 
+elements v's, one need only apply a simple local operation ha~ in re~,erse aigzag (,' j',) sequence. Let. j , denote the predecessor of (i, ;j) in this seq~:mnce, and let 
+h~ take (d,j) into (d/~.) such that d ...... = d~,,~.,~ = 'e, an~. di ~ = v whenever dr .~ .... s. 
+(3) Use ~his #@)rm(tgou~ go correct the rd~n&mc;q. Ig remains oMy to define the 
+function h by 
+h(a{,~) = s, if a~, = v~,v~ors~, 
+h,((~,~) = a'~,j oa~erwise. 
+This is a local operation--indeed, it operates only on a single (i, j) ag a ~ime-.- 
+since (d,::~) has brought these v's to evew (i, j);ig can be applied in: any sequence. 
+' rcplaee:~ oy ~ , and is The resulting t.ransfom~ of (a,~) has all its v~'s, v/s and v,'s ~ d ~',, v's 
+otherwise the gtme as g4j • 
+We now repeat the process described in (1).-(a), but starting with ~he new (a'~y) 
+and with (b}~). Application of (a in. zigzag sequence now erases aim first I in (b~), 
+say b~.,, (which was the second 1 in (b<~)), and leaves ~he rest of ig unchanged; ig 
+Mso constructs a new (cq) with a 1 in the (z, w) position. Application of h~ and h~ 
+]* then yields a new (c;~) with appropriate label v (not the same as the previous v), 
+It is quite possible that the redundancy ag (z, w) invoNed only v~,, vv, v, or va, 
+
+
+=== PDF PAGE 8 ===
+478 AZRIEL I{OS]gNFELD AND JOHN L. PFALTZ 
+and is now eliminated; in this case the new v reduces to 2 *~', and application of h 
+does nothing to (a~i), In any event, this second cycle of (1)-(3) yields an (a'~i) in 
+which further possible redundancies have been eliminated. 
+Let this entire process be repeated as many times as necessary. (One can, of 
+course, stop when there are no more l's in (b~j), but if only local operations are in- 
+volved, this can only be detected by performing a couJ:~ting operation o~ (b~j) 
+after each iteration. Certainly mn repetitiorts--in fact, eonsiderabIy fewer--will 
+suffice to clear up all the redundancies in (a~i).) 
+In summary: Given (a~i) in which every element is 0 or 1, one can construct 
+(a~i) in which every connected component of 0's has a unique label by proceeding as 
+follows: 
+(a) Apply f to (ao) in (e.g.) raster sequence (zigzag would do just as well). 
+(b) Iterate the following sequence mn times: (g in zigzag sequence; h~ in 
+zigzag sequence; h~ in reverse zigzag sequence; h in any sequence). 
+3.3 Programrrdr~g consideration~ 
+A practical computer program for determining connected components along the 
+lines described above rmed not be as elaborate, since it need not restrict i~self to 
+local operations alone. Some immediate shortcuts, once other types of operatio~ts are 
+permitted, include the following: 
+(a) The "redundancies" can be stored as a table "outside" the picture; this 
+greatly reduces storage requirements, a 
+(b) Elimim~tion of redundancies can be performed by processing this table. 
+When this has been done, the redundant picture element labels can be "translated" 
+into irredundant ones as the very last step, by making one scan of the picture, 
+"looking up" each value in the processed table and substituting the equivalent, 
+irredundant value if different from the given value. 
+(e) The table can be processed in many fewer steps than are required to process 
+redundancies within the picture, since (1) the table is in general much smaller; 
+(2) when a redundancy is being "reduced," it need not be "carried" through the 
+t~ble, since processing is not constrained to neighborhoods within l:!m table; (3) it 
+is easy to stop the processing when the table is exhausted, r,tt;her than blindly 
+repe~tting it mn times. 
+In the light of these simplifications, a program for labeling connected components 
+can proceed as follows: 
+(1) Apply f as described in Section 3.2; but rather than generating an auxiliary picture (b~s), 
+simply store the redundant labels in the first unused place in a table T. The ith entry in 
+this table thus has the form (vv~ , vqi , v~ , v~), where v~,~ < Vql -<= v~ < v~ . 
+(2) To process the table: 
+(a) Order the entries lexicographically (in order of increasing first value; for each of these, 
+in order of increasing second value; and so on). 
+(b) Store (v~ , vq~, vr,, v~) in a second table T'. In the remaining entries, replace every 
+vq~, vr~ and vn by vm • Reorder each entry (if necessary) to re-establish v~ < vq~ =< vr~ < 
+v~ ; if all terms are equal, erase the entry. 
+3 Since auxiliary tables which contain stored information about the picture are used in this 
+and the following steps, the operations performed are no longer local; the table makes avail- 
+able information about picture elements which are not neighbors of the element being proc- 
+essed. 
+
+
+=== PDF PAGE 9 ===
+S~QUENTIAL OPEI%ATIONS IN DIGITAL PICTURE PROCESSING 479 
+Repeat steps (a) and (b) until every entry has been erased or stored in T'. When this is 
+finished, 7 '1 consists of a set of entries in lexicographic order. The first term of each entry 
+is t.he sm'dlest representative of an equivalence class of redundant values; the remaining 
+terms of tile entries which have first term v are the remaining elements of its equivalence 
+class. 
+(3) Scan the pier.are in any sequence, comparing the value of each element with the entries in 
+T'. Whenever a value is found to be in T', but noi; as a first term, replace it by the corre- 
+spondil~g first term. (If desired, gaps in the sequence of labels can be "closed up" before 
+output.) 
+Note that this program consists basically of a single sequentially applied local 
+operatiol~ (step (1), except that the redundancies are stored outside the picture 
+to simplify the reinaining steps), followed by sequential processing of the table and 
+sequential rclabeling of the picture. The approach is still essentially sequential, 
+e~ren though for simplicity the restriction to "pure" neighborhood operations has 
+been relaxed. 
+An IBM 7090/94 program along these lines has been written and tested. The 
+program, originally written in the FAP symbolic assembly language, has been 
+~,dapted so that it can be called as a FOm'R~N subroutine. It accepts as input a 
+digital picture on magnetic tape. Each record on the tape contains information 
+~bout one row of the picture. A picture element can have any value from 0 to 2 ~- 1, 
+and each row can consist of up to 2,000 elements. The number of rows is limited 
+Only by the capacity of the tape. 
+The program selects any prespecified rectangular subpicture (rows r through 
+f-t-u, cohlmns s through s-I-v, for example). It slices the picture elenlent values 
+between any two prespecified levels tl, te (0 N h < t~ < 26-1), treating all 
+values between h and t2 as 0 and all values outside the range as 1. The program then 
+proceeds to label the connected components of the set of O's essentially as described 
+above. The labels used for processing are simply the integers. For printout purposes, 
+only the 46 distinct labels 
+ABCDEFGttIJKLMNOPQRSTUVWXYZ123456789-t-- / = I.) $,,( 
+are used, in that order. If there are more than 46 connected components, these 
+symbols are used over and over again, as many times as necessary. The output is a 
+matrix of alphanumerics in which the symbol printed at each 0 point is the label 
+of the connected component which contains the point; 1 points are left blank. A 
+labeled version of the picture is also written on tape for input to succeeding process- 
+ing routines. 
+An example of a simple picture input to the program is shown as Figure 2 (1 --- 
+black, 0 --= white). The corresponding output for this picture is shown as Figure 3. 
+In this picture, the component labeled I, for example, had three labels in the original 
+processing, since it was detected as a possible "new" component at each of the 
+three elements which are circled in the figure. Component D obviously had many 
+labels originally, while components A and C had unique labels throughout the 
+processing. 
+4. Sequential Operations for Distance Determinatwn 
+Several investigators over the past decade have considered picture transforma- 
+tions in which a given subset is "propagated" over the picture, or dually in which the 
+
+
+=== PDF PAGE 10 ===
+480 AZRIEL ROSENFELD AND JOHN L. PFALTZ 
+F~G. 2. Picture input to 
+processing programs 
+a~=~ eee~ee e~. CCC¢CCCCCC 0000000000000000000000000 O000eo0o 
+• ~a~ eeeeeee e~ CCCCCCCCCCC oo0000000000oooooooo00co ooo~o~0 
+~ e~ ee~ CCCCCCCCCC O0000000000~O000pO00000 o00000 
+~&ma ~EE~EE BBBB C~CGCCCCC OO~OOOO000 DODDOOOODOD FF~FFFFFF 0OOODD 
+&kAAAP~a eeeeeeeeE eeee ccccccccc oooooooo~ ooooDoooo FFeFFFFFFF~FF ~o0~0 
+• ~ Eeeee~ee ee~e~ CCCCCCCCCC OODOOOODO OOOOODD FFFFFFFFFFFFF O0~o 
+a~ eee~eEee ~e~e CCCCCCCCC ODOODOOOD ~0 CO00000 FFFFF~FF~FFFF~ OD~O 
+~ e~eeeeee~ eeeee CCCC¢¢¢¢¢ oooooooo 00o oooooo F~¢~;F~P~ 0o0o0 
+~=~ ~ee~eeeee ee~ee CCCCCCCCC 00ooo0o ~ OODOOO F6F~FFFgFFFFFF O00cmo 
+~ eEEe~ee ~e~ee CCCCECCC DOODO G~&~ ~DDDDO F~FFFF~FFFFFFFFP O~O00m 
+~ E~(~((~e ~8e~8 CCCCCCCC O00DO ~0~¢~ O0+DO000 FFFFFFFFFF~FFFF ODO0~ 
+~e~E~ ~8B~B~ CCCCCCC 000000 GGGGG~ O0:ODODD FFFFFFFFFFFFFFF 00000 
+~(~ eeeeo CCCCCC ooooooo GG~G~ O00DOODD FFFFFF~FFFFFFF oooo0 
+ee~eee~+e~ ~e~e~ CCCCC Ooocoo0 ¢00000 000.0o0~ ~;~r~ 00~0 
+EEE~EEEE~ eBeBEBB CCCCC O00.DODDO GGGGG DDO~OOOOOD FFFFFFFFFFFF OOOD 
+eEee~eeee eeeeee~ ((CC OOCO000OO0 OOGG O00000000oo EF~FF~FFFFF ODO0 H 
+eee~e~ee eee~e~ ccccc ooooocoooov ~ oooooo.ooooooo ~F~F~F~ 00~0 ~:~ 
+e~e~e~ee ee~eeee CCCC OODOCO~ODDO~O O00000~DODODOD FFFFFFFFF OOOO 
+~eeeee~e eeeee~s~e CCCCC 000000000000000 00oo00o000000000 ~F~FF~ 0000~ 
+~e~ee~ e~eeeee~e CCCC ooooooo.ooooo~ooo oooo~o00oo00~ooooa F~FF~r o~oo 
+eeeee eseeee~e~ CCC COOOOOCO~OOOO000000000~O00000000O.OO0 ~rF~ 0oo0 ~,~, 
+ee~ eBeeee~e~ ocooooooo~ooooooooooooo~oooooooooooo ~F~ uoooo ~,~+ 
+eee eeeeeeee~ ~ OOCOO0OOO00000000000000000000000000,OO FFFFFFF Ooooo HH~'~ 
+EE eeeeeeeeee Z~] OCOCCO000000000OOOODOOOOOOOOOOO~OOOOOD FFFFFFF 00000 ~PH:~ 
+e eeeeeeee~ NIl CCCCCO000COCO000©ODOOOOOOOOOOOOOODO~O FFFFFFF OOOO0 ~H~, 
+Beeeeeeese IIIII COCO~OODOOOOODOOOOODOOOODOOOUODO0000~O FFFFFF OQO00 HH~HH~H 
+s~eeee~e~ iHtl 00000000000000 00000000000000000~ ~F~ ooo~n ~+<~,~ 
+eeaBeeeeeee xlzx OCOCOCOODOO0 O00OO00OO0000000 m FFFF~ 00~o00 HHHHPHHH 
+8es~eeeeeee lII]I OCOCOCOOOO O000eOOOOO0000o ~FF ~oooo H,H~H~H 
+8~BBs~eet~e IlZlil oooooooooo &Jaa ODOOOOOODODDO ~FF O00OQ HHHH~H 
+eeeeeee~e lllllll OOO00DOOO JJ3J~JJ$ O00OOOOO00 FFF o00000 ~HHH~H~H 
+es~seB~ ilXl~l% OOOCO~Ofl JJa&JaaJJ:JJ OO00000OO FF DOOO00 HH~IH~HHH~H 
+~t~85 ~([II~]I CGCOOOCO 4JdJJ4J4JSJ3J OOOOOOOO0 FPP 0009000 Hi4HH~HM~HHH 
+B$888e IJIHI~II COOCC0C JSJJJJJJJJJSJJJJ OO000000 ODOD00D0 ~HH~HHHHPrH 
+81SB8 ll41llJlll OOO0OO0 J~JJJJJJ,JJJ~JJJJ 0DODDOOOD O0000OOO H~HHHHpeH 
+BSB~ lllllIllll CO00OO JJ~JJJJJJJJJSJJ4J3 DO000000~ ~O000~OO0 ~HHHHH~),H 
+85 II]llllll¢ COOCD JJJJJJJJJJJJJ, dJJJJ OOOO00D~OOODOOOOOODOC9 HH~HH~ 
+8~ li]]]JIlIl| OCO000 JJJ~JJJJJJJJJ3JJJJJ OOODOODDODOOO~OODOODD HHHH~H 
+B IIIIZI~IIlII OOCO00~ JJJbJJJJJJJJJJJaJJJ DOOOOODOOOCO~O~Q~O HHHHH~HH 
+8 JNII|I[[IIi| 00C0CO JJJJJJJSJJJJJJJJJ$~ 0000000000000000D0O00 HHH~,~ 
+[Nll[~l[ll]l O~C~ JJJJJJJJJJJJJJJJJJJJ 0000OO0000000~0900OOO K H~HIZH 
+[[~IIN||~IHI OOCO00 JJJJJJJJJSJJJJJJJJJJ DDgODOODOOOODOOODDDO ~K H~ 
+I~I~I]IIII[HI ~DOODDO JJJJJJJ~JJJJJJJJJ~ Oooooo00000000Ooooo0 ~ HH~( 
+li[|llll~llll] O00CO00C JJJJJJJ~JJJJJJJJ OOODOOODOOOD~OOODODBD KKKK H~ 
+IJ[JHNIZl[]] ~00£C~CCO JJJJJJaJJJJJ 0000~9000000~00~0000~ ~K~KK 0 ~H~¢ 
+lZllllllllllll DCOOCOCC00O JJJJ~JJJJ OCDBODDDOOOOOOD~OOOD K~XK o ~H~H 
+tIllllltXllZl[ CVOOOO0000+O JdJ+ O090OO0000OOOO00++09OO KKKk~ D H.~H 
+II[lllll(lllli C~DOCCCOCO¢©O J CO0000DODOOOOOOOOOOCOODD K~KK D ~H 
+ZzlJZZllZl|Ili O~O0~OCOOO~OO0 O00000000000000000000pODDD ~K~K 0 ~H 
+Zltllllllllllll O~OOCOOCOOODO00 O0000000OODOOOODOOOOOOOOO~OOD X~KK~ DO +HH~ 
+lllllllllllllll O00COOCO000OO00 O,O00OOODO000000000000OOOOOOODO KKKKtl D ~! 
+[l[lllllllllllll ~CCOCOCQC~COOOCOCO~I0~ODDOD DDOOO~OODO000OO0~O0 K~KRRK o HHHMH 
+Illllllllllllll$1 OOCCOOCOCgOO0000~DDDOOODO ~DOOOOlOObO00000~O0 X~XXKK ; ~ 
+Illlllllllll]llZl[ OCO0000ODDOOO00D00ODO~O OOOOOOOOOOOO00~OO ~KKKK~ 0 i.HH~iH 
+Illllll~lllllllllll OCOEOCOOO00C0OOC00OO II I ~OCOOOO000OO0~O0 IIIII O ~IH~HHH 
+Illlllllllllllllllll O0000©O00000¢O00pO0 Ill OOOOOOOOOODO~D II:IX ~ H~H.H+i 
+Illllllllllltllllilll 00CO00000~00©0DOPO0 I1111 0000000P0~PO0 ~Ixl D~ H~+'HHH 
+IIIIIIIIIIIIINITIIIII 0000~O000000DO+000 1111tli ODOOD000BDOD KKKm ++ HHH~H+, 
+llllllllllllllllllllll 00C00000+000¢00000 IIII1111 0+000000OOD m~mm 0+o. >++++++++++ 
+IIIIIlllllllllllllllil OODCOOOOOOOmO00 III11111 00~000000 KKKKK o++ +H+H++~ 
+Illlllllllllllllllllll~ O000000000000& IIIIIIII1 0000000000 K~kKK~ O0 +mH~+<++ 
+IIII11111111111111tli111 ~DCOOOOOODO IIIII11111 ooooooo KKKK~K~ DOO b.,,~t¢~l 
+111111111111IIII!111III1 O00000000b II11III1111 000000o KKK~I 00o HHHHHHH 
+IlllllllllllllllllIlllIl CO0Oo00 I11111111111 ooo0ooo ~KKXK~ DO HWlH~HH,It 
+II111111111II111111111II 0 IIII111111111 ~GOODO KI~K~(K~ DO ,HHtlI+,Htl 
+lllllllilllllllllililllil I111111111111 ~00 IKKKKIKK~ 000 ~HHH~HTH 
+IIIIIIIIIIIIIIIIIINIIIIIIIIII IlIlllllllilll 00oo0oo KKKKKKKK O0 HHHHHHHH 
+111111111111111111111111111{1111 ~111111|11111111 000DO0~ K~KKKKK ODO0 ~HHHHHHH~! 
+III11111111III11111111[[1111111111111111111111II111 OD~C~DD ~KKKKKK 0~ HHHHHH~4~H 
+IllllllllllllllIIllllllllllIllllllllllllllllllllllll 00000 K~IIIK O00D ~,.~tlHH~H.~. 
+IlllllllllllIllllllllllllll~lllllllllllllllllllillll 00~D ~KK~I D~O I+H~..t+.H..*+ 
+lllllllllllllllllllllllllll[lllllllllllllllllllilll DO0~ ~KK~ 0~0 H~HHHH~HHHHIH 
+IlllllllllllllllIIllll~llIIIllllllllltllllllllllll BOOD IK~K~K BBD H.~.H ~mt:H 
+llllllllllllHIIIIIlllllllllllllllillllllllll;llll O000D KK~KIX~ 0~ H~IH#I~ ~lt~l 
+lllllllllllllllllllllllilllllllllllllllllllllllll 00ooo KKK~XKKK POD HH~H~+ ++++ 
+IIIII11111]1Iii1111111I lllllllllllllllll Illllli OODO+ KK~XmKK 000 HH~+t L ++ 
+IIIIII111111111111111I I1~I11111111111 I11II OODO K~KKt~ 09~0 H~tl LL ~t 
+11111111111111111111 Iil11111111111 11 0~o0o KIlKIIt 0000 t!ttH~I ~tC 
+IllIlllllllllllllll III1111111111 o0o00 KKKKKKI DD000 t11~ LL{L 
+I1[1111111111111111 111111111111 DQ DO0000 KKKKX 00000 NHItH LLLLL 
+lllllilillllll[ll O IIII]IIIIIII 000000~O~O00BO IIKK ~DDO HW~HH tLtLL 
+Illtllllllllllll 0o0 IIil1[ 0o0ooooooooo0oo KKK O00COD HHI~t~ LLL 
+111111111111111 0000 I111 00000000000000000 K 009000 HHH'H LLLL 
+O III IIIIIIII ~oooo OO0000000000000000 ~00000 HH+¢HHH Ll~ +I 
+0 III II 000000 0000000000000000000o~0 O000BDO HHH~HH ~L~L ~ 
+oo [ o~oooo00 OOO0DOOO00O0OO00OO0000000 000000 HHHH~+HH LLL~ HHH 
+O00 0 ~ODDOO00ODO00OOOOD00OOODOOOOOOO0nOODOOO~O0000 HMHHHMH~ 1LL MHH 
+~00 0 000000~00~00000000000000000000000000000000000~O000 HHHHHHHH ~LL ~ 
+O00OO00CO00000OO00OOO~O00O~O O~000o0oooooo~o~o0o0ooooooo~ HHH~HHHH L +(~+~H 
+C000000¢000¢0C0000~00000000 ¢0000o000o0000000~00000~7 HHHHH~HHH HH~HHH~ 
+OOO~OO000CO0000O0OOO~OO00OO ooooo9oo~oooo~oo~0000000 HHH,HH~H,H HMHH.MII~I 
+000ooo00000000©o©o00~0 nm~mMm~ ooooo000o0oo~ooo0000 ~HH~HH~HH~H~HHHHHHHHHH~H 
+D00OOO00 DCO000000000 MNHM~M~ 0000000000~0000e0000 HH~HHHHH~H~HH~HHH~HHHHH~ 
+O00+000©o0000+o mmnm.mmm~mm.~+mmm~.m 00OOO000000P x~-~,~+.m.x~-,~i++m~'~H.+Hn 
+Fro. 3. ConnecLed componenL transform 
+of Figure 2 
+subset is examined by an expanding array of sensors. (For the latter approach soe 
+Harmon [5] and Singer [6-8]; compare also Stevens [9].) In early work on digital 
+picture proeessing (Kitsch [2]), a traasformation of this type was performed by a 
+sequence of local operations performed in parallel; this approach requires two 
+operations for each incremental propagation step. N[ore recent discussions of this 
+type of transformation and its implications for shape description may be found in 
+several papers by Blum [10-12] (see also Kotelly [13]), who also considers the pos- 
+sible role of such transformations in visual form perception. 
+"Propagating" a subset over a picture is tantamounB to finding the "distance," 
+
+
+=== PDF PAGE 11 ===
+SEQUENTIAL OPERATIONS IN DIGITAL PICTURE PROCESSING 481 
+in the sense of the propagation process, between the subset and each point of the 
+picture. In this section a simple "distance" concept, appropriate to digitized pic- 
+tures, is introduced, and a transformation is defined which determines the distance 
+from every picture element to a given subset. 
+4.1 Distance 
+Let P and Q be any two distinct points in a digitized picture, and let d*(P, Q) 
+be the smallest positive integer such that there exists a sequence of distinct points 
+P = P0, Pi, "'" , Pn = Q with P~ a neighbor of Pi-1, 1 < i < n. This d* is 
+called the distance from P to Q; if P = Q, the distance between them is defined as zero. 
+The distance from P to a given subset S of the picture is defined as the smallest 
+of the distances fl'om P to the points in S. 
+Like connectivity, the distance concept is defined by iterating the property of 
+being a neighbor. Here, however, the miifimum number of iterations required to 
+"reach" Q from P is of interest, whereas in the case of connectivity, the question 
+considered was whether Q could be reached at all from P using only points in a 
+given subset as intermediate points. As was pointed out for connectivity in Section 
+3.1, a distance can also be defined using only horizontal and vertical neighbors 
+as "steps." If d(P, Q) is the distance from P to Q using this more restricted defini- 
+tion, it is clear that d => d*. For simplicity, the restricted definition is used in the 
+remainder of this paper. 
+Evidently, d(P, Q) (and similarly for d*) has all the properties of a metricJ It 
+should be emphasized, however, that d is not even approximately the Euclidean 
+distance. In fact, the locus of points at a given distance d > 0 from a given point 
+P is a diagonally oriented square of side d+ 1 centered at P, rather than a eircleJ 
+4.2 Distance transformation 
+Given a digitized picture whose elements have only the values 0 and 1, it is 
+desired to construct a distance transform of the picture in which each element has an 
+integer value equal to its distance from the set of O's. (It is assumed that the set of 
+O's is nonempty.) Thus in particular, the O's remain unchanged, since they are at 
+zero distance fl'om themselves; the l's which are horizontal or vertical neighbors of 
+O's also remain unchanged; the l's which are horizontal or vertical neighbors of 
+such l's become 2's; and so on, 
+This transform can be performed using just two sequentially applied local opera- 
+tions as follows. Let 
+fl(a~,~) = 0 if a~d = 0, 
+= min (ai-l,i -t- 1, a~,j_l -]- 1) if (i,j) ¢ (1, 1) 
+= m+n if (i,j) = (1,1) 
+f:(aid) = rain (aid, ai+lj + 1, aij+t + 1). 
+and a~,i = t, 
+and a1,~ = 1, 
+Since tie two points of the picture can be distance m-~n apart, we know that a1.1 
+is at a distance less than town from the set of O's, if this set is nonempty; thus the 
+4 It is positive definite by definition, and is clearly symmetric (the reversal of a sequence 
+from P to Q is a sequence from Q to P and vice versa). Moreover, since any two sequences 
+from P to Q and Q to R, respectively, can be put end to end to give a sequence from P to R, 
+it evidently satisfies the triangle inequality. 
+5 For the metric d*, the corresponding locus is ar~ upright square of side 2 d+l cei~tered 
+at P. 
+
+
+=== PDF PAGE 12 ===
+482 AZRIEL ROSENFELD AND JOHN L. PF&LTZ 
+final value of al,~ (or of any other element labeled m+n by fl) will be the value 
+assigned to it by f2. 
+T~H~o~u~M. Let C -- ( e~,i) be the picture which results when fl is applied to the pic- 
+ture A -- ( a~,~) in forward raster sequence, followed by f2 in reverse raster sequence. 
+Then C is the distance transform of A. 
+PROOF. Note first that if a,~.~ = 1 and ~ horizontal or vertical neighbor of a~,i 
+is zero, evidently c~,~. = 1, and conversely. Suppose now that c~,j is equal to the 
+distance from the (i, j) element to the closest zero element in A for M1 (i, j) such 
+that this distance is less than/c. Let B == (b~,j) be the picture which results from 
+applying f~ in forward raster sequence to A. If c~,¢ = k, by the induction hypothesis 
+the distance h'om the (i, j) element to the nearest zero must be at least/c. If it is 
+greater than k, by definition of distance it must be at least/~ for each of the (i, j) 
+element's horizontal and vertical neighbors. In particular, e~+~,~, and c~,j+~ each are 
+greater than or equal to k, so that c~,~. -- k implies b~,~- = k by definition of f~. 
+But then b~_~,~ or b~.j_~, say the former, must be lc- 1 by definition of f~, so that 
+c,_~,j < k - 1; contradiction. 
+The distance transforms for a circle, two rectangles 6 and regions F, J and K of 
+Figure 3 are shown as Figure 4. These transforms illustrate the output of an IBl~I 
+7090/94 program, written in FOX,ThAN, which accepts input digital picture data 
+as described in Section 3.3. For simplicity, only the odd distance values are printed 
+out modulo 10, while the even values are left bbmk; the points with value zero are 
+printed as X's. 
+4.3 Distance skeleton 
+Blum has suggested [12] that the locus of points at, which the propagation wave 
+front "intersects itself" may be perceptually important. This locus defines a sort of 
+"skeleton" (Blum: "medial axis") for the original picture. In this subsection, a 
+skeleton subset is defined for the distance transform introduced above, 7 and it is 
+shown that this skeleton is the smallest subset of the transform picture from which 
+the entire transform picture can be reconstructed by "reversing" the distance- 
+measuring process, 
+Define the local operations g~ and g~ by 
+gl(al,j) = max (a~.j, a~,j_l -- i, ai-l,i -- 1), 
+g=(a~.~) = max (a~,~, a~.~.+t -- 1, a~+,,i -- 1). 
+Let GffP) be the picture which results when gt is applied to P in forward raster 
+sequence; GffP), the result of applying g~ to P in backward raster sequence; and 
+LF~MM~ 1. If A is any picture and a(A) = (c,~), then all of l c~,¢ -- e~+~,~ I, 
+I c~,~ -- e~,i+~ I, I e~,i -- c~-~,~l and I c~.i - c~,i-~l which are defined are less than or 
+P~oo~. Let A = (a,~), G~(A) = (b~i). By definition of g~, 
+b~,i > b~,~_l - 1 and bi.~" > b~-~.i - 1, for all i, j, 
+The two rectangles actually have the same proI~)rtions; the difference between their shapes 
+in the figure results from the unequal horizontal and vertical size of a character space. The : 
+circle appears distorted for the same reason. 
+' It should be emphasized that since the distance considered here is non-Euclidean, as 
+i!i already pointed out, the resulting skeleton is not likely to have any special significance for 
+visual form perception; however, it is still a useful picture proeessing tool. 
+
+
+=== PDF PAGE 13 ===
+SEQUENTIAL OPEICATIONS IN DIGITAL PICTURE PROCESSING 483 
+........ II 
+x~x xxx xxx 
+:l ........ x ~xxx xxx 
+~xx lxx x~x 
+IIi iIi 11 
+xxx 
+×sx xlx xl~ 
+xlx x~ xxx 
+xx~ xxl x~ 
+............... ,l: IV xxl~ xlxx xxx xxxxx 
+x~, xxxx xxx ~xxlxl ix ~x 
+~t xx~ xx x~xxx xxx ~lx~ x 
+x lxxx xxx ~xlsx xx 
+~xxx xxx xxix x xxxxxx 
+txxx xll xxll 
+XllX xxxl xx~x 
+x~xx xxxxxxxx~xl 
+.... 117 *fill' ix~x 
+I~sx xxx ixl 
+xxxx ix xxxxxi 
+xxlxxxxxxl 
+xxsxx xxxslxxxxxl~x 
+xi1111 ~!11 l!lli i1:< x x XlXXX iIx iXl~litl~IxIxI 
+XlXXll ltlilll 
+xl i:: xl ix XIIXX' .... ]~I ............... 
+xl 333333333333 ix xl 3 !x x~xx x×xxz ~ 1~ t~x~ 
+xxxll xl 3 ~ Ix xl 3 3 ix xx,~x ~ xxlx* xl 3 55555555 3 ix x£ 3 5 3 lx xx~xx xx~x xxxt • s 7~tt ~ ~ *~x 
+x] 3 3 ix x 1 3 5 5 3 lx xxxxlx xlxxx ~x~xt ~ s t ~ s ~ t~l 
+×1 zx :~ 35753 ix ""* ,II~ illi t I ~ T~ 51 t llli lllI 
+xl]llll! llltllll!x xl 3 5 7 5 3 ix Ill lXIX IlXl $~ ~ 1 5}}} 1) [XIl 
+================================= ×I 3 5 7 5 3 ix xi xsIx llIII 3 S ~S 31 ~llIl Ix xxxx llIx|l ~ s 1151 Ilxxxi 
+X]. 3 5 7 5 3 iX x xllx lxxlx~ 3 3~ 1111111 
+illl 11~111 ~ I~[[llllll 
+;<! ] 5 7 5 3 IX X XlIX 1 XXIIX] ]~llIXIlIll 
+xl 3 5 5 3 Ix ~xxxx ~xxxxlx~x~xxx~x x~xxx xlxxll~x~xxl 
+~xxx *xxxlxx 
+xxxxxxxx 
+:::::::::::::::::::::: xl 3 lN xxxx xx~xx 
+:.:xxlll ! ]] ]]ixxx xi ix XlilllXI lllXlXXXlXlxii 
+}[kX 11 ].IXH}i X ]}[ lIXlI XlI Ill 
+xx]l 333333333 llxx x ~xsx~ xxx ~xx~ 
+...... ,, 'III xxi 33 33 ixx ,xl xx 
+x:,:i 33 555555555 33 Ixx xxxx xxxx 
+.... 13 55 55 31 ..... xx .... 
+xxk 3 55 777777777 55 3 ]xx ~ x~xxxxxxx 
+xx:k 3 5 77 77 5 3 lxx ~*x xxxx xxxx 
+xx/. 3 5 7 999999999 7 5 3 ixx xxx~x x~xx 
+xxl 3 5 7 9 9 7 5 3 ix xxx~x~xxx ~xixx xxlx,xxxlxxxx Xx! 3 5 7 9 illll!l 9 7 5 3 Ixx xxsxxx~ 
+>:xl 3 5 7 9 1 1 9 7 5 3 ixx ~xx 
+;-::.d 3 5 7 9 i 333 1 9 7 5 3 ixx 
+::x[ 3 5 7 9 k 9 3 1. 9 7 5 3 IX}: 
+:<×i 3 5 7 9 i 333 i 9 7 5 3 ixx 
+xxl 3 5 7 9 I i 9 7 5 3 ix× xxx xxxl Ilxx xxx xlllx 
+xxJ. 3 5 7 9 ll!li 9 7 5 3 IXX xxx xxx~ ~ m ~xx xx~ xx~x~ xxx xxxl ~ ~ txxxx xx~ xxxl xx* x:.:l 3 5 7 9 99 7 5 3 lxx l~x iixI xxi Xlll ~ • llXXI fix IxI IXl 
+:~x! 3 5 7 999999 7 5 3 ixx ~ XlxX IIlXXi lXll llll ~ IXII xlI gXXX xlx 
+Xxl 3 5 77 777 5 3 ixx x x×xxxx xx~ xxxx~x x~xt ~ IXXXx x xxx ]~ I fix lxx x~ xxx~ zlxxx xx~l lx~ 
+xxl 3 5 777777 55 3 Ixx "xxX lxx ixl Ill ill lxxxxx Ixxx xilx ix 
+XX~ ] 55 555 3 kxx IXX IX XXXI IXIXIXX Ill IIXXK XXIX Illl IXXl XX~I XXXi 
+xx]. 33 555555 33 ixx x~x xx x~xxxl xxxx~xxx~xxxXXX x~xxxx ~xx~x~xXXXlXXXx ~x~xxxxx xxx x~xl 
+xlxx xx×xx xlx xxA 33 333 lxx xxxxxx xxx x*xxxxxx ~x~xxxx xxx 
+xxil 533333 1txx xxxxxxiixixxx xxxxx IXI IXXI xxxxxi xxixxII xxxxx xxxx~xxx xxxl 
+x:,:xli ].i!xxx xxxxx ix xxxx xxx xxxx ixxxs xx xxllxx ixxxxx ~:x:,:?[ ii 3lxxxxx xxxx~xll xxxx xxxxx~xx 
+XHX2<2<::}[],:XHH XxxxllllX lXXX XXIIXII 
+XXXXI Ill IIIX ~XXI XXXXXX 
+Fro. 4a. Distance transforms of Fro. 4b. Distance transforms of components 
+two rectangles and a circle F, J, K of Figure 3 
+dll ...... IXl XXXKXXIIXX~I 
+Ill X~X~XIIXI~IlII 
+IlXX XXXXXXXIIXXIIXIX 
+~Xll XlI]~ IXXXIIIILILIlIXll XlX~l IIIXI 
+~X~* 3 ~ *XXXX 
+,ZI dY II .............. ~xx 
+,Ix xxxn i ~ r?? ~ i ~x~xx 
+~xxxx xx~x ~x~ xxn ~ ~ ~ /~?,xl~ ~I 
+xxx 
+xlll ] ~ II11 111 
+sxlz * ~ zxlx lxxx 
+1111 ] ] llli ixxK 
+ixiI ~ ~ illl I11 
+llgt t t Illl Ill 
+lllIi ~ 11II XIII 
+I11[ ~ [gXI XII 
+IXli Ixxx XXIX 
+III11 11111 1111 
+XXXXL I1111 I11 
+XgXX~IXIII IXIX 
+llltlllXl I11 
+yIIIIXlI I11 
+IIIIXX XXIXg 
+I111 IlIIl 
+II!111 
+III11111 
+IllilXIl 
+II111111It 
+IIII~XIIIII 
+IKIXl~XXXlXXl 
+II1~ lllIIlXI 
+1111 lllllll 
+XXI~ ~ Ixgl II 
+IlI~l ]]lII II 
+Illl ~ IXll I11 
+Xll~ ) Illl 1111 
+IIl~ llIXX IIII 
+XxIl ~ ~IIX 111 
+i111 ~) llll IIX 
+IXll )) [XKl IXl 
+.......... III IXXI ~ [Xll 
+Illl } [XXI II 
+IXII } IXXI IXX 
+l~lll [IXX Ill 
+Xll[ IXXII ~l 
+XXXXl aXXX XlX 
+ilX II111 ~ llll Ill 
+III .............. X~X~ }1 IlXI ill 
+.......... 1 .... III XII IIIXl ) [lIl 
+Xig IIl] ~ ~ ~ lIll XXlI 
+IXI XIX! 3 ~S • ixxl ixx 
+XXll ~ ) LIxIx llXI 
+lli ixKi ~ ) lXXi IIx 
+xxxl xiKi ~ 3 1111 Ixx 
+III .............. xxxt ~ ~ txxx xxx 
+x~x XXXL ~ ~ lxxi xlx 
+xx~x xxxL ~ ~ lXXX xxx 
+so that 
+b<~.+z > b~.i - 1 and b~+z.s > b~,i - 1, for all i, ]. 
+Similarly, by definition of g~ we have for any B = (b~i) and for M1 i, j, 
+c~,j _-> c~,i+l -- 1, c~,j >_- c~+l,j -- 1, 
+c~,j_~ > c~.j -- 1, c~-z,j > c~.j -- 1, 
+where G2(B) = (cis). 
+If it can be shown that the above relations on the b's remain true when the b's 
+are replaced by c's (that is, when g2 is applied), the assertion made in Lemma I will 
+follow immediately, since (e.g.) c~,j-1 _-> c~,~ - 1 and c~,:. ~ c4.j_z - 1 are equiv- 
+alent to I c~,j. - c~,s-11 =< 1. 
+Suppose that these relations hold for all the c's through the (i, j)-th in the sense 
+of the backward raster sequence. Since g2 can never decrease the value of a picture 
+
+
+=== PDF PAGE 14 ===
+484 AZRIEL ROSENFELD AND JOHN L. PFALTZ 
+element, we have b~,j_l < b~,~. + 1 < c~,~. + 1. By the induction hypothesis, 
+ci+ld-1 - 1 < ei+l,~, and by the relations on the c's, this is less than or equal to 
+c~,~. + 1. Hence 
+ci,~-i = max (bx,i-t, ci.j - 1, ei+l,j-1 -- 1) <~ Ci,j -~ 1, 
+proving tile induction step. Finally, 
+c .... , = max (b ..... 1, c ..... - 1) -< max (b,~,~ + 1, c~,,,~ + 1) = c~,~ + 1, 
+and similarly cm-l,, <= c ..... + 1. This completes the proof. 
+LEMMA 2. Let A be a picture such that a~,i >= a~,i-~ -- 1 and a~,j >= a~-l,j -- 1 
+for all i, j; then GI(A) = A. Similarly, if A is such that a~,i >= a~.i+~ -- 1 and 
+a~,i >= a~+l,~ -- 1 for all i, j, then G2( A ) = A. 
+PROOF. Clearly gl(a,t) = a11. If GI(A) = A for all elements up to the i, jth 
+(in the sense of the forward raster sequence), then 
+gl(ai,~) = max (ai,i, gl(a~d-t) - 1, gl(ai-l,i) - 1) 
+= max (a~.i, a~,i-~ -- 1, a~_~,j - 1) 
+by induction hypothesis, and this equals a~,i by the original assumption about A. 
+The proof of the second part is exactly analogous. 
+Co~oLLAnY. GI(G~(A)) = G~(A), G2(G~(A)) = G2(A) and G(G(A)) = 
+G(A ) for all A. 
+PROOF. By the proof of Lemma 1, G~(A) has the properties of the first part of 
+Lemma 2, so that GI(GI(A)) = GI(A); similarly for G2(A). By Lemma 1, G(A) 
+has the properties of both parts of Lemma 2; hence by Lemma 2 G(G(A)) : 
+= a,(a(A)) = G(A). 
+gE~ui 3. The distance transform of any picture has the property of Lemma 1. 
+PRooF. By the Theorem of Section 4.2, in such a picture each element value 
+is equal to the distance from the element to a zero-valued element, and clearly 
+di,or 1 
+ConoLLinY. If T is any distance transform picture, G( T) = T 
+,roo  0o.o   r, Proof. 
+LngMi 4. Let A =(aii), B = (bi~) be pictures such that al,j <= b~,i for all i, j. 
+Let G(A) = (c~), G(B) = (di~), and let a~,~ = b~,~ = d~,~ for some h, k. Then 
+ah,k = Ch,k. 
+Pnoo~. Evidently we must have c~,i _-< d~,~. for all i, j, so that c~.~ _-< d,,~ = 
+aa,~. But G never decreases the value of a picture element; hence aa.~ =< ct,,~. 
+If P = (P,i) is any picture, P' = (p;~.) will he called a partial picture of P if 
+t 
+p~.~ = pi.~ or 0 for all i, j. 
+COrOLlARY. Let T be any distance transform picture, T' any partial picture of T. 
+Then all the elements of T' which are equal to the corresponding elements of T are in- 
+variant under G. 
+PROOF. Take A = T', B = T in Lemma 4. By Lemma 3, b~,i = d~.i for all 
+i, j; hence for all a~.~ such that ah,~ = b~,~ we have ah,~ = c~,~ as required. 
+LEMM~_ 5. Let A = (ai~) be a picture, G(A) = (cli), and let a~,~ < V; let 
+ca_~.~ , ch,~_l , c~+~,~ , c~,~+1 all be less than or equal to V. Then c~.~ < V. 
+PROOf. Let Gt(A) = (b~j). Since G~ never decreases the value of an element, 
+
+
+=== PDF PAGE 15 ===
+SEQUENTIAL OPERATIONS IN DIGITAL PICTURE PROCESSING 485 
+we ht~ve bp~_l,~ < ch-l.~ -<_ V, b1~,~_1 < c~,.k_l < V, so that 
+bh,e = max (aha, bh-l.k -- 1, bh,~_~ -- 1) < V, 
+and 
+cl~,k = max (bh.k, bf~+1.k -- 1, bh,~+l -- 1) < V. 
+If 7'= (t~j') is a distance transform picture, the part.ial picture T* = (h*~) 
+defined by t~*j = t~,~, if none of ti-~,j, h+l.i, ti,~-i, h,i+l is t<~. + l; 0, otherwise, 
+will be called the slceleton of T. In order words, T* is the set of local maxima of the 
+distance transform. We assume that T is not the trivial picture every element of 
+which has value m+n. 
+T[IEOREM. G( T*) = T, and if T' is any partial picture of T such that G( T') = 
+T, then T* is a partial picture of T'. In other words, T* is the partial picture of T 
+with fewest nonzero elements such that G(T*) = T. 
+PROOF. If P is any picture with integer-vMued elements, let Pk be the set of 
+dements of P which have value k. Let N be the highest vahle of any element of T; 
+then by definition, (T*)~ = 5/'~, so that by the Corollary to Lernma 4, G(T*)N = 
+T~r. Suppose that G(T*)~,+~ = T~+I. By definition, T* contains every element of 
+value M which has no element of value M+I as a neighbor in T (or equivalently, 
+in G(T*)), and by the Corollary to Lemma 4, G(T*) still contains these elements. 
+On the other hand, if t~.k = M and has a neighbor in G(T*) with value M+I, 
+then by definition of G, the (h, /~) element in G(G(T*)) has value at least M. 
+But G(G(T*)) = G(T*) (Corollary to Lemma 2), and by the proof of Lemma 4, 
+the (h, k) element in G(T*) can have value at most that of the (h, Ic) element in 
+G(T) = 7' (Corollary to Lemma 3); hence every such element has value M in 
+G(T*), proving that G(T*). = T,u. This induction argument proves G(T*)k = 
+Tk for all k(= N, N - 1, ... , 1, 0), so that G(T*) = T. Conversely, let T' be 
+any par~iM picture of T such that G(T') = T, and let t~,,~ be an element of T of 
+value M > 0 which has no neighbor in T of vMue M+I and which fails to be in T'. 
+Then the values of its neighbors in G(T') = T are less than or equal to M (Lemma 
+1), while its vMue in T' is 0 < M, so that by Lemma 5 its value in G(T') is still 
+less than M, contradicting G(T') = T. Thus T' must contain every element of 
+T* of value greater than 0; this completes the proof. 
+Skeletons for the pictures of Figure 4 are shown as Figure 5. In this figure, the 
+nonzero skeleton point values are printed out modulo 10. As the two rectangles in 
+Figure 5 show, the skeleton is not invariant under rotation. Note also that the Eu- 
+clidean skeleton for a circle would evidently be just the point at its center, unlike 
+the skeleton shown for the circle in Figure 5. 
+5. Applications: Connectivity and Proximity 
+The connectivity transformation described in Section 3 has several immediate 
+applications. Once a label has been assigned to each connected component of a 
+picture, it. is triviM to count the number of such components by simply counting 
+the number of labels which were used. (A special-purpose version of the connected 
+component program can be written which only counts the components but does not 
+label each element of each component; see Nuttall [14] and Sabbagh [15, pp. 43-48]. 
+
+
+=== PDF PAGE 16 ===
+486 AZRIEL ROSENFELD AND JOHN L. PFALTZ 
+x x.'<xxx xxx Xxxx xn x;~ Xx i x 
+:: 2 ? :: 
+x 3 3 x 
+:: 3 3 
+x 2 2 x 
+xi ix 
+:::::::::::::::::::::::::::::::::::::: 
+x;,:x;,:x :< x x 
+xxx ~xx ×H 
+xx× x xx~ xxx ~ ~ xxx× 
+~×~ ixx xxx xxxxx x~ x,x xx~ i 
+X ..... ~t ~Z 
+..... iii: :: ....... 
+............. :!i:i: ........ ~xx ~ xx× xx~x 
+xxx~ x×~x~xxx×xx xxx xx~ 
+×x~ ×xx 
+........... ~Z ¢AP ~Y 
+..... iii ....................... X~XI X XX~X XXIX XXXXI ~11 XX~X 
+x xxaxx xxxx xxx x×× ×l×x××~× 
+x x xxx~ xxx ~ ~ xx~x ~×~x~x× 
+xx ×~x~ xxx~ ×xx~ x×~ x ~x~xx 
+x X ~ xxxx xx××× ×xxxx ×xx ~ ~xx x~ 
+xxxx ×xxa~ xxx~x~ xx×x ~ ~xx ×× 
+x X x xxxxx xxxxx xxxxxxxxx xx× ~ xax x~* 
+x 7 X xxxx ×x~xx× xxx ~ xx~ xx~ 
+XxXX XX×× XXX ~ 
+x 7 x x~x xxxx~xx ]~ x~ xx~ 
+xx×x x×x ×xx× ×xx ~ ×xx ×x 
+xxxx× ~x xxx× x ~* ×x~ ×xx 
+x x x ~x ~ ~x x~ ~ x~ x xx~ xx× xxx~ ~ x×x x×× 
+• x~xx ×xxx xxx x~x~ ~ xxx ~×x 
+,×x x~× x×× xxx ~ xxx ~xxx 
+xxt ×~x× ×x~x xxxx ~ xx× 
+xxx~x~x×x xx×x× xxx xxx "~ xxx 
+xxxxxxx xxx ×x~ a xxx× xxxx 
+xxxx xxx xxx x 
+~xx ~ xxx xxx 
+xxx xxx *~ xxx xxx 
+~xxx xxx ~ xxx xxx 
+xx× xxx ~ xx xxx x ×~ 
+xx~ x~x ~ ~x~ x~x xxx~×x 
+x~xx xxxxx~ xxx~ xxx ~ ~ xxx x×× ~x~ xx~ 
+xxx~x× x~x~x~xx~x~ x~x ~) xxx xxx x~x x~ 
+×xx~ xxx x~xxxx xxx i xxxx ~xx~ ~xx x~ 
+x,x 
+::xxxxxxxxxx x x 
+:::¢.,: x>:x x ~ 
+x>:x xxx x x 
+x:< xx 
+-Xx x:: 
+x x: ::;< 
+xx 5 5 xX 
+xx 7 7 xx 
+>:x 9 .'~x 
+xx 0 x 
+x,-: l 1 x× 
+•., 3 xx 
+xx 4 xx 
+xx 3 3 xx 
+xx 2 xx 
+x:4 1 xx 
+xx 0 9 xx 
+xx xx 
+xX 7 7 XX 
+Xx 5 >:x 
+XX 4 XX 
+Xx xx 
+xx XX 
+xx Xx 
+:<xx xxx 
+xxx xxxxx 
+xxx;.:×x>:xxxx 
+x;-:xxx~: 
+F~a. 5a. Skeletons for Figure 4a 
+x~x x×~× xx a. xxxxx xxx~ x~ 
+xx x~x xxxxxxx xx ~ xxxx xx~x x~xx xx~ 
+................ xx~ xx× ×x~x~x xx xx 
+x~xx xx~ xxx~ 
+x~ xx~ xxxxxxx~ xxxxxxxx xxx ~xx× xxx~ xxx 
+x~× x~x~xxx~x~ xx~x~ xxx x×~x ~x~ xxx 
+xxxx~ ,× xx×x x ×xxx 
+xx~xx ~ x××x 
+IlXIX~ 11 x 11~ 
+XXXX ~XI XXX ~ 
+X~lX~ xxx 
+IIIX XXl I ~II Xlll 
+Fro. 5b. Skeletons for Figure 4b 
+It is also possible to perform this blob-counting operation by a process of succes- 
+sively deleting from each component border elements which do not disconnect the 
+component until only one element per component remainsS; for this approach, 
+which is easily implemented using parallel local operations, see Kirseh [2], Minor 
+[16] and Izzo [17, 18]. A closely related approach, using accretion rather than dele- 
+tion, has been implemented by yon Foerster and his colleagues [19-21].) One can 
+also measure the area of any given component by counting the number of times its 
+label occurs. 
+5.1 Adjacency and order of connectivity 
+Two somewhat less trivial problems which can be solved with the aid of the basic 
+8 Provided that the components are simply connected; if they have "holes" in them, a more 
+complicated procedure is necessary. 
+
+
+=== PDF PAGE 17 ===
+< r.'H:' ~!,~ ..... "'*" 
+,, ~ :'.,.,, g g ........... g ............. 
+.... a ~g 
+H 
+Fro. ~}. G~aph ~or Fi~r~ a 
+
+
+=== PDF PAGE 18 ===
+488 AZltIEL ROSENFELD AND JOHN L. PFALTZ 
+TABLE iI 
+Region Order of Connectivity 
+1 Boundary of picture 10 
+2 Boundary of regioll F 2 
+3 Boundary of region G 2 
+4 Boundary of region J 2 
+D 4 
+appropriate positions in an incidence matrix whenever such a subpicture contains 
+points which have two or more different labels. The graph of Figure 3, constructed 
+in this way by a FOaTRAN program and output by a tape-controlled plotter, is 
+shown in Figure 6. 
+Once the graph has been constructed, it is easy to solve the second problem posed 
+earlier. It is easily seen that the order of connectivity of a connected component is 
+equal to the number of nonadjacent "pieces" into which the picture is divided if the 
+given component is deleted. Evidently, this is just the number of connected com- 
+ponents into which the graph is divided if the corresponding node and the ares 
+emanating from it are deleted. This number can be determined by examining the 
+ineidetxee matrix of the graph after deleting the corresponding row and column. 9 A 
+FORTRAN program which performs this analysis has been written; its output for 
+Figure 3 is shown in Table II. 
+5.2 Proximity 
+Closely related to the two problems just discussed is the question of defining a 
+"graph" for a picture such as Figure 3 ignoring the unlabeled "borders," and con- 
+sidering two of the labeled regions as being "adjacent" if they are separated only 
+by a border. Intuitively, region I on Figure 3 is adjacent in this sense to regions B, 
+C and D, but region B is not adjacent to region D. The graph for the labeled regions 
+and "exterior region" of Figure 3 corresponding to this notion of adjacency is shown 
+as Figure 7. 
+The concept of adjacency in the intuitive definition just given requires careful 
+consideration. If the borders beUween regions in a picture all have approximately 
+the same thickness, the adjacency of two regions in this sense essentially reflects 
+their degree of proximity; regions are adjacent provided they approach one another 
+within a distance just greater than the border thickness. TM As in the ease of true 
+adjacency, this can be determined by examining all possible subpictures of the ap- 
+propriate size and entering l's in the incidence matrix whenever points with two or 
+more labels are contained within such a subpicture. The graph in Figure 7 was 
+drawn by a FOItTaAN program which analyzed 4 by 4 subpietures of Figure 3 in this 
+manner. 
+9 This number could be determined directly from the picture as follows: Temporarily label 
+the points of the given component 1, the points of its complement 0, whether these points were 
+1 or 0 in the original picture. Apply the connected component labeling program to this new 
+set of 0's and simply count the number of its components. However, it is much simpler and 
+faster to determine the orders of connectivity from the graph, once this has been constructed 
+~o One should certainly not define two regions as being adjacent if it is merely possible to go 
+from one to the other by moving through border elements only; by this criterion, regions A 
+and B, B and D of Figure 3 would be adjacent, and K would be adjacent to the picture exterior. 
+
+
+=== PDF PAGE 19 ===
+SEQUENTIAL OPERATIONS IN DIGITAL .PICTURE PROCESSING 489 
+A more dillicult problem is presented if the borders between regions are of varying 
+thickness. Even in this case, however, one might proceed by determining the degree 
+and direction of the elonc/ation of any segment of border (see Section 6.2). Adjacent 
+could then be defined as "separated by a segment of border which is tangentially 
+elongated." This definition would be consistent with the intuitive concept of ad- 
+jacency for the labeled regions of Figure 3. 
+It should be pointed out that the intuitive definitions of adjacency suggested in 
+the last three paragraphs are of more limited usefulness than the mathematicM 
+definition. For example, one cannot in general determine the order of connectivity 
+of a region from a graph based on such a definitiom Examination of the graph in 
+Figure 7 does indeed show, in agreement with intuition, that all the regions except 
+D are simply c, onnected, while D has order of connectivity 4. However, suppose 
+that in Figure 3 the six D's to the right of the top row of F's are replaced by blanks, 
+making a "cut" in region D. This does not change the graph of the figure (region D 
+is still connected, and region F still not adjacent, in the intuitive sense, to the pic- 
+ture exterior) ; but region D now has order of connectivity only 3. *~ 
+6. Applications: Shape (Elongation) 
+The distance transform can be used to obtain a variety of information about the 
+shapes of regions on a picture. In this section, two applications of this transform to 
+the definition of elongation are discussed. The elongation considered here is an in- 
+trinsic sh.~pe property; a snake is considered to be elongated even when it is coiled. 
+It is difficult to define this property in conventional geometrical terms, in spite of 
+its evident intuitive sigllifieance. 
+Since the connected component transformation provides the ability to single out 
+any component of a picture for analysis of its shape, it will be assumed in what 
+follows that the given picture contains only a single connected region ("figure") 
+consisting of l's, and that the remainder of the picture consists of O's. 
+6.1 Elongation as the proportion of a figure which lies close to its boundary 
+In his original papers [10-11] on the propagation concept, Blum suggested that 
+the successive wavefronts--that is, the sets of points which are at a given distance 
+from the original figure boundary--could provide useful information about the 
+shape of the figure. For example, if the figure is a square, the wavefronts are con- 
+centric squares, and the numbers of points in them decrease linearly to zero. (See 
+the solid curve in Figure 8(a)). On the other hand, if the figure is a very elongated 
+rectangle (Figure 8(b)), the number of points in a wavefront decreases linearly until 
+the center line of the rectangle is reached, when it drops abruptly to zero. Analogous 
+plots of number of points vs. number of steps for three irregular figures of approxi- 
+mately equal area (regions F, J and K of Figure 3) are shown in Figures 8(c)-(e). 
+As the solid curves in Figure 8, especially parts (a) mid (b), indicate, the manner 
+in which waveh'ont perimeter decreases provides a measure of the elongation of a 
+given figure. This measure represents the degree to which the interior of the figure 
+lies close to its boundary, which is iI~tuitively related to the intrinsic elongation of 
+the figure. 
+~t Note that making this out does change the graph in Figure 6, since it combines the "border 
+o[ F" region with the "picture border" region. The modified graph does in f~ct reflect the 
+orders of connectivity which result from m~king the cut. 
+
+
+=== PDF PAGE 20 ===
+490 AZRIEL ROSENFELD AND JOHN L. PFALTZ 
+120 
+90 
+60 
+30 
+120 
+90 
+60 
+~0 
+\ 
+i 
+i 
+I0 
+(c) 
+120 
+90 
+i0 20 i0 
+(a) (b) 
+o 
+~20 
+3O 
+20 io 20 
+(d) 
+120 
+90 
+6o 
+30 ',, 
+7 
+!0 20 
+(e) 
+Fro. 8. Wavefront perimeter and boundary-touching square plots for (a) a square; (b) ~m 
+elongated rectangle; (c) component K of Figure 3 (elongated); (d) component F of 
+Figure 3 (partly elongated); (e) component J of Figure 3 (roughly circular) 
+A shape descriptor closely allied to wuvefront perimeter is the number of different 
+squares of a given size which are contained within a given figure and touch its 
+boundary. For simplicity, only squares whose sides are parallel to the sides of the 
+picture will be considered. These numbers carl be computed by systema'ti(.ally erect- 
+ing all possible squares on the cross-sections of the figure by the rows of the picture. 
+Art IBM 7090/94 progr~Lm for doing this has beret written in FAP. In Figure 8, tile 
+numbers of boundary-touching squares are plotted as dashed curves for comparison 
+with the wavefront perimetersJ 2 
+The measure of elongation provided by these shape descriptors is relatively crude, 
+since they are computed over the entire figure. A much more sensitive measure of 
+elongation is defined in Section 6,2, using the distance skeleton concept introduced 
+in Section 4.3. 
+12 The wavefront and enclosed squares descriptors are conceptually related, but not equiva- 
+lent, to the "Buffon needle" shape descriptor proposed by Tenery [22-23], which involves the 
+probability that a line segment of given length randomly dropped on a figure with one end 
+inside the figure also has the other end inside. 
+
+
+=== PDF PAGE 21 ===
+SEQUENTIAL OPERATIONS IN DIGITAL PICTURE PROCESSING 491 
+:  iii!ii   iiiiiiii!i!ii!iiiiii!iiiiii!il ° .~ :::::::::::::::::::::::::::::: 
+:' :~!E!!iiii!!iiiiiii!iiiiiiiil :: ================================ 
+;ii!iiiiiii[iii!ii!ii!iiiiii!ii!il :' 
+!i!i!E!!;" "iii!iiiiii!i ,,~ ~,,,:,.. 
+! :~iiiiiT: iiiiiiiiiii! ~ii 
+:: #iiiT :i!ili!iiii 
+:ili#' ~ii 
+,,#iiiT: !iii::..iiiiiiiiiiiiiiiiiiiii 
+m;::::;. ,iiiiiii~i!i!i~i~i~i!:i!iii:, :~'" ,;#iiiiii!711111!ii:' ;iii7 
+Fro. 9a. Lake, river Fro. 9b. Skeleton of 
+and streams Figure 9a 
+.° 
+,J 
+® 
+, ' iiiiii   iiiiiiiiiiiiiiiiiiiiiiii iiiiii ,' :::::::::::::::::::::::::::::: 
+,, ::.:::::::::::::: :::::::::::: 
+",, .Z: :i!iiii:ii:!ii Zi!!!Zi) 
+., ii! / DI 
+~i ,iiZii: ,r,;iilm 
+l ii ii .................. 
+,~i~;~<;~{~ ', ~ 
+..... if' 
+'"' '!i iiiiiiiii!i : ®, " :!!iii; I~IH~ ::::::::::::::::::::: 
+..... .< .:., ::::::::::::::::::::: 
+.-,,,,,-, :::::::::::::::::::::::::::: 
+: ii lit' ,i~iiiiiiiiiiiiiiiii!77!!!!i:, 
+~>.:~$ ~iiiiiii!iiiiiiiiiiiiil ,,,,,,iii~ ,~: ............. :iil}!!!iii~;;:;m, 
+Fro. 9c. "Elongated" 
+parts of Figure 9a 
+6.2 Elongated parts of a figure 
+The skeleton subset introduced in Section 4.3 can be used to define a variety of 
+useful shape properties. In this section it is applied, in combination with proximity 
+analysis (see Section 5.2), to the problem of determining elongated parts of a given 
+figure. The approach described in what follows is based on the intuitively appealing 
+idea that any elongated figure part should give rise to a skeleton subset similar to 
+that of an elongated rectangle. Such a skeleton should contain a large number of 
+adjacent or proximate points located a relatively short distance away from the 
+figure border. If the "reverse" distance transformation (Section 4.3) is applied to 
+this set o~ points, the elongated part of the original figure should be regenerated. 
+Consider as an example the fictitious "hydrogTaphy" of Figure 9(a), in which the 
+X's are water and the blanks land. Intuitively, the river, %ribu~aries and creeks are 
+elongated, but the lake and bay are not. Figure 9(b) shows the corresponding skele- 
+ton:locus modulo 10, where the land points have been treated as O's, the water 
+points as l's. In this figure the components of the points with values 5 or less, de- 
+fined by a proximity criterion using a 3 by 3 subpicture, have been circled. 13 The 
+large components (25 elements or more) evidently correspond to elongated portions 
+of the hydrography, the one at the lower right to the elongated loop of lake around 
+the island. In Figure 9(c) these elongated pieces have been regenerated by applying 
+the reverse distance transform starting with these large components only. The re- 
+generated parts are represented by E's, the remaining original water points by dots. 
+~3 The number 5 is an arbitrary threshold, not necessarily optimum. Skeleton points con- 
+tained in the same 3 by 3 subpietnre were considered to belong to the same component only if 
+their values differed by two or less. 
+
+
+=== PDF PAGE 22 ===
+492 AZRIEL ROS:ENFELD AND JOHN L. PFALTZ 
+This example suggests the following general procedure :for determining elongated 
+parts of a figure: 
+1. Apply the distance transform to the figure and determine the skeleton locus. 
+2. For each k = 2, 3, ... , up to half the picture diameter if necessary, consider the set &~ of 
+skeleton points which have values less than or equal to k. 
+3. Determine "proximity components" of each Sk, and count the number of points in each 
+component. 
+4. Select those components, if any, which have more than tk points. A reasonable value for tk is 
+in the range 5/c-10k, ~4 corresponding to a set of proximate skeleton points whose "length" 
+is at least 2½ times the "width" of the piece of figure which gave rise to it. 
+5. Apply the reverse distance transform to these componeni~s to reconstruct the elongated 
+parts of the original figure. 
+Appendix. Proof of the Equivalence of Parallel and Sequential Local 
+Operations 
+It must be shown that any local operation applied in parallel is equivalent to a 
+series of local operations applied sequentially, and vice versa. 
+Note first that if the local operation f is applied to each element of the picture A, 
+and the results are stored in another picture B, rather than modifying A, then it 
+makes no difference whether f is applied to A in parallel or sequentially, since the 
+arguments of f are always the original elements of A. Hence if f applied in parallel 
+takes A into A*, then f applied in any sequence, using B for storage of the results, 
+yields B = A*. By the Lemma of Section 2.1, it is known that if necessary, this 
+procedure can be re-expressed in terms of A %lone (for example, one could trans- 
+form A in such a way as to "keep" the original element values as exponents of 2, 
+while storing the transformed values as exponents of 3). It has thus been shown 
+that the result of any parallel local operation can be obtained by applying ~ local 
+operation sequentially. (Strictly speaking, an additional operation of "erasing" A 
+and "replacing" it by B = A* should also be performed; this operation does not 
+even involve neighbors, and can be performed either sequentially or in parallel. In 
+the example using exponents given just above, this operation is simply Ca (see Sec- 
+tion 2.1).) 
+Conversely, let f be ~ local operation which takes A into A* when applied se- 
+quentially. Let A = (a~s), A* * = (ai~'), 1 < i =< m, 1 =<j <= n, ~nddefine 
+ao,j = a,,+~.j = a~,o = a~,n+~ = v, 1 =< i =< m, 1 =< j =< n, where v is different 
+from every a~,~ and * ai,j, 1 _<- i=< m, 1 -<_j_-< n. Nowdefine: 
+(1) fl(a<1) = f(a~-ld-l,'", a~+l,j+l), if a¢-l,j = a<~'-I = v; 
+=a~,i otherwise; 1 =<i <= m, 1 =<j =< n. 
+(Since ai-l,~ = a~,i-~ = v is equivalent to (i,j) = (1, 1), applying this f, in parallel 
+to all of A is equivalent to applying f to a~.l only.) At the same time, let ft generate 
+an auxiliary picture (b~s) such that 
+b~,¢ = w if ai-lj = ai,j-1 = Y / 
+(i.e., if (i,j) = O, 1))~, 1 <i < m, 1 <j < n, 
+= a~,s otherwise J 
+~4 This uncertainty can be reduced if the skeleton locus is "thinned" before this step is pe> 
+formed. 
+
+
+=== PDF PAGE 23 ===
+SEQUENTIAL OPERATIONS IN DIGITAL PICTURE PROCESSING 493 
+where w is different from every a~,j and a* • ,.~ as well as from v. 
+(2) f2(a~.j) = f(ai-lj-1, ''' , ai+l,j+l) 1 
+ifa~_l,j = v and b~.i-~= w | 
+= a~.jotherwise ~, 1 _-_i<m, 1 ~j <=n. 
+f2(b~.j) = w if ai-l.i = v and bl,j-1 = w ) = b~.3 otherwise 
+(If fl has been applied to A, the unique (i, j) s~tisfying a~-l,j = v and bi,~-i = w is 
+(1, 2). Thus applying f2 in parallel to fl(A) is equivalent to applying f to al,2. Ap- 
+plication of f2 also puts a w in the (1, 2) position; hence if it is applied again, the 
+unique (i, j) satisfying the conditions is now (1, 3). Hence repetition of fe n--1 
+times is equivalent to applying f sequentially to a~,~, • • • , a~.,,.) 
+(3) f3(al,i) = f(ai-l,j-1, "'" , ai+l,j+l) 
+if a~-1.i = v) and a~,j_l = v 
+= a~,~.otherwise , 1 < i <m, 1 <j-<__n. 
+f3(bi,j) = w if bi-l.j = w and ai.j-1 = v 
+= b~.j otherwise 
+(If fl has been applied, these conditions are satisfied by (i, j) = (2, 1) only. Hence 
+applyiI~gf3 afterf~ and n- 1 f2's have been applied has the same effect as applying f 
+to a2.1 after having npplied it to ala, "" • , al,~ .) 
+(4) f4(a~,~') = f(a~-l.~-i ,"" , ai+t.j+l) 
+if bi_~,j = b~.~_~ = w 
+= a~.j otherwise , 1 -<_i <m, 1 =<j_-_ n. 
+f4(b~,~) = w if b~_~.~ = b~.j_l = w 
+= b~.j otherwise 
+(Readily, after fx, n-1 f~'s and fs have been applied, this f4 singles out the (2, 2) 
+element; and repeating it a total of n-1 times singles out the (2, 3), ... , (2, n) 
+elements, successively. Moreover, after this has been done, application of fa again 
+will single out the (3, 1) element; successive applications of f~ after this will pick 
+the (3, 2), ... , (3, n) elements; and so on.) 
+In summary: Applying f to A sequentially is equivalent to applying the following 
+series of parallel local operations to A : 
+f~;f~,...,f~, (n--ltimes); [fa;f4,"',f4, (n-ltimes)], 
+with the bracketed series of operations repeated u total of m--1 times, giving a 
+totM of mn parallel operations. 
+Aclcnowledgments. The assistance of Mr. David Wilson, who made sever~l sig- 
+nificant contributions to the development of the distance transformation program, 
+is gratefully acknowledged. Early versions of both this and the connected com- 
+ponent program were developed by the senior ~uthor and his colleagales at the 
+Budd Information Sciences Center, McLean, Virginia. This initial work was ac- 
+complished through the efforts of Mr. James N. Orton of Budd, with the assistance 
+of Messrs. Ernest W. Smith and Bernard Altschuler. 
+RECEI'VED JANUARY, 1966; R~WS~D Aem~, 1966 
+
+
+=== PDF PAGE 24 ===
+494 AZRIEL ROSENFELD AND JOHN L. PFALTZ 
+REFERENCES 
+1. DINNEEN, G. P. Programming pattern recognition. Proc. Western Joint Compu~. Conf., 
+Vol. 7, 1955, pp. 94-100. 
+2. Kmsen, R. A., ET AL. Experiments in processing pictorial information with a digital 
+computer. Proc. Eastern Joint Comput. Conf., Vol. 12, 1957, pp. 221-229. 
+3. UNGER, S.H. A computer oriented toward spatial problems. Proc. fRE 46 (1958), 1744- 
+1750. 
+4. 1N-ARASIMHAN, I~. Labeling schemata and syntactic descriptions of pictures. Inform. 
+Control 7 (1964), 151-179. 
+5. HARMON, IJ. D. Line drawing pattern recognizer, I~'lectronics 33 (Sept. 2, 1960), 39-43; 
+Proc. Western Joint Comput. Conf., Vol. 17, 1960, pp. 351-364. 
+6. SINGER, J.R. Model for a size invariant pattern recognition system. Bionics Symposium, 
+WADD Tech. Rep. 60-600, Dec. 1960, pp. 239-245. 
+7. --. Electronic analog of the human recognition system. J. Opt. Soc. Amer. 51 (1961), 
+61-69. 
+8. --. A self organizing recognition system. Proc. Western Joint Comput. ConL, Vol. 19, 
+1961, pp. 545-554. 
+9. STEVENS, M. E. Abstract shape recognition by machine. Proc. Eastern Joint Comput. 
+Conf., Vol. 20, 1961, pp. 332-351. 
+10. BsuM, H. An associative machine for dealing with the visual field and some of its bio- 
+logical implications. In Bernard, Eugene E., and Kare, Morley R., Eds., Biological 
+Prototypes and Synthetic Systems, Vol. I. (Proc. Second Annual Bionics Symp., Cornell 
+U., 1961). Plenum Press, New York, 1962, pp. 244-260. 
+11. A machine for performing visual recognition by use of antenna-propagation con- 
+cepts. Proc. IRE Weseon, Pt. IV, 1962. 
+12. --.. A transformation for extracting new descriptors of shape. Syrup. on Models for the 
+Perception of Speech and Visual Form (Boston, Nov. 1964); in press, M.I.T. Press, 
+Cambridge, Mass. 
+13. KOT~ImY, J. A Mathematical Model of Blum's Theory of Pattern Recognition. 
+AFCRL Res. Rap. 63-164, April, 1963. 
+14. NUTTALL, T. C. Apparatus for Counting Objects. U. S. Patent 2803406, Aug. 20, 1957. 
+15. SABBAOH, E. N. Aerial reconnaissance electronic reader. RADC Tech. Rep. 60-132, June, 
+1960. 
+16. MINOT, 0. N. Counting and outlining of "two-dimensional" patterns by digital computer. 
+U. S. Naval Elect. Lab. TM-414, Aug. 1960. 
+17. Izzo, N. F., A~qD COLAS, W. Blood-cell scanner identifies rare cells. Electronics 35 (April 
+27, 1962), 52-57. 
+18. Izzo, N. F. Electro-optical enhancement of microscopic images. Proceedings S.P.I.E. 
+Image Enhancement Seminar, March, 1963, Society of Photographic Instrumentation 
+Engineers, Redondo Beach, Calif., pp. 1-13. 
+19. YON FO~RS~R, H. Circuitry of clues to Platonic ideation. In Muses, C. A., Ed., Aspects 
+of the Theory of Artificial Intelligence (Proe. First Int. Syrup. on Biosimulation, Locarno, 
+Switz., 1960). Plenum Press, New York, 1962, pp. 43-81. 
+20. BABCOCK, M.L. Some physiology of automata. Proe. Western Joint Comput. Conf., Vol. 
+19, 1961, pp. 291-298. 
+21. WESTON, P. Photocell field counts random objects. Electronics S$ (Sept. 22, 1961), 46-~7. 
+22. T~NERr, G. A pattern recognition function of integral geometry. IEEE Trans. MIL-7 
+(1963), 196-199. 
+23. . Information flow in a bionics image recognition system. Syrup. on Models for the 
+Perception of Speech and Visual Form. (Boston, Nov. 1964); in press, M.I.T. Press, 
+Cambridge, Mass. 

@@ -1,0 +1,204 @@
+\subsection{Page conditioning and line segmentation}
+\label{sec:des-seg}
+The recogniser requires an image containing one line of text. A photographed page, however, can contain uneven lighting, rotation, page edges and strokes extending between neighbouring lines. This stage prepares the page and separates it into ordered line crops while preserving the shape and relative spacing of the handwriting. The following subsections explain each operation before bringing them together in the complete processing sequence.
+
+\subsubsection{Lighting normalisation and ink extraction}
+The first part of the process is to tell apart ink from paper. A single threshold applied directly to brightness can classify a shadowed area as ink, therefore causing a misclassification. Comparing each pixel with its local background reduces this problem, as in adaptive thresholding~\cite[pp.~2--3]{bradley2007}. This design uses a local brightness ratio, followed by a threshold chosen from the ratio histogram. A local brightness and threshold means the level is calculated from a certain area around each pixel to determine its local brightness,
+
+The page is represented as grey values from 0 to 255. The analysis uses a half-resolution image which is obtained by averaging each 2x2 block, which reduces the pixel count by a factor of four. Averaging the pixels lets a thin stroke contribute to the smaller image even if it would fall between alternate sampling positions, so if it is any of the four blocks, it will have an effect.
+
+\paragraph{Estimating the local background.}
+For any grey image G, the local background $B_r$ is the average of a square window that has a radius of r. The implemented radius is $r=\max(8,\min(40,\operatorname{round}(H/41)))$, SOURCE where $H$ is the working image height. This makes the window follow image size within bounded limits, so it averages over strokes rather than treating their darkness as the background.
+
+A summed-area table provides the window sum from four corner values~\cite[p.~2]{bradley2007}. With exclusive prefix sum $S$, the sum over rows $[y_0,y_1)$ and columns $[x_0,x_1)$ is
+\begin{equation}
+\Sigma_{[y_0,y_1)\times[x_0,x_1)}=
+S(y_1,x_1)-S(y_0,x_1)-S(y_1,x_0)+S(y_0,x_0).
+\label{eq:des-integral}
+\end{equation}
+Dividing by the window area gives $B_r$. Once the prefix image has been constructed, each window needs four accesses regardless of its radius. Edge replication prevents artificial zero padding from darkening the estimated background at the image boundary.
+
+\paragraph{Separating ink from paper.}
+Each pixel is divided by its local background estimate. Dark ink therefore has a lower ratio than the surrounding paper. The binary mask $M$ marks pixels whose ratio is below the selected threshold $t^*$:
+\begin{equation}
+R(y,x)=\frac{G(y,x)}{\max[B_r(y,x),1]},\qquad
+M(y,x)=\mathbf{1}[R(y,x)<t^*].
+\label{eq:des-ratio}
+\end{equation}
+Here $R$ is normalised brightness, and the denominator floor prevents division by zero. This ratio formulation is the project's adaptation of local-background comparison; it brings paper brightness towards a common level before threshold selection.
+
+Otsu's criterion selects $t^*$ by maximising separation between the two histogram classes~\cite{otsu1979}. For a candidate threshold $t$, $\omega_0$ and $\omega_1$ are the class masses, and $\mu_0$ and $\mu_1$ are their mean bin indices:
+\begin{equation}
+t^*=\arg\max_t\ \omega_0(t)\omega_1(t)
+\bigl[\mu_0(t)-\mu_1(t)\bigr]^2.
+\label{eq:des-otsu}
+\end{equation}
+The implementation applies this criterion to 256 bins over the clipped ratio range 0--1.2, rather than to the original grey histogram.
+
+\paragraph{Calculation on an actual page.}
+The recorded Owen01 trace uses a stored photograph reduced before analysis, producing an $800\times600$ pre-deskew working image. At pixel $(317,343)$, $G=100$. Its $41\times41$ background window has prefix values $20696850$, $18404173$, $18359673$ and $16338366$. Equation~\ref{eq:des-integral} gives $\Sigma=271370$, hence $B_r=271370/1681=161.43367$ and $R=100/161.43367=0.619449$.
+
+For that image, Otsu's criterion selects bin 171. Its class masses are 0.07069375 and 0.92930625, with mean bin indices 124.98356 and 217.71913, giving between-class variance approximately 564.97942. The corresponding ratio threshold is $(171+0.5)(1.2/256)=0.80390625$. Since the example pixel's ratio is lower, it is retained as ink. These values describe the reduced calculation trace; the native-page examples below are separate runs.
+
+\subsubsection{Page orientation and skew correction}
+Once an ink mask is available, the page must be aligned so that text lines run approximately horizontally. A quarter turn changes the line axis, while a small rotation changes the slope of lines on that axis. These are handled separately.
+
+For the quarter-turn decision, the code compares the fraction of nearly empty rows in the current image with that in its $90^\circ$ rotation. The rotation is accepted only when its score exceeds the original by a factor of 1.35. This prevents two similarly weak scores from causing an unnecessary turn, although sparse text can leave the correct axis ambiguous.
+
+After choosing the line axis, fine deskewing tests seventeen angles from $-4^\circ$ to $+4^\circ$ in $0.5^\circ$ steps. At each angle, the row profile $p_\theta(y)$ counts the ink pixels projected onto row $y$. The chosen angle maximises the squared row counts, following the projection-profile principle~\cite{postl1986}:
+\begin{equation}
+\theta^*=\arg\max_\theta\sum_y p_\theta(y)^2,\qquad
+p_\theta(y)=\sum_x M_\theta(y,x).
+\label{eq:des-skew}
+\end{equation}
+Squaring favours ink concentrated into distinct text rows rather than spread across neighbouring rows. A further reduced mask is used for this search because it needs the arrangement of whole lines. Ink coordinates are mapped onto candidate rows instead of rotating the full image at every trial. The selected rotation is then applied to the full-resolution and working grey images, and the ink mask is rebuilt.
+
+In the Owen01 trace, the scores at $+0.5^\circ$, $+1.0^\circ$ and $+1.5^\circ$ are 442973, 464105 and 439403. The largest score across all seventeen angles is 464105, so the selected rotation is $+1.0^\circ$.
+
+\subsubsection{Line detection and separation}
+The next task is to locate the text lines and separate neighbouring lines without cutting their strokes. A straight horizontal cut works only when there is a clear blank row. Ascenders and descenders can overlap vertically even when they belong to different lines, so the design uses line centres followed by curved boundaries.
+
+\paragraph{Removing marks and locating line centres.}
+The line pitch $P$ is the estimated vertical spacing between text lines. A preliminary estimate sets the scale for removing printed structure: the bright page region separates the paper from dark surrounds, and long nearly horizontal or vertical runs are masked using limits of 1.25 and 1.4 pitches. Artifact components are also removed before the final line centres are selected. These are geometric rules; a long handwritten underline can resemble a printed rule and may also be removed.
+
+After this cleaning, pitch is estimated again from a smoothed row profile over the central writing region. Candidate peaks must exceed 6\% of the maximum profile value. The preferred pitch is the median spacing between peaks, subject to a lower bound based on component height. This reduces the chance of treating the ascender, body and descender bands of one line as separate text lines. Autocorrelation and component-height estimates provide fallbacks when peak spacing is unsuitable.
+
+Line centres are selected in order of peak strength, with a minimum separation of $0.6P$ to suppress multiple centres within one line. A further option merges peaks separated by a shallow valley, but its default threshold disables that merging. It is therefore not assumed to operate on every photographed page.
+
+\paragraph{Finding a boundary between lines.}
+Between neighbouring centres, the boundary follows a low-cost path from the left edge to the right edge. The cost should make crossing ink expensive while keeping the path near the middle of the gap. For midpoint $y_m$ and half-gap height $h_g$, the implemented local cost is
+\begin{equation}
+C(y,x)=4\widetilde M(y,x)
++0.012\left(\frac{y-y_m}{h_g}\right)^2.
+\label{eq:des-seamcost}
+\end{equation}
+Here $\widetilde M$ is the ink mask after morphological closing: dilation followed by erosion~\cite[p.~541]{haralick1987}. The closing radius is $\max(2,\lfloor0.07P\rfloor)$ working pixels. Closing fills narrow breaks that could otherwise let the boundary pass through a stroke. The ink penalty is deliberately stronger than the midpoint attraction. These weights are project design choices, rather than values prescribed by seam carving.
+
+The minimum-cost path is found by dynamic programming, following the seam-carving principle~\cite[p.~3]{avidan2007}. The accumulated cost $D$ includes the local cost and the cheapest predecessor in the previous column:
+\begin{equation}
+D(y,x)=C(y,x)+\min_{|d|\leq s}
+\{D(y+d,x-1)+0.02|d|\}.
+\label{eq:des-seam}
+\end{equation}
+The allowed row change is $s=7$ per column, and $0.02|d|$ penalises unnecessary vertical movement. Backtracking from the lowest cost in the final column gives the boundary.
+
+In the recorded boundary between centres 38 and 61, $y_m=49.5$ and $h_g=11.5$. At row 49 the closed mask is zero, giving $C=0.012[(49-49.5)/11.5]^2=0.0000226843$. At column 283, the selected predecessor is row 50 with stored cost 0.00641966. Its one-row change adds 0.02, so the accumulated cost is $0.00641966+0.02+0.0000226843\simeq0.02644234$. This connects the local penalty to an actual step of the path search.
+
+Figure~\ref{fig:vt-seamfield} shows two selected gaps from Abhinav01 processed at native page resolution. The first was selected for the largest reduction in crossed ink: a straight midpoint cut intersects 64 working-image ink pixels, while the seam intersects one. The second was selected for the largest departure from the midpoint. Its seam moves by up to 22 rows and crosses no ink, compared with 44 pixels for the straight cut. These examples explain the boundary choice; they are not an average segmentation-accuracy measurement.
+
+\begin{figure}[!htbp]\centering
+\includegraphics[width=0.96\linewidth]{Figures/VisualTests/T25_seam_cost_field.pdf}
+\caption{Seam paths and local cost fields on two explicitly selected gaps from Abhinav01.}
+\label{fig:vt-seamfield}
+\end{figure}
+
+A separate sensitivity check varies the midpoint and step penalties over six fixed gaps from two pages. At the implemented 0.012/0.02 setting, mean midpoint offset is 0.363 working pixels; removing midpoint attraction raises it to 4.055 pixels. Every tested setting still crosses two raw-ink pixels across those seams. The check shows how the weights affect the path without establishing a unique optimum. The complete settings and outcomes are retained in Appendix~\ref{app:des-seam-sweep}.
+
+\subsubsection{Assigning ink to the correct line}
+A seam initially divides the page into bands, but the band alone does not always identify which line owns an ink piece. A dot may fall above the boundary of its stem, or a descender may extend into the band below. Connected-component analysis refines these assignments. The implementation uses row runs and union operations with diagonal contact, giving eight-connected components~\cite[pp.~476--479]{rosenfeld1966}.
+
+For a component spanning several bands, a band containing at least 15\% of its in-band ink is treated as substantial. The uppermost substantial band provides the reference owner for small-piece corrections; if none qualifies, the largest overlap is used. Large components are not moved wholesale: their pixels keep the seam-band assignment except where the narrow-tail and small-piece rules apply.
+
+An \texttt{i} dot between two lines illustrates the reason for this correction. Its position may place it in the upper band, while a stem below supports assigning it to the lower line. Closing can also join the dot to an unrelated descender, so the raw mask is revisited rather than accepting the closed component without further checks. An enclosed-ring test distinguishes a detached loop from an open hook. These decisions use geometry, not knowledge of the intended character.
+
+In Algorithm~\ref{alg:des-ownership}, $\mathcal C$ is the set of ink components, $a_{C,n}$ is component $C$'s overlap with band $n$, and $O$ stores the final line index of each retained ink pixel.
+
+\begin{designalgorithm}
+\caption{Refining seam bands into ink ownership}
+\label{alg:des-ownership}
+\prequire{Ink mask $M$, components $\mathcal C$, seams, centres and pitch $P$.}
+\begin{designpseudo}
+\pstate{0}{\textbf{for each} component $C\in\mathcal C$ \textbf{do}}
+\pstate{1}{Count overlap $a_{C,n}$ with each seam band $n$}
+\pstate{1}{$S\leftarrow\{n:a_{C,n}\geq0.15\sum_j a_{C,j}\}$}
+\pstate{1}{Choose topmost $S$ as reference owner, or maximum overlap if $S=\varnothing$}
+\pstate{1}{Correct eligible narrow tails and small pieces; reject remote specks}
+\pstate{1}{Associate compact dots with plausible stems using pitch-scaled guards}
+\pstate{0}{\textbf{end for}}
+\pstate{0}{$O\leftarrow$ corrected ownership, preserving large-piece seam assignments}
+\pstate{0}{\textbf{for each} raw component near a neighbouring line \textbf{do}}
+\pstate{1}{\textbf{if} detached-dot or enclosed-ring guards pass \textbf{then}}
+\pstate{2}{Transfer eligible pixels to the supported stem's line; protect correction}
+\pstate{1}{\textbf{end if}}
+\pstate{0}{\textbf{end for}}
+\pstate{0}{Reassign residual fragments lacking their own body-band support}
+\pstate{0}{\textbf{return} $O$; excluded pixels retain no line index}
+\end{designpseudo}
+\end{designalgorithm}
+
+The three largest correction cases on Abhinav01 are shown in Figure~\ref{fig:vt-ownership}. Colour identifies the assigned line, and the boxes locate the affected ink. Across the page, 462 pixels change assignment; the three boxed components contain 115, 78 and 73 pixels. This makes the correction rules visible, although the reassignment count is not an accuracy score because no manually labelled pixel-ownership reference was supplied.
+
+\begin{figure}[!htbp]\centering
+\includegraphics[width=0.96\linewidth]{Figures/VisualTests/T27_ownership_corrections.pdf}
+\caption{Initial seam-band ownership and corrected component ownership on the same page.}
+\label{fig:vt-ownership}
+\end{figure}
+
+\subsubsection{Preparing the classifier crops}
+Once ownership has been established, each line is cropped from the full-resolution image. The ownership map excludes neighbouring ink, while local contrast adjustment strengthens faint strokes within the retained line. This order matters: contrast recovery should not bring a neighbour's stroke back into the crop.
+
+The crop uses a soft interpolation of its own ink mask to avoid jagged edges. The separate ownership exclusion uses nearest-neighbour interpolation so that a yes/no assignment is not blurred back into partial ownership. Contrast is stretched between a robust ink level and the paper level, followed by a darkness exponent of 0.55. This strengthens faint writing without treating the whole crop as a solid band.
+
+A final guard rejects a crop only when its dark-pixel fraction exceeds both 15\% and three times the page's median crop fraction. Requiring both conditions helps retain a genuine dense line when the other lines are sparse. If every crop would be rejected, the input crop list is retained. This is a guard against solid shadows, rather than a guarantee that every retained crop contains valid text.
+
+The classifier input must then fit a $64\times640$ canvas. For crop height $h$ and width $w$, the same scale is applied to both dimensions:
+\begin{equation}
+a=\min\left(\frac{64}{h},\frac{640}{w}\right),\qquad
+(h',w')\simeq(ah,aw).
+\label{eq:des-fit}
+\end{equation}
+The archived first Owen01 line is $156\times2170$ pixels. Its scale is $\min(64/156,640/2170)=0.2949309$, giving a $46\times640$ resized image after integer rounding. It is placed nine rows below the top of the canvas, left-aligned and padded with white. This preserves letter proportions, although a very long line becomes short in height when the width limit controls its scale.
+
+\subsubsection{Complete processing sequence and output}
+Figure~\ref{fig:des-seg-stages} brings the stages together on a photographed page: lighting correction produces an ink mask, orientation aligns the lines, boundaries and ownership separate the ink, and the full-resolution page supplies the final crops. These intermediate images make it possible to identify the stage at which a stroke was removed or assigned incorrectly.
+
+\begin{figure}[!htbp]\centering
+\includegraphics[width=0.96\linewidth]{Figures/design-segmentation-stages.pdf}
+\caption{Processing stages used to obtain separate text-line images from a photographed page.}
+\label{fig:des-seg-stages}
+\end{figure}
+
+Algorithm~\ref{alg:des-segment} summarises the sequence now that its operations have been explained. Here $G_f$ and $G_h$ are the deskewed full- and half-resolution grey images, $M$ is the ink mask, $R$ is the brightness-ratio image and $\theta$ is the selected skew angle. The line pitch is $P$, the centres are $c$, the seams are $b$, and $O$ is the refined ownership map. The output $\mathcal L$ contains ordered line crops with their coordinates and classifier views; diagnostics retain the angle, pitch and rejected-crop information.
+
+\begin{designalgorithm}
+\caption{Photographed page to ordered line crops}
+\label{alg:des-segment}
+\prequire{Grey page on its chosen line axis.}
+\pensure{Ordered full-resolution crops, coordinates and diagnostics.}
+\begin{designpseudo}
+\pstate{0}{$(G_f,G_h,M,R,\theta)\leftarrow\operatorname{Deskew}(G)$}
+\pstate{0}{$M\leftarrow\operatorname{RemovePrintedStructure}(M,G_h)$}
+\pstate{0}{$(M,\mathcal C)\leftarrow\operatorname{DropArtifactPieces}(M,R)$}
+\pstate{0}{$(P,c)\leftarrow\operatorname{LineCentres}(M)$}
+\pstate{0}{$b\leftarrow\operatorname{SeamCuts}(M,c,P)$}
+\pstate{0}{$O\leftarrow\operatorname{AssignOwnership}(M,\mathcal C,b,c,P)$}
+\pstate{0}{$\mathcal L\leftarrow\varnothing$; normalise full-resolution brightness}
+\pstate{0}{\textbf{for each} line index $n$ \textbf{do}}
+\pstate{1}{$C_n\leftarrow\operatorname{BuildLineCrop}(n,O,G_f,P)$}
+\pstate{1}{\textbf{if} $C_n$ has sufficient ink and height \textbf{then}}
+\pstate{2}{Append $C_n$, its fixed-canvas view and bounding box to $\mathcal L$}
+\pstate{1}{\textbf{end if}}
+\pstate{0}{\textbf{end for}}
+\pstate{0}{$\mathcal L\leftarrow\operatorname{DropSolidCrops}(\mathcal L)$; renumber retained crops}
+\pstate{0}{\textbf{return} $\mathcal L$, seams, ratio image and diagnostics}
+\end{designpseudo}
+\end{designalgorithm}
+
+The line-axis decision does not distinguish a page from its upside-down version. After crops are available, the server therefore asks the reader to compare up to three sampled lines in both directions. It selects the direction with the higher mean best-frame log score, reuses the selected readings and reverses the line order when necessary. This is a practical orientation heuristic; a confidently wrong reading can still select the wrong direction.
+
+\subsubsection{Segmentation verification and limitations}
+\label{sec:des-segverify}
+The native-resolution Owen page in Figure~\ref{fig:des-seg-stages} produced 20 crops for its 20 labelled lines. This checks the gross splitting of that page, rather than the correctness of every boundary pixel. Figure~\ref{fig:des-seg-variation} examines a more difficult case using three actual camera-roll photographs of the same three-line page. Their shadows and presentation differ, but neither illuminance nor physical rotation angle was measured.
+
+The striped-shadow capture produced three crops, while the diffuse-shadow capture produced four. The third capture remained on the wrong line axis: its gap scores of 0.379 and 0.400 give a ratio of 1.054, below the required 1.35, and it produced 28 slices. Fine deskewing reached its $-4^\circ$ limit but could not correct the missed quarter turn. These examples show why crop count and visible ink assignment must be inspected together; they do not establish a lighting operating range or a general success rate.
+
+\begin{figure}[!htbp]\centering
+\includegraphics[width=0.95\linewidth]{Figures/design-segmentation-variation.pdf}
+\caption{Actual repeated photographs and segmentation diagnostics for the same sparse page. Capture C retains the unsuccessful axis decision.}
+\label{fig:des-seg-variation}
+\end{figure}
+
+The scale-based thresholds and curved boundaries handle changes in handwriting size and overlapping vertical extents without fixing one pixel spacing for every page. Their limitations follow from the same assumptions: irregular spacing weakens a single pitch estimate, touching strokes can defeat component ownership, and sparse text provides weak orientation evidence. A global rotation also does not correct perspective distortion or page curvature. A more consistent camera and page mount reduces these disturbances at capture; more general rectification would require additional processing and verification.
+
+Appendix~\ref{app:des-visual-tests} retains the capture filenames, extended digital perturbations and independent algorithm checks, including unsuccessful cases after further image reduction.
+\FloatBarrier

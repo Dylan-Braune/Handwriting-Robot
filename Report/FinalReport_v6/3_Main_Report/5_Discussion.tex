@@ -5,58 +5,84 @@
 This subsection interprets the results of Section~\ref{sec:results}, evaluates the design choices in hindsight and identifies what must change before the requirements can be considered proven.
 \label{sec:dis-critical}
 
-Two limitations determine every conclusion below: the measurements were taken on a development laptop and not on the ODROID N2+, and the evidence on synthesis quality is partly circular, because the classifier that selects the best of $N$ candidates belongs to the same family as the one that reports the score.
-Where a figure is affected by either limitation, this is stated with the figure.
+Three limitations determine every conclusion below.
+The first is one of platform: the reproduction and classification timings of qualification tests~3 and~4 were taken on the ODROID~N2+, which is the target platform, while the accuracy measurements of qualification tests~1 and~2 were taken on the development computer, where the platform affects only how long a measurement took and not what it was.
+The second is that the evidence on synthesis quality is partly circular, because the classifier that selects the best of $N$ candidates belongs to the same family as the one that reports the score.
+The third is economic, and it is set out under economic feasibility in Section~\ref{sec:dis-crit}: the processing platform was constrained by a \mbox{R5\,000} budget, and the consequences of that constraint fall almost entirely on the one requirement that was not met.
+Where a figure is affected by any of the three, this is stated with the figure.
 
     \subsubsection{Interpretation of results}
     \label{sec:dis-interp}
 
-        \textbf{R2, classification: the strongest part of the system.}
-        Text decoding reached 98.61\% character accuracy and 94.21\% word accuracy over 669 real line crops, and writer identification 99.78\% over 1358 real lines from thirteen writers with the ink classifier.
-        Both exceed the 95\% target on this evidence, and the lower bound of the character figure is about 97.6\%.
-        Two qualifications do not show in the numbers.
-        First, the 98.61\% is measured on crops known to be correctly cut, because any page whose crop count disagreed with the label count was excluded; it therefore measures recognition given correct segmentation and says nothing about pages where segmentation fails.
-        Second, the five writers scored are also represented in the recogniser's fine-tuning data, so the split favours the system.
-        Honestly stated, recognition and identification meet their target on correctly segmented, in-distribution input, and the end-to-end page-to-text accuracy is bounded above by these figures rather than equal to them.
-        The gap between character and word accuracy carries information: one wrong character spoils a whole word, so the residual error sits in a minority of words rather than spread thinly.
+        \textbf{R2, writer identification: the strongest result in the report, and the one most nearly separated from its target.}
+        The writer was named correctly on 153 of 156 lines held out from the classifier, 98.08\%, and on all 11 writers when each writer's held-out lines are pooled by ink.
+        The point estimate clears the 95\% target by 3.08 points, but the honest statement is weaker than that: the Wilson interval runs from 94.5 to 99.3\%, so its lower bound sits 0.5 points \emph{below} the target and 156 lines are not quite enough to separate the result from the specification at 95\% confidence.
+        Roughly 250 held-out lines at the same error rate would be.
+        What the pooled result adds is that no writer was misnamed as a whole: the three errors are isolated lines on three different writers, so a page-level decision, which is what the system actually makes, was right every time.
 
-        \textbf{The writer classifier that is used for real ink is not the one that judges synthesis.}
-        The ink classifier reached 99.78\% on real lines and the shape classifier 93.67\%.
-        That ordering is the opposite of what the synthesis path needs, because the ink classifier depends on stroke thickness and ink density, which a constant-width plotter cannot reproduce: on the system's own drawn output the ink classifier falls to 28\%, close to chance for thirteen writers, while the shape classifier reaches 89.7\%.
-        Both are therefore necessary: one is the right instrument for reading a photograph, the other for judging a drawing.
+        \textbf{Why the writer classifier that reads real ink is deliberately not the best one available.}
+        An ink-based classifier scored higher than the stroke-normalised one on photographed handwriting, and it was nevertheless replaced.
+        The reason is that ink density and stroke thickness are among the strongest cues available in a photograph and are exactly the cues a constant-width ballpoint in a plotter cannot vary: a classifier that leans on them cannot judge the machine's own output, which is the measurement R1 depends on.
+        Redrawing every crop at one constant pen width before classifying discards those cues deliberately, costs accuracy on photographs, and buys an instrument that works on both real ink and drawn output.
+        This is the project's decision heuristic in its clearest form: where two options differed, the one chosen was the one that survived a change of pen, camera or lighting, even at a cost in headline accuracy.
+        The normalisation width itself was not guessed but swept, and 0.17 x-heights was selected on held-out accuracy.
 
-        \textbf{A training fault, not an intrinsic difficulty, explained the hardest writer pair.}
-        Before this work the shape classifier assigned 118 of one writer's 148 real lines to a single other writer, which read as two intrinsically similar hands.
-        The measurement shows otherwise: training the same architecture end-to-end, instead of freezing the backbone at the recogniser's features and fitting only the classification head, raised the shape classifier from 83.4\% to 93.7\% overall and that writer from 18.9\% to 67.6\%.
-        A recogniser's features are trained to be \emph{invariant} between writers, so a classifier restricted to them can separate only writers whose recognition features already differ.
-        The residual is still 48 of 148 lines sent to the same neighbour, so a smaller genuine effect probably remains on top of the fault; this is unresolved and listed as an unsolved problem.
-        The lesson is that reusing a recogniser's backbone saves training data, but it must be fine-tuned rather than frozen whenever the new task is to detect the variation the backbone was trained to ignore.
+        \textbf{R2, text: 94.39\% against a 95\% target, and the shortfall is 0.61 points.}
+        The text half was measured on 1\,076 lines held out from the reader, of which 976 are the public corpus's own validation partition and 100 are the photographed writers' seeded split.
+        Two features of that measurement matter more than the headline.
+        First, the two sets agree to 0.03 points, 94.39\% against 94.42\%, although one is a public benchmark of many writers cut by its own distributor and the other is five writers photographed with this project's webcam and cut by this project's segmenter.
+        That agreement is the strongest available evidence that the reader generalises rather than having learned the particular conditions of the project's own pages, and it is also evidence that the segmenter is not systematically damaging the crops it produces.
+        Second, the figure is a measurement on genuinely unseen material: the transcript lookup reported in qualification test~2 established that three of the database writers' pages are inside the reader's training corpus, and those pages were excluded rather than quoted.
+        An earlier draft of this report quoted 91.02\% over 155 lines, a figure that included contaminated material; the present figure is both higher and sound, which is the opposite of the usual direction and is worth stating plainly.
 
-        \textbf{R1, representation fidelity: close, and the shortfall is in the right place to be fixable.}
-        Synthesised text was read at 82.2\% character accuracy over thirteen writers, against the 85\% target, and at 79.2\% in a wider coverage run.
-        The matching comparison is more informative: on identical sentences the writers' genuine handwriting was read at 89.0\% and the synthesis at 81.6\%.
-        The synthesis loses 7.4 percentage points of character accuracy but 23.8 points of word accuracy, and that asymmetry localises the defect.
-        Individual letterforms survive the transfer, as expected because the synthesiser draws the writer's own traced glyph paths; the spacing structure does not, so words are drawn with boundaries the recogniser reads differently.
-        The measured feature deviations agree: synthesised lines have ascenders about 0.4 to 0.6 x-height units shorter than the writer's real lines, word spaces about 0.5 units narrower, and connectedness lower.
-        The defect is thus a few measurable, correctable quantities rather than a failure of the method, which is why R1 is partially met rather than not met.
-        A recogniser checkpoint that took no part in the search read the same lines 3.7 points below the production checkpoint, so the selection raises legibility only slightly and the result is not an artefact of the search.
+        \textbf{Why the text half falls short, and what the gap is made of.}
+        Three causes are identifiable and none of them is a defect in the recogniser itself.
+        The first is the segmenter: when two written lines sit close together it occasionally carries a descender or a stray letter from the line above into the crop below, and the reader is then charged with a character that was never part of that line.
+        This is infrequent, but it sets a ceiling on page-to-text accuracy that no amount of training can lift.
+        The second is the deliberate absence of a language model.
+        The gap between 94.39\% character accuracy and 73.47\% word accuracy localises the residual error: one wrong character spoils an entire word, so the errors are concentrated in a minority of words rather than spread thinly, and that is precisely the error structure a lexicon or an $n$-gram decoder corrects.
+        A dictionary-constrained decoder was not used, and the reason is a requirement rather than an oversight: R1 asks the system to reproduce \emph{arbitrary} digital text, including proper names and strings that are not words, so constraining the decoder to a lexicon would raise the measured accuracy on benchmark prose while making the system worse at the task it is specified to do.
+        The third is training budget, discussed under economic feasibility below.
+        Of the three, only the first is a fault; the second is a defensible trade and the third is a constraint.
 
-        \textbf{The stylistic-correlation target is not verified, and writer identification is a weak proxy for it.}
-        The proposal asks for 85\% stylistic correlation; what was measured is writer-identification accuracy, a different question, because a synthesis could be identifiable as the right writer while still differing visibly from that writer's hand.
-        Worse, the writer-identification figures on synthesised text (80.1\% in the official run, 89.7\% in the coverage run) come from a classifier that also selects the candidates, so a best-of-$N$ search necessarily raises the score it is judged by, and only the figures computed outside the search can be trusted.
-        The nine-feature geometric correlation gave 0.714 against the 0.85 target, so the style term of R1 is not met on that measure, the shortfall being in descender extent, the ascender-to-descender ratio and word spacing rather than in slant or ascender extent.
-        The overlay test gave an AUC~\cite[p.~868]{fawcett2006} of about 0.71, against 0.5 for an output carrying no writer information, which indicates real but limited fidelity.
-        A human panel or an independent classifier is required before the 85\% stylistic target can be claimed, and this was not carried out.
+        \textbf{R1, representation fidelity: 84.41\% against 85\%, and the shortfall is concentrated in a measurable, explainable place.}
+        Over the 184 lines the robot itself drew, the text was read back at 84.41\% character accuracy, 0.59 points below the target, while the stylistic half was met: the writer was identified from the machine's own output on 86.4\% of lines and on all 14 pages when a page's lines are pooled.
+        The informative figure is not the mean but the spread: character accuracy by writer runs from 60.97\% to 97.01\%, a range of 36 points, which is far too wide to be noise and points at a property of the writers rather than of the machine.
+        That property was measured. Ranking the eleven writers by connected ink components per character and by character accuracy gives a Spearman correlation of $+0.845$, with the four writers above 93\% being the four least joined hands and two of the three lowest being the two most joined.
+        The same ranking against writer identification gives $-0.027$, that is, nothing.
+        So cursiveness governs how legibly the machine reproduces a hand and has no bearing on whether the hand remains recognisable, which is a coherent result rather than a coincidence.
 
-        \textbf{The synthesis is recognised as the correct writer much better than the system draws that writer.}
-        The same shape classifier identifies 93.7\% of real lines but only 89.7\% of drawn lines in the coverage run, and only 67.6\% of one writer's real lines while identifying 100\% of that writer's drawn lines.
-        A judge that recognises the machine's output more reliably than the human's hand is measuring agreement with the synthesiser rather than fidelity to the author, which is the most important caveat on every writer-identification figure measured on synthesised text.
+        \textbf{Why cursiveness costs legibility, and why that is a property of the chosen method.}
+        The synthesiser composes a line from glyph paths traced out of the writer's own ink and then joins them.
+        For a printed hand, the isolated letterform harvested from the page is very close to the letterform the writer actually produces in context, so the reconstruction is faithful.
+        For a joined hand it is not: the writer never draws those letters in isolation, every letter is deformed by its neighbours, and a library of isolated shapes is therefore a worse model of a cursive writer than of a printed one.
+        The shortfall on R1 is thus the predictable cost of a design decision taken for other reasons.
+        A glyph library was chosen over a generative image model because it preserves the writer's actual letterforms, needs no accelerator to run on the board, and can be inspected and corrected glyph by glyph; a diffusion or adversarial synthesiser would model context directly and would be expected to do better on exactly the cursive cases, at the cost of all three of those properties and of a platform the budget did not allow.
+        Four writers clearing 93\% shows the method works where its assumption holds.
 
-        \textbf{R3, reproduction time: the failure is the search, not the drawing.}
-        A four-character word at $N=6$ took 64.3~s, or 16.1~s per character, four times the limit.
-        The coverage run confirms that the cost scales with the number of candidates, because every candidate is rendered, read by the recogniser and scored by the writer classifier.
-        The physical drawing time was never measured, so the requirement cannot be decomposed, and it would be wrong to conclude that the gantry is slow: the evidence points at the selection procedure, which embeds two network passes in its inner loop and pays for the quality it delivers.
-        The proposal does not state whether the synthesis time counts towards the limit; under the reading that only the physical writing counts, the generator's model value of 2.7 to 4.0~s per character sits at the 4~s limit, so the requirement is recorded as not met on the conservative reading that the total counts.
+        \textbf{The stylistic half of R1 is met on one measure and missed on the measure the proposal actually specifies.}
+        The proposal asks for 85\% stylistic correlation. Measured as a correlation, over nine geometric features between each writer's real lines and the system's reproduction of the same text, the pooled coefficient is 0.714 against 0.85, so the specification is not met and the honest verdict on R1's stylistic half is a failure by 0.136.
+        Measured as writer identification from the machine's own output it is met, at 86.4\% of lines and 14 of 14 pages.
+        Both numbers are reported because they answer different questions, and the specification's own question is the one that fails.
+
+        The per-feature breakdown says where the fidelity is lost, and it is coherent with the R1 character result.
+        Slant correlates at 0.996, ascender extent at 0.974 and character width at 0.936, so the \emph{letterforms and their proportions} transfer almost exactly, which is expected because the synthesiser draws the writer's own traced paths.
+        Word gap correlates at 0.605, the ascender-to-descender ratio at 0.509 and descender extent at only 0.148, so what fails to transfer is the \emph{spacing and the vertical placement between letters} rather than the letters themselves.
+        That is the same defect the character accuracy showed from the other direction, and it localises the remaining work: the glyph library is adequate and the layout model that places those glyphs is not.
+
+        Two caveats remain on the writer-identification figure and neither applies to the correlation.
+        The classifier that reports the score also selects the best of $N$ candidates, so a best-of-$N$ search inflates the measure it is judged by; qualification test~1 limits this by classifying the G-code before any page was drawn, which removes the drawing from the loop but not the classifier.
+        The overlay test gives an area under the curve of 0.71 against 0.5 for output carrying no writer information at all, which is independent of the classifier and indicates real but partial fidelity, consistent with a correlation of 0.714 rather than with the identification figure.
+        A human panel was not carried out.
+
+        \textbf{R3, reproduction time: met on the target platform, with the margin in an unexpected place.}
+        All 36 complete reproductions in the log met the 4~s per character allowance, and they were measured on the ODROID~N2+ driving the real gantry, not on the development computer, so this is an on-target result.
+        The margin, however, is not uniform: the worst case used 96.9\% of its allowance and the best 33.6\%, and the worst case is the \emph{shortest} block, not the longest.
+        The reason is a mismatch between how the cost scales and how the allowance scales.
+        Drawing is a per-character cost and tracks the allowance, but the best-of-$N$ search is paid once per block, so its contribution per character falls as the block lengthens: in the worst run at each length, synthesis cost 0.617~s per character on a 43-character block and 0.156~s per character on the 378-character paragraph.
+        The allowance, being strictly proportional to length, gives a short block almost no room to pay for a fixed search.
+        Taking the measured synthesis cost of the shortest block and the measured drawing rate, the allowance is exhausted at about 35 characters, which means R3 is met over the range tested and would be expected to fail below roughly that length.
+        This is recorded under expected failure conditions rather than hidden in the margin.
 
         \textbf{R4, classification time: recognition passes, segmentation fails badly.}
         Recognition ran at 8.86~ms per character against the 25~ms allowance, a margin of about 2.8 times, so the neural component is not the problem.
@@ -65,22 +91,34 @@ Where a figure is affected by either limitation, this is stated with the figure.
         The profile shows the cause: line grouping and the chain search dominate, at about 70\% of the time, and are written in pure Python.
         Moving two inner routines to C reduced the total by 25\% to 32\%, but the grouping still dominates: accelerating the wrong part of a program cannot fix it.
 
-        \textbf{R5, positional accuracy, and the field conditions: no conclusion is possible.}
-        The derived step resolution of 12.5~$\mu$m shows only that the command quantisation is 40 times finer than the tolerance, so the error must come from the mechanics and from open-loop effects.
-        No drawn mark was scanned, because the direction-pin fault prevented controlled motion in both directions, so the requirement is unassessed rather than failed.
-        The same holds for the two field conditions, neither of which was measured; the illumination figure is the more consequential omission, because the conditioning stage was designed to tolerate uneven lighting and that claim is untested.
+        \textbf{R5, positional accuracy: met on the specimen measured, and the residual error is explained rather than merely bounded.}
+        The worst of the four sides of a 100~mm square was 0.30~mm from nominal and the mean absolute error 0.175~mm, both inside the 0.5~mm limit.
+        What makes this more than a single lucky measurement is that the triangle explains where the error comes from.
+        A square cannot detect a squareness error, because a sheared square still has four equal sides; the triangle can, because its two sloped sides are equal only if the axes are perpendicular.
+        Those two sides differed by 0.70~mm although they are equal by construction, and solving the shear from them gives a single apex offset that predicts both measured sides to within 0.02~mm, which is the resolution of the caliper.
+        One unknown fitted to two measurements with residuals at the reading resolution is a validated model, not a curve fit, and it says the dominant residual is a $0.706^{\circ}$ non-perpendicularity of the axes rather than a scale error or lost steps.
+        That is a mechanical alignment fault, correctable by squaring the frame, and it is the most useful thing the test produced.
+        The limitation is equally plain: one square and one triangle support a compliance statement and a diagnosis, and do not support a repeatability figure or a tolerance.
 
-        \textbf{Requirements met.}
-        The storage half of R6 is met: thirteen styles are stored as files and the live server lists all of them, against a minimum of ten, returning the list in 70~ms. The reproduction half is not: the proposal's demonstration asks for a writer to be chosen at random and the text written on paper in that style, and that was never carried out.
-        R2 is met for writer identification on real handwriting and for recognition on correctly segmented in-distribution crops, but not demonstrated for the complete page-to-text chain.
-        R1 is close but not met, R3 and R4 are not met, and R5 and both field conditions are unassessed.
+        \textbf{R6, stored styles: met, and the margin is one style.}
+        Eleven writer styles are trained and permanently stored against a minimum of ten, each with a glyph library and a style profile, and the classifier checkpoint records the same eleven names.
+        The set was reduced from thirteen during this work by withdrawing two writers and retraining, which is a reduction of the margin from three styles to one and is reported as such.
+
+        \textbf{Requirements met, stated plainly.}
+        R3, R5 and R6 are met, and both field conditions are met.
+        R2 is met on writer identification, at 98.08\% against 95\%, and falls 0.61 points short on text.
+        R1 falls 0.59 points short on its character half and, on the correlation its specification names, 0.136 short on its stylistic half; it is met only on the writer-identification reading of that half.
+        R4 is not met, by a factor of about 2.4 on the per-character term and about 8 on the fixed term.
+        So three of the six core requirements are met outright, two are met in part and miss by less than a point on the half that is close, and one fails by a wide margin. Every requirement was measured; none is left unassessed.
 
         \textbf{Where this system sits against published work.}
         Table~\ref{tab:dis-compare} places the measured figures of Section~\ref{sec:results} beside the published systems surveyed in Section~\ref{sec:literature}.
-        The comparison is not like for like and is not offered as one: every published row was obtained on a public benchmark with a full research pipeline behind it, while the rows for this project were measured on thirteen writers, five of them photographed for this project, on a system that must also synthesise and draw.
-        What the table is for is to show that the recognition and writer-identification figures are of the same order as published work rather than far below it, and that the shortfall of this project is concentrated in synthesis fidelity and in time, not in classification.
-        Two differences make the recognition figure easier than the published ones: it is measured on crops known to be correctly cut, and five of the thirteen writers appear in the fine-tuning data.
-        The published cells are quoted from each paper at the page given, and the metrics are not the same one: the two recognition rows are accuracies on handwritten lines, while the two synthesis rows are Fr\'echet inception distances, a distance between image distributions for which lower is better and for which no accuracy equivalent exists. They are therefore comparable down a column only within a pair. \mustdo{the Bulacu and Schomaker writer-identification figure is still missing: the IEEE copy could not be obtained, so no number has been entered rather than a guessed one.}
+        One row of that table is a genuine comparison and the rest are not, and the difference matters.
+        The reader's 94.39\% character accuracy was measured on 976 line crops of the public IAM corpus as distributed by Teklia, cut by its distributor and held out by its own partition, which is the same corpus the two published recognition rows were obtained on.
+        On that corpus a recogniser written from first principles, trained on one machine without a framework supplying any layer, gradient or optimiser, reads 12.6 points above the bidirectional recurrent network of Graves \emph{et al.} and 2.0 points below the CNN--BiLSTM--CTC of K{\i}z{\i}l{\i}rmak \emph{et al.}, whose layer pattern this implementation follows.
+        That is the single most useful calibration in the report: it places the weakest of the six requirements against the state of the art rather than against a target, and it shows the 0.61-point shortfall on R2 to be a shortfall against a specification and not against what the method can do.
+        Two differences still favour this implementation and must be stated: the validation partition used here is the corpus's own and is not necessarily the same partition as the test sets the published figures were obtained on, and the published works report on the full IAM test material with research-scale training behind them.
+        The synthesis rows are not comparable at all, being Fr\'echet inception distances, a distance between image distributions for which lower is better and for which no accuracy equivalent exists; they are included to show the class of method, and are comparable only to each other.
 
 \begin{table}[!htbp]
 \centering
@@ -94,28 +132,75 @@ Graves \emph{et al.}~\cite[p.~855]{graves2009} & Bidirectional recurrent network
 \hline
 K{\i}z{\i}l{\i}rmak \emph{et al.}~\cite[p.~1]{kizilirmak2023} & CNN--BiLSTM--CTC, the layer pattern this project follows & IAM lines & 3.59\,\% CER, 9.44\,\% WER (that is 96.41\,\% character accuracy) \\
 \hline
-Bulacu \emph{et al.}~\cite{bulacu2007} & Edge-direction texture features, no network & Own corpus & \mustdo{figure not obtained} \\
-\hline
 Kang \emph{et al.}~\cite[Tab.~1]{kang2020} & Adversarial image synthesis & IAM & FID 120.1 (seen styles) to 130.7 (unseen, out-of-vocabulary); real data scores 90.4 \\
 \hline
 Dai \emph{et al.}~\cite[Tab.~3]{dai2024} & Diffusion-based synthesis, one reference image & IAM, unseen styles, out-of-vocabulary & FID 102.8 \\
 \hline
-\textbf{This implementation}, text recognition & CNN--BiLSTM--CTC written from first principles, no framework & 669 real line crops, 13 writers & 98.61\% character, 94.21\% word \\
+\textbf{This implementation}, text recognition & CNN--BiLSTM--CTC written from first principles, no framework supplying a layer, gradient or optimiser & \textbf{IAM lines, 976 held-out crops of the distributor's own validation partition} & \textbf{94.39\% character, 73.67\% word} \\
 \hline
-\textbf{This implementation}, writer identification & Convolutional classifier on the recogniser's backbone, ink input & 1358 real lines, 13 writers & 99.78\% \\
+\textbf{This implementation}, text recognition & The same checkpoint, on this project's own photographed pages & 100 held-out lines, 5 writers, webcam capture & 94.42\% character, 70.74\% word \\
 \hline
-\textbf{This implementation}, writer identification & The same architecture on stroke-normalised input, for drawn output & 13 writers & 93.67\% real, 89.7\% drawn \\
+\textbf{This implementation}, writer identification & The same backbone on stroke-normalised input, 11-class closed set & 156 held-out lines, 11 writers & 98.08\% per line, 11 of 11 writers pooled \\
 \hline
-\textbf{This implementation}, synthesis read back & Glyph-library synthesis from the writer's own traced letters & 13 writers, identical sentences & 81.6\%, against 89.0\% for the writers' real hands \\
+\textbf{This implementation}, synthesis read back & Glyph-library synthesis from the writer's own traced letters & 184 lines the robot drew, 11 writers & 84.41\% character, writer identified on 86.4\% of lines \\
 \hline
 \end{tabular}
-\caption{The measured results of this project beside the published systems surveyed in Section~\ref{sec:literature}. The rows are not directly comparable: the published systems are measured on public benchmarks, this one on thirteen writers including five photographed for this project, and its recognition figure assumes correct segmentation.}
+\caption{The measured results of this project beside the published systems surveyed in Section~\ref{sec:literature}. Only the first of this implementation's rows is a like-for-like comparison, being measured on the same public corpus as the two recognition rows above it; the writer-identification and synthesis rows have no published counterpart on the same material and are given for completeness. The two synthesis rows above are Fr\'echet inception distances and are comparable only to each other.}
 \label{tab:dis-compare}
 \end{table}
 
 
     \subsubsection{Critical evaluation}
     \label{sec:dis-crit}
+
+        \textbf{Economic feasibility, and what the budget decided.}
+        The project was built to a \mbox{R5\,000} budget, and the processing platform was the item that constraint bound hardest.
+        The ODROID~N2+ was obtained second hand at no cost, which is what kept the build inside the budget once the gantry mechanics, motors, drivers, supply and camera were accounted for.
+        Two consequences followed from that choice and neither was incidental.
+        The first was practical: the board has no HDMI output, so all development, testing and demonstration had to be done headless over the network, and the browser interface described in Section~\ref{sec:system} is not merely a convenience but the only means of operating the machine.
+        The second is the direct cause of the one requirement that was not met.
+        Boards with substantially more processing capability were available and were considered, and were rejected on price: a Rock~5B or a Jetson Nano would have cost a large fraction of the whole budget on its own, against a board that cost nothing.
+        No measurement of either alternative was made, so this report offers no figure for how much faster they would have been; what it can state is the size of the deficit that has to be covered, which Section~\ref{sec:dis-unsolved} puts at a factor of about 2.4 on the network stages and about 8 on the per-page image stages.
+        The honest summary is that R4 was traded for the rest of the system: within a \mbox{R5\,000} budget the money went into a machine that draws accurately and a platform that could run the algorithms at all, and the classification-time specification was the casualty.
+
+        \textbf{Writing the networks from first principles, and what that cost.}
+        Every layer, gradient and optimiser used in training and inference was written out rather than taken from a framework, which is the project's largest single claim to original work and is also measurable as a cost.
+        Loading the same weights into equivalent library modules and running each page as one batched forward pass, rather than the hand-written forward pass one crop at a time, is faster by a factor of about 2.8 on the same machine and on the same pages, with the text identical.
+        That factor is not a criticism of the hand-written code, which has to be correct and legible rather than fast; it is the price of the design decision, and it happens to be most of what R4 needs.
+        In hindsight the right structure would have been to keep the from-first-principles implementation as the reference and the thing that earns credit, and to batch its forward pass per page rather than per crop, which is an implementation change of the same code and not a move to a library.
+        That was not done, and it is the clearest piece of available performance left on the table.
+
+        \textbf{Training by the two routes is not equivalent, and the difference decided which checkpoint was used.}
+        The writer classifier was trained twice on the same data, the same architecture and the same stroke normalisation at 0.17 x-heights: once through the library route and once through the from-first-principles trainer.
+        Both were then measured on the two populations the classifier has to serve, and Table~\ref{tab:dis-routes} gives the result.
+        The from-first-principles checkpoint meets R2 on held-out real handwriting, at 95.51\% against the 95\% target, so the claim that the training code works is supported by a checkpoint that satisfies the requirement.
+        It is nevertheless not the checkpoint the measurements of Section~\ref{sec:results} were taken with, and the reason is the second population.
+        On the pages the robot drew, where the classifier is the measuring instrument for R1 rather than the subject, it reaches 80.54\% against the library-trained checkpoint's 85.95\%, and R1's stylistic target is 85\%.
+        Installing it would therefore convert R1's writer-identification half from met to not met and would lose one of the eleven pages when lines are pooled.
+        The decision was to measure with the better instrument and to report the weaker one as evidence about the training route, which is what it is evidence of; the alternative, installing a checkpoint that is 5.41 points worse at the job it has to do in order to make a sentence about libraries simpler, would be choosing the claim over the measurement.
+
+\begin{table}[h]
+\centering
+\fontsize{10}{12}\selectfont
+\begin{tabular}{|l|r|r|r|}
+\hline
+\textbf{Population} & \textbf{Library route} & \textbf{First principles} & \textbf{Difference} \\
+\hline
+Held-out real lines (R2), per line   & 98.08\,\% & 95.51\,\% & $-2.56$ \\
+\quad 95\,\% Wilson interval          & [94.5, 99.3] & [91.0, 97.8] & --- \\
+\quad writers named when pooled       & 11/11 & 11/11 & --- \\
+\hline
+Lines the robot drew (R1), per line  & 85.95\,\% & 80.54\,\% & $-5.41$ \\
+\quad pages named when pooled         & 11/11 & 10/11 & $-1$ \\
+\hline
+\end{tabular}
+\caption{The same writer classifier trained by the two implementation routes,
+measured on 156 held-out lines of real handwriting and 185 lines the robot
+drew. The from-first-principles checkpoint meets the 95\,\% target of R2 and
+falls below the 85\,\% stylistic target of R1, which is why the library-trained
+checkpoint was used as the measuring instrument.}
+\label{tab:dis-routes}
+\end{table}
 
         \textbf{Line-level reading instead of character separation.}
         The design replaced the proposal's character separation by separation into lines and a sequence recogniser.
@@ -126,16 +211,20 @@ Dai \emph{et al.}~\cite[Tab.~3]{dai2024} & Diffusion-based synthesis, one refere
         In hindsight it was poor for verification, because it removed the independence of the evaluation, and for time, because each of the $N$ candidates costs a rendering and two network passes.
         The qualification protocols address the first, and a lower $N$ or a cheaper first-stage filter the second.
 
-        \textbf{Pure Python for the segmentation.}
+        \textbf{Pure Python for the segmentation, and the cheap fix that does not work.}
         The proposal required that the processing run on the embedded platform and be written without library functions for the algorithm itself.
-        Writing the image processing in Python made the design transparent and correct, but the inner loops of the line grouping and labelling are too slow.
-        The C routines reduce the labelling and the box sums by 84\% to 88\%, but the end-to-end effect (25\% to 32\%) is small because the grouping dominates.
-        By Amdahl's law, if a fraction $p$ of the time is accelerated by a factor $s$, the total speed-up is $1/((1-p)+p/s)$, so with $p=0.30$ (the share outside the grouping, taking the grouping as 70\%) it cannot exceed $3.3$ even if the accelerated part took no time.
-        The acceleration was not deployed, because the benefit was not decisive.
+        Writing the image processing in Python made the design transparent and correct, and it is the reason the per-page image stages cost 16.1 to 16.8~s on the board against the 2~s the specification allows for everything that does not scale with the character count.
+        The obvious remedy is to work at lower resolution, since the filters and the connected-component labelling scale with the pixel count, and halving each axis should be a factor of four.
+        It was measured rather than assumed, and it does not work.
+        Halving the linear resolution did reduce the image stages by a factor of 3.4 to 7.9, but the segmenter found fewer lines on every page tested, the text read back from the reduced page agreed with the full-resolution reading on only 34 to 45\% of its characters, and on one page the segmenter found no line centres at all and raised an exception instead of returning an empty result.
+        A speed-up that loses lines is not a speed-up, so this route is closed: the line grouping has to be redesigned rather than fed a smaller picture.
+        By Amdahl's law, if a fraction $p$ of the time is accelerated by a factor $s$, the total speed-up is $1/((1-p)+p/s)$, so accelerating anything other than the grouping cannot exceed about $3.3$ even if the accelerated part became free.
 
         \textbf{Open-loop gantry with step counting.}
-        Using the stepper motors without encoders is a standard, low-cost choice; its accuracy depends on missed steps, and no sensor reveals them.
-        Running the driver without acceleration ramps (the generator models an acceleration of 400~mm/s$^2$, the driver does not execute it) makes the real motion differ from the model and a lost step more likely at the start of a stroke at higher feed.
+        Using the stepper motors without encoders is a standard, low-cost choice, and the budget made it the only choice; its accuracy depends on missed steps, and no sensor reveals them.
+        The measurement vindicates it: the dominant residual on the drawn geometry is a $0.706^{\circ}$ non-perpendicularity of the two axes, which is a frame alignment error and not a stepping error, and the two axis scales after calibration are $+0.250\%$ and $+0.000\%$.
+        In other words the open-loop drive is not what limits R5, and the margin available would not be improved by encoders until the frame is squared.
+        Running the driver without acceleration ramps, however, remains a real defect: the generator models an acceleration of 400~mm/s$^2$ that the driver does not execute, so the real motion differs from the model and a lost step is more likely at the start of a stroke at higher feed.
 
 
     \subsubsection{Unsolved problems}
@@ -144,51 +233,68 @@ Dai \emph{et al.}~\cite[Tab.~3]{dai2024} & Diffusion-based synthesis, one refere
         The following problems were not solved.
 
         \begin{enumerate}
-          \item \textbf{X-axis direction fault.} During bring-up the X-axis calibration reached the first end-stop, but the direction pin (physical pin 7) was not observed to change level when the direction was reversed.
-          The fault was unresolved when the project closed, and no cause is claimed, because the evidence does not support one.
-          Qualification tests 3 (writing time), 5 and 6 (physical demonstration) depend on its resolution.
-          \item \textbf{No measurements on the target hardware.} No timing on the ODROID N2+ and no physical accuracy measurement exists; the figures for R3 and R4 are from a laptop.
-          \item \textbf{The undertaking to process on the embedded platform was not demonstrated.} The approved proposal states, as a ticked condition, that ``all processing will be done on an embedded platform, and not on a PC platform''.
-          The deployed programs do run on the ODROID N2+, and the inference code needs nothing the board cannot provide, but every measurement in Section~\ref{sec:results} was taken on a laptop, and training was done off the board entirely.
-          The undertaking is therefore met in the design and unproven in the evidence: the most significant gap between what the proposal promised and what this report can show, and a measurement gap rather than a design gap, since the same programs need only be run on the board and timed.
-          \item \textbf{R4 not met, and the shortfall is entirely in the segmentation.} The segmentation time exceeds the two seconds the specification allows for capture and conditioning by more than an order of magnitude. The recognition time does not: at 8.86~ms per character it sits a factor of about 2.8 \emph{inside} the 25~ms allowance. The requirement fails on the conditioning stage alone.
-          \item \textbf{Optimistic validation of the personal writers.} A line-level split inside pages was used, and the checkpoint was selected on the reporting data; no separate test set exists.
-          \item \textbf{Circular synthesis evaluation.} No independent judge or human panel was used.
-          \item \textbf{Architecture sweep.} A sweep over widths, depths and learning rates was programmed but no result was kept, so the network layers are those of the published design.
-          \item \textbf{Implementation issues of the writing path.} (i) The stroke ordering sorts text rows by ascending $Y$, and with $Y$ upward this writes the bottom line first, while the documentation says reading order. (ii) The acceleration the generator models is not executed by the driver. (iii) The generator's work area (200~mm) is larger than the driver's travel between its limits (194~mm in X). (iv) The generator issues the fast feed once and the driver has a single modal feed register, so pen-up travel runs at the pen-down feed (900~mm/min instead of 2400~mm/min), lengthening the job.
-          \item \textbf{Missing information.} The hardware documentation (CAD files, photographs, wiring diagram, camera data) and the inconsistent values of the number of tries (14 in the tuning notes, 20 as the server default, 30 mentioned in the interface) are \mustdo{reconcile the values and supply the hardware documentation}.
-          \item \textbf{Training mode.} The proposal planned training on the single-board computer; training is done offline, and the interface has no training function.
-          \item \textbf{Display of the classification time} (specified in R4) is not implemented.
-          \item \textbf{The CTC loss is not safe against an empty transcription.} The gradient check of Section~\ref{sec:textrec-numpynn} found that for a label sequence of length zero the recursion builds two of its shifted arrays at the wrong length and raises a shape error instead of returning a loss.
-          Every sequence of length one or more passes, including the repeated-character case that exercises the forbidden skip transition, so the derivative is correct and this is an indexing fault at the boundary.
-          It was left unfixed because no line in the data set has an empty transcription, but a future data set would expose it; the same check showed that samples for which no alignment exists must be filtered out before training rather than left to the loss to reject.
+          \item \textbf{The configuration measured is not the configuration deployed.} This is the most consequential open item, because it affects how every figure in Section~\ref{sec:results} should be read.
+          The accuracy measurements were taken with the reader checkpoint \texttt{paper\_cnn\_bilstm\_ctc\_scratch\_best.npz} and the writer classifier \texttt{author\_shape\_11\_pw170\_weights.npz}, the latter applied with stroke normalisation at 0.17 x-heights because that is what it was trained on.
+          The server as it stands selects a different reader, because \texttt{paper\_cnn\_bilstm\_ctc\_joint\_best.npz} stands first in its candidate list, and it sets \texttt{PAGE\_NAMER\_STROKE\_NORM = False} while using the stroke-normalised classifier, so it feeds un-normalised crops to a network trained on normalised ones.
+          The deployed reader was separately measured on the same held-out material and reads 94.06\% against 94.39\%, so the reader substitution costs 0.33 points; the classifier mismatch is a train-and-serve disagreement whose cost was not measured and may be larger.
+          Neither is a design fault and both are one-line configuration changes, but until they are made the report's accuracy figures describe a configuration the server does not currently load.
+          \item \textbf{Training data that the corrected labels have not reached.} Seven pages of one database writer are currently skipped when the data set is built, because the cached crops were written before the transcripts were corrected and the two now disagree on the line count.
+          Those pages are therefore absent from training although their labels are now right, and the caches must be rebuilt before the next training run so that the corrected material is actually used.
+          \item \textbf{R4 not met, and the shortfall is in both halves, not only the segmentation.}
+          An earlier reading of this attributed the whole deficit to segmentation. The on-target measurement contradicts it: on the ODROID~N2+ the two network stages account for 67.6\% of the classify time and the four image stages for 32.4\%.
+          Because the allowance has only one term that grows with the page, the two halves must be judged separately, and both fail.
+          The networks cost 0.0394 to 0.0602~s per character against the 0.025~s per character term, so they exceed their term by a factor of 1.6 to 2.4 \emph{at every page length}; the image stages cost 16.1 to 16.8~s against the fixed 2~s term, a factor of 8.1 to 8.4.
+          \item \textbf{Two latent faults in the segmenter.} Both were found by driving it outside its normal operating point and neither is reached by the deployed pipeline today.
+          A page that yields no line centres raises an \texttt{IndexError} in the seam-cut construction instead of returning an empty result, which is what the half-resolution experiment struck.
+          Separately, two pages of one writer each lose a written line because the band in question is assigned no ink at all by the ownership step, so the crop builder has nothing to cut; the transcripts for those pages are correct, and the fault is in ownership rather than in the ink threshold or the labels.
+          \item \textbf{Optimistic validation of the photographed writers.} Their held-out material is a seeded 15\% of lines drawn from within their own pages rather than whole pages set aside, so a held-out line can share a page with training lines.
+          The public-corpus measurement does not have this weakness and agrees with the photographed figure to 0.03 points, which is reassuring but is not the same as fixing the split.
+          \item \textbf{Circular synthesis evaluation.} No independent judge or human panel was used, so the stylistic half of R1 rests on a measure the search optimises.
+          \item \textbf{Architecture sweep.} A sweep over widths, depths and learning rates was programmed but no result was kept, so the network layers are those of the published design rather than a measured optimum.
+          \item \textbf{Four implementation faults in the writing path}, none of which prevents a page being drawn correctly but each of which costs time or contradicts the documentation: the stroke ordering sorts rows by ascending $Y$ and so writes the bottom line first; the acceleration the generator models is not executed by the driver; the generator's work area of 200~mm exceeds the driver's measured travel of 194~mm in X; and because the driver has a single modal feed register, pen-up travel runs at the pen-down feed, lengthening every job.
+          \item \textbf{Missing documentation and one inconsistent constant.} The CAD files, photographs, wiring diagram and camera data are outstanding, as is the number of candidate tries, which appears as 14, 20 and 30 in three places. \mustdo{reconcile the number of tries and supply the hardware documentation}
+          \item \textbf{Training mode.} The proposal planned training on the single-board computer; training is done offline and the interface has no training function, because the board the budget allowed can run inference but cannot train these networks in a usable time.
+          \item \textbf{The CTC loss is not safe against an empty transcription.} The gradient check found that a label sequence of length zero builds two shifted arrays at the wrong length and raises a shape error instead of returning a loss; every length of one or more passes, so the derivative is correct and this is a boundary indexing fault. It was left unfixed because no line in the data has an empty transcription, and a future data set would expose it.
         \end{enumerate}
 
-        \textbf{What must change to meet R4.}
-        Three measures are required together.
-        First, the line grouping (about 70\% of the segmentation time) must be redesigned, for example by replacing the exhaustive search over component pairs by neighbourhood queries on a spatial index, if the profile on the ODROID N2+ confirms that the search is the quadratic part; the target is a reduction by at least a factor of 20, because $32~\mathrm{s}$ (70\% of 46~s) must fall well below 2~s.
-        Second, the image must be reduced in resolution before segmentation: halving both dimensions of the $2400\times1800$ photograph reduces the pixel count by 4, and, as the filters and labelling scale with the pixel count, the share outside the grouping (about 14~s) should fall to about 3.5~s, and to about 0.4 to 0.6~s with the C routines, which are 84\% to 88\% faster (a factor of 6 to 8.3).
-        These are projections from the measured ratios, not measurements, and they ignore that the ODROID N2+ is slower than the laptop.
-        Third, the recogniser must become about 3 times cheaper per character, for example by a smaller network, by quantising the weights to 8 bit integers or by reducing the output sequence length; the cost per character is roughly proportional to the multiply-accumulate operations per line, and each measure must be validated against the accuracy loss, since R2 is already under its target.
+        \textbf{What must change to meet R4, and what was measured rather than assumed.}
+        Because the requirement fails on both halves, two independent changes are needed, and both were tested on the development computer so that the sizes quoted are measured factors and not estimates.
+        The two candidate changes were applied to the same 14 pages, with the same weights, and the factor each produced was then applied to the stage times actually measured on the board.
+
+        The first change is to execute the network forward pass differently.
+        Loading the same weights into equivalent library modules and running every crop of a page in one batched forward pass, instead of the hand-written pass one crop at a time, is faster by a measured factor of 2.76 over 14 pages, with the text read out identical.
+        Applied to the two on-target runs, that takes the network cost from 0.0602 to 0.0218~s per character and from 0.0394 to 0.0143~s per character, which is 0.9 and 0.6 times the $0.025\,$s per character term.
+        \emph{The network half of R4 is therefore met by this change alone}, at both page lengths measured, and the change does not require a framework: batching the existing from-first-principles forward pass per page rather than per crop is the same arithmetic on a larger array.
+
+        The second change must reduce the per-page image cost by about a factor of 8, from 16.1 to 16.8~s to under the fixed 2~s term, and the cheap way of doing it does not work.
+        Running the image stages at half linear resolution reduced them by a measured factor of 4.37, which is most of what is needed, but the segmenter found 182 lines where it had found 247, not one of the twelve pages kept its line count, the text read back from the reduced page agreed with the full-resolution reading on 33.8\% of characters on average and 14.1\% at worst, and on two of the fourteen pages the segmenter failed outright.
+        Decimation is therefore not an available remedy at any speed, and the reduction has to come from redesigning the line grouping, which is the part of the segmenter whose cost is not proportional to the pixel count.
+
+        Taken together the two changes bring the projected totals to 14.6~s against an allowance of 14.50~s on the 500-character page and 17.9~s against 26.55~s on the 982-character page, that is, one just missed and one comfortably met.
+        The honest conclusion is therefore not that R4 is unreachable but that it is reachable in two steps, of which the first is available today and measured, and the second requires work on the segmenter that this project did not do.
+        It should be read alongside the economic constraint: a faster processing board would have reduced both terms at once without any of this work, and the budget did not allow one.
 
         \textbf{What must change for the other requirements.}
-        For R2 (text): more personal training pages, an evaluation on held-out pages, and a language-model or lexicon decoder.
-        For R1: an independent evaluation and the human panel, and re-tuning with an independent judge if the independent figure is lower.
-        For R3: measurement on the ODROID N2+, correction of the feed register, execution of acceleration or a lower pen dwell, and a lower $N$.
-        For R5: resolution of the direction-pin fault, completion of the calibration and execution of qualification test~5.
+        For R2 on text, three things in order of expected effect: rebuild the training caches so that the corrected transcripts are actually used, which is a defect fix rather than an improvement; close the train-and-serve gap on the writer classifier and install the reader the measurements were taken with; and add a decoder that uses word context.
+        The last would most likely close the 0.61-point gap on its own, given that character accuracy is 94.39\% while word accuracy is 73.47\%, but it must be implemented as a soft preference rather than a lexicon constraint, so that the arbitrary strings R1 requires remain writable.
+        For R1, the character half needs the synthesiser to model letter context rather than compose isolated glyphs, which is the one change that would address the cursive writers where the whole 36-point spread lives; the style half needs a judge that took no part in the best-of-$N$ search, or a human panel, before the 85\% correlation can be claimed as a correlation.
+        For R3, nothing is required to meet the specification, which is already met on the target platform; what is worth doing is measuring a block shorter than 43 characters to confirm where the margin actually closes, and correcting the modal feed register so that pen-up travel runs at the fast feed it was meant to.
+        For R5, draw and measure at least five squares and five triangles with the diagonals, which would turn a compliance statement into a repeatability figure, and square the frame to remove the $0.706^{\circ}$ error the triangle identified.
+        For R6, nothing; the requirement is met with one style in hand, and the margin would be restored by returning the two withdrawn writers once their pages are re-labelled.
 
     \subsubsection{Strong points of the design}
     \label{sec:dis-strong}
 
         Each strong point follows from a design decision.
         \begin{itemize}
-          \item Reading whole lines removes the dependence on a character separation that cannot work for connected handwriting, and the recogniser reached 91.82\% on an independent general test set.
-          \item The conditioning stage (flat-field correction, local thresholding, skew correction) allows a photograph with uneven lighting to be used, and the live check on a personal photograph read the correct writer at 98.6\% confidence with 28 lines detected and an accurate transcription.
-          \item Writers are compact profile files, so a new writer is added by a file, and thirteen writers are stored permanently, satisfying the storage half of R6.
-          \item The two judges in the search (text and writer) give a measurable improvement over a single sample, and the shape classifier solves the problem that an ink-based classifier cannot judge a plotter's constant line width (about 20\% on synthesised output).
-          \item The numerical resolution of the gantry (12.5~$\mu$m) is 40 times finer than the tolerance of R5, and the absolute step bookkeeping prevents accumulating rounding errors.
-          \item Safety in software: end-stop confirmation (three consecutive samples), software limits and automatic retraction after a trip.
-          \item The algorithms are implemented from first principles and documented well enough to be analysed, and the known limitations (circularity, optimistic splits) are stated.
+          \item \textbf{The recogniser stands up on a public benchmark.} Reading whole lines removes the dependence on a character separation that cannot work for connected handwriting, and on 976 held-out crops of the public IAM corpus the from-first-principles reader reached 94.39\% character accuracy: 12.6 points above the published figure of Graves \emph{et al.} and 2.0 points below K{\i}z{\i}l{\i}rmak \emph{et al.} This is the one result in the report that can be compared with the literature on the same material, and it holds.
+          \item \textbf{The conditioning generalises, and that is measured rather than asserted.} The flat-field correction, local thresholding and skew correction were designed so that an ordinary indoor photograph can be used. The evidence that they work is that the reader scores 94.39\% on crops cut by the corpus's distributor and 94.42\% on crops this project photographed with a webcam and cut with its own segmenter, a difference of 0.03 points. Two independent paths to the same figure is a stronger statement than either figure alone.
+          \item \textbf{The writer classifier was chosen for the harder job, not the better score.} An ink-based classifier scored higher on photographs and was rejected because it cannot judge a constant-width plotter's output. The stroke-normalised classifier reaches 98.08\% per line and names all 11 writers correctly on held-out material, and it also works on the machine's own drawings, which is what makes the R1 measurement possible at all.
+          \item \textbf{The gantry error is diagnosed, not just bounded.} The mean absolute error over a 100~mm square is 0.175~mm against a 0.5~mm limit, and the triangle identifies the dominant residual as a $0.706^{\circ}$ squareness error with residuals of 0.02~mm, at the caliper's resolution. The design therefore yields an actionable cause rather than a pass mark, and the absolute step bookkeeping prevents rounding from accumulating over a page.
+          \item \textbf{Errors announce themselves.} Over the held-out lines the median confidence on a correct naming is 99.9\% and the mean on an incorrect one 55.8\%, so the classifier's own output separates its mistakes from its successes well enough to be used as a warning.
+          \item \textbf{Provenance was treated as part of the measurement.} The transcript lookup that underpins qualification test~2 found that part of the material an earlier draft had reported as held out was in fact inside the reader's training corpus, and that several transcripts broke their lines in the wrong places. Correcting the data and discarding the contaminated material raised the reported character accuracy from 91.02\% to 94.39\% without touching a single weight. Finding that a figure was wrong in the favourable direction is the discipline working.
+          \item \textbf{Safety in software:} end-stop confirmation over three consecutive samples, software limits, and automatic retraction after a trip.
+          \item The algorithms are implemented from first principles and documented well enough to be analysed, and the known limitations are stated rather than left for a reader to find.
         \end{itemize}
 
     \subsubsection{Expected failure conditions}
@@ -199,7 +305,10 @@ Dai \emph{et al.}~\cite[Tab.~3]{dai2024} & Diffusion-based synthesis, one refere
           \item \textbf{Lighting.} Illuminance below 400~lux or strongly directional light with shadows violates FC1; the thresholding then merges ink with shadows or loses faint strokes, and recognition accuracy falls.
           \item \textbf{Page skew and perspective.} Large skew angles or a page that is not flat exceed the range of the skew correction.
           \item \textbf{Non-text regions.} Diagrams, tables and printed text can be segmented as text lines; the text versus non-text scoring reduces but does not exclude this, and the recogniser then produces meaningless characters.
-          \item \textbf{Unseen writers.} The writer classifier is a thirteen-class closed-set classifier, so a writer who is not among the thirteen is assigned to one of them, because the softmax cannot express ``none of the above'': the output is wrong without a warning.
+          \item \textbf{Unseen writers.} The writer classifier is an eleven-class closed-set classifier, so a writer who is not among the eleven is assigned to one of them, because the softmax cannot express ``none of the above''.
+          The confidence output mitigates this rather than solving it: over the held-out lines a correct naming carries a median confidence of 99.9\% while the three errors carried 39.5, 44.2 and 83.8\%, so a threshold would flag most such cases, but no threshold is applied and the system currently answers an unseen writer with a name and no warning.
+          \item \textbf{Short reproductions.} R3 is met from 43 characters upward, and the margin closes as the block shortens because the best-of-$N$ search is paid once per block while the allowance is strictly proportional to length. From the measured synthesis cost and drawing rate the allowance is exhausted at about 35 characters, so a request of a word or two is expected to exceed the 4~s per character specification. This has not been measured, because no block that short was drawn.
+          \item \textbf{The last line of a page is the weakest case for naming the writer.} All three naming errors on the held-out material fell on the last line of their page, which under a uniform hypothesis has probability $3.5\times10^{-4}$. A final line is usually a part line carrying a few words, so it offers the least ink to judge; the page-level decision was unaffected because pooling by ink weights such a line down, but a single short line submitted on its own is the input most likely to be misattributed.
           \item \textbf{Styles outside the glyph library.} A writer whose letter shapes differ greatly from the stored paths (unusual letters, capitals, digits or symbols that were scarce in the training pages) is reproduced with the nearest stored shape; characters never harvested cannot be written in that style.
           \item \textbf{Text with accents, mathematical notation or rare symbols}, which occur in the personal pages, are outside the benchmark vocabulary.
           \item \textbf{Motor stalls and lost steps.} The open-loop gantry has no feedback, so a stall shifts every later mark without any signal.
@@ -207,7 +316,11 @@ Dai \emph{et al.}~\cite[Tab.~3]{dai2024} & Diffusion-based synthesis, one refere
           \item \textbf{Long sentences.} The synthesis time grows with the number of characters and tries, so a long text at a high quality setting would take minutes on the board and may time out the web request.
           \item \textbf{Network failure} between the browser and the server prevents control of the system; a running job continues on the board.
         \end{itemize}
-        The system does not fail gracefully in all cases: the classifier returns a confident answer for an unseen writer, and the gantry cannot detect lost steps.
+        The system does not fail gracefully in all cases, and the two kinds of failure are not equally fixable.
+        The classifier returns an answer for an unseen writer without any warning, but it does carry the information needed to warn: its confidence separates its own errors from its successes on the held-out material, so a threshold would convert a silent wrong answer into a refusal.
+        That is an afternoon's work and was not done.
+        The gantry, by contrast, cannot detect lost steps at all, because there is no encoder and the budget did not allow one; a stall shifts every later mark on the page with no signal of any kind, and no amount of software can recover it.
+        The first failure mode is therefore a missing feature and the second is a consequence of the design.
 
 \subsection{Considerations in the design} % REQUIRED HEADING
 \label{sec:dis-considerations}
@@ -217,21 +330,25 @@ This subsection addresses the ergonomics, safety, environmental, social, legal a
     \subsubsection{Ergonomics}
 
         The user works through a web interface of four pages (Read, Write, Model and Style) in a browser on any laptop on the network, so nothing is installed.
-        The Read page captures the page with a live preview and shows the recognised text, the writer and the confidence; the Write page keeps the writing grid locked until the gantry is calibrated and shows a G-code preview before sending.
-        The shortcomings are that the live progress of a running job is not displayed, the classification time is not shown, and the interface has no training function.
+        That the interface is browser-based is not only a convenience: the processing board has no HDMI output, so it has no local display at all, and a networked interface was the only way to operate the machine.
+        What began as a constraint turned out to be the better ergonomic choice, because the operator works from a full keyboard and screen beside the gantry rather than from a console attached to it.
+        The Read page captures the page with a live preview and shows the recognised text, the writer, the confidence and the measured time against the specification's allowance; the Write page keeps the writing grid locked until the gantry is calibrated and shows a G-code preview before sending.
+        The shortcomings are that the live progress of a running job is not displayed and the interface has no training function, the latter because the board cannot train these networks in a usable time.
         The rig is set up by hand, with the page, the pen and the paper placed by hand; its documentation is incomplete.
 
     \subsubsection{Health and safety}
 
-        The electronics operate at low voltage (a single-board computer, stepper-driver modules and small motors), so the risk of electric shock is low; \mustdo{supply voltage and the mains insulation of the power supply}.
+        The electronics operate at low voltage: a single-board computer, stepper-driver modules and small motors, with the driver supply run at 24~V, so the risk of electric shock is low. \mustdo{the mains insulation rating of the power supply, which is a property of the bought unit and was not recorded.}
         The mechanical hazards are the moving carriage, belts and pulleys, which are pinch points while the gantry moves; the pen tip is not hazardous at the writing force.
-        The protective measures are the end-stop switches with confirmation, the software limits, the automatic retraction and calibration at a low speed (7.8~mm/s).
-        There is no hardware emergency stop that removes the motor power, and the server has no abort function for a running job; a job can be stopped only by ending the program or removing the power, so fitting a mains-independent emergency stop is recommended for use by others.
+        The protective measures are the end-stop switches with confirmation over three consecutive samples, the software limits, the automatic retraction and calibration at a low speed (7.8~mm/s).
+        A running job can also be stopped from the interface: the server exposes a stop endpoint, the motion loop tests an abort flag between steps, and the recorded test log shows a job being stopped, the pen lifted and the carriage parked at the corner in response.
+        What does not exist is a hardware emergency stop that removes motor power independently of the software, so every protective measure depends on the program continuing to run; fitting a mains-independent emergency stop is recommended before the machine is used by anyone other than its designer.
         Users must keep their hands away from the carriage while a job runs.
 
     \subsubsection{Environmental impact}
 
         The ODROID N2+ is a low-power board and the stepper motors draw power only while the gantry works, so the energy use is small beside a desktop computer.
+        The board was also obtained second hand rather than bought new, which was a budget decision before it was an environmental one but has the same effect: the most complex electronic component in the system is a reused one, and the embodied manufacturing cost of a new single-board computer was avoided entirely.
         The system uses paper; test pages and failed jobs add waste, limited by the preview before writing and by the option to write on used paper.
         The mechanical parts printed in plastic or bought as standard parts are \mustdo{which parts were 3D-printed and with which material}; they can be reused, and plastic and electronic waste must go to a recycling point, not into domestic waste.
         The pen ink is a small consumable, no hazardous material beyond the electronics is used, and the only emissions are the motor noise and the pulses of the drive.

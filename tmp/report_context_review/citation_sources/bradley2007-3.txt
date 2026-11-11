@@ -1,0 +1,34 @@
+Figure 2: The integral image. Left: A simple input of image values. Center: The computed integral image. Right:
+Using the integral image to calculate the sum over rectangle D.
+3 The Technique
+Our adaptive thresholding technique is a simple extension of Wellner’s method [Wellner 1993]. The main idea
+in Wellner’s algorithm is that each pixel is compared to an average of the surrounding pixels. Speciﬁcally, an
+approximate moving average of the last s pixels seen is calculated while traversing the image. If the value of the
+current pixel is t percent lower than the average then it is set to black, otherwise it is set to white. This method works
+because comparing a pixel to the average of nearby pixels will preserve hard contrast lines and ignore soft gradient
+changes. The advantage of this method is that only a single pass through the image is required. Wellner uses 1/8th
+of the image width for the value of s and 15 for the value of t. However, a problem with this method is that it is
+dependent on the scanning order of the pixels. In addition, the moving average is not a good representation of the
+surrounding pixels at each step because the neighbourhood samples are not evenly distributed in all directions. By
+using the integral image (and sacriﬁcing one additional iteration through the image), we present a solution that does
+not suffer from these problems. Our technique is clean, straightforward, easy to code, and produces the same output
+independently of how the image is processed. Instead of computing a running average of the last s pixels seen, we
+compute the average of an s x s window of pixels centered around each pixel. This is a better average for comparison
+since it considers neighbouring pixels on all sides. The average computation is accomplished in linear time by using
+the integral image. We calculate the integral image in the ﬁrst pass through the input image. In a second pass, we
+compute the s x s average using the integral image for each pixel in constant time and then perform the comparison.
+If the value of the current pixel is t percent less than this average then it is set to black, otherwise it is set to white.
+The following pseudocode demonstrates our technique for input image in, output binary image out, image width w
+and image height h.
+procedure AdaptiveT hreshold (in,out,w,h)
+1: for i = 0 to w do
+2: sum←0
+3: for j = 0 to h do
+4: sum←sum + in[i, j]
+5: if i = 0 then
+6: intImg[i, j]←sum
+7: else
+8: intImg[i, j]←intImg[i−1, j] +sum
+9: end if
+10: end for
+11: end for

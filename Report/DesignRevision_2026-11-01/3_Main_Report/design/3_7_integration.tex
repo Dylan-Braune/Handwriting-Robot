@@ -1,0 +1,54 @@
+\subsection{System integration and embedded operation}
+\label{sec:des-integration}
+The final integration connects the representations described above without moving the handwriting algorithms into the user interface. The browser supplies an image or a writing request and displays the returned information. The server loads the models and profiles, invokes the processing modules and communicates with the gantry. The interface is therefore an operating tool for the design rather than the source of its classification or synthesis calculations.
+
+\subsubsection{Classification and reproduction workflows}
+For classification, a captured or uploaded image enters a common processing path. The page is placed on its line axis, separated into crops, and read in the selected orientation. Each valid crop is then classified by writer. The page identity combines those line predictions, instead of requiring one arbitrarily chosen line to represent the entire page.
+
+The implementation weights line probabilities by the number of dark pixels in each crop. Equation~\ref{eq:des-pagevote} gives the combined distribution.
+\begin{equation}
+\overline p_k=\frac{\sum_i w_i p_{i,k}}{\sum_i w_i},\qquad
+\widehat k=\arg\max_k\overline p_k.
+\label{eq:des-pagevote}
+\end{equation}
+Here $p_{i,k}$ is the writer probability for line $i$, and $w_i$ is its count of pixels below grey value 128. If the weights sum to zero, the implementation uses equal weights. Equation~\ref{eq:des-pagevote} gives longer ink-bearing lines more influence, but it is a weighted average rather than a calibrated probabilistic proof. A dark artefact can still receive excessive weight, which is why crop rejection belongs before aggregation.
+
+The returned page probability and line agreement describe different properties. The former is the largest value of the pooled distribution; the latter reports how many lines individually support the selected writer. Keeping the per-line information makes an otherwise plausible page result inspectable. Accuracy requires a known reference writer or transcript and is not inferred from confidence alone.
+
+For reproduction, the selected writer profile and digital text determine a generated job. The server constructs a trajectory, preview and G-code file and stores the request settings with the job. Drawing is a separate action that requires a connected and calibrated gantry. This separation lets the trajectory be inspected before physical execution and preserves the relationship between a saved file and the text, writer, feed and pen settings that created it.
+
+Table~\ref{tab:des-contracts} summarises the principal interfaces. A transcript becomes required only when it supplies supervision or constrains extraction; an ordinary classification request does not require the unknown text to be supplied.
+\begin{table}[!htbp]\centering\small
+\begin{tabularx}{\linewidth}{|p{0.19\linewidth}|X|X|}
+\hline\textbf{Stage}&\textbf{Required input}&\textbf{Output and governing convention}\\\hline
+Segmentation&Photographed or saved page&Ordered raw crops and full-page boxes; image $y$ points down\\\hline
+Recognition&Line crops and model arrays&Text plus writer probabilities interpreted by the checkpoint mapping\\\hline
+Profile construction&Original lines, known transcripts and reader&Writer-keyed glyph paths in x-height units, baseline origin and $y$ up\\\hline
+Synthesis&Text, stored profile, scale and search settings&Millimetre trajectory, source tags and internal selection scores\\\hline
+File conversion&Trajectory and workspace configuration&Absolute millimetre G-code, pen events, placement and timing budget\\\hline
+Physical execution&G-code, connected GPIO and completed calibration&Step-counter updates and job outcome; physical accuracy requires observation\\\hline
+\end{tabularx}
+\caption{Representation boundaries that connect the three main processing stages to the gantry.}
+\label{tab:des-contracts}
+\end{table}
+
+\subsubsection{Embedded execution, interfaces and job control}
+The ODROID N2+ runs numerical inference and the motion interface. The stored arrays remove the need for the training framework during model execution. This reduces the deployment interface to model files, profiles and the runtime processing modules, although it does not make inference inexpensive. The line count, canvas size and synthesis trial count all affect how much work must be performed per request.
+
+Library usage is separated by function. NumPy provides array arithmetic for the implemented algorithms; the framework training route provides learned-network operations only in that route. Flask handles requests, image-file libraries handle image I/O, OpenCV is used in the camera interface, and \texttt{gpiod} exposes the GPIO lines. Keeping these supporting interfaces separate from the processing modules allows the same handwriting algorithms to operate on saved images and on camera inputs, while the motion module handles the hardware-specific connection.
+
+Gantry access is conditional on a successful connection and calibration. Position counters are updated with emitted pulses, and targets are limited by the calibrated area. The running-step loop checks an abort event, while the server exposes a stop request through a separate request thread. A stop can therefore be requested while a drawing request is executing. This is a software control path and must not be described as an independent hardware power-disconnect function.
+
+End-stop trips latch a fault and interrupt normal job execution. The driver also attempts to retract from triggered switches; a user stop has its own abort and recovery sequence. Raising the pen, reversing from a switch and parking are movements with preconditions, not instantaneous consequences of a stop request. Failed pen-state confirmation remains significant because subsequent travel can mark the page. The implemented warning and recovery behaviour should be verified against the actual mechanism rather than assuming that every requested lift succeeds.
+
+The job therefore has distinguishable outcomes: generation completed, execution refused, execution completed, or execution interrupted/failed. An existing preview establishes only the first. A calibration flag establishes the software's current coordinate reference, not continuing physical position accuracy after missed steps. These distinctions also determine what information must be preserved in the job and timing records.
+
+\subsubsection{Integration verification and remaining constraints}
+Integration checks should establish the correctness of the interfaces: a saved camera image follows the same processing route as an upload, a profile's writer identifier matches the classifier mapping, a generated file stays within the machine bounds, and a stopped job is not reported as a completed drawing. Those checks are distinct from measuring the final reproduction accuracy or classification time against the proposal.
+
+An additional diagnostic route traces a supplied page directly: conditioning and line separation are followed by thinning, path tracing and the ordinary machine conversion. It bypasses the reader, glyph library and text synthesis. Comparing the resulting G-code geometry with a physical drawing can therefore help isolate motion and pen-control effects from synthesis effects. Comparing the drawing directly with the original photograph still includes errors from conditioning, thinning, filtering, scale and coordinate conversion; retracing is not an independent measurement of the gantry alone. This qualification matters because a static centreline reconstruction is already an approximation to the source ink.
+
+Per-stage timing makes it possible to identify where processing time is spent without attributing all delay to the network or all drawing overhead to acceleration. The stored job carries its generation stages into the later writing record, supporting a complete reproduction-time measurement. The formal R3 and R4 tests must state their start and end events and use the intended platform; laptop timings are useful development evidence but do not establish an ODROID timing requirement.
+
+The integration retains a clear boundary between requested operation, software belief and observed physical outcome. The server can report a generated file or emitted steps, but those facts alone do not prove that the nib followed every point. The qualification tests in Results therefore assess the integrated robot, while the component verification in this section provides the evidence needed to understand and diagnose that outcome.
+\FloatBarrier

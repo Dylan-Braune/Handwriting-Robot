@@ -1,0 +1,41 @@
+method is easy to implement for real-time performance on a live video stream. Though our technique is an extension
+to a previous method [Wellner 1993], we increase robustness to strong illumination changes. In addition, we present
+a clear and tidy solution without increasing the complexity of the implementation. Our technique is also similar to
+the thresholding method of White and Rohrer for optical character recognition [White and Rohrer 1983], however
+we present an implementation designed for real-time video. The motivation for this work is ﬁnding ﬁducials in
+augmented reality applications. Pintaric also presents an adaptive thresholding algorithm speciﬁcally for augmented
+reality markers [Pintaric 2003], however his method requires that a ﬁducial has been located in a previous frame in
+order for the technique to threshold correctly. Our algorithm makes no assumptions and is more general, suitable for
+use in any application. The source code is available online at the address listed at the end of this paper.
+2 Background
+2.1 Real-Time Adaptive Thresholding
+In this paper we focus on adaptively thresholding images from a live video stream. In order to maintain real-time
+performance, the thresholding algorithm must be limited to a small constant number of iterations through each
+image. Thresholding is often a sub-task that makes up part of a larger process. For instance in augmented reality,
+input images must be segmented to locate known markers in the scene that are used to dynamically establish the
+pose of the camera. A simple and fast adaptive thresholding technique is therefore an important tool.
+2.2 Integral Images
+An integral image (also known as a summed-area table) is a tool that can be used whenever we have a function
+from pixels to real numbers f (x,y) (for instance, pixel intensity), and we wish to compute the sum of this function
+over a rectangular region of the image. Examples of where integral images have been applied include texture
+mapping [Crow 1984], face detection in images [Viola and Jones 2004], and stereo correspondence [V eksler 2003].
+Without an integral image, the sum can be computed in linear time per rectangle by calculating the value of the
+function for each pixel individually. However, if we need to compute the sum over multiple overlapping rectangular
+windows, we can use an integral image and achieve a constant number of operations per rectangle with only a linear
+amount of preprocessing.
+To compute the integral image, we store at each location, I(x,y), the sum of all f (x,y) terms to the left and above
+the pixel (x,y). This is accomplished in linear time using the following equation for each pixel (taking into account
+the border cases),
+I(x,y) = f (x,y) +I(x−1,y) +I(x,y−1)−I(x−1,y−1). (1)
+Figure 2 (left and center) illustrates the computation of an integral image. Once we have the integral image, the sum
+of the function for any rectangle with upper left corner (x1,y1), and lower right corner (x2,y2) can be computed in
+constant time using the following equation,
+x2
+∑
+x=x1
+y2
+∑
+y=y1
+f (x,y) = I(x2,y2)−I(x2,y1−1)−I(x1−1,y2) +I(x1−1,y1−1). (2)
+Figure 2 (right) illustrates that computing the sum of f (x,y) over the rectangle D using Equation 2 is equivalent to
+computing the sums over the rectangles (A+B+C+D)-(A+B)-(A+C)+A.

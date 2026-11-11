@@ -1,0 +1,3 @@
+from pathlib import Path
+p=Path('Report/IntegratedReport_2026-11-01/build_report.py');s=p.read_text();s=s.replace('import subprocess,sys','import subprocess,sys,os');s=s.replace("['bibtex','.build/full_report']","['bibtex','full_report']");s=s.replace('for cmd in commands:',"env=os.environ.copy()\nenv['BIBINPUTS']=str(base)+os.pathsep+env.get('BIBINPUTS','')\nfor cmd in commands:");s=s.replace('cwd=base,capture_output=True,text=True','cwd=out if cmd[0]==\'bibtex\' else base,env=env,capture_output=True,text=True,errors=\'replace\'');p.write_text(s,encoding='utf-8')
+p=Path('Report/IntegratedReport_2026-11-01/README.md');s=p.read_text().replace('MiKTeX (or TeX Live with the required packages)','MiKTeX');p.write_text(s,encoding='utf-8')

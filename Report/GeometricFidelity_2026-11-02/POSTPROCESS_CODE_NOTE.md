@@ -1,0 +1,1 @@
+After measurement, a path-only fallback was added so saved masks can be scored with the archived source/segment.py outside the full project. No metric, tolerance, mask, annotation or numerical result changed. Original measurement code hashes are retained in raw_results.json.

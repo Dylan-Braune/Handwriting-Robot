@@ -1,0 +1,54 @@
+\label{sec:discussion}
+\subsection{Critical evaluation of the design}
+\label{sec:dis-critical}
+\subsubsection{Interpretation of results}
+\label{sec:dis-interpretation}
+The system reproduces eleven stored styles, with 84.41\% physical character recovery and correct author identification on 86.41\% of lines. All fourteen page pools are identified correctly. Seven writers exceed 85\% character recovery, showing that performance depends on the selected style. Pooling provides more writer evidence than a short line, but does not correct unreadable letters.
+
+The geometric test gives 86.68\% agreement relative to the writers' own natural variation. Its 83 repeated words provide a separate physical-shape check, alongside classifier results. This ratio is not character accuracy or a correlation coefficient. The shorter-word subset and its 83.65\% to 89.65\% conditional interval limit a claim that all output meets the stylistic target. Recognition and direct shape measures remain complementary because recognition-based evaluation depends on its model~\cite[p.~2]{chen2022glyph}.
+
+Original-line recognition reaches 94.06\%, narrowly below 95\%, while author identification reaches 98.08\%. These are validation scores, since the partitions also support checkpoint selection. The results support the selected architectures without establishing performance on every unfamiliar page.
+
+All 25 completed drawing requests meet the speed requirement. Classification remains the main timing shortfall. Both ODROID requests and all thirteen laptop page means exceed their allowances. The laptop stage records show why faster networks alone cannot solve every case. Some pages already spend their complete allowance on image preparation.
+
+The measured batched-library benchmark reduces combined network time by a factor of 2.76. Applying that gain to unchanged laptop image times would bring L3, L4 and L5 within their limits. This demonstrates a practical route for some workloads, rather than a measured embedded pass. Output-preserving image optimisation and an ODROID rerun are still needed. Lowering resolution is unsuitable where it removes lines.
+
+All 70 dimensions are within 0.5 mm, with a maximum error of 0.49 mm. This supports the calibrated transmission, but the 0.01 mm minimum margin is small. Unrecorded caliper resolution prevents an uncertainty-qualified pass. Side lengths also do not establish absolute pen position or return accuracy.
+
+\subsubsection{Critical evaluation}
+\label{sec:dis-choices}
+Line-based CTC recognition avoids requiring correct character cuts before reading~\cite[pp.~2--3]{graves2006}. Its main dependency is correct line ownership. Clipping an ascender or including a neighbouring line affects the sequence supplied to the reader.
+
+The glyph library suits static samples and limited writer data~\cite[p.~4]{haines2016}. It gives direct control of geometry without requiring the recorded pen chronology used by trajectory generators~\cite[p.~18]{graves2013}. Its weakness is contextual shape. Cursive letters change with their neighbours, so combining isolated glyphs cannot recover every join. Contextual variants address this more directly than additional random trials.
+
+The numerical implementation makes the network calculations inspectable. Similar validation scores and operation checks support its implementation, while batching offers a way to reuse the arithmetic more efficiently. The shared gantry shaft similarly reduces independent alignment decisions. Open-loop control still cannot detect a missed step after calibration. Controlled acceleration, consistent pulse timing and a firmer holder are appropriate improvements. The approximately R4\,000 prototype cost excludes purchase of the borrowed ODROID, so a repeat build would need its replacement cost.
+
+\subsubsection{Unsolved problems}
+\label{sec:dis-unsolved}
+The priorities are faster classification with unchanged crops and predictions, better contextual glyphs for connected writers, and repeated coordinate and word-overlay measurements. Each change should be checked against the same inputs before a new integrated qualification.
+
+\subsubsection{Strong points of the design}
+\label{sec:dis-strengths}
+The project connects offline samples to physical output in eleven styles. Source crops, stored paths, G-code and drawings make the process inspectable. Classifiers, direct geometry and dimensional measurements provide different checks on the same system.
+
+\subsubsection{Expected failure conditions}
+\label{sec:dis-failures}
+Strongly connected writing, missing glyphs, touching lines and curved pages remain difficult. An unknown writer can receive a confident known label. Slipping couplers, changed belt tension or disturbed paper can also invalidate the calibrated relationship between commanded and actual motion.
+
+\subsection{Considerations in the design}
+\label{sec:dis-considerations}
+\subsubsection{Ergonomics}
+Capture, writer selection and preview reduce repeated setup. The operator must still secure the sheet, calibrate the axes and check pen clearance before execution. Clear job and interruption feedback is necessary.
+
+\subsubsection{Health and safety}
+Moving belts and carriages create pinch points, while drivers dissipate heat. Accessible motor-power isolation is needed alongside software aborts. The pen circuit would benefit from the inductive protection described in Design~\cite{rohmlowside2026}.
+
+\subsubsection{Environmental impact}
+The computer will be returned and motion components can be reused. Replaceable printed supports and previews reduce discarded parts and trial pages. Training and motor holding consume energy, but their environmental impact was not metered.
+
+\subsubsection{Social and legal impact}
+Personalised writing may assist correspondence, but can also imitate another person's handwriting. Use should be authorised and machine output identified. Samples and profiles require controlled access under the personal-information considerations discussed in the literature~\cite[pp.~8--9, 11]{popia2013}. IAM data remain subject to their dataset terms.
+
+\subsubsection{Ethics clearance}
+All five personal contributors supplied signed consent. An institutional clearance or exemption reference is not established by the supplied records and remains separate from participant consent.
+\FloatBarrier

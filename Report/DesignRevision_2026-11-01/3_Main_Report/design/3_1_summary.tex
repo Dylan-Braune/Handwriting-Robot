@@ -1,0 +1,25 @@
+\subsection{Design summary}
+\label{sec:des-summary}
+This section summarises the project design tasks and how they were implemented (see Table~\ref{tab:des-summary}). The tasks follow the deliverables and student design work in the approved Project Proposal. Completion refers to the implementation of a task; compliance with a numerical system specification is established separately by the qualification tests in the Results section.
+
+\begin{table}[!htbp]
+\centering\small
+\begin{tabularx}{\linewidth}{|>{\raggedright\arraybackslash}p{0.24\linewidth}|>{\raggedright\arraybackslash}X|>{\raggedright\arraybackslash}p{0.23\linewidth}|}
+\hline
+\textbf{Deliverable or task}&\textbf{Implementation}&\textbf{Completion of deliverable or task, and section in the report}\\\hline
+Page capture and image conditioning&Camera arrangement, illumination normalisation, ink extraction and orientation correction.&Completed; Sections~\ref{sec:des-camera} and~\ref{sec:des-seg}.\\\hline
+Separation of handwritten text&Line detection, curved separation boundaries and ink ownership produce recogniser inputs. Character localisation is performed later using known text.&Completed; Sections~\ref{sec:des-seg} and~\ref{sec:des-alignment}.\\\hline
+Text and writer classifiers&Convolutional feature extraction, sequence recognition and a separate writer-identification head.&Completed; Section~\ref{sec:des-class}.\\\hline
+Network training and verification&Numerical training implementation and a corresponding framework implementation; labelled public and personal handwriting data.&Completed; Sections~\ref{sec:des-training}--\ref{sec:des-netverify}.\\\hline
+Writer-specific trajectory maps and storage&Aligned glyph extraction, skeleton tracing, variant filtering and persistent style profiles.&Completed; Sections~\ref{sec:des-alignment}--\ref{sec:des-profile}.\\\hline
+Handwriting synthesis and G-code&Text layout, glyph assembly, candidate selection and conversion to machine coordinates.&Completed; Sections~\ref{sec:des-layout}--\ref{sec:des-gcode}.\\\hline
+Gantry, pen mechanism and motion control&Custom mechanical assembly, two-axis drive, pen switching, end stops and calibration.&Completed; Section~\ref{sec:des-hardware}.\\\hline
+Display and system communication&Web interface and server connect camera acquisition, classification, generation and physical writing.&Completed; Section~\ref{sec:des-integration}.\\\hline
+\end{tabularx}
+\caption{Design summary.}
+\label{tab:des-summary}
+\end{table}
+
+The final implementation separates text into lines rather than requiring isolated letters before recognition. This allows connected handwriting to be read without committing to uncertain character boundaries. Character positions are recovered with known transcripts when constructing the glyph library. The text reader and writer classifier also use separate output heads because identifying a sequence of characters and identifying the writer require different treatment of position within a line. These choices retain the proposal's intended functions while changing how those functions are implemented.
+\designgap{Confirm the completion entries against the final submitted deliverables, and identify the computer used for training and profile construction. The proposal's embedded-processing requirement must remain distinguishable from the actual training arrangement.}
+\FloatBarrier

@@ -1,0 +1,156 @@
+
+=== PDF PAGE 1 ===
+An algorithm  is  given for computer  control of a digital  plotter. 
+The  algorithm  may be programmed  without  multiplication or di- 
+vision  instructions  and  is  eficient  with  respect  to  speed of execution 
+and  memory  utilization. 
+Algorithm  for  computer  control  of  a digital plotter 
+by J. E. Bresenham 
+This  paper describes an algorithm  for  computer  control of a type 
+of digital  plotter  that  is now in common use with  digital com- 
+puters.' 
+The  plotter  under consideration is capable of executing,  in 
+response to  an  appropriate pulse, any one of the eight  linear 
+movements  shown  in  Figure 1. Thus,  the  plotter  can move linearly 
+from  a point on  a  mesh to  any  adjacent  point on the mesh. A 
+typical  mesh size is  1/100th of an inch. 
+The  data  to be  plotted  are expressed in an (x, y) rectangular 
+coordinate  system which has been scaled with  respect to  the  mesh; 
+i.e., the  data points lie on  mesh  points and consequently  have 
+integral  coordinates. 
+It is  assumed that  the  data include  a sufficient number of 
+appropriately selected points to produce  a  satisfactory  representa- 
+tion of the curve by connecting the  points  with line segments, as 
+illustrated  in  Figure 2. In Figure 3, the line segment  connecting 
+Figure 2 Curve  defined by linear segments joining data points 
+Figure 1 Plotter  movements 
+IBM SYSTEMS JOURNAL * VOL. 4 * NO. 1 . 1965 25 
+
+=== PDF PAGE 2 ===
+
+
+=== PDF PAGE 3 ===
+
+
+=== PDF PAGE 4 ===
+Applying the initial condition for the coordinates of Po, a, = 0 
+and 6, = 0, 
+V, = 2Ab - Aa. 
+If vi 2 0, 
+A A 
+bi = b,-, + 1, 
+so that 
+Vi+, = 2(ai-1 + 1)Ab - 2(6,-, + 1)Aa + 2Ab - Aa 
+= Vi + 2Ab - 2Aa. 
+If vi < 0, 
+bi = 6,-,, 
+so that 
+Vi+, = 2(ai-, + 1)Ab - 26,Aa + 2Ab - Aa 
+A 
+= Vi + 2Ab. 
+Thus (1) has been  shown to hold. 
+The second data point  has been assumed to be in  the first 
+other octant with respect to  the first data point. If the second data 
+octants point lies in  another  octant, an (a, b) rectangular coordinate 
+system is again chosen with origin at the first data point, but 
+with the axes oriented individually for each octant,  as shown 
+in Figure 5. Directions associated with the plotter movements 
+m, and m, are also indicated. This information is summarized 
+in  the left columns of Table 1 together  with the assignments 
+made to m, and m,. Thus,  the  variants of Equations (1) and (4) 
+have been specified for each of the eight octants,  and the reader 
+may verify that, in conjunction with (2) and (3) as previously 
+stated, they comprise a correct formulation for the general case. 
+To complete the algorithm, a computational procedure is 
+needed to determine the applicable octant for an arbitrary  pair 
+of data points so that the  appropriate forms of (2) and (4) can be 
+determined. The form of (2) depends on the sign of lAzl - IAyI. 
+Table 1 Determination of form of Equations 2 and 4 
+OCT 
+1 
+2 
+8 
+7 
+4 
+3 
+5 
+6 
+__ 
+X 
+1 
+1 
+1 
+1 
+0 
+0 
+0 
+0 
+- 
+Y 
+1 
+1 
+0 
+0 
+1 
+1 
+0 
+0 
+__ 
+- 
+z 
+1 
+0 
+1 
+0 
+1 
+0 
+1 
+0 
+~ 
+- 
+G 
+28 J. E. BRESENHAM 
+
+=== PDF PAGE 5 ===
+Figure 5 Axes orientation 
+To find the form of (4), Boolean variables X, Y, and 2, corre- 
+sponding to Ax, Ay, and I Ax1 - IAyI, are  introduced. As shown 
+in  Table 1, these  variables  assume the value 0 or 1, depending 
+on  whether or not  the correspondent is negative. To determine 
+the assignment of m,, the function 
+F(X, Y, 2) = (XZ, Yz, 22, Pz), 
+found  by inspection of Table 1, is  introduced.  Correspondence 
+between  values  assumed by F and  the assignment of m, is indi- 
+cated by columns  headed F and  m,. Similarly, 
+G(X, Y) = (XU, XY, XF, XP) 
+is used in  conjunction  with the G- and m,-columns of Table 1 to 
+make the  appropriate assignment to m,. 
+The algorithm  can  be  programmed  without the use of multi- 
+plication or division. It was found that 333 core locations were 
+sufficient for an IBM 1401 program  (used to control an IBM 1627). 
+The average  computation  time  between successive incrementations 
+was approximately 1.5 milliseconds. 
+A functionally  similar  algorithm  reported  in the  literature3  is 
+described as requiring 513 core  positions and 2.4 milliseconds 
+between successive incrementations.' 
+ALGORITHM FOR CONTROL OF A DIGITAL PLOTTER 
+
+=== PDF PAGE 6 ===
+ACKNOWLEDGMENT 
+The suggestions of the author’s colleagues, D. Clark  and A. 
+Hoffman, were of considerable assistance. 
+CITED REFERENCES AND FOOTNOTES 
+1. This  paper is based on “An incremental  algorithm for digital  plotting,” 
+presented by  the  author at the ACM National Conference at Denver, 
+Colorado, on August 30, 1963. 
+2. The foor (LA) and ceiling ([I) operators are defined as follows: LxJ de- 
+notes the  greatest integer not exceeding 2, and r.1 denotes the smallest 
+integer not exceeded by 2. This notation was introduced by  Iverson; see, 
+for example: K. E. Iverson,  “Programming notation  in systems design,” 
+IBM Systems  Journal 2, 117 (1963). 
+3. F. G.  Stockton,  Algorithm 162, XMOVE  PLOTTING, Communications 
+of the ACM 6, Number 4, April 1963. Certification  appears  in 6, Number 5, 
+May 1963. 
+4. F. G. Stockton, Plotting of Computer  Output, Bulletin  No. 139, California 
+Computer  Products,  May 1963. 
+rn 30 J. E. BRESENHAM 

@@ -1,0 +1,26 @@
+\subsection{System integration and embedded operation}
+\label{sec:des-integration}
+The server connects page processing, models, profiles and motion control to the browser.
+
+\subsubsection{Classification and reproduction workflows}
+Captured and uploaded pages use the same preparation and recognition path. For each writer $k$, page pooling combines the line probabilities $p_{i,k}$ with ink weights $w_i$.
+\begin{equation}
+\overline p_k=\frac{\sum_i w_i p_{i,k}}{\sum_i w_i},\qquad
+\widehat k=\arg\max_k\overline p_k.
+\label{eq:des-pagevote}
+\end{equation}
+
+Each weight counts pixels below grey value 128. Empty weights fall back to equal weighting. Crop rejection precedes pooling so that a dark artifact does not gain excessive influence. The two-line Owen calculation is retained in Appendix~\ref{app:worked-design-calculations}.
+
+Each generated job stores paths, preview, G-code and metadata. Drawing requires connection and calibration, allowing preview inspection first. Table~\ref{tab:des-contracts} records the data interfaces.
+
+\subsubsection{Embedded execution, interfaces and job control}
+The ODROID runs inference and motion control. NumPy supplies array operations, Flask handles requests, image libraries and OpenCV load or capture images, and gpiod controls GPIO.
+
+The pulse loop checks aborts and confirmed end stops. A separate request thread accepts stops during drawing. End-stop faults trigger the configured recovery. Job records distinguish generation, refusal, completion and interruption. Software stops do not independently disconnect motor power.
+
+\subsubsection{Integration verification and remaining constraints}
+Interface checks cover input consistency, profile mapping, G-code bounds and interruptions. Diagnostic retracing bypasses recognition and synthesis. Comparing its preview with the drawing separates extraction faults from execution faults.
+
+Stage timings separate processing, inference, generation and drawing. Reproduction totals include generation. Results evaluates accuracy and embedded runtime.
+\FloatBarrier

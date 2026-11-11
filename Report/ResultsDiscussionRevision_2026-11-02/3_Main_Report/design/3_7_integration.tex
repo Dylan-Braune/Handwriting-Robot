@@ -1,0 +1,17 @@
+\subsection{System integration and embedded operation}
+\label{sec:des-integration}
+A web server was created to connect page processing, models, profiles and motion control to the browser. Training was done through the ODROID N2+ for the text and author classifiers, but was not part of the website, as there was no use to start a new training run in a user interface if the models and weights were already trained. Adding new authors through a user interface was out of the specifications of this project, and new glyphs extractions, feature extractions and author classifiers are trained through the terminal or by running a script on python, all on the ODROID N2+.
+
+\subsubsection{Classification and reproduction workflows}
+Captured and uploaded pages use the same preparation and recognition path. The image conditioning and segmentation code is run when a new classify request is started, and then the page and its crops are passed into the text and author classifiers alongside its expected transcription and author, and a percentage accuracy metric is displayed for it.
+
+Each generated job stores paths, preview, G-code and metadata. Drawing requires connection and calibration, allowing preview inspection first. Table~\ref{tab:des-contracts} records the data interfaces.
+
+\subsubsection{Embedded execution, interfaces and job control}
+The pulse loop checks aborts and confirmed end stops. A separate request thread accepts stops during drawing. End-stop faults trigger the configured recovery. Job records distinguish generation, refusal, completion and interruption. Software stops do not independently disconnect motor power.
+
+\subsubsection{Integration verification and remaining constraints}
+Interface checks cover input consistency, profile mapping, G-code bounds and interruptions. Diagnostic retracing bypasses recognition and synthesis. Comparing its preview with the drawing separates extraction faults from execution faults.
+
+Stage timings separate processing, inference, generation and drawing. Reproduction totals include generation. Results evaluates accuracy and embedded runtime.
+\FloatBarrier

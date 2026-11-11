@@ -1,0 +1,28 @@
+\reportqt{qt:r2}{Reading handwritten content and identifying its writer (R2)}
+\resstep{Objectives of the test or experiment}
+Evaluate reading and writer identification separately against 95\%, using the recorded validation partitions.
+
+\resstep{Equipment used}
+Saved IAM and personal line images, reference transcripts, selected checkpoints and the scoring tools. This experiment does not require gantry movement.
+
+\resstep{Test setup and experimental parameters}
+The reader population has 976 public validation lines (42\,072 characters) and 100 photographed lines (3\,675 characters). The writer population has 156 lines, using held-out IAM pages and a seeded personal-line split. Personal validation can share page backgrounds with training. These are validation results because checkpoint selection may have used the same split.
+
+\resstep{Steps followed in the test or experiment}
+Check the corpus partitions, read each line with greedy CTC decoding, classify the normalised writer crop and retain the edits, reference counts and predictions. Aggregate the reader populations and writer confusion counts separately.
+
+\resstep{Results or measurements}
+Table~\ref{tab:res-r2-reader} reports 94.06\% pooled character accuracy for the selected joint reader. The scratch comparison reaches 94.39\% on the same 1\,076 lines. The training-route comparison is in Table~\ref{tab:dis-training}. Table~\ref{tab:app-reader-breakdown} retains the individual personal-writer scores.
+\input{3_Main_Report/results_tables/r2_reader}
+The writer model correctly identifies 153/156 lines (98.08\%) and all eleven pooled writer groups. Figure~\ref{fig:res-holdout} shows the row-normalised predictions, with actual line counts beside each writer. The only three errors are predictions of Y.
+\begin{figure}[H]\centering
+\includegraphics[width=.78\linewidth]{Figures/results_holdout_confusion.pdf}
+\caption{Writer validation predictions, row percentages.}\label{fig:res-holdout}
+\end{figure}
+
+\resstep{Observations}
+The writer point estimate exceeds target by 3.08 percentage points. The selected reader is 0.94 points below target and recovers 221 complete lines without edits. One incorrect writer prediction has 83.8\% confidence, showing that a high posterior alone cannot guarantee identity.
+
+\resstep{Statistical analysis}
+The writer Wilson interval is 94.5\% to 99.3\%. The result demonstrates a point estimate above 95\%, with a stronger pooled decision across the available lines. Character accuracy is an edit-distance ratio, so a binomial interval on individual characters is not assigned.
+

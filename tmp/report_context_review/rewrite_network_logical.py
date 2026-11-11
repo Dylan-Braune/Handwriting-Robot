@@ -1,0 +1,182 @@
+from pathlib import Path
+import re,collections
+r=Path.cwd();src=Path('C:/Users/braun/.codex/attachments/2e386a0e-41de-45cb-82a3-8633833f0914/Pasted text.txt');old=src.read_text(encoding='utf-8-sig')
+def block(env,label):
+ i=old.index('\\label{'+label+'}');a=old.rfind('\\begin{'+env+'}',0,i);b=old.index('\\end{'+env+'}',i)+len('\\end{'+env+'}');return old[a:b]+'\n\n'
+backbone=block('table','tab:des-backbone');width=block('table','tab:des-widthselection');recipe=block('table','tab:des-training');checks=block('table','tab:des-numericalcheck')
+figs={k:block('figure',k) for k in ['fig:des-network','fig:vt-featurestack','fig:vt-lattice','fig:des-strokenorm']}
+figs['fig:des-network']=figs['fig:des-network'].replace('Architecture of the text reader and writer classifier.','Text-reader architecture: convolutional feature extraction, two BiLSTM layers and CTC decoding.')
+s=r'''\subsection{Neural network design, training and classification}
+\label{sec:des-class}
+The classification stage identifies both the text in a line and its writer. These tasks need different information: text recognition must preserve the order of the strokes, while writer identification must combine evidence about the hand across the line. The design therefore uses two separately trained networks with the same convolutional architecture and different output heads. The text reader follows the CNN--BiLSTM approach of Kizilirmak and Yanikoglu~\cite[pp.~4--5]{kizilirmak2023}.
+
+The following subsections explain the common feature extractor, how each head uses its output, and then how the networks are trained and verified. Both receive the line crops prepared by the preceding segmentation stage.
+
+\subsubsection{Convolutional feature extraction}
+A convolutional network converts the line image into features that the output head can use. Small learned kernels respond to local patterns in the image; successive layers combine these responses across larger regions~\cite[pp.~6--8]{lecun1998}. The reader and writer networks use the same arrangement of layers, but their learned weights are separate. Sharing an architecture does not mean that the two tasks share one trained parameter set.
+
+\paragraph{Input and layer operations.}
+Each crop is fitted to a $64\times640$ canvas. Grey intensity is inverted and scaled to $[-1,1]$, so dark ink is positive and white padding is negative. A batch of $B$ lines therefore has input dimensions $(B,1,64,640)$, with one image channel.
+
+For padded input $X$, learned kernel $W$ and bias $b$, the response at output channel $o$, row $y$ and column $x$ is the local weighted sum~\cite[pp.~6--8]{lecun1998}:
+\begin{equation}
+z_{o,y,x}=b_o+\sum_c\sum_{i,j}W_{o,c,i,j}X_{c,y+i,x+j}.
+\label{eq:des-conv}
+\end{equation}
+The sums cover input channels $c$ and kernel positions $(i,j)$. This is the cross-correlation convention used by the implementation. In the numerical route, input patches are rearranged into a matrix and multiplied by flattened kernels, following the matrix formulation of convolution~\cite{chellapilla2006}. It avoids a Python loop for every multiplication while retaining explicit layer calculations.
+
+Each convolution is followed by batch normalisation and a rectified linear unit (ReLU). Batch normalisation uses channel mean $\mu_B$ and variance $\sigma_B^2$, computed over the batch and spatial dimensions during training. Learned scale $\gamma$ and offset $\beta$ then adjust the normalised response~\cite[pp.~4--5]{ioffe2015}:
+\begin{equation}
+\widehat z=\frac{z-\mu_B}{\sqrt{\sigma_B^2+\epsilon}},\qquad
+y=\gamma\widehat z+\beta.
+\label{eq:des-bn}
+\end{equation}
+The small constant $\epsilon$ stabilises division. At inference, stored running statistics replace the training-batch statistics. ReLU retains positive responses and sets negative ones to zero through $\max(0,y)$. Max pooling then retains the largest response in each local window, reducing the spatial dimensions passed to later layers.
+
+\paragraph{Calculation on a real crop.}
+At canvas row 34, column 462 of the first Owen01 line, channel 0 of the first convolution gives $\sum WX=-1.150897$ and bias $b=-0.000435125$. Equation~\ref{eq:des-conv} produces $z=-1.151332$. The actual nine input values and learned weights are retained in Appendix~\ref{app:des-real-calculations}.
+
+For this activation, the joint reader stores $\mu=0.2163021$, $\sigma^2=0.02585394$, $\gamma=1.0193636$ and $\beta=0.1324657$. With $\epsilon=10^{-5}$, Equation~\ref{eq:des-bn} gives
+$y=1.0193636(-1.1513321-0.2163021)/\sqrt{0.02585394+10^{-5}}+0.1324657\simeq-8.53619$.
+ReLU therefore sets this response to zero. These are stored inference statistics, not statistics estimated from that single crop.
+
+\paragraph{From image features to a line sequence.}
+Table~\ref{tab:des-backbone} shows the implemented progression. Two spatial pooling operations reduce the width from 640 to 160 positions. The third stage increases feature depth without another spatial pool. Finally, taking the maximum over the remaining height changes $128\times16\times160$ into $128\times1\times160$. The result is 160 ordered columns, each containing 128 features.
+
+'''+backbone+r'''Figure~\ref{fig:vt-featurestack} shows these arrays for the archived Owen line using the joint reader. Three channels with strong activations are displayed at each stage, independently scaled for visibility; darkness cannot therefore be compared as an absolute response across layers. The final height-pooled array is the representation passed to the two different types of output head.
+
+'''+figs['fig:vt-featurestack']+r'''\subsubsection{Text recognition with BiLSTM and CTC}
+The text reader must interpret the feature columns in order. Two bidirectional LSTM layers combine evidence from the left and right of each position before a linear output layer assigns character scores. Each LSTM direction has 256 hidden units, so concatenating the two directions gives 512 values per frame. The first recurrent layer receives 128 features per frame; the second receives the first layer's 512 outputs. The full line is available at inference, allowing both directions to be evaluated.
+
+Figure~\ref{fig:des-network} shows the complete text-reader path. The writer classifier described next uses the same convolutional architecture, but does not use these recurrent layers or the CTC decoder.
+
+'''+figs['fig:des-network']+r'''\paragraph{Retaining context between feature columns.}
+An LSTM maintains cell state $c_t$ and hidden output $h_t$ at frame $t$. The input, forget and output gates are $i_t$, $f_t$ and $o_t$, while $g_t$ is the candidate update. Each depends on the current feature vector and previous hidden output. The implemented state update retains an additive memory path~\cite[p.~5]{graves2013}:
+\begin{equation}
+c_t=f_t\odot c_{t-1}+i_t\odot g_t,\qquad
+h_t=o_t\odot\tanh(c_t).
+\label{eq:des-lstm}
+\end{equation}
+Here $\odot$ denotes elementwise multiplication. The implementation computes the gate inputs together as $[a_i,a_f,a_g,a_o]^T=W_xx_t+W_hh_{t-1}+b_x+b_h$, applies sigmoid to the three gates and $\tanh$ to the candidate update. It omits the additional cell-to-gate peephole connections shown in the cited source. The backward direction applies the recurrence to the reversed feature sequence.
+
+For the first forward layer on the Owen line, frame 10 and cell 0 have $c_{t-1}=-2.7277257$, $f_t=0.7306111$, $i_t=0.6666368$ and $g_t=-0.8560218$. Equation~\ref{eq:des-lstm} gives $c_t\simeq-2.5635625$. With $o_t=0.000145395$, the hidden output is $h_t\simeq-0.000143680$. This is an actual state update from processing the line.
+
+\paragraph{Converting frame predictions into text.}
+The output layer produces 160 frames of scores over 74 configured characters and an additional blank class. A frame is a feature-column position, not a pre-segmented character. Connectionist temporal classification (CTC) allows a line transcript to train these predictions without requiring the position of every character~\cite[pp.~2--3]{graves2006}.
+
+CTC interprets a frame path by merging consecutive repetitions and then removing blanks. Thus $a,a,\varnothing,b,b$ becomes ``ab'', while $a,\varnothing,a$ retains ``aa''. At inference, greedy decoding chooses the highest-probability class at each frame and applies this collapse rule. The implementation uses no beam search, language model or lexicon. A locally plausible path can therefore remain incorrect even when a broader search might recover another reading.
+
+For target transcript $\boldsymbol\ell$, frame probabilities $p_t(k)$ and collapse operation $\mathcal B$, the CTC loss sums all paths $\pi$ that produce the target~\cite[pp.~2--3]{graves2006}:
+\begin{equation}
+\mathcal L_{\mathrm{CTC}}=-\log\sum_{\pi:\mathcal B(\pi)=\boldsymbol\ell}
+\prod_{t=1}^{T}p_t(\pi_t).
+\label{eq:des-ctc}
+\end{equation}
+Here $T=160$. The path sum is evaluated by a dynamic programme with blank-interleaved target states. Transitions can stay in one state, advance one state, or skip a blank when neighbouring labels differ. Log-space arithmetic avoids directly multiplying many small probabilities. A target with $L$ labels and $r$ adjacent repeated-label pairs requires at least $L+r$ frames; its $2L+1$ lattice states are not a universal minimum frame count.
+
+For the labelled line ``1.9. Vloggers using fame to support charities is a positive way'', the recorded total path probability is $Z\simeq0.6247908$, with $\log Z=-0.47033843$. Equation~\ref{eq:des-ctc} gives loss 0.47033843. This was calculated offline from the trained reader's logits and known transcript, without updating its weights.
+
+Figure~\ref{fig:vt-lattice} compares greedy decoding with forced alignment on that line. Forced alignment restricts the path to the supplied transcript; greedy decoding does not receive that transcript. The greedy result happens to match it exactly, while blank carries about 46\% of the mean frame probability. The adjacent \texttt{g}s in ``Vloggers'' require separate emission runs with a blank between them. The same restriction is used for glyph alignment in Section~\ref{sec:des-alignment}. This worked example explains decoding rather than replacing the pooled accuracy results.
+
+'''+figs['fig:vt-lattice']+r'''\subsubsection{Writer identification and stroke normalisation}
+\label{sec:des-shapenamer}
+Writer identification needs the overall writing style rather than a sequence of characters. Its head therefore averages the 160 feature columns into one 128-element vector. A 96-unit hidden layer, ReLU and final $K$-class layer produce writer scores. Here $K$ is the number of writers represented by the checkpoint. Dropout with probability 0.2 is used in the hidden head during training and disabled during inference~\cite[pp.~1931, 1934]{srivastava2014}.
+
+\paragraph{Why the classifier uses normalised strokes.}
+The initial writer classifier used handwriting as photographed and performed well on those samples. However, ink width can also carry writer information: Brink et al. use directional ink-trace width as a feature and relate it to the pen and writing style~\cite[p.~162]{brink2012}. The original images also retain darkness and capture variation. The gantry uses its own pen, so preserving a writer's geometry does not reproduce all those ink cues.
+
+The final design therefore uses a stroke-normalised classifier for writer identification and synthesis evaluation. The aim is to reduce dependence on ink appearance and focus more on geometry that the gantry can reproduce. Ink is binarised, reduced to a centreline by Zhang--Suen thinning~\cite[p.~237]{zhang1984}, then redrawn by morphological dilation~\cite[p.~533]{haralick1987} before the fixed-canvas fit.
+
+For estimated x-height $h_x$ and width fraction $\rho$, the project chooses an odd dilation-kernel size $k$. With binary mask $M$ and square dilation $\delta_k$, the normalised grey image is
+\begin{equation}
+I_s=255\left[1-\delta_k\bigl(\operatorname{thin}(M)\bigr)\right],\quad
+w=\operatorname{clip}\bigl(\operatorname{round}(\rho h_x),2,9\bigr),\quad
+k=2\lfloor w/2\rfloor+1.
+\label{eq:des-strokenorm}
+\end{equation}
+This combines established thinning and dilation operations with the project's width-selection rule. For the Owen crop, $h_x=38$ pixels. At the selected $\rho=0.17$, $w=\operatorname{clip}(\operatorname{round}(0.17\times38),2,9)=6$, giving $k=7$. The crop is therefore redrawn with a seven-pixel square kernel before fitting to the canvas.
+
+Figure~\ref{fig:des-strokenorm} shows the individual stages on real crops. Normalisation reduces ink differences, but cannot remove all capture dependence: a faint or touching stroke may already have changed during thresholding or thinning. Removing ink-width evidence is therefore a deliberate trade-off between discrimination on original photographs and consistency with reproduced handwriting.
+
+'''+figs['fig:des-strokenorm']+r'''The selected checkpoint records $\rho=0.17$, and the same setting is used for its training preparation and inference. The module default of 0.14 is not the selected model's width. The selection experiment is described after the general training procedure below.
+
+\subsubsection{Training data and separation of evaluation samples}
+Public IAM handwriting~\cite{marti2002} and the five photographed contributors supply known text and writer labels. Public pre-cut lines support reader training, while writer-labelled pages and personal samples support writer identification. The final evaluated writer population contains six IAM writers (150, 152, 153, 384, 552 and 588) and five personal contributors.
+
+Each crop is paired with its transcript and writer label. Blank or unusable labelled lines are excluded, and printed prompts and signatures must be excluded when public forms are matched to line transcripts. The label encoder filters characters outside the configured alphabet; recognising them as distinct symbols would require extending both the alphabet and output layer.
+
+The eleven-writer corpus contains 1186 labelled lines: 517 IAM and 669 photographed lines. These give 1031 training and 155 held-out lines. One IAM page per writer is held out, while personal samples use a fixed-seed 15\% line split. A personal held-out line can therefore share a page or capture session with training lines. It is a held-out line, not necessarily an unseen recording condition. Augmentation is applied only after the split and only to the training partition.
+
+The selected text reader instead uses a joint corpus of Teklia pre-cut IAM lines and lines from the five photographed writers. Its exact historical training and validation counts are not preserved in the available record. The reader corpus, writer corpus and pages used to build glyph profiles must also be distinguished: withholding a line from one classifier does not establish that its text or letterforms were absent from every other project input.
+
+\subsubsection{Training procedure and checkpoint selection}
+\label{sec:des-training}
+Both training routes update the convolutional layers and task head together. Convolution weights use variance-scaled initialisation; normalisation scales start at one and offsets at zero. During training, shear, small rotations, perspective changes and elastic distortion vary line geometry while retaining the label. Validation uses consistent preprocessing without those random transforms.
+
+The text trainer supports public, page-derived and joint data sources. In joint training, a personal-sample fraction controls their representation in batches so that the larger public corpus does not determine the whole sample distribution. Its implemented default is 0.20; this is a sampling setting, not a recovered record for every completed run.
+
+\paragraph{Losses and backward calculations.}
+The reader minimises the CTC loss already defined in Equation~\ref{eq:des-ctc}. The writer model minimises cross-entropy: for true writer $y$ and predicted class probabilities $p_k$, the per-sample loss is $-\log p_y$ and its logit derivative is $p_k-\mathbf{1}[k=y]$~\cite[p.~6]{graves2013}. These derivatives are propagated through the task head and convolutional layers to update their weights.
+
+For the reader, CTC forward and backward recurrences give the target-constrained occupancy $q_{t,k}$ of symbol $k$ at frame $t$~\cite[pp.~4--6]{graves2006}. Let $\alpha_{t,s}$ include the current emission at target state $s$, while $\beta_{t,s}$ includes only emissions after frame $t$. With blank-interleaved target $\ell'_s$, logit $z_{t,k}$ and total admissible path probability $Z$, the implementation uses
+\begin{equation}
+q_{t,k}=\sum_{s:\ell'_s=k}\exp(\alpha_{t,s}+\beta_{t,s}-\log Z),
+\qquad \frac{\partial\mathcal L}{\partial z_{t,k}}=p_t(k)-q_{t,k}.
+\label{eq:des-ctcgrad}
+\end{equation}
+The backward convention avoids counting the current emission twice. The numerical trainer averages this derivative over the batch without an additional target-length division. Algorithm~\ref{alg:des-ctc} in Appendix~\ref{app:des-training-procedures} gives the full recurrence and blank/repeat transitions.
+
+For frame 11 of the Owen line, $p_{11,V}=0.98030665$ and $q_{11,V}=0.99999995$. The resulting derivative is $-0.01969329$: reducing the loss requires more probability for \texttt{V} at that frame. The real-input finite-difference check in Appendix~\ref{app:des-expanded-checks} verifies this local derivative.
+
+\paragraph{Optimisation and validation.}
+Table~\ref{tab:des-training} summarises the defaults implemented by the first-principles trainer. Completed epochs and actual run settings must come from training records; these defaults do not establish the settings of the selected historical checkpoints.
+
+'''+recipe+r'''Validation disables dropout and uses stored normalisation statistics. The reader retains the lowest-validation-loss checkpoint, while the writer retains the highest-validation-accuracy checkpoint. Separate progress and best-model files allow training to resume without replacing the best saved model with a later, poorer epoch.
+
+Algorithm~\ref{alg:des-train} in Appendix~\ref{app:des-training-procedures} sets out the numerical batch and update procedure. Forward caches retain the values needed for differentiation, so the backward pass does not redraw random augmentation or dropout masks.
+
+\subsubsection{Selecting the writer normalisation width}
+Width selection uses the writer architecture and training procedure described above. Each crop is skeletonised and redrawn once per candidate width, with labels, writer mappings and split membership retained. The prepared images are then augmented during training. Where normalisation returns no usable ink, the preparation records that the raw crop was retained instead.
+
+Table~\ref{tab:des-widthselection} records the supplied eleven-writer sweep. All four runs used the same population and held-out partition, a 50-epoch budget, and framework training on a Google Colab T4 GPU. The listed epoch is the best saved epoch, not the stopping point.
+
+'''+width+r'''The best observed setting was $\rho=0.17$ at 99.35\% validation accuracy, so it defines the selected normalisation configuration. Appendix~\ref{app:vt-width} shows why the integer kernel matters: nearby fractions can produce the same transformed image on a particular crop. A fixed split keeps the evaluated population consistent, but one run per setting does not isolate width effects from training variability. These are model-selection results; the integrated robot's writer-identification results are evaluated separately in Results.
+
+\subsubsection{First-principles and framework implementations}
+\label{sec:des-implementations}
+The first-principles route in \texttt{train.py} implements the forward operations, losses, backward operations and optimiser updates with NumPy array arithmetic. It does not obtain network layers, automatic differentiation or CTC training from a machine-learning framework. The corresponding route in \texttt{trainlibrary.py} uses PyTorch layers and automatic differentiation. Both use the project's preparation functions, parameter naming and named-array export format, allowing either route to supply weights to the NumPy inference module.
+
+The selected reader and eleven-writer weights were trained with PyTorch and exported to named arrays. The selected files are \texttt{paper\_cnn\_bilstm\_ctc\_joint\_best.npz} and \texttt{author\_shape\_11\_pw170\_weights.npz}. Inference evaluates these weights through the numerical forward path. Results in Section~\ref{sec:results} compare them with separately trained first-principles reader and writer checkpoints. The joint reader also supplies the Design calculation traces.
+
+The first-principles contribution is therefore the explicit numerical training implementation and operational inference path, while the selected weights retain their framework-training provenance. The selected reader's original training computer, completed epoch count and learning-rate/batch settings are not preserved; Table~\ref{tab:des-training} should not be interpreted as that missing run record.
+
+Matching layer architecture and export format does not by itself establish an identical training objective. The numerical CTC loss averages unnormalised sequence losses across the batch. The framework trainer uses the default mean reduction, which divides each sequence loss by its target length before averaging, and zeroes impossible-alignment losses~\cite{pytorchctc}. These conventions must match for a controlled training comparison because they change the relative contribution of different lines.
+
+The operation comparison is retained in Table~\ref{tab:des-implementations}, Appendix~\ref{app:des-reference-tables}. Patch-matrix derivatives and their storage calculation appear in Appendix~\ref{app:des-expanded-checks}. Their numerical verification is considered next.
+
+\subsubsection{Verification and design limitations}
+\label{sec:des-netverify}
+Verification answers two separate questions. A numerical check gives both implementations the same parameters and inputs, with matched precision, normalisation and stochastic state, then compares logits, loss and derivatives. A learning comparison instead trains models and evaluates their predictions. Separately trained models can perform differently even when their layer calculations agree.
+
+\paragraph{Numerical correspondence.}
+The archived float64 check uses two random $64\times640$ inputs and identical initial weights to compare the reader and a thirteen-output writer head. Writer dropout is disabled for the check. Table~\ref{tab:des-numericalcheck} retains its recorded values; this configuration is distinct from the final trained eleven-writer evaluation.
+
+'''+checks+r'''The logit metric divides the largest absolute difference by the larger maximum logit magnitude, with a $10^{-8}$ denominator floor. Gradient differences use $\|g_N-g_T\|_2/\|g_T\|_2$, where $g_N$ and $g_T$ are the numerical-route and framework gradients. Tensors whose maximum gradient magnitude is below $10^{-6}$ remain in the archive but are excluded from the worst-ranked summary, avoiding ratios dominated by almost-zero reference values. The figures support close agreement for this tested configuration, not every possible input or training trajectory.
+
+A separate finite CTC check enumerated all $4^5=1024$ paths for a repeated-label target. Comparing their summed probability with the implemented dynamic programme gave an absolute loss difference of $4.44\times10^{-16}$. Central differences over all 20 logits gave a maximum absolute derivative difference of $3.63\times10^{-11}$. This tests that finite example, including the blank needed between repeated labels. Its construction is retained in Appendix~\ref{app:des-visual-tests}; Equation~\ref{eq:des-gradcheck} in Appendix~\ref{app:des-expanded-checks} explains the numerical derivative reference. Additional convolution and CTC checks are illustrated in Appendix~\ref{app:vt-gradient}.
+
+\paragraph{Learning performance and limitations.}
+The comparison archive also contains a controlled text experiment with 500 training lines, 40 validation lines and 40 test lines over 15 epochs. It supports the implementation comparison, but is not the final selected-system evaluation. Formal reader and writer qualification remains in Results.
+
+The main limitations follow from the input and training population. Fixed-width fitting reduces detail in long lines, the closed writer head always selects among its trained classes, and personal line holdout does not establish independence from capture conditions. Stroke normalisation reduces ink dependence but can lose detail when thresholding or thinning fails. Neither a high writer probability nor agreement on a small numerical fixture establishes generalisation beyond the tested samples.
+\FloatBarrier
+'''
+out=r/'output/Neural_Network_Section_Revised_2026-11-02.tex';out.write_text(s,encoding='utf-8')
+assert collections.Counter(re.findall(r'\\begin\{([^}]+)\}',s))==collections.Counter(re.findall(r'\\end\{([^}]+)\}',s))
+assert set(re.findall(r'\\label\{([^}]+)\}',old))<=set(re.findall(r'\\label\{([^}]+)\}',s))
+b=r/'Report/IntegratedReport_2026-11-01';whole='\n'.join(p.read_text(encoding='utf-8-sig') for p in b.rglob('*.tex') if p.name!='3_5_classification.tex')+'\n'+s
+assert set(re.findall(r'\\(?:ref|eqref)\{([^}]+)\}',whole))<=set(re.findall(r'\\label\{([^}]+)\}',whole))
+keys=set(re.findall(r'@\w+\{([^,]+)',(b/'references.bib').read_text()))
+assert all(k in keys for g in re.findall(r'\\cite(?:\[[^\]]*\])?\{([^}]+)\}',s) for k in g.split(','))
+for n in re.findall(r'\\includegraphics(?:\[[^\]]*\])?\{([^}]+)\}',s):assert (b/n).exists(),n
+print(out);print('All original labels, equations, figures and numerical tables retained; reference and source checks passed. Open segmentation file and full report unchanged.')

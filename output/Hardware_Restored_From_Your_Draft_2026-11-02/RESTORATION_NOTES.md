@@ -1,0 +1,7 @@
+# Restoration notes
+
+Baseline: the author's newly pasted hardware section, from Hardware Design through the G-code command table. The six original subsection headings, CAD panels, motor photographs, speed-to-torque sequence, pen and switch circuits, pen/end-stop/calibration algorithms, calibration explanation, G-code extract and command table are restored. The newer command-space stepping figure is retained in the G-code subsection. The assembled report has not been modified.
+
+Corrections retained: 200 rather than 400 full steps; chopping distinguished from stepping; dimensional speed conversion; correct 6.37 mm pulley pitch radius, 0.0237 N cm estimated load and conditional ratio approximately 688; unverified curve and friction identified as assumptions; actual Vref and driver derating not invented; switch-confirmed pen actuation distinguished from generator dwell; axis switches distinguished from the pen switch; debounce interval distinguished from stopping distance; actual workspace 190.6 x 251.3 mm; counted homing legs distinguished from total calibration time; software stop endpoint acknowledged; broken labels repaired and missing stepping algorithm supplied. Removed the blank CAD dimensions table and unfinished drafting notes; no dimensions were invented.
+
+The matching torque-speed curve is still needed to verify the inherited 7 and 21 N cm curve readings. No assertion that the motor is never torque-limited is made. The new diagram in the report's separate hardware overview remains unchanged.

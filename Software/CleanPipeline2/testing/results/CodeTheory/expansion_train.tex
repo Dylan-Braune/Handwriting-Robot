@@ -1,0 +1,200 @@
+\section{Expanded reasoning: data partitions, loss derivatives and training choices}
+\label{sec:expand-train}
+\subsection{The 15\% holdout, seed and 20\% personal representation}
+The inspected paths specify validation fraction 0.15 and split seed zero.
+A seeded shuffle fixes which examples are withheld, provided the example
+list and ordering are unchanged. The fraction controls data allocation;
+the seed controls reproducibility, not statistical quality. For a constructed
+100-line population a 15\% split with exact rounding gives 15 validation
+and 85 training lines. Real per-writer rounding and minimum-set guards can
+change totals. Never infer actual held-out counts from the fraction alone.
+
+A line-level split can put neighbouring lines from one photographed page
+in both sets. This tests new lines under partly shared capture conditions,
+not new pages, pens or writers. A page-level split reduces that dependency;
+a writer-disjoint split answers a different question from closed-set writer
+identification. Fifteen percent is a sample-efficiency/precision compromise,
+not a statistically universal optimum. After tuning on validation, it no
+longer serves as a fully untouched final test.
+
+The text trainer's personal fraction 0.20 controls representation during
+mixed sampling~\cite{code2026}. It does not make public and personal data
+equal: the intended shares are 80/20. In an ideal twenty-example batch,
+that would mean sixteen public and four personal examples, subject to the
+routine's rounding/replacement behaviour. Oversampling a small personal set
+can repeat examples; an epoch need not then mean one visit per unique image.
+This coefficient is separate from 0.2 dropout and from the 15\% holdout.
+Its rationale is to prevent abundant public data overwhelming the personal
+domain; it does not guarantee absence of bias or optimum transfer.
+
+\subsection{Training settings: what each number controls}
+The report's first-principles defaults use RMSprop for text, AdamW for
+writers, initial learning rate $10^{-3}$, weight penalties $10^{-5}$ and
+$10^{-4}$ respectively; text plateau reduction factor 0.5, patience 5 and
+minimum $10^{-5}$; writer cosine annealing and gradient norm limit 5.
+These describe code defaults, not a recovered configuration for every saved
+checkpoint. Architecture sizes and preparation must also match the checkpoint.
+
+RMSprop keeps $v_t=\alpha v_{t-1}+(1-\alpha)g_t^2$ and updates
+$\theta\leftarrow\theta-\eta g_t/(\sqrt{v_t}+\epsilon)$.
+This scales steps by recent squared-gradient magnitude~\cite{rmslecture}.
+The inspected defaults are $\alpha=0.99,\epsilon=10^{-8}$. Larger
+$\alpha$ gives a longer memory; the numerical floor prevents unstable small
+denominators. The inspected RMSprop adds $\lambda\theta$ to the gradient,
+so its weight penalty is coupled L2-style regularisation.
+
+Adam forms $m_t=\beta_1m_{t-1}+(1-\beta_1)g_t$ and
+$v_t=\beta_2v_{t-1}+(1-\beta_2)g_t^2$, corrects their initial bias using
+$1-\beta_1^t$ and $1-\beta_2^t$, and scales the first moment by the square
+root of the second~\cite{kingma2015}. Defaults 0.9 and 0.999 express
+different smoothing times. AdamW additionally subtracts
+$\eta\lambda\theta$ separately from the adaptive gradient update.
+Decoupling matters because adding L2 to an adaptively scaled gradient is
+not equivalent~\cite{loshchilov2019}. Neither optimiser proves a global
+optimum for these nonconvex networks.
+
+Halving learning rate after a plateau reduces update size when the monitored
+validation quantity stops improving. ``Patience 5'' must be read with the
+code's comparison: the inspected counter uses \texttt{badEpochs > patience},
+so the reduction follows more than five counted bad epochs. Cosine decay
+typically follows $\eta(t)=\eta_{\min}+
+\tfrac12(\eta_0-\eta_{\min})[1+\cos(\pi t/T_{\max})]$ across the
+configured run. These are schedules, not measured physical learning rates.
+Changing loss reduction changes gradient scale and can invalidate a learning
+rate comparison even if the displayed numerical rate is unchanged.
+
+\subsection{Cross-entropy and its logit derivative from first principles}
+For logits $z_k$, stable softmax is
+$p_k=e^{z_k-m}/\sum_j e^{z_j-m}$ with $m=\max_jz_j$.
+Subtracting the common $m$ leaves ratios unchanged. With true class $y$,
+$L=-\log p_y=-z_y+\log\sum_j e^{z_j}$.
+Direct differentiation gives
+$\partial L/\partial z_k=p_k-\mathbf1[k=y]$.
+For probabilities $(0.7,0.2,0.1)$ and true class one, loss is
+$-\log0.7\simeq0.3567$ and gradient $(-0.3,0.2,0.1)$, summing to zero.
+Gradient descent raises the true logit relative to the others. Class indices
+are discrete labels; the derivative is with respect to the real logits.
+
+A batch average $L_B=B^{-1}\sum_iL_i$ contributes a factor $1/B$ to every
+per-example gradient. Apply that factor once, not at every backward layer.
+An average makes nominal scale less sensitive to batch size, but the examples'
+gradient directions still differ. Class imbalance and repeated samples can
+still dominate the mean.
+
+\subsection{CTC target occupancy, backward convention and batch scaling}
+Use $Z=P(\ell\mid X)$ for total valid-path likelihood. Let
+$\alpha_{t,s}$ include the emission at $(t,s)$ and let $\beta_{t,s}$
+include only later emissions. Then conditional probability of state $s$ at
+frame $t$ is $\exp(\alpha_{t,s}+\beta_{t,s}-\log Z)$ in log notation.
+Summing over states carrying class $k$ gives
+\[
+q_{t,k}=\sum_{s:\ell'_s=k}
+e^{\alpha_{t,s}+\beta_{t,s}-\log Z},\qquad
+{\partial L\over\partial z_{t,k}}=p_t(k)-q_{t,k}.
+\]
+The condition $\ell'_s=k$ matters: state index and class index differ.
+Different states can carry the same letter or blank. If backward scores
+also include the current emission, divide it out once; otherwise it is
+counted twice. This convention issue is a frequent source of incorrect
+CTC implementations. The occupancy definition follows the valid-path
+posterior, not the greedy path~\cite{gravesbook}.
+
+For the constructed two-frame $a$ example above, at frame one valid-path
+mass emitting $a$ is $0.42+0.18=0.60$ and blank mass is 0.28.
+Thus $q_1(a)=0.60/0.88\simeq0.6818$, and the $a$ logit derivative is
+$0.6-0.6818=-0.0818$. Occupancy sums to one at each valid frame; the logit
+gradients sum to zero. These identities provide hand-checkable invariants.
+An impossible target has $Z=0$ and requires explicit failure handling.
+
+The project averages sequence losses across a batch without target-length
+division. Equal coefficients $1/B$ do not mean equal influence per character:
+long sequences can contribute larger loss/gradient. PyTorch's documented
+\texttt{CTCLoss(reduction='mean')} divides by target length before averaging;
+matching the project's batch mean requires summing per-sequence losses and
+dividing by batch size~\cite{torchctc}. One must match blank index, valid
+input/target lengths, tensor order and impossible-path behaviour before
+calling a loss discrepancy a numerical bug.
+
+\subsection{Backward pass: how every major layer receives a derivative}
+For affine $Y=XW^T+b$ and upstream $G=\partial L/\partial Y$,
+$dW=G^TX$, $dX=GW$, $db=\sum_{\rm batch}G$. A convolution can be
+written as this matrix multiplication after stacking patches (im2col).
+Its input gradient folds overlapping patch contributions back by \emph{adding}
+them. Overwriting overlaps loses gradients. Bias sums over batch and spatial
+positions. The padding added for forward computation must be removed from
+the input gradient.
+
+ReLU masks upstream values at nonpositive inputs. Max pooling scatters to
+saved argmax locations, accumulating if needed. Average pooling distributes
+equally. For batch normalisation, write $g_i=\partial L/\partial u_i$,
+$r=(v+\epsilon)^{-1/2}$ and averages over the same $m$ values:
+\[
+d\beta=\sum_i g_i,\quad d\gamma=\sum_i g_i\hat z_i,\qquad
+dz_i=\gamma r\,[g_i-\overline g-\hat z_i\overline{g\hat z}].
+\]
+This includes dependence of mean and variance on all batch values. Treating
+them as constants gives the inference derivative, not the training derivative.
+The distinction is mathematical; tolerances cannot repair a wrong formula.
+
+For one LSTM step, combine upstream cell derivative $\bar c_t$ with the
+hidden contribution $\bar h_t\odot o_t\odot(1-\tanh^2c_t)$.
+Then $\bar f_t=\bar c_t\odot c_{t-1}$,
+$\bar i_t=\bar c_t\odot g_t$,
+$\bar g_t=\bar c_t\odot i_t$,
+$\bar o_t=\bar h_t\odot\tanh c_t$ and
+$\bar c_{t-1}=\bar c_t\odot f_t$ along the direct cell path.
+Multiply gate derivatives by sigmoid/tanh derivatives, concatenate in the
+same gate order as forward, form weight outer products, and propagate to
+$x_t,h_{t-1}$. Reverse temporal order during backpropagation through time.
+For the reverse-direction LSTM, undo the reversal when merging input
+derivatives. For stacked layers, output derivatives split across directions
+and then pass through the lower recurrent layer. These are explicit
+chain-rule calculations, not an invocation of automatic differentiation.
+
+\subsection{Clipping, initialisation, augmentation and their alternatives}
+Global norm clipping uses
+$g'=g\min(1,\tau/\|g\|_2)$ with $\tau=5$ for the inspected writer trainer.
+A norm of 20 is scaled by 0.25; a norm of 2 is unchanged. It preserves
+direction, unlike elementwise clipping. It limits a gradient norm, not
+necessarily an adaptive optimiser's parameter-update norm. The method
+addresses exploding gradients~\cite{pascanu2013}; threshold 5 remains a
+project setting. The reported text route does not apply the same clipping.
+
+Variance-scaled initialisation attempts to keep activations/gradients from
+shrinking or growing through depth. For rectifiers, variance around
+$2/n_{\rm in}$ motivates He-style scaling~\cite{he2015}; Xavier-style scaling
+uses fan-in and fan-out for different activation assumptions~\cite{glorot2010}.
+This does not make a freshly initialised model accurate. Learned batchnorm
+scales starting at one and offsets at zero initially avoid an extra arbitrary
+rescaling.
+
+Augmentation perturbs only training examples with plausible shear, rotation,
+perspective or elastic deformation~\cite{simard2003}. It assumes the label
+is unchanged. An excessive warp can violate that assumption or create
+nonphysical strokes. Validation preparation remains fixed, with dropout
+disabled and saved normalisation statistics, so its score is not an average
+over random training perturbations. Stronger augmentation is not automatically
+better, especially for writer identity where style cues themselves are labels.
+
+\subsection{Extended training algorithm and historical time evidence}
+Conceptually: choose fixed partitions; sample a batch and any domain mixture;
+augment only training images; apply the checkpoint's preparation; run the
+train-mode backbone and task head while saving forward caches; compute CTC
+or cross-entropy; apply the correct batch reduction; backpropagate through
+the head, pooling and convolution stack; clip if configured; update optimiser
+state/weights; at epoch end validate deterministically; update schedule;
+save a progress checkpoint and replace best only under the selected criterion.
+Text selection uses validation loss; writer selection uses validation accuracy.
+Resume requires optimiser moments, epoch/scheduler state and preferably
+random state, not just weights, to reproduce a continuous run.
+
+The final report's Appendix C.6 retains writer epoch times around 19.5--20.9
+minutes and selected reader epochs 7, 8, 11 and 16 at 122.3, 120.1, 111.6
+and 112.3 minutes. These are reported log rows, not timings measured here.
+Multiplying one selected epoch by a desired epoch count estimates neither
+the exact complete run time nor the time on another host. Caches, validation,
+batch sizes, implementation and interruptions matter. ``Best saved epoch''
+is not necessarily final epoch, and one loss value is not an accuracy.
+The logs and checkpoint metadata are needed to tie any quoted result to
+its host, precision, training route and selected model. No new training,
+inference or numerical comparison was run for this edition.

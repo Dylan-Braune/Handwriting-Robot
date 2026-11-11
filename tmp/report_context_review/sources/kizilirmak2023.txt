@@ -1,0 +1,1630 @@
+
+=== PDF PAGE 1 ===
+Springer Nature 2021 LATEX template
+CNN-BiLSTM model for English Handwriting Recognition:
+Comprehensive Evaluation on the IAM Dataset
+Firat Kizilirmak 1* and Berrin Yanikoglu 1,2*
+1*Faculty of Engineering and Nat. Sciences, Sabanci University, Istanbul, T¨ urkiye, 34956.
+2*Center of Excellence in Data Analytics (VERIM), Istanbul, T¨ urkiye, 34956.
+*Corresponding author(s). E-mail(s): fkizilirmak@sabanciuniv.edu;
+berrin@sabanciuniv.edu;
+Abstract
+We present a CNN-BiLSTM system for the problem of offline English handwriting recognition, with
+extensive evaluations on the public IAM dataset, including the effects of model size, data augmen-
+tation and the lexicon. Our best model achieves 3.59% CER and 9.44% WER using CNN-BiLSTM
+network with CTC layer. Test time augmentation with rotation and shear transformations applied
+to the input image, is proposed to increase recognition of difficult cases and found to reduce the
+word error rate by 2.5% points. We also conduct an error analysis of our proposed method on IAM
+dataset, show hard cases of handwriting images and explore samples with erroneous labels. We provide
+our source code as public-domain, to foster further research to encourage scientific reproducibility.
+Keywords: offline handwriting; English; LSTM; deep learning
+1 Introduction
+Deep learning models have become the method
+of choice for handwriting text recognition (HTR)
+problem, especially in the last decade [4, 7, 13,
+27, 31, 39]. Most of the recent works in offline
+handwriting recognition have used Convolutional
+Neural Networks (CNNs) in combination with
+recurrent neural networks (RNNs), using Connec-
+tionist Temporal Classification (CTC) loss func-
+tion [14] for training the network. This approach
+allows the model to be end-to-end trainable with-
+out requiring explicit image-character alignment.
+The CTC algorithm maximizes the total proba-
+bility of different segmentations over the output
+of the RNN. Moreover, the CTC algorithm makes
+many-to-one alignment in which more than one
+input time frame could map to a single time frame
+at the output, allowing characters that do not fit
+in a single time step to be recognized.
+Due to the success of attention based
+approaches in sequence related areas [2, 44], more
+recent works suggested the use of sequence-to-
+sequence and proposed attention based encoder-
+decoder models [22, 24, 31]. Among these, ear-
+lier methods have combined a CNN with a
+bi-directional RNN as the encoder and one-
+directional RNN with attention mechanism as the
+decoder. More recent approaches utilized Trans-
+former decoders [7] for decoding or Vision Trans-
+formers [27] as a sequence-to-sequence architec-
+ture to exploit their applicability over handwriting
+recognition.
+Despite recent progress, handwriting recogni-
+tion technologies fall short in recognizing challeng-
+ing writing styles. In fact, there aren’t large public
+1
+arXiv:2307.00664v1  [cs.CV]  2 Jul 2023
+
+=== PDF PAGE 2 ===
+Springer Nature 2021 LATEX template
+2 Article Title
+Fig. 1 The same text written by different people, showing
+the possible dissimilarities of handwriting. Examples from
+IAM dataset.
+datasets to cover the wide variability in people’s
+handwritings (some examples are given in Figure
+1). This leads us to a data sparseness problem
+in terms of capturing distinct writing styles. In
+addition, most of the existing datasets comprise
+historical handwriting images, making it imprac-
+tical to train and evaluate a model for modern
+handwriting cases.
+There are two common approaches in order to
+alleviate the data sparseness: augmenting images
+at train time and generating synthetic handwrit-
+ing images to pretrain the models [9, 27, 28, 31,
+46]. In the former, handwriting images are trans-
+formed to imitate the same text as if it is written
+in a different style by changing letter shapes
+while preserving the readability. In the latter case,
+synthetic handwritten images are created. This
+approach has the advantage of being able to push
+the diversity of handwriting styles further. Both
+strategies are widely used for introducing differ-
+ent writing styles to increase the generalization
+capacity of models.
+In this paper, we have (1) conducted compre-
+hensive analysis using deep learning models on
+line-level IAM [29] dataset, (2) proposed a sim-
+ple yet effective test time augmentation method,
+(3) provided insightful error analysis regarding
+dataset related issues, (4) explored the state-of-
+art approaches with their pros/cons and stated
+directions for future work, (5) made our train,
+evaluation and benchmarking code public 1 for
+reproducibility.
+The rest of the paper is organized as fol-
+lows. First the related work regarding the offline
+handwriting recognition is presented. Then our
+proposed deep learning model comes, which is
+followed by data augmentation and synthetic
+data generation phases, test time augmentation
+1https://github.com/firatkizilirmakk/handwriting-
+recognition
+method we proposed, and experiments we per-
+formed. Afterwards, error analysis of our model on
+the IAM dataset and comparison with the state of
+the art approaches are given.
+2 Related Work
+Hidden Markov Models. The fundamental
+approach to handwriting recognition prior to the
+deep learning era was with Hidden Markov Models
+(HMMs) [35]. HMMs are doubly statistical mod-
+els, where there is an underlying stochastic process
+governing the state transitions and another one for
+generating observations during state transitions.
+Formally the aim is to maximize the posterior
+probability P (S | X), taking into account these
+stochastic models of state transitions and output
+generation [3].
+Preliminary studies explored offline handwrit-
+ing recognition with a sliding window approach
+for feature extraction and Hidden Markov Mod-
+els for generating character or word sequences
+[5, 34]. They further supported their models with
+external language models and investigated the
+effects of lexicon during decoding.
+CTC Based Methods. Connectionist Temporal
+Classification (CTC) method was introduced for
+speech recognition task [14] in the last decade,
+allowing RNN models to be trained end-to-end
+with the backpropagation [45] algorithm for
+sequence classification without any need of pre-
+segmented data. The method was adopted for
+handwriting recognition [13]. In CTC based mod-
+els, (1) a sequence of image features are extracted
+using a sliding window (1 pixel wide), (2) the
+extracted features are then fed to a bi-directional
+LSTM (BiLSTM) [18], and (3) produced character
+sequences via the CTC layer. The CTC algorithm
+takes sequence of probability distributions and
+generates a character sequence consisting of rec-
+ognizable characters. These models significantly
+outperformed HMM and HMM-RNN based
+approaches. Later, Graves et al. applied multi-
+dimensional LSTM (MDLSTM) layers instead
+of BiLSTM to incorporate more context around
+letters and to obtain better transcriptions [15].
+With the rise of deep learning and great per-
+formances achieved by CNN models on image
+processing tasks [17, 25], researchers have con-
+sidered deep learning methods for handwriting
+
+=== PDF PAGE 3 ===
+Springer Nature 2021 LATEX template
+Article Title 3
+recognition problem as well. Instead of using
+hand-crafted image features [13, 15], Shi et al
+integrated a CNN network to produce more
+robust image features [39]. The method first pro-
+cesses input handwriting image with the CNN,
+generates sequence of image features, and passes
+them through BiLSTM-CTC layers to obtain
+final transcription. Inspiring from these, Bluche
+et al proposed a gated convolutional model
+for computing more generic image features [4].
+Puigcerver [37] showed the effectiveness of single
+dimensional LSTM layers over multi dimensional
+ones. Further, Dutta et. al. [9] made a com-
+prehensive study demonstrating effects of data
+augmentations, pretraining and use of Spatial
+Transformer Network (STN) [20].
+Sequence-to-Sequence Approaches. The
+CTC method has the drawback that it prevents
+the generation of sequences longer than the input
+sequence, which is a sequence of feature maps
+[22, 31]. As feature maps get smaller, due to
+convolution and max pooling operations, the gen-
+erated sequence becomes shorter, which in turn
+could result in missing transcriptions. Hence,
+attention based sequence-to-sequence methods
+have been developed in order to overcome the
+shortcomings of the CTC and to leverage their
+sequence learning capabilities on handwriting
+recognition [22–24, 31]. The fundamental idea
+with these methods is to use CNN-RNN (usu-
+ally a BiLSTM) to encode the input image as a
+sequence of features, and then an attention based
+RNN, usually an LSTM or a GRU, to decode the
+encoded sequence. The overall network is opti-
+mized with the cross entropy loss function, applied
+over each frame through the output sequence.
+Among such approaches, Micheal et al [31]
+utilized the CNN-BiLSTM approach where the
+CNN model learned to encode the handwrit-
+ing image and the attention-based LSTM model
+learned to decode the encoded representation into
+sequence of characters. Authors compared differ-
+ent attention mechanisms such as content-based,
+location-based and penalized attention, and fur-
+ther combined the CTC loss along with the cross
+entropy loss to increase model capabilities. Kass
+et al [24] integrated the spatial transformer net-
+work at the forefront of their sequence-to-sequence
+model to reduce handwriting variations before
+feeding images to the rest of the architecture.
+Apart from these, Kang et al [22] incorporated
+a character level language model into training
+phase where they feed the attention based LSTM
+decoder with the concatenation of encoder and
+language model outputs.
+More recently, transformer [44] based models
+have been used, due to their substantial achieve-
+ments on sequence related tasks [7, 27]. Diaz
+et al compared CTC and sequence-to-sequence
+approaches, experimented with the transformer
+decoder and found the best performing model
+as a self-attention encoder with the CTC decod-
+ing. Li et al, on the other hand, employed the
+Vision Transformer (ViT) [8] as an encoder and
+vanilla transformer decoder, taking advantage of
+pretrained ViT and transformer decoder. They
+obtained the state of the art results and further
+showed the effectiveness of their model and pre-
+training scheme, without any post processing or
+external language.
+Data Augmentation & Synthetic Data
+Generation. In addition to model related devel-
+opments, most of the studies proposed solutions
+for dealing with data sparseness issue. There
+are two common approaches: (1) applying data
+augmentation techniques at train time for intro-
+ducing a broad range of handwriting styles, (2)
+generating synthetic handwriting images to pro-
+vide enough and diverse handwriting styles to
+deep learning models.
+Affine transformations such as rotating, scal-
+ing, and shearing are heavily applied and are
+shown to be effective methods for mimicking hand-
+writing styles [9, 36, 47]. More complex augmen-
+tation techniques are also proposed. Wigington
+et al [46] developed a distortion method along
+with a profile normalization technique to vary
+letter shapes, which in turn generates more dis-
+criminative letter styles. Further, Luo et al [28]
+proposed to learn augmentation as a joint-task
+during training of the networks.
+The second approach to reducing data sparse-
+ness involves generating synthetic handwritten
+samples. Most of the studies have generated
+their own synthetic data, either in word or line
+level, and experimentally shown their effective-
+ness. While some have synthesized a few millions
+of handwriting images using words or sentences
+from known, large corpora [9, 22, 47], others used
+
+=== PDF PAGE 4 ===
+Springer Nature 2021 LATEX template
+4 Article Title
+BiLSTM
+Max Pooling
+ Convolution
+ Max Pooling
+ Column Wise
+Max Pooling 
+Encoded
+Representation
+Fully Connected + CTC
+Impossible to say.
+Fig. 2 Our proposed deep learning network consisting of CNN-BiLSTM models as encoder and CTC as decoder.
+synthetic data generated for scene-text recogni-
+tion problem [24], or cropped lines from pdf files
+containing handwriting text [27]. However, though
+the above methods report performance increase,
+none of them have published their dataset, which
+leaves the problem unsolved for other researchers.
+As for test time augmentation, there are only
+a few studies [9, 36, 46] in which they follow sim-
+ilar approaches. The idea is to augment the input
+image at the test phase and then generate a new
+transcription based on the outputs of the origi-
+nal image and of the augmented ones. Poznanski
+et al [36] applied 36 different transformations on
+an image at test time, retrieved model outputs
+for these augmented images and the original one,
+and afterwards took the mean of these outputs as
+the final outcome. While Dutta et al [9] followed
+the same approach in [36], Wigington et al [46]
+employed 20 transformations, obtained the corre-
+sponding transcriptions and picked the final one
+with respect to the lowest CTC loss value.
+3 CNN-BiLSTM Model
+Inspired from [39], and its later accomplished
+successors [4, 9, 37], we followed a similar deep
+learning architecture and more details could be
+found in [26]. The architecture consists of three
+fundamental blocks: feature extraction from the
+input image using convolutional layers (Section
+3.1); processing the extracted deep features as a
+sequence using bidirectional LSTMs (Section 3.2);
+and producing the sequence of output characters
+with the help of CTC decoding (Section 3.3).
+These modules are described in detail below and
+the network structure is depicted in Figure 2.
+3.1 Feature Extraction
+The network uses 12 convolutional layers with 3×3
+kernels for feature extraction. Max pooling oper-
+ation, with 2 × 2 kernel, is applied two times in
+total; after the first two and following four con-
+volution layer blocks. The convolution layers in
+these blocks have 32, 64 and 128 number of filters.
+ReLU [32] activation function and batch normal-
+ization [19] are applied after each convolution for
+faster convergence and easier training. The CNN
+network produces a feature map tensor in the form
+of D × H × W where D corresponds to number
+of output filters or depth of feature maps; H and
+W stand for height and width of feature maps,
+respectively. Then, we apply a max-pooling func-
+tion over the height dimension and interchange the
+dimensions, resulting a tensor of W × D.
+This output represents D dimensional feature
+vectors for a sequence of length W . More formally,
+W could be written as W = [w1, w2, ..., wt], indi-
+cating a sequence of t time frames where wi ∈ RD
+for i ∈ {1, 2, . . . , t}.
+We intentionally avoided using deep CNN net-
+works in order not to narrow down the feature
+maps too much. Otherwise, the CTC algorithm
+would only allow producing shorter sequences
+due to its constraints. Nonetheless, we conducted
+
+=== PDF PAGE 5 ===
+Springer Nature 2021 LATEX template
+Article Title 5
+experiments with a different number of convo-
+lution and max-pooling layers and even tried
+well-known image feature extractors like ResNet18
+[17] architecture to decide the baseline model.
+We explain the outcomes of these experiments in
+Section 6.2.
+3.2 Sequence Encoding
+This phase processes the sequence of features
+crafted by the feature extraction step. The idea
+is to incorporate sequence learning capabilities of
+Recurrent Neural Networks to obtain sequences of
+features representing the input handwritten text
+better.
+Following [4, 9, 37, 39], we utilised a bi-
+directional LSTM model as well, leveraging
+learned contexts from both directions. We used
+two BiLSTM layers having 256 hidden nodes,
+without any dropout [42] applied. We fed the
+BiLSTM layers with the delivered sequence of fea-
+tures, W × D, and the BiLSTM produces a new
+tensor of size W ×(2 × K), where K stands for the
+hidden dimension size of the BiLSTM layer which
+is equal to 256. The produced tensor, sequence of
+feature vectors, holds an encoded representation
+of the input handwriting image in a feature space.
+Additionally, we explored bi-directional Gated
+Recurrent Unit (GRU) [6] based models and
+conducted experiments with different number of
+recurrent layers and hidden dimension sizes. Sub-
+section 6.2 illustrates the effect of these experi-
+ments.
+3.3 CTC Decoding
+After passing the input image through the first
+two phases, feature extraction and sequence learn-
+ing, the encoded representation of the input is
+obtained in the following form W × (2 × K); for-
+mally W = [ w1, w2, ..., wt] where wi ∈ RH for
+i ∈ {1, 2, . . . , t}. Here, H stands for 2×K or a real
+value 512 in our case of K being set to 256.
+Then, the encoded sequence representation,
+W ×(2×K), is mapped to a sequence of probability
+distributions over alphabets of recognizable char-
+acters, resulting in W × C. To do so, we utilised
+two fully connected layers; the first one is fol-
+lowed by a ReLU activation and the second one
+outputs through C number of cells. Further, the
+SoftMax function is applied to produce a sequence
+of probability distributions defined over the alpha-
+bet. Then, CTC function processes the output for
+labelling the sequence, allowing the whole network
+to be end-to-end trainable.
+3.4 Word Level Decoding
+We employed three different decoding methods at
+the test phase to obtain the final transcription
+from the model output, which is a sequence of
+probability distributions: greedy, beam search [12]
+and word beam search [38]. Greedy decoding is
+the simplest one which picks the most likely char-
+acter at each time frame. Although it is intuitive
+to select a character with the highest probability,
+it is not guaranteed to generate the most likely
+transcription sequence.
+Instead of selecting one character at a time,
+beam search keeps k most likely transcriptions at
+each time frame and produces a transcription with
+the highest score among these k alternatives [12].
+Word Beam Search (WBS), on the other hand, is
+an extension of the beam search, which constrains
+words to be in a given lexicon and allows non-word
+characters to occur inside words [38]. Moreover,
+the algorithm incorporates a 2-gram word-level
+language model for scoring words through decod-
+ing. We used WBS algorithm to output the final
+transcription; set beam width as 150 and con-
+figured word beam search to utilize the 2-gram
+language model.
+4 Data Augmentation &
+Synthetic Data Generation
+4.1 Public-Domain Datasets
+The handwriting recognition domain lacks high-
+quality, open-access datasets with a high number
+of samples, even though the problem has been
+studied for decades. There are a few common
+datasets that contain full sentences; namely, IAM,
+Rimes, Bentham and Washington [10, 16, 29, 43]
+where the last two consist of only historical hand-
+writing images, which are not suitable for modern
+cases.
+IAM dataset was first published in 1999 [29],
+and still is the most commonly used English hand-
+writing dataset. It contains handwriting texts in
+English written by 657 different people. There
+are 1,539 scanned pages, partitioned into 10,373
+
+=== PDF PAGE 6 ===
+Springer Nature 2021 LATEX template
+6 Article Title
+(b)
+(a)
+(c)
+Fig. 3 Original image along with the augmented samples.
+(a) Original image. (b) Images augmented by affine trans-
+form: first two lines are sheared, the last one is rotated. (c)
+Images applied elastic distortion and perspective transform
+from geometric conversions.
+labelled text lines and 79 different characters.
+To the best of our knowledge, there is no other
+public dataset in English with non-historical and
+line-level handwriting images.
+Rimes dataset [16] consist of French handwrit-
+ing and has been used for evaluating generaliza-
+tion abilities of models for a long time. However,
+we have not been able to access to the dataset
+using official channels and their websites, as also
+indicated here 2. Therefore, our experiments will
+not include results on this dataset.
+Due to this data sparseness, current methods
+usually exploit data augmentation and synthetic
+data generation techniques. Fundamental idea is
+to alleviate the lack of data problems and present
+various handwriting styles for better generaliza-
+tion. Yet, these works have not published the
+synthetic datasets they have crafted, which in turn
+disallows a common evaluation protocol.
+4.2 Data Augmentation
+Although data augmentation for visual tasks has
+been explored extensively [40], there are a cou-
+ple of studies that proposed novel approaches to
+augment handwriting images [28, 41, 46], while
+others utilized common methods such as affine
+transformations [9, 36, 46, 47].
+2https://github.com/jpuigcerver/Laia/issues/44
+Following [9, 36, 47], we employed affine con-
+versions including shear and rotation to generate
+natural looking handwriting images. Moreover, we
+applied elastic distortion [46] and geometric trans-
+formations [28] to further increase the handwriting
+variability. Augmented examples with these con-
+versions are displayed in Figure 3.
+Shear is a linear affine transformation that
+takes a point ( x, y) ∈ R2 and maps it to ( x +
+ky, y) ∈ R2, if it conducts horizontal conversion.
+Here k denotes the scaling factor determining how
+many pixels to move in an image. Rotation is
+another linear affine transformation that rotates
+a point ( x, y) in the counter-clockwise direction
+by θ degree. Using these shear and rotation trans-
+formations makes it possible to mimic slanted
+handwriting styles as illustrated in Figure 3 (b).
+Elastic distortion, on the other hand, is a non-
+linear transformation that elastically changes the
+shape of a letter. We used the method in [41] where
+displacement fields ∆x and ∆y are sampled from a
+probability distribution. First, they sample x and
+y positions of the field from a uniform distribu-
+tion between −1, +1; then, convolve these fields
+separately with a 1-dimensional Gaussian kernel
+of σ standard deviation; finally, the fields get mul-
+tiplicated by α value to determine the distortion
+intensity. Overall, the method is able to distort
+handwriting letters using σ and α parameters.
+We also use geometric transformations, as
+proposed in [28], which transform an image by
+moving set of predefined points to new posi-
+tions. The movement of the points is determined
+via an agent network, where this transformation
+method is optimized jointly with text recogni-
+tion module to craft readable yet hard samples.
+We used closed-form versions of their augmenta-
+tions3, namely distortion, stretch and perspective,
+and grouped them under the name of geometric
+transformations.
+These transformations were applied to the
+input image more than once with different param-
+eters to generate distinct handwriting styles. We
+decided on the range of parameters of the augmen-
+tation methods by visual inspection. We deformed
+the letter shapes to some degree while considering
+the readability of the handwriting. During train-
+ing, input images undergo a transformation with
+3publicly shared in https://github.com/Canjie-Luo/Text-
+Image-Augmentation
+
+=== PDF PAGE 7 ===
+Springer Nature 2021 LATEX template
+Article Title 7
+Fig. 4 Examples of synthetically generated handwriting line images.
+a probability p = 0.5, which makes it practically
+impossible to introduce the same image again.
+We trained our base model with and with-
+out these augmentations in order to evaluate their
+effects. Outcomes of these experiments are given
+in detail in Section 6.3.
+4.3 Synthetic Data Generation
+Many state-of-art systems craft their synthetic
+dataset following similar steps, such as employing
+texts written in widely used large corpora [1, 11] or
+crawling text from the internet [22] to synthesize
+artificially written handwritten images.
+We combined WikiText-2 [30], Brown [11],
+and training text of IAM dataset (which cor-
+responds to LOB corpus [1]) as the corpus to
+generate images from. Then the texts were pre-
+processed to have a unified form with correctly
+tokenized words; sentences were tokenized into
+words and punctuation was removed. At most 8
+word-sentences are picked to generate lines syn-
+thetically. More than 200 handwriting TrueType
+fonts were collected from the internet and then
+utilized to synthesize images. We took advantage
+of the trdg tool 4 to generate synthetic images
+using these corpora and fonts. Overall, we have
+generated almost 2.5 million synthetic handwrit-
+ing image lines, example images are illustrated in
+Figure 4.
+4https://github.com/Belval/TextRecognitionDataGenerator
+5 Test Time Augmentation
+Based on our initial observation that a large
+majority of character and word errors originated
+from a small portion of text lines, coupled with
+the fact that text lines may be recognized better if
+they were not slanted or rotated, we hypothesized
+that test time augmentation would help.
+For the offline handwriting recognition prob-
+lem, the idea of the test time augmentation is
+to apply transformations to an input handwrit-
+ing image at the test phase, obtain transcriptions
+of the corresponding augmented images, and then
+decide on the best decoding. The idea was used
+before in [9, 36, 46], however we evaluated differ-
+ent methods for choosing or constructing the final
+recognition output, given the recognition outputs
+of different augmentations. While it is a simple
+and effective idea, test time augmentation is not
+widely used or evaluated due to the added decod-
+ing time; however, the method could be preferable
+in the case of batch processing, where time is not
+too critical.
+For test augmentation, we applied 16 different
+shear and rotation augmentations in total to the
+original image at test time and retrieved transcrip-
+tions of both augmented images and the original
+image. We then obtained the overall score by com-
+bining the optical score of the deep learning model,
+OPs, and a language model score, LMs over the
+decoded transcription:
+score = (λ × OPs) + (ω × LMs) (1)
+where OPs is obtained from the WBS decoding
+algorithm and LMs denotes the language model
+
+=== PDF PAGE 8 ===
+Springer Nature 2021 LATEX template
+8 Article Title
+-17.77
+0.6
+LM Score 
+Original
+ Prediction
+-12.88
+Final Score 
+-5.55
+0.4
+Optical Score 
+oat it 's a good start .
+Sheared -0.3 degree
+-14.37
+Final Score 
+-12.13
+0.4
+Optical Score 
+bat it's a good start 
+Rotated 2.5 degree 
+-7.98
+Final Score 
+-4.50
+0.4
+Optical Score 
+but it's a good start .
+-10.31
+0.6
+LM Score 
+-15.87
+0.6
+LM Score 
+(a)
+(b)
+(c)
+Prediction
+Prediction
+Fig. 5 An example application of the scoring transcriptions. (a) Output of the original image is scored using the equation
+1. The optical score is obtained from the deep learning network. The language model score is computed using the 4-gram
+language model. (b) and (c) shows the scoring steps of the transformed images. The output with the lowest final score is
+picked as the final output, which is the correct transcription of the handwriting.
+score obtained from the below defined 4-gram
+language model. Then the transcription with the
+highest score was picked as the final outcome.
+Through the experiments, we fit values for λ and
+ω.
+We trained the language model as a 4-gram
+model on WikiText-103 [30] corpus with Kneser-
+Ney smoothing [33] using KenLM 5 tool. Before
+training the language model, we applied prepro-
+cessing steps including tokenization of the words,
+lowering the letters and removing punctuation.
+Figure 5 illustrates the proposed method in
+a simplified fashion. For each image (original or
+transformed), the optical score, produced by the
+model for the image and the language model score
+5https://github.com/kpu/kenlm
+computed for the corresponding transcription are
+combined using the above-defined formula. The
+best transcription with the highest score ( −7.98
+for the example in the figure) is picked as the final
+output, which is the correct decoding obtained
+from the image rotated by 2.5 degrees for this case.
+In addition to the simplicity of this method,
+it is applicable to any network generating charac-
+ter sequences from handwriting images. Further,
+the method achieves superior results (see Table 9)
+once the best decoding is selected with respect to
+the lowest error, as if an oracle telling the truth.
+This suggests that a better scoring function will
+yield greater success.
+
+=== PDF PAGE 9 ===
+Springer Nature 2021 LATEX template
+Article Title 9
+6 Experiments
+We have run comprehensive evaluations, including
+the input scaling (6.1), the baseline architecture
+(6.2), the data augmentation (6.3), pretraining
+with synthetic data (6.4), effect of lexicon, let-
+ter case and punctuation (6.5), and the test time
+augmentation (6.6).
+Through the experiments, models were trained
+and evaluated on the corresponding Aachen splits
+of the IAM dataset. Training was set to last by
+200 epochs at most and stopped after 10 epochs of
+non-decreasing validation loss. Initial learning rate
+was 1e - 3 for most of the experiments though it
+was tailored in some cases. Rmsprop optimizer was
+used with weight decay being set to 1e-5. Batch
+size was kept fixed at 16.
+We assessed the performance of the models
+using character error rate (CER) and word error
+rate (WER), which corresponds to normalized
+Levenshtein Distances between the predicted and
+ground truth character sequences. Though we uti-
+lized the three decoding methods, we share CER
+and WER scores from the word beam search
+algorithm in the tables.
+6.1 Input Scaling
+Input images were resized to 100×960 before feed-
+ing to recognition models. It is intuitive to keep
+image height as fixed and resize the width, pre-
+serving the aspect ratio. However, in our prelimi-
+nary experiments we acquired worse performance
+with this approach and other fixed image sizes.
+We also tried keeping images as is and feeding
+to models one-by-one as keeping batch size set to
+1, yet this approach was neither effective nor effi-
+cient. Thus, we resized images to 100 × 960 and
+feed through the deep learning network.
+6.2 Model Experiments
+Our preliminary experiments were designed to
+decide on the baseline model that would be
+used in upcoming experiments. Inspired from
+[4, 9, 37, 39], we followed a similar CNN-RNN-
+CTC architecture as explained in Section 3. We
+explored combinations of CNN and RNN mod-
+els with different hyperparameters through the
+experiments.
+Backbone. We first experimented with the num-
+ber of convolution layers in the CNN backbone
+network. Keeping the rest of the layers fixed, we
+employed separate CNN networks with 8, 10, 12,
+and 14 layer convolutions while applying 2 or 3
+max pooling operations. In addition, a smaller
+ResNet [17] variant, ResNet18, was utilized to
+experiment with a deeper model compared to
+previous ones. For the sequence encoding, a two-
+layered bi-directional LSTM network was used
+with a hidden dimension of 256. During these
+backbone and sequence encoding experiments no
+data augmentation was applied to measure the
+direct effect of these model choices.
+T able 1 Impact of backbone configuration on the IAM
+validation split.
+Backbone # Max Pooling CER % WER %
+8 conv. layers 2 5.49 16.34
+10 conv. layers 2 5.95 17.17
+12 conv. layers 2 5.01 15.14
+14 conv. layers 3 5.37 15.51
+ResNet18 default 6.08 18.27
+As displayed in Table 1, a 12-layer CNN net-
+work with two max pooling operations surpassed
+the other ones. Though there is no significant
+performance gap, shallower or deeper the model
+obtains lower scores; therefore, we preferred con-
+tinuing with the best scored model with the least
+parameters and built the baseline model on top
+of the 12-layer CNN network.
+Sequence Encoding. After deciding on the
+backbone network, our next experiment is to
+select a sequence-encoder model. To this end,
+we evaluated the performance of bi-directional
+LSTM and GRU networks. We varied the number
+of recurrent layers and hidden layer sizes of these
+deep learning networks. Table 2 illustrates the
+model configurations and the corresponding error
+rates on the validation split of the IAM dataset.
+Two recurrent layers fit better for this prob-
+lem as seen in Table 2. Models competed with
+different hidden dimension sizes yet there was
+no exact winner of this experiment. However, we
+intended to keep the model simple while preserv-
+ing its capabilities. Thus, we preferred to complete
+
+=== PDF PAGE 10 ===
+Springer Nature 2021 LATEX template
+10 Article Title
+the baseline model with 2-layered BiLSTM hav-
+ing hidden dimensions of 256, which outperformed
+the other networks.
+The rest of the experiments were built upon
+this baseline model consisting of 12 layered CNN
+with two max pooling functions and two-layered
+BiLSTM with 256 hidden dimensions followed by
+a CTC layer.
+T able 2 Performance of sequence encoding models,
+BiLSTM and BiGRU, with different configurations on the
+IAM validation split. Here the backbone network is the
+one with the 12 convolutional layers and 2 max-pooling
+operations as displayed in Table 1.
+RNN Model # Layers Hidden
+Dim. Size CER % WER %
+BiLSTM
+1 256 4.95 15.42
+512 5.26 15.99
+2 256 4.62 14.62
+512 4.93 14.93
+3 256 5.07 15.64
+512 5.24 16.14
+BiGRU
+1 256 5.27 16.54
+512 4.90 15.48
+2 256 5.01 15.14
+512 4.85 14.94
+3 256 5.05 15.53
+512 5.70 16.33
+6.3 Data Augmentation
+After establishing the baseline model, we explored
+the effect of data augmentation techniques, which
+are described in Section 4. The transformations
+were either applied separately or in combination,
+as shown in Table 3, to assess the effect of each
+method. We only performed one conversion on an
+image so as not to deform handwritings too much
+and it was only applied with a probability p = 0.5.
+We determined to parameters of the transfor-
+mations by visually inspecting augmented images.
+For the shear transformation, k is sampled from a
+uniform distribution between −0.6 and +0.6 with
+a fixed random seed to apply the same conver-
+sions through all the experiments. Rotation angle
+was kept in small degrees from −2.5 to +2 .5 to
+mimic slanted handwritings while keeping letters
+T able 3 Effect of train time data augmentations applied
+in separate and in combination using the baseline network
+defined above. For the combined augmentations, only one
+of the transformations is used on an image to keep
+readability of handwritings while deforming handwriting
+styles. An augmentation is applied with a probability p =
+0.5.
+Augmentation Method CER % WER %
+Baseline from Table 2 4.62 14.62
+(No Augmentation)
+Shear 4.28 13.44
+Rotate 4.67 14.06
+Elastic 4.48 14.72
+Geometric 4.52 14.29
+Shear + Elastic + Geometric 4.20 13.18
+Shear + Rotate + Elastic 4.17 13.21
+Shear + Rotate + Elastic
++ Geometric 4.06 13.02
+inside image borders. Elastic distortion variables
+were picked from the following sets σ ∈ {3, 4}, α ∈
+{15, 20}. Once the parameters set, we trained the
+models using these augmentations and evaluated
+without any transformation applied.
+Shear conversion is the most convenient way to
+mimic handwriting thereby the model with only
+shear augmentation obtained better scores com-
+pared to other single transformation experiments,
+as revealed in Table 3. Even though the other
+methods were not as effective on their own, their
+combination achieved better performance due to
+generating more diverse handwriting styles, as
+observed over the validation set. Hence, we per-
+formed the next set of experiments using these
+augmentations at train time.
+6.4 Pretraining with Synthetic Data
+Generating synthetic handwriting images is
+another commonly used strategy to reduce the
+data sparseness and increase the generalization
+capacity of models. Section 4 describes in detail
+how we produced images from the utilized corpora
+using an online image generation tool.
+We, firstly, trained the baseline deep learn-
+ing network on the generated data consisting of
+almost 2.5 million synthetic handwriting images.
+We applied the data augmentation methods,
+explained in Section 4, to the synthetic images in
+order to push the diversity further. The synthetic
+
+=== PDF PAGE 11 ===
+Springer Nature 2021 LATEX template
+Article Title 11
+dataset was not split into validation or test parti-
+tions; the model was directly trained on the whole
+dataset by 5 epochs.
+T able 4 Results of our pretrained deep learning model,
+on the IAM validation and test splits. Linear layer :
+parameters of the output linear layers are updated while
+fine-tuning. All layers : all the parameters are updated.
+Pretraining Validation Test
+CER
+(%)
+WER
+(%)
+CER
+(%)
+WER
+(%)
+Baseline from Table 3
+(No Pretraining) 4.06 13.02 5.20 14.86
+Pretrained:
+Linear layer 4.21 14.16 5.44 15.58
+All layers 3.88 12.71 5.05 14.46
+We reduced the character errors by around
+0.15% and word errors around 0.4% (from 5.20%
+to 5.05% for character errors and from 14.86%
+to 14.46% for word errors) by only pretrain-
+ing the model on more than 2 million synthetic
+handwriting images. However, there is room for
+improvement once there is more synthetic and
+natural handwriting data for pretraining and fine-
+tuning. We performed the next set of experiments
+using this pretrained model.
+Afterwards, the pretrained network was fine-
+tuned on the IAM dataset train partitions in two
+ways: (1) freezing all the parameters of the model
+except the output linear layers. (2) updating all
+the parameters. Then, the fine-tuned model was
+evaluated on the IAM validation and test parti-
+tions and the corresponding scores are given in
+Table 4.
+Updating only the parameters of the final lin-
+ear layers did not reveal better scores, as expected,
+due to the difference in handwriting styles between
+synthetic and natural ones. Hence, we adopted
+pretraining all layers, in the remainder of the
+experiments. The results of this experiment are
+shown in Table 4.
+6.5 Effect of Lexicon, Letter Case,
+and Punctuation
+We decoded model outputs using three different
+methods (greedy, beam search, and word beam
+search) and gave the best results obtained by the
+word beam search algorithm in all result tables.
+We used greedy and beam search methods as is; in
+other words, without adding an external language
+model or considering a lexicon during decod-
+ing. However, word beam search builds a prefix
+tree from a corpus i.e. lexicon to keep decoded
+words in the lexicon. Therefore, we explored the
+effect of lexicon size and out-of-vocabulary rate on
+decoding performance.
+We experimented with three different English
+corpora and their combinations for building the
+lexicon. The base lexicon consists of the texts from
+the IAM training partition, which is part of the
+LOB corpus [1]. On top of it, we appended the
+Brown corpus, which is a million-word English
+text corpus consisting of texts from 15 different
+categories. We also added the WikiText-2 corpus
+comprising over two million English words. Fur-
+ther, we assessed their combination as well as the
+validation partition of the IAM dataset. The lex-
+icon built upon the IAM validation split has zero
+out-of-vocabulary rate, which is not possible for
+real-time scenarios yet it underlines the effect of
+the lexicon.
+T able 5 Reflection of lexicon size with number of unique
+words (after tokenization, lowering and discarding
+punctuation) and out-of-vocabulary (OOV.) rates on
+errors. B stands for the Brown corpus and W2 for the
+WikiText2. corpus
+Lexicon #
+Words
+OOV.
+Rate
+CER
+(%)
+WER
+(%)
+Baseline from Table 4
+(IAM Train) 7.845 0.54 3.88 12.71
++ B 57.606 0.15 3.49 11.77
++ W2 60.244 0.21 3.56 11.92
++ B + W2 82.449 0.13 3.46 11.70
++ IAM Validation 2.251 0.00 2.2 6.35
+The error rate depends on the context of the
+words in the lexicon. As the rate of the out
+of vocabulary (OOV) words decreased, the error
+rates gets reduced as well, as illustrated in Table
+5. In a normal test scenario, it is not possible to
+contain all likely words in a lexicon, which is the
+IAM Test case in the table. Nonetheless, most of
+the time, we obtained lower error rates when using
+larger lexicons. However, one needs to account the
+trade-off between the running time with a bigger
+lexicon and obtained performance. We preferred
+
+=== PDF PAGE 12 ===
+Springer Nature 2021 LATEX template
+12 Article Title
+going with the lexicon consisting of train partition
+of IAM, Brown and WikiText-2, since there is no
+significant difference of running time compared to
+smaller lexicons in Table 5.
+The error rate depends on the context of the
+words in the lexicon. As the rate of the out
+of vocabulary (OOV) words decreased, the error
+rates gets reduced as well, as illustrated in Table
+5. In a normal test scenario, it is not possible
+to contain all likely words in a lexicon, which
+is the IAM Test case in the table. Nonetheless,
+most of the time, bigger the lexicon is lower the
+errors achieved. However, one needs to account the
+trade-off between the running time with a bigger
+lexicon and obtained performance. We preferred
+going with the lexicon consisting of train partition
+of IAM, Brown and WikiText-2, since there was
+no significant difference of running time compared
+to smaller lexicons in Table 5.
+We decoded and compared the transcriptions
+with the ground truth text in a case-sensitive
+manner and also counting punctuation errors.
+However, some work in the literature report that
+they generated case insensitive text without any
+punctuation [9, 46], while others do not specify
+this. As a matter of fact, the IAM dataset contains
+sentences with several quotes and punctuation
+around them. As this is an important distinc-
+tion, we performed experiments considering both
+strategies, with results given in Table 6. However,
+unless otherwise stated explicitly, we shared all
+the errors measured with case sensitive letters and
+punctuation through the tables.
+T able 6 Effect of the letter case and the punctuation
+when decoding over the validation split of the IAM
+dataset. Decoding method up to this experiment involved
+case sensitive letters with punctuation.
+Case & Punctuation CER
+(%)
+WER
+(%)
+Baseline (Case Sensitive + Punctuation) 3.46 11.70
+Case Insensitive + Punctuation 3.16 10.58
+Case Insensitive + No Punctuation 2.87 8.27
+6.6 Test Time Augmentation
+Test time augmentation is a simple and effective
+technique which offers a feasible time complex-
+ity for batch processes. We described our method
+T able 7 Validation and test scores with and without test
+time augmentation, in case sensitive recognition, as well
+as ignoring punctuation mistakes. Oracle indicates the
+case where the final transcription was selected so as to
+minimize the character error, among all transcriptions
+obtained with test augmentation.
+Validation Test
+Test Time
+Augmentation
+CER
+(%)
+WER
+(%)
+CER
+(%)
+WER
+(%)
+- 3.46 11.70 4.80 13.85
+✓ 3.22 10.63 4.37 12.03
+Oracle 2.28 8.54 3.02 9.35
+of using test time augmentation to obtain better
+transcriptions in Section 5.
+Once the final transcription is obtained, it
+is compared with the ground truth character
+sequence and error score in terms of CER and
+WER metrics are measured. We assessed the pro-
+posed test time augmentation method on ignoring
+errors involving case or punctuation mistakes, to
+gain further insight.
+Table 7 shows that applying test time augmen-
+tation reduced the character errors by almost 0.5%
+and word errors by around 2%, when decoding
+with case-sensitive letters and punctuation. The
+error rate gets decreased further (almost 1% for
+character errors and 2.5% for word errors) when
+decoding with case insensitive letters without
+punctuation, as displayed in Table 8.
+In addition to our scoring function, we per-
+formed test time augmentation and selected the
+final transcription with respect to the lowest CER
+score, among all transcriptions. We named this
+method as Oracle since it knows in advance the
+error due to the comparison with the ground truth
+sequence, which is not a possible in real life. How-
+ever, our aim was to show the how much gain
+is possible with this Oracle method. As Tables
+T able 8 Validation and test scores with and without test
+time augmentation considering case insensitive letters
+ignoring punctuation errors .
+Validation Test
+Test Time
+Augmentation
+CER
+(%)
+WER
+(%)
+CER
+(%)
+WER
+(%)
+- 3.38 11.29 4.38 12.00
+✓ 2.84 9.05 3.59 9.44
+Oracle 1.61 6.42 2.63 7.74
+
+=== PDF PAGE 13 ===
+Springer Nature 2021 LATEX template
+Article Title 13
+7,8 indicates, there is room for improvement once
+a better scoring function is employed. Moreover,
+this strategy is applicable to any model generat-
+ing character sequences from handwriting images,
+which makes it considerable for other models as
+well.
+We also analyzed the time running times with
+decoding of original images. We run our proposed
+methods on two different machines with the fol-
+lowing configurations: (1) AMD Ryzen 3970X, 64
+GB ram with Geforce RTX 3090. (2) Intel i7
+10700K, 32 GB ram with Gefore RTX 3080. The
+time taken for each image was measured and its
+average with the standard deviation for all the
+samples in the IAM test partition is computed for
+both of our methods, as shared in Table 9. Even
+though this test time augmentation method slows
+down obtaining the final transcription, it could be
+preferred for batch processing of documents when
+there is no real time requirements. Additionally,
+better scoring function would reveal greater suc-
+cess without needing any more model parameters
+or more data.
+T able 9 Running times of test time augmentation
+method on two different machines with CPU & GPU
+options. Mean and standard deviation of the elapsed time
+over the IAM test partition.
+Original
+Time (s)
+With Test Time
+Aug. Time (s)
+Machine Processing
+Device Mean Std. Mean Std.
+PC 1 CPU 2.58 1.03 21.46 4.08
+GPU 2.27 0.98 19.33 3.84
+PC 2 CPU 3.64 1.12 25.54 4.56
+GPU 3.28 1.02 24.76 4.21
+7 Error Analysis
+Up to this point, we measured system performance
+in terms of CER and WER metrics and computed
+their mean over the IAM test partition. Once we
+examined the erroneous cases, we found out that
+a lot of the errors are contributed by a smaller
+number of text lines.
+In this section, we provide analysis in terms
+of the error distribution; explore difficult sam-
+ples along with possible ways to overcome these
+challenging handwriting samples; and share mis-
+labelled example lines from the IAM dataset. We
+analyzed the outputs of the best models without
+the test time augmentation, for simplicity.
+One can see in Figure 6 that in 42% of all the
+lines, all the characters were recognized correctly
+and in 80.89% of all the images in the IAM test
+set, there were at most 3 character mistakes. Note
+that the dataset has an average of 35.2 characters
+per line image with an 8.72 standard deviation.
+This is a rather surprising statistics, which we
+believe can indicate certain future research direc-
+tions. Based on this observation, we focused on
+test time augmentation, for example. Similarly,
+the model produced at most one incorrect word in
+68.75% of all the samples in the test split, where
+the mean number of words in lines is 8.90.
+Some of the most challenging writing samples
+are given in Figure 7. The figure shows exam-
+ples from IAM test dataset where our model made
+at least five character errors, which corresponds
+to 7% of the test set samples. Note that these
+handwritings are difficult for people as well.
+Furthermore, the IAM dataset contains par-
+tially or totally wrong ground truth labels which,
+in fact, affects the both training and testing
+phases. Therefore, we found and corrected the
+erroneous cases on the IAM test split in order
+to evaluate better. Example erroneous lines along
+with their issues are presented in the Appendix A.
+We will share the new, fixed metadata of the test
+split on the link 6.
+8 Comparison with the State
+of the Art
+Our approach is compared to state-of-art methods
+with varying characteristics, as shown in Table 10.
+However, it should be noted that direct compari-
+son of the models may not very meaningful, due
+to differences or omissions in training or testing
+criteria.
+Our model is able to compete with the sim-
+ilar approaches proposed in [4, 47]. However, we
+were not able to fully duplicate their results due
+to the differences including (1) extra data they
+used in training, (2) the language model they
+employed to support the deep learning network
+6https://github.com/firatkizilirmakk/handwriting-
+recognition
+
+=== PDF PAGE 14 ===
+Springer Nature 2021 LATEX template
+14 Article Title
+T able 10 Comparison of our approach with the state-of-the-art approaches. LM & Lexicon denotes the language model and the lexicon being used (if any) during
+decoding. Decoding indicates which method is used to decode network outputs into character sequence. Here WBS denotes the word beam search algorithm and bw
+is the beam width. #P is the number of trainable parameters (in millions) of the deep learning networks. CaseInsens. stands for case-insensitive decoding and
+NoPunct. denotes the decoding without considering punctuation.
+Authors Encoder Decoder Train Set LM & Lexicon Decoding #P CER % WER %
+Bluche [4] GCRNN CTC IAM + Multi. 7-gram LM + 50K - 0.75 3.2 10.5
+Xiao [47] CNN + LSTM CTC IAM + Synth. Brown + LOB WBS bw/150 - 3.03 8.66
+Michael [31] CNN + LSTM LSTM w. Att. IAM - Beam bw/16 - 4.87 -
+Kang [21] Transformer IAM + Synth. - Greedy 100 4.67 15.45
+Li [27] Transformer IAM + Synth. - Beam bw/10 334 3.42 -
+Li [27] Transformer IAM + Synth. - Beam bw/10 558 2.89 -
+Diaz [7] Self Att. + CTC Public 9-gram LM Greedy ∼12.5 3.15 -
+Diaz [7] Internal + Public 9-gram LM Greedy ∼12.5 2.75 -
+Ours CNN + LSTM CTC IAM + Synth. Brown + W102
+WBS bw/150
+∼3.6
+4.80 13.85
+WBS + TTA 4.37 12.03
+WBS + TTA +
+CaseInsens. + NoPunct. 3.59 9.44
+
+=== PDF PAGE 15 ===
+Springer Nature 2021 LATEX template
+Article Title 15
+(a) (b)
+Fig. 6 Cumulative character and word error rates obtained with the baseline model on the IAM dataset. (a) Illustrates
+cumulative character errors. Example: All the characters are predicted correctly in 42% of all the lines, which corresponds
+to 1226 line images; one or at most two characters are predicted incorrectly in 560 line images, which corresponds to 17%
+of all the lines (b) Displays cumulative word error rates following the same manner.
+output, and (3) the lexicon their methods select
+decoded words from. Yet, our method achieves a
+close performance to these works, plus with open
+and comprehensive evaluation.
+Others exploited the attention based
+approaches to make use of the advantages of these
+methods on sequence learning. In addition to deep
+learning architectures, they generated millions of
+synthetic handwriting images and/or crafted real
+handwriting images through the web, which is
+another factor of their success. As summarized in
+Table 10, Li et. al. [27] pretrained a Transformer
+model on their synthetic dataset, finetuned over
+the IAM and achieved superior results with-
+out applying any post processing method e.g.
+a language model or a lexicon. Diaz et. al. [7]
+obtained the state of the art performance where
+they preferred a simpler model with considerably
+less amount of parameters, trained on datasets
+they collected and supported the outputs with a
+9-gram language model.
+These works suggest that the crucial part of
+a successful handwriting recognition system is to
+utilize large number of high quality data, either
+synthetic or real. Once the data requirement is
+satisfied, it is better to employ the state of the
+art deep learning networks such as Transformer,
+Vision Transformer or other models with atten-
+tion mechanism. Next, the final output could be
+decided with the help of an n-gram language
+model to further increase the success.
+9 Summary and Conclusions
+We proposed a CNN-BiLSTM model for offline
+English handwriting and comprehensively evalu-
+ated it in regards to model architecture, data aug-
+mentation, synthetic data generation, and data
+representation. We have also suggested a sim-
+ple yet effective post processing method utilizing
+test time augmentation. Even though the method
+takes more time compared to decoding of a single
+image, it could be preferable in batch processes
+that do not have time constrains and it is applica-
+ble to any model producing sequence of characters
+from images.
+In addition to the usual metrics for assess-
+ing handwriting recognition models, we analyzed
+the error distributions to gain insights regarding
+challenges. We have shown that the majority of
+the errors stem from a relatively small portion
+of the test cases, which can be instructive for
+improvements.
+We will share our code openly upon publi-
+cation, to allow for other researchers, as well as
+reproducibility.
+References
+[1] Lancaster-oslo-bergen corpus of modern
+english (LOB) : [tagged, horizontal format] /
+stig johansson, http://hdl.handle.net/20.500.
+12024/0167, oxford Text Archive
+
+=== PDF PAGE 16 ===
+Springer Nature 2021 LATEX template
+16 Article Title
+waving , unkissed , from the window . And Dai , on the pavement , knowing in his 
+morsing , hired , from the window . rd dean , on the panime"t . knowing in his
+True:
+Prediction:
+CER: 18.0
+ WER: 6.0
+became great sighs of ecstacy
+become a.cat sials a ecras
+True:
+Prediction:
+CER: 14.0
+ WER: 6.0
+True:
+Prediction:
+carrying it into effect , and a subordinate
+crying ie into offeree , anda puler!inte
+True:
+Prediction:
+CER: 13.0
+ WER: 6.0
+got hotter as the day wore on and we rested
+got hater as the day we on and he rastled 
+CER: 7.0
+ WER: 4.0
+True:
+Prediction:
+with Sir John ? " she enquired cuttingly .
+wits Sir Son ? " She enquired cutling ly .
+CER: 6.0
+ WER: 5.0
+Fig. 7 Difficult samples from IAM dataset test partition, claiming samples for which model predicted with character errors
+bigger than 5 i.e. CER > 5 are not easy to read by people as well.
+[2] Bahdanau, D., Cho, K., Bengio, Y.:
+Neural machine translation by jointly
+learning to align and translate (2014).
+https://doi.org/10.48550/ARXIV.1409.0473,
+https://arxiv.org/abs/1409.0473
+[3] Bahl, L., Brown, P., de Souza, P., Mercer, R.:
+Maximum mutual information estimation of
+hidden markov model parameters for speech
+recognition. In: ICASSP ’86. IEEE Interna-
+tional Conference on Acoustics, Speech, and
+Signal Processing. vol. 11, pp. 49–52 (1986).
+https://doi.org/10.1109/ICASSP.1986.1169179
+[4] Bluche, T., Messina, R.: Gated convo-
+lutional recurrent neural networks for
+multilingual handwriting recognition. In:
+2017 14th IAPR International Conference
+on Document Analysis and Recognition
+(ICDAR). vol. 01, pp. 646–651 (2017).
+https://doi.org/10.1109/ICDAR.2017.111
+[5] Bunke, H., Bengio, S., Vinciarelli, A.:
+Offline recognition of unconstrained
+handwritten texts using hmms and
+statistical language models. IEEE Trans-
+actions on Pattern Analysis and Machine
+
+=== PDF PAGE 17 ===
+Springer Nature 2021 LATEX template
+Article Title 17
+Intelligence 26(6), 709–720 (2004).
+https://doi.org/10.1109/TPAMI.2004.14
+[6] Cho, K., van Merrienboer, B., Gulcehre,
+C., Bahdanau, D., Bougares, F., Schwenk,
+H., Bengio, Y.: Learning phrase repre-
+sentations using rnn encoder-decoder for
+statistical machine translation (2014).
+https://doi.org/10.48550/ARXIV.1406.1078,
+https://arxiv.org/abs/1406.1078
+[7] Diaz, D.H., Qin, S., Ingle, R.,
+Fujii, Y., Bissacco, A.: Rethinking
+text line recognition models (2021).
+https://doi.org/10.48550/ARXIV.2104.07787,
+https://arxiv.org/abs/2104.07787
+[8] Dosovitskiy, A., Beyer, L., Kolesnikov, A.,
+Weissenborn, D., Zhai, X., Unterthiner, T.,
+Dehghani, M., Minderer, M., Heigold, G.,
+Gelly, S., Uszkoreit, J., Houlsby, N.: An
+image is worth 16x16 words: Transform-
+ers for image recognition at scale (2020).
+https://doi.org/10.48550/ARXIV.2010.11929,
+https://arxiv.org/abs/2010.11929
+[9] Dutta, K., Krishnan, P., Mathew, M., Jawa-
+har, C.: Improving cnn-rnn hybrid networks
+for handwriting recognition. In: 2018 16th
+International Conference on Frontiers in
+Handwriting Recognition (ICFHR). pp. 80–
+85 (2018). https://doi.org/10.1109/ICFHR-
+2018.2018.00023
+[10] Fischer, A., Keller, A., Frinken, V., Bunke,
+H.: Lexicon-free handwritten word spotting
+using character hmms. Pattern Recog-
+nition Letters 33(7), 934–942 (2012),
+https://www.sciencedirect.com/science/
+article/pii/S0167865511002820, special Issue
+on Awards from ICPR 2010
+[11] Francis, W.N., Kucera, H.: Brown cor-
+pus manual. Tech. rep., Department of
+Linguistics, Brown University, Providence,
+Rhode Island, US (1979), http://icame.uib.
+no/brown/bcm.html
+[12] Graves, A.: Sequence transduction
+with recurrent neural networks (2012).
+https://doi.org/10.48550/ARXIV.1211.3711,
+https://arxiv.org/abs/1211.3711
+[13] Graves, A., Liwicki, M., Fern´ andez, S.,
+Bertolami, R., Bunke, H., Schmidhuber, J.:
+A novel connectionist system for uncon-
+strained handwriting recognition. IEEE
+Transactions on Pattern Analysis and
+Machine Intelligence 31(5), 855–868 (2009).
+https://doi.org/10.1109/TPAMI.2008.137
+[14] Graves, A., Liwicki, M., Fern´ andez, S.,
+Bertolami, R., Bunke, H., Schmidhuber, J.:
+A novel connectionist system for uncon-
+strained handwriting recognition. IEEE
+Transactions on Pattern Analysis and
+Machine Intelligence 31(5), 855–868 (2009).
+https://doi.org/10.1109/TPAMI.2008.137
+[15] Graves, A., Schmidhuber, J.: Offline
+handwriting recognition with multidi-
+mensional recurrent neural networks. In:
+Koller, D., Schuurmans, D., Bengio, Y.,
+Bottou, L. (eds.) Advances in Neural
+Information Processing Systems. vol. 21.
+Curran Associates, Inc. (2008), https:
+//proceedings.neurips.cc/paper/2008/file/
+66368270ffd51418ec58bd793f2d9b1b-Paper.
+pdf
+[16] Grosicki, E., Carr´ e, M., Brodin, J.M.,
+Geoffrois, E.: Results of the rimes
+evaluation campaign for handwritten
+mail processing. In: 2009 10th Interna-
+tional Conference on Document Analysis
+and Recognition. pp. 941–945 (2009).
+https://doi.org/10.1109/ICDAR.2009.224
+[17] He, K., Zhang, X., Ren, S., Sun,
+J.: Deep residual learning for image
+recognition. pp. 770–778 (06 2016).
+https://doi.org/10.1109/CVPR.2016.90
+[18] Hochreiter, S., Schmidhuber, J.:
+Long short-term memory. Neural
+computation 9, 1735–80 (12 1997).
+https://doi.org/10.1162/neco.1997.9.8.1735
+[19] Ioffe, S., Szegedy, C.: Batch normalization:
+Accelerating deep network training by reduc-
+ing internal covariate shift. In: Proceedings of
+the 32nd International Conference on Inter-
+national Conference on Machine Learning -
+Volume 37. p. 448–456. ICML’15, JMLR.org
+(2015)
+
+=== PDF PAGE 18 ===
+Springer Nature 2021 LATEX template
+18 Article Title
+[20] Jaderberg, M., Simonyan, K., Zisserman, A.,
+Kavukcuoglu, K.: Spatial transformer net-
+works. In: Proceedings of the 28th Inter-
+national Conference on Neural Information
+Processing Systems - Volume 2. p. 2017–2025.
+NIPS’15, MIT Press, Cambridge, MA, USA
+(2015)
+[21] Kang, L., Riba, P., Rusi˜ nol, M., Forn´ es, A.,
+Villegas, M.: Pay attention to what you read:
+Non-recurrent handwritten text-line recogni-
+tion. Pattern Recognition 129, 108766 (2022)
+[22] Kang, L., Riba, P., Villegas, M., Forn´ es,
+A., Rusi˜ nol, M.: Candidate fusion: Integrat-
+ing language modelling into a sequence-to-
+sequence handwritten word recognition archi-
+tecture. Pattern Recognition 112, 107790
+(2021)
+[23] Kang, L., Toledo, J., Riba, P., Villegas, M.,
+Forn´ es, A., Rusi˜ nol, M.: Convolve, attend
+and spell: An attention-based sequence-to-
+sequence model for handwritten word recog-
+nition: 40th german conference, gcpr 2018,
+stuttgart, germany, october 9-12, 2018, pro-
+ceedings. pp. 459–472 (01 2019)
+[24] Kass, D., Vats, E.: Attentionhtr: Handwritten
+text recognition based on attention encoder-
+decoder networks. In: Uchida, S., Barney, E.,
+Eglin, V. (eds.) Document Analysis Systems.
+pp. 507–522. Springer International Publish-
+ing, Cham (2022)
+[25] Krizhevsky, A., Sutskever, I., Hinton, G.E.:
+Imagenet classification with deep convolu-
+tional neural networks. In: Proceedings of
+the 25th International Conference on Neu-
+ral Information Processing Systems - Volume
+1. p. 1097–1105. NIPS’12, Curran Associates
+Inc., Red Hook, NY, USA (2012)
+[26] Kızılırmak, F.: Offline Handwriting Recogni-
+tion using Deep Learning with Emphasis on
+Data Augmentation Effects. Master’s thesis,
+Sabanci University (2022)
+[27] Li, M., Lv, T., Cui, L., Lu, Y., Floren-
+cio, D., Zhang, C., Li, Z., Wei, F.: Trocr:
+Transformer-based optical character recog-
+nition with pre-trained models (2021).
+https://doi.org/10.48550/ARXIV.2109.10282,
+https://arxiv.org/abs/2109.10282
+[28] Luo, C., Zhu, Y., Jin, L., Wang, Y.: Learn
+to augment: Joint data augmentation and
+network optimization for text recognition.
+2020 IEEE/CVF Conference on Computer
+Vision and Pattern Recognition (CVPR) pp.
+13743–13752 (2020)
+[29] Marti, U.V., Bunke, H.: The iam-
+database: an english sentence database
+for offline handwriting recognition. Inter-
+national Journal on Document Analysis
+and Recognition 5(1), 39–46 (Nov 2002).
+https://doi.org/10.1007/s100320200071,
+https://doi.org/10.1007/s100320200071
+[30] Merity, S., Xiong, C., Bradbury, J., Socher,
+R.: Pointer sentinel mixture models (2016).
+https://doi.org/10.48550/ARXIV.1609.07843,
+https://arxiv.org/abs/1609.07843
+[31] Michael, J., Labahn, R., Gruning, T.,
+Zollner, J.: Evaluating sequence-to-
+sequence models for handwritten text
+recognition. pp. 1286–1293 (09 2019).
+https://doi.org/10.1109/ICDAR.2019.00208
+[32] Nair, V., Hinton, G.E.: Rectified linear units
+improve restricted boltzmann machines. In:
+Proceedings of the 27th International Confer-
+ence on International Conference on Machine
+Learning. p. 807–814. ICML’10, Omnipress,
+Madison, WI, USA (2010)
+[33] Ney, H., Essen, U., Kneser, R.: On struc-
+turing probabilistic dependences in stochas-
+tic language modelling. Computer Speech &
+Language 8(1), 1–38 (1994)
+[34] Pechwitz, M., Maergner, V.: Hmm based
+approach for handwritten arabic word
+recognition using the ifn/enit - database.
+In: Seventh International Conference on
+Document Analysis and Recognition,
+2003. Proceedings. pp. 890–894 (2003).
+https://doi.org/10.1109/ICDAR.2003.1227788
+[35] Ploetz, T., Fink, G.: Markov models
+for offline handwriting recognition: A
+survey. IJDAR 12, 269–298 (12 2009).
+
+=== PDF PAGE 19 ===
+Springer Nature 2021 LATEX template
+Article Title 19
+https://doi.org/10.1007/s10032-009-0098-4
+[36] Poznanski, A., Wolf, L.: Cnn-n-gram for
+handwriting word recognition. In: 2016 IEEE
+Conference on Computer Vision and Pattern
+Recognition (CVPR). pp. 2305–2314 (2016).
+https://doi.org/10.1109/CVPR.2016.253
+[37] Puigcerver, J.: Are multidimensional
+recurrent layers really necessary for
+handwritten text recognition? In: 2017
+14th IAPR International Conference on
+Document Analysis and Recognition
+(ICDAR). vol. 01, pp. 67–72 (2017).
+https://doi.org/10.1109/ICDAR.2017.20
+[38] Scheidl, H., Fiel, S., Sablatnig, R.: Word
+beam search: A connectionist temporal clas-
+sification decoding algorithm. In: 2018 16th
+International Conference on Frontiers in
+Handwriting Recognition (ICFHR). pp. 253–
+258 (2018). https://doi.org/10.1109/ICFHR-
+2018.2018.00052
+[39] Shi, B., Bai, X., Yao, C.: An end-to-end
+trainable neural network for image-based
+sequence recognition and its application
+to scene text recognition. IEEE Transac-
+tions on Pattern Analysis and Machine
+Intelligence 39(11), 2298–2304 (2017).
+https://doi.org/10.1109/TPAMI.2016.2646371
+[40] Shorten, C., Khoshgoftaar, T.: A survey on
+image data augmentation for deep learn-
+ing. Journal of Big Data 6 (07 2019).
+https://doi.org/10.1186/s40537-019-0197-0
+[41] Simard, P., Steinkraus, D., Platt, J.:
+Best practices for convolutional neural
+networks applied to visual document anal-
+ysis. In: Seventh International Conference
+on Document Analysis and Recognition,
+2003. Proceedings. pp. 958–963 (2003).
+https://doi.org/10.1109/ICDAR.2003.1227801
+[42] Srivastava, N., Hinton, G., Krizhevsky, A.,
+Sutskever, I., Salakhutdinov, R.: Dropout:
+A simple way to prevent neural networks
+from overfitting. Journal of Machine Learn-
+ing Research 15(56), 1929–1958 (2014), http:
+//jmlr.org/papers/v15/srivastava14a.html
+[43] S´ anchez, J.A.: Bentham
+dataset r0 (Jan 2016).
+https://doi.org/10.5281/zenodo.44519,
+https://doi.org/10.5281/zenodo.44519
+[44] Vaswani, A., Shazeer, N., Parmar, N., Uszko-
+reit, J., Jones, L., Gomez, A.N., Kaiser, L.,
+Polosukhin, I.: Attention is all you need.
+In: Proceedings of the 31st International
+Conference on Neural Information Process-
+ing Systems. p. 6000–6010. NIPS’17, Curran
+Associates Inc., Red Hook, NY, USA (2017)
+[45] Werbos, P.: Backpropagation through time:
+what it does and how to do it. Proceed-
+ings of the IEEE 78(10), 1550–1560 (1990).
+https://doi.org/10.1109/5.58337
+[46] Wigington, C., Stewart, S., Davis, B., Bar-
+rett, B., Price, B., Cohen, S.: Data aug-
+mentation for recognition of handwritten
+words and lines using a cnn-lstm network.
+In: 2017 14th IAPR International Confer-
+ence on Document Analysis and Recogni-
+tion (ICDAR). vol. 01, pp. 639–645 (2017).
+https://doi.org/10.1109/ICDAR.2017.110
+[47] Xiao, S., Peng, L., Yan, R., Wang, S.:
+Deep network with pixel-level rectifica-
+tion and robust training for handwriting
+recognition. In: 2019 International Con-
+ference on Document Analysis and
+Recognition (ICDAR). pp. 9–16 (2019).
+https://doi.org/10.1109/ICDAR.2019.00012
+
+=== PDF PAGE 20 ===
+Springer Nature 2021 LATEX template
+20 Article Title
+Appendix A Incorrect IAM
+Test Samples
+Label:
+Sentence Database P02-109
+Issue:
+Completely wrong except the last a few letters
+Issue:
+Label:
+was . I 'm Ian Bawley . Does that mean anything
+Labelled as I'm instead of I'am
+Issue:
+Label:
+Stepping out in their white shorts , they looked glad enough
+'glad' is not present
+Label:
+interest to the Mos , doubtless because their habitat is
+Issue:
+Crossed-out word before 'interest'
+Label:
+12 o'clock at night . At that time pastries and buns
+Issue:
+Crossed-out 'hours'. another word under the line
+Label:
+know how you newspaper people value that commodity !-
+Issue:
+'know' is not present
+Issue:
+Label:
+-----------------------------------------------------
+Completely wrong.
+Fig. A1 Samples from lines in the IAM dataset test par-
+tition with wrong labels. Label denotes the ground-truth
+text written on the image and Issue indicates the error of
+the label e.g. a word in a label is not present in the corre-
+sponding image. The corrected labels of the IAM test split
+will be shared upon acceptance.

@@ -1,0 +1,1790 @@
+
+=== PDF PAGE 1 ===
+Journal of Machine Learning Research 3 (2002) 115-143 Submitted 5/01; Revised 3/02; Published 8/02
+Learning Precise Timing with LSTM Recurrent Networks
+F elix A. Gers felix@idsia.ch
+IDSIA
+Galleria 2
+6928 Manno, Switzerland
+www.idsia.ch
+Nicol N. Schraudolph schraudo@inf.ethz.ch
+Inst. of Computational Science
+ETH Zentrum
+8092 Z¨urich, Switzerland
+www.icos.ethz.ch
+J¨urgen Schmidhuber juergen@idsia.ch
+IDSIA
+Galleria 2
+6928 Manno, Switzerland
+www.idsia.ch
+Editor: Michael I. Jordan
+Abstract
+The temporal distance between events conveys information essential for numerous sequen-
+tial tasks such as motor control and rhythm detection. While Hidden Markov Models tend
+to ignore this information,recurrent neural networks (RNNs) can in principle learn to make
+use of it. We focus on Long Short-Term Memory (LSTM) because it has been shown to
+outperform other RNNs on tasks involving long time lags. We ﬁnd that LSTM augmented
+by “peephole connections” from its internal cells to its multiplicative gates can learn the
+ﬁne distinction between sequences of spikes spaced either 50 or 49 time steps apart without
+the help of any short training exemplars. Without external resets or teacher forcing,our
+LSTM variant also learns to generate stable streams of precisely timed spikes and other
+highly nonlinear periodic patterns. This makes LSTM a promising approach for tasks that
+require the accurate measurement or generation of time intervals.
+Keywords: Recurrent Neural Networks,Long Short-Term Memory,Timing.
+1. Introduction
+Humans quickly learn to recognize rhythmic pattern sequences,whose deﬁning aspects are
+the temporal intervals between sub-patterns. Conversely,drummers and others are also
+able to generate precisely timed rhythmic sequences of motor commands. This motivates
+the study of artiﬁcial systems that learn to separate or generate patterns that convey infor-
+mation through the length of intervals between events.
+Widely used approaches to sequence processing,such as Hidden Markov Models (HMMs),
+typically discard such information. They are successful in speech recognition precisely be-
+cause they do not care for the diﬀerence between slow and fast versions of a given spoken
+c⃝2002 Felix A. Gers, Nicol N. Schraudolph and J¨ urgen Schmidhuber.
+
+=== PDF PAGE 2 ===
+Gers, Schraudolph and Schmidhuber
+word. Other tasks such as rhythm detection,music processing,and the tasks in this paper,
+however,do require exact time measurements. Although an HMM could deal with a ﬁnite
+set of intervals between given events by devoting a separate internal state for each interval,
+this would be cumbersome and ineﬃcient,and would not use the very strength of HMMs
+to be invariant to non-linear temporal stretching.
+Recurrent neural networks (RNNs) hold more promise for recognizing patterns that are
+deﬁned by temporal distance. In fact,while HMMs and traditional discrete symbolic gram-
+mar learning devices are limited to discrete state spaces,RNNs are in principle suited for
+all sequence learning tasks because they have Turing capabilities (Siegelmann and Sontag,
+1991). Typical RNN learning algorithms (Pearlmutter,1995) perform gradient descent in
+a very general space of potentially noise-resistant algorithms using distributed,continuous-
+valued internal states to map real-valued input sequences to real-valued output sequences.
+Hybrid HMM-RNN approaches (Bengio and Frasconi,1995) may be able to combine the
+virtues of both methodologies,but to our knowledge have never been applied to the problem
+of precise event timing as discussed here.
+We have previously introduced a novel type of RNN called Long Short-Term Memory
+(LSTM—Hochreiter and Schmidhuber,1997) that works better than traditional RNNs on
+tasks involving long time lags. Its architecture permits LSTM to bridge huge time lags be-
+tween relevant input events (1000 steps and more),while traditional RNNs with more costly
+update algorithms such as BPTT (Williams and Peng,1990),RTRL (Robinson and Fallside,
+1987,Williams and Zipser,1992),or combinations thereof (Schmidhuber,1992,Williams
+and Zipser,1992),already fail to learn in the presence of 10-step time lags (Hochreiter,
+1991,Bengio et al.,1994,Hochreiter and Schmidhuber,1997,Gers et al.,2000,Hochreiter
+et al.,2001).
+For instance,some of our previous tasks required an LSTM network to act upon events
+that occurred 50 discrete time steps ago,independently of what happened over the inter-
+vening 49 steps. Right before the critical moment,however,there was a helpful “marker”
+input informing the network that its next action would be crucial. Thus the network did
+not have to learn to measure a time interval of 50 steps; it just had to learn to store relevant
+information for 50 steps,and use it once the marker was observed.
+But what if there are no such markers at all? What if the network itself has to learn
+to measure and internally represent the duration of task-speciﬁc intervals,or togenerate
+sequences of patterns separated by exact intervals? Here we will study to what extent
+this is possible. The highly nonlinear tasks in the present paper do not involve any time
+marker inputs; instead they require the network to time precisely and robustly across long
+time lags in continual input streams. Clearly,such tasks cannot generally be solved by
+common time-window based approaches,because their generalization ability is limited by
+the time window size. Unfortunately,this means that we cannot use standard benchmarks
+for measuring and timing because there aren’t any—to our knowledge no other network has
+yet learned to generalize from time lags of size 15 to time lags of size 45,etc. Hence we are
+forced to create a new set of comparative tasks.
+Outline. Section 2 gives an overview of “traditional” LSTM,as used in our previous
+publications. Section 3 identiﬁes a weakness in its connection scheme,introduces “peephole
+connections” as a remedy,and describes the modiﬁcations to the LSTM learning algorithm
+they necessitate. Section 4 compares the performance of peephole LSTM to traditional
+116
+
+=== PDF PAGE 3 ===
+Learning Precise Timing with LSTM Recurrent Networks
+∗
+∗
+∗
+cw
+g
+state
+cell
+cell output
+zwin
+zoutw
+yg
+and forgetting
+input squashing
+output gating
+input gating
+CECϕw y
+ϕ
+forget gate
+memorizing
+cell input
+z
+z
+out
+in
+c
+y
+ϕ
+out
+c
+in
+output gate
+yin
+input gate
+yout
+y
+c
+s
+s
+c
+Figure 1: LSTM memory block with one cell (rectangle). The so-called CEC maintains the
+cell statesc,which may be reset by the forget gate. Input and output gate control
+read and write access to the CEC;gsquashes the cell input. See text for details.
+LSTM on timings tasks of the kind described above,and Section 5 provides some further
+discussion of our approach.
+2. Traditional LSTM
+We are building on LSTM with forget gates (Gers et al.,2000),simply called “LSTM” in
+what follows. The basic unit of an LSTM network is thememory block containing one or
+more memory cells and three adaptive,multiplicative gating units shared by all cells in the
+block (Figure 1). Each memory cell has at its core a recurrently self-connected linear unit
+we call the “Constant Error Carousel” (CEC). By recirculating activation and error signals
+indeﬁnitely,the CEC provides short-term memory storage for extended time periods. The
+input, forget,and output gate can be trained to learn,respectively,what information to
+store in the memory,how long to store it,and when to read it out. Combining memory
+cells into blocks allows them to share the same gates (provided the task permits this),thus
+reducing the number of adaptive parameters.
+Throughout this paperjindexes memory blocks;vindexes memory cells in blockj(with
+S
+j cells),such thatcv
+j denotes thev-th cell of thej-th memory block;wlm is the weight on
+the connection from unitmto unitl. Indexmranges over all source units,as speciﬁed by
+the network topology; if a source unit activationym (t− 1) refers to an input unit,current
+external inputym (t) is used instead. The outputyc of memory cellcis calculated based on
+the current cell statesc and four sources of input:zc is the input to the cell itself,whilezin,
+zϕ andzout feed into the input,forget,and output gate,respectively. LSTM operates in
+117
+
+=== PDF PAGE 4 ===
+Gers, Schraudolph and Schmidhuber
+discrete time stepst=0,1,2,...,each involving the update of all units’ activation (forward
+pass) followed by the computation of error signals for all weights (backward pass).
+2.1 F orward Pass
+Input. During each forward pass we ﬁrst calculate the net cell input
+zcv
+j(t)=
+∑
+m
+wcv
+jm ym (t− 1), (1)
+then apply the (optional)input squashing functiongto it. The result is multiplied by
+the activation of the memory block’s input gate,calculated by applying a logistic sigmoid
+squashing functionf
+in with range [0,1] to the gate’s net inputzin:
+yinj(t)= finj(zinj(t)),zinj(t)=
+∑
+m
+winjm ym (t− 1). (2)
+The activationyin of the input gate multiplies the input to all cells in the memory block,
+and thus determines which activity patterns are stored (added) into it. During training,
+the input gate learns to open (y
+in ≈ 1) so as to store relevant inputs in the memory block,
+respectively close (yin ≈ 0) so as to shield it from irrelevant ones.
+Cell State. Att= 0,the activation (orstate)sc of a memory cellcis initialized to zero;
+subsequently the CEC accumulates a sum,discounted by the forget gate,over its input.
+Speciﬁcally,we ﬁrst calculate the memory block’s forget gate activation
+y
+ϕ j(t)= fϕ j(zϕ j(t)),zϕ j(t)=
+∑
+m
+wϕ jm ym (t− 1), (3)
+wherefϕ is a logistic sigmoid function with range [0,1]. The new cell state is then obtained
+by adding the squashed,gated cell input to the previous state multiplied by the forget gate
+activation:
+s
+cv
+j(t)= yϕ j(t)scv
+j(t− 1) + yinj(t)g(zcv
+j(t)),scv
+j(0) = 0. (4)
+Thus activity circulates in the CEC as long as the forget gate remains open (yϕ ≈ 1). Just
+as the input gate learns what to store in the memory block,the forget gate learns for how
+long to retain the information,and—once it is outdated—to erase it by resetting the cell
+state to zero. This prevents the cell state from growing to inﬁnity,and enables the memory
+block to store fresh data without undue interference from prior operations (Gers et al.,
+2000).
+Output. The cell outputy
+c is calculated by multiplying the cell statesc by the activation
+yout of the memory block’s output gate:
+ycv
+j(t)= youtj(t)scv
+j(t). (5)
+Here we introduce a minor simpliﬁcation unrelated to the central idea of this paper. Tra-
+ditional LSTM memory cells incorporate an input squashing functiongand an output
+118
+
+=== PDF PAGE 5 ===
+Learning Precise Timing with LSTM Recurrent Networks
+squashing function (calledhin earlier LSTM publications); we remove the latter from
+equation 5 for lack of empirical evidence that it is needed.
+By multiplying the output from the CEC,the output gate controls read access to the
+memory block. Its activation is calculated by applying a logistic sigmoid squashing function
+f
+out with range [0,1] to its net input:
+youtj(t)= foutj(zoutj(t)),zoutj(t)=
+∑
+m
+woutjm ym (t− 1). (6)
+Finally,assuming a layered network topology with a standard input layer,a hidden layer
+consisting of memory blocks,and a standard output layer,the activation of the output units
+kis calculated as:
+y
+k(t)= fk(zk(t)),zk(t)=
+∑
+m
+wkm ym (t), (7)
+wheremranges over all units feeding the output units,andfk is the output squashing
+function. This concludes the forward pass of a traditional LSTM network.
+2.2 Gradient-Based Backward Pass
+LSTM’s backward pass is an eﬃcient fusion of error back-propagation (BP) for output
+units and output gates,and a customized,truncated version of real-time recurrent learning
+(RTRL—e.g.,Robinson and Fallside,1987,Williams and Zipser,1992) for weights to cell
+input,input gates,and forget gates. Here we present the equations necessary to implement
+the LSTM backward pass; see Gers et al. (2000) for a full derivation of the algorithm.
+Output units and gates. Following previous notation (Gers et al.,2000),we minimize
+the objective functionEby gradient descent (subject to error truncation),changing the
+weightsw
+lm (from unitmto unitl) by an amount ∆wlm given by the learning rateαtimes
+the negative gradient ofE. For the output units we obtain the standard back-propagation
+weight changes:
+∆wkm (t)= αδk(t)ym (t− 1),δk(t)= −∂E(t)
+∂zk(t). (8)
+Here we use the customary squared error objective function based on targetstk,yielding:
+δk(t)= f′
+k(zk(t))ek(t), (9)
+whereek(t): =tk(t)−yk(t) is the externally injected error. The weight changes for connec-
+tions to the output gate (of thej-th memory block) from source unitsm(as speciﬁed by
+the network topology) are also obtained by standard back-propagation:
+∆woutjm (t)= αδoutj(t)ym (t), (10)
+δoutj(t) tr= f′
+outj(zoutj(t))
+
+
+Sj∑
+v=1
+scv
+j(t)
+∑
+k
+wkcv
+j δk(t)
+
+, (11)
+where thetr= sign indicates error truncation (see below).
+119
+
+=== PDF PAGE 6 ===
+Gers, Schraudolph and Schmidhuber
+Error ﬂow and truncation. An error signal arriving at a memory cell output is scaled by
+the output gate before it enters the memory cell’s CEC,where it can ﬂow back indeﬁnitely
+without ever being changed as long as the forget gate’s activation remains near 1.0 (which
+is why LSTM can bridge arbitrary time lags between input events and target signals).
+When the error escapes from the memory cell through an open input gate and the input
+nonlinearityg,it gets scaled once more and then serves to change incoming weights before
+being truncated. Truncation means that errors arriving at net inputs of memory blocks and
+their gates do not get propagated back further in time (though theydo serve to change the
+incoming weights); it makes the LSTM learning algorithm very eﬃcient.
+In conventional RNN architectures,truncating errors in this fashion would preclude the
+network from learning problems with time lags exceeding the truncation horizon. LSTM,by
+contrast,has an alternative (arguably better) mechanism for bridging long time lags—the
+CEC—and consequently is not so much aﬀected by error truncation. In previous experi-
+ments Hochreiter and Schmidhuber (1997) found that error truncation did not signiﬁcantly
+worsen the LSTM network’s performance.
+T runcated R TRL partials. RTRL requires the forward propagation in time of certain
+partial derivatives. During each step,no matter whether a target is given or not,we
+therefore need to update the partials∂s
+cv
+j/∂wlm for weights to the cell (l= cv
+j),to the
+input gate (l= in),and to the forget gate (l= ϕ):
+∂scv
+j(t)
+∂wcv
+jm
+tr=
+∂scv
+j(t− 1)
+∂wcv
+jm
+yϕ j(t)+ g′(zcv
+j(t))yinj(t)ym (t− 1), (12)
+∂scv
+j(t)
+∂winjm
+tr=
+∂scv
+j(t− 1)
+∂winjm
+yϕ j(t)+ g(zcv
+j(t))f′
+inj(zinj(t))ym (t− 1), (13)
+∂scv
+j(t)
+∂wϕ jm
+tr=
+∂scv
+j(t− 1)
+∂wϕ jm
+yϕ j(t)+ scv
+j(t− 1)f′
+ϕ j(zϕ j(t))ym (t− 1). (14)
+Initially these partials are set to zero:∂scv
+j(0)/∂wlm = 0 forl∈{ in,ϕ,cv
+j}.
+R TRL weight changes. To calculate weight changes ∆wlm for connections to the cell
+(l= cv
+j),the input gate (l= in),and the forget gate (l= ϕ) we use the partials from
+Equations 12,13,and 14:
+∆wcv
+jm (t)= αescv
+j
+(t)
+∂scv
+j(t)
+∂wcv
+jm
+, (15)
+∆winjm (t)= α
+Sj∑
+v=1
+escv
+j
+(t)
+∂scv
+j(t)
+∂winjm
+, (16)
+∆wϕ jm (t)= α
+Sj∑
+v=1
+escv
+j
+(t)
+∂scv
+j(t)
+∂wϕ jm
+, (17)
+where the internal state errorescv
+j
+is separately calculated for each memory cell:
+escv
+j
+(t) tr= youtj(t)
+( ∑
+k
+wkcv
+j δk(t)
+)
+. (18)
+120
+
+=== PDF PAGE 7 ===
+Learning Precise Timing with LSTM Recurrent Networks
+∗
+∗
+cw
+g
+state
+cell
+cell output
+win
+outw
+yg
+and forgetting
+peephole connections
+input squashing
+output gating
+input gating
+CECϕw y
+ϕ
+forget gate
+memorizing
+cell input
+peephole connection
+out
+in
+c
+z
+z
+z
+z
+outy
+output gate
+yin
+input gate
+ϕ
+in
+y
+y
+out
+c
+cs
+sc
+Figure 2: LSTM memory block with peephole connections from the CEC to the gates.
+3. Extending LSTM with Peephole Connections
+A Limitation of traditional LSTM. In traditional LSTM each gate receives connections
+from the input units and the outputs of all cells,but there is no direct connection from the
+CEC it is supposed to control (Figure 1). All it can observe directly is the cell output,
+which is close to zero as long as the output gate is closed. The same problem occurs for
+multiple cells in a memory block: when the output gate is closed none of the gates has
+access to the CECs they control. The resulting lack of essential information may harm
+network performance,especially in the tasks we are studying here.
+Peephole connections. Our simple but eﬀective remedy is to add weighted “peephole”
+connections from the CEC to the gates of the same memory block (Figure 2). The peephole
+connections allow all gates to inspect the current cell state even when the output gate is
+closed. This information can be essential for ﬁnding well-working network solutions,as we
+will see in the experiments below.
+During learning no error signals are propagated back from gates via peephole connections
+to the CEC (see backward pass,Section 3.2). Peephole connections are treated like regular
+connections to gates (e.g.,from the input) except for update timing. For conventional LSTM
+the only source of recurrent connections is the cell outputy
+c,so the order of updates within
+a layer is arbitrary. Peephole connections from within the cell,or recurrent connections
+from gates,however,require a reﬁnement of LSTM’s update scheme.
+Update order for peephole LSTM. Each memory cell component should be updated
+based on the most recent activations of connected sources.
+121
+
+=== PDF PAGE 8 ===
+Gers, Schraudolph and Schmidhuber
+In the simplest case this requires a two-phase update scheme; when recurrent connections
+from gates are present, the ﬁrst phase must be further subdivided into three steps (a,b,c):
+1. (a) Input gate activationyin,
+(b) forget gate activationyϕ ,
+(c) cell input and cell statesc,
+2. output gate activationyout and cell outputyc.
+Thus the output gate is updated only after the cell statesc,so that it sees via its peephole
+connection the current value ofsc(t),already aﬀected by input and forget gate.
+Below we present the modiﬁcations and additions to the LSTM forward and backward
+pass,respectively,due to the presence of peephole connections. Appendix A gives the entire
+learning algorithm for peephole LSTM in pseudo-code.
+3.1 Modiﬁed F orward Pass for Peephole LSTM
+Steps 1a, 1b. The input and forget gate activation are computed as:
+y
+inj(t)= finj(zinj(t)),zinj(t)=
+∑
+m
+winjm ym (t− 1) +
+Sj∑
+v=1
+winjcv
+j scv
+j
+(t− 1) ; (19)
+yϕ j(t)= fϕ j(zϕ j(t)),zϕ j(t)=
+∑
+m
+wϕ jm ym (t− 1) +
+Sj∑
+v=1
+wϕ jcv
+j scv
+j
+(t− 1).(20)
+The peephole connections for input and forget gate are incorporated in Equations 19 and
+20 by including the CECs of memory blockjas source units. These equations replace
+Equations 2 and 3 of traditional LSTM.
+Step 1c. The cell input and cell statesc are calculated as before via Equations 1 and 4.
+Step 2. The output gate activationyout with peephole connections is computed as:
+youtj(t)= foutj(zoutj(t)),zoutj(t)=
+∑
+m
+woutjm ym (t− 1) +
+Sj∑
+v=1
+woutjcv
+j scv
+j
+(t).(21)
+Equation 21 replaces Equation 6 of traditional LSTM. The output of the memory cell,and of
+the entire LSTM network,are then calculated as before via Equations 5 and 7,respectively.
+3.2 Update Rules for Peephole Connections
+The revised update scheme for memory blocks allows for treating peephole connections like
+regular connections,so the equations given for traditional LSTM in Section 2.2 need only
+be supplemented with corresponding update rules for the partial derivatives and weights
+associated with peephole connections. Analogous to Equations 13 and 14,we now also
+122
+
+=== PDF PAGE 9 ===
+Learning Precise Timing with LSTM Recurrent Networks
+maintain partial derivatives for the peephole connections to input gate and forget gate:
+∂scv
+j(t)
+∂winjcv′
+j
+tr=
+∂scv
+j(t− 1)
+∂winjcv′
+j
+yϕ j(t)+ g(zcv
+j(t))f′
+inj(zinj(t))scv′
+j
+(t− 1), (22)
+∂scv
+j(t)
+∂wϕ jcv′
+j
+tr=
+∂scv
+j(t− 1)
+∂wϕ jcv′
+j
+yϕ j(t)+ scv
+j(t− 1)f′
+ϕ j(zϕ j(t))scv′
+j
+(t− 1), (23)
+with∂scv
+j(0)/∂winjcv′
+j
+= ∂scv
+j(0)/∂wϕ jcv′
+j
+= 0. The changes to the peephole connection
+weights are calculated the same way as in Equations 10,16,and 17:
+∆woutjcv
+j(t)= αδoutj(t)scv
+j(t), (24)
+∆winjcv′
+j
+(t)= α
+Sj∑
+v=1
+escv
+j
+(t)
+∂scv
+j(t)
+∂winjcv′
+j
+, (25)
+∆wϕ jcv′
+j
+(t)= α
+Sj∑
+v=1
+escv
+j
+(t)
+∂scv
+j(t)
+∂wϕ jcv′
+j
+. (26)
+The storage complexity of the backward pass does not depend on the length of the input
+sequence. Like standard LSTM,but unlike BPTT and RTRL,LSTM with forget gates and
+peephole connections is local in spaceand time. The increase in complexity due to peephole
+connections is small: 3 weights per cell.
+4. Experiments
+We study LSTM’s performance on three tasks that require the precise measurement or
+generation of delays,and are unsolvable by traditional RNNs. We compare traditional to
+peephole LSTM,analyze the solutions,or explain why none was found.
+Measuring spike delays (MSD). See Section 4.2. The goal is to classify input sequences
+consisting of sharp spikes. The class depends on the interval between spikes. We consider
+two versions of the task: continual (MSD) and non-continual (NMSD). NMSD sequences
+stop after the second spike,whereas MSD sequences are continual spike trains. Both NMSD
+and MSD require the network to measure intervals between spikes; MSD also requires the
+production of stable results in presence of continually streaming inputs,without any external
+reset of the network’s state. Can LSTM learn the diﬀerence between almost identical pattern
+sequences that diﬀer only by a small lengthening of the interval (e.g.,fromnton+1 steps)
+between input spikes? How does the diﬃculty of this problem depend onn?
+Generating timed spikes (GTS). See Section 4.3. The GTS task can be obtained from
+the MSD task by exchanging inputs and targets. It requires the production of continual
+spike trains,where the interval between spikes must reﬂect the magnitude of an input signal
+that may change after every spike. GTS is a special case of periodic function generation
+(PFG,see below). In contrast to previously studied PFG tasks (Williams and Zipser,1989,
+Doya and Yoshizawa,1989,Tsung and Cottrell,1995),GTS is highly nonlinear and involves
+long time lags between signiﬁcant output changes,which we cannot expect to be learned by
+123
+
+=== PDF PAGE 10 ===
+Gers, Schraudolph and Schmidhuber
+Out
+Forget Gate
+Cell
+one
+with
+Block
+Memory
+Input Gate
+In
+Output Gate
+Figure 3: Three-layer LSTM topology with one input and one output unit. Recurrence is
+limited to the hidden layer,which consists of a single LSTM memory block with
+a single cell. All 9 “unit-to-unit” connections are shown,but bias and peephole
+connections are not.
+conventional RNNs. In contrast to previous work,which did not focus on stability issues,
+here we demand that the generation be stable for 1000 successive spikes. We systematically
+investigate the eﬀect of minimal time lag on task diﬃculty.
+Additional periodic function generation tasks (PFG). See Section 4.4. We study
+the problem of generating periodic functions other than the spike trains above. The classic
+examples are smoothly oscillating outputs such as sinewaves,which are learnable by fully
+connected teacher-forced RNNs whose units are all output units with teacher-deﬁned ac-
+tivations (Williams and Zipser,1989). An alternative approach trains an RNN to predict
+the next input; after training outputs are fed back directly to the input so as to generate
+the waveform (Doya and Yoshizawa,1989,Tsung and Cottrell,1995,Weiss,1999,Townley
+et al.,1999). Here we focus on more diﬃcult,highly nonlinear,triangular and rectangular
+waveforms,the latter featuring long time lags between signiﬁcant output changes (Hochre-
+iter,1991,Bengio et al.,1994,Hochreiter et al.,2001). Again we demand that the generation
+be stable for 1000 successive periods of thewaveform.
+4.1 Network T opology and Experimental Parameters
+We found that comparatively small LSTM nets can already solve the tasks above. A single
+input unit (used only for tasks where there is input) is fully connected to the hidden layer
+consisting of a single memory block with one cell. The cell output is connected to the cell
+input,to all three gates,and to a single output unit (Figure 3). All gates,the cell itself,
+and the output unit are connected to a bias unit (a unit with constant activation one) as
+124
+
+=== PDF PAGE 11 ===
+Learning Precise Timing with LSTM Recurrent Networks
+well. The bias weights to input gate,forget gate,and output gate are initialized to 0.0,−2.0
+and +2.0,respectively. (Although not critical,these values have been found empirically to
+work well; we use them for all our experiments.) All other weights are initialized to uniform
+random values in the range [−0.1,0.1]. In addition to the three peephole connections there
+are 14 adjustable weights: 9 “unit-to-unit” connections and 5 bias connections. The cell’s
+input squashing functiongis the identity function. The squashing function of the output
+unit is a logistic sigmoid with range [0,1] for MSD and GTS (except where explicitly stated
+otherwise),and the identity function for PFG. (A sigmoid function would work as well,but
+we focus on the simplest system that can solve the task.)
+Our networks process continual streams of inputs and targets; only at the beginning of
+a stream are they reset. They must learn to always predict the targett
+k(t),producing a
+stream of output values (predictions)yk(t). A prediction is considered correct if the absolute
+output error|ek(t)|= |tk(t)−yk(t)|is below 0.49 for binary targets (MSD,NMSD and GTS
+tasks),below 0.3 otherwise (PFG tasks). Streams are stopped as soon as the network makes
+an incorrect prediction,or after a given maximal number of successive periods (spikes): 100
+during training,1000 during testing.
+Learning and testing alternate: after each training stream,we freeze the weights and
+generate a test stream. Training and test stream are generated stochastically in the same
+manner. Our performance measure is the achieved test stream size: 1000 successive periods
+are deemed a “perfect” solution. Training is stopped once a task is learned or after a
+maximal number of 10
+7 training streams (108 for the MSD and NMSD tasks). Weight
+changes are made after each target presentation. The learning rateαis set to 10− 5;w e
+use the momentum algorithm (Plaut et al.,1986) with momentum parameter 0.999 for the
+GTS task,0.99 for the PFG and NMSD task,and 0.9999 for the MSD task. We roughly
+optimized the momentum parameter by trying out diﬀerent orders of magnitude.
+For tasks GTS and MSD,the stochastic input streams are generated online. A perfect
+solution correctly processes 10 test streams,to make sure the network provides stable per-
+formance independent of the stream beginning,which we found to be critical. All results
+are averages over 10 independently trained networks.
+4.2 Measuring Spike Delays (MSD)
+The network input is a spike train,represented by a series of ones and zeros,where each
+“one” indicates a spike. Spikes occur at timesT(n) setF+I(n) steps apart,whereFis the
+minimum interval between spikes,andI(n) is an integer oﬀset from a ﬁxed set,randomly
+reset for each spike:
+T(0) = F+ I(0),T(n)= T(n− 1) + F+ I(n)( n∈ N
+).
+The target given at timest= T(n) is the delayI(n). (Learning to measure the total interval
+F+ I(n)—that is,adding the constantFto the output—is no harder.) A perfect solution
+correctly processes all possible input test streams. For the non-continual version of the task
+(NMSD) a stream consists of a single period (spike).
+MSD Results. Table 1 reports results for NMSD withI(n) ∈{ 0,1} for various minimum
+spike intervalsF. The results suggest that the diﬃculty of the task (measured as the average
+number of training streams necessary to solve it) increases drastically withF(see Figure
+125
+
+=== PDF PAGE 12 ===
+Gers, Schraudolph and Schmidhuber
+LSTM
+ Peephole LSTM
+T
+ F
+I(n) ∈
+ % Sol.
+ Train. [103]
+ % Sol.
+ Train. [103]
+10
+ {0,1}
+ 100
+ 160± 14
+ 100
+ 125± 14
+20
+ {0,1}
+ 100
+ 732± 97
+ 100
+ 763± 103
+NMSD
+ 30
+ {0,1}
+ 100
+ 17521± 2200
+ 80
+ 12885± 2091
+40
+ {0,1}
+ 20
+ 37533± 4558
+ 70
+ 25686± 2754
+50
+ {0,1}
+ 0
+ —
+ 10
+ 32485
+10
+ {0,1}
+ 10
+ 8850
+ 20
+ 27453± 11750
+MSD
+ 10
+ {0,1,2}
+ 20
+ 29257± 13758
+ 60
+ 9791± 2660
+Table 1: Results comparing traditional and peephole LSTM on the NMSD and MSD tasks.
+Columns show the task T,the minimum spike intervalF,the set of delaysI(n),
+the percentage of perfect solutions found,and the mean and standard derivation
+of the number of training streams required.
+0
+10
+20
+30
+40
+0 10 20 30 40 50
+Training Streams [106]
+Time Delay F
+LSTM
+Peephole LSTM
+Figure 4: Average number of training streams required for the NMSD task withI(n) ∈
+{0,1},plotted against the minimum spike intervalF.
+4). A qualitative explanation is that longer intervals necessitate ﬁner tuning of the weights,
+which requires more training. Peephole LSTM outperforms LSTM for some sets,though
+peephole connections are not mandatory for the task. They correlate the opening of the
+output gate to high cell states. Otherwise the output gate has to learn to be open all the
+time,using its bias input,which may take longer,because the cells states might have higher
+activation values than the bias (activation one). The continual MSD task forF= 10 with
+I(n) ∈{0,1} orI(n) ∈{ 0,1,2},is solved with or without peephole connections (Table 1).
+126
+
+=== PDF PAGE 13 ===
+Learning Precise Timing with LSTM Recurrent Networks
+LSTM
+ Peephole LSTM
+I(n) ∈
+ %
+ Training
+ %
+ Training
+Sol.
+ Str. [103]
+ Sol.
+ Str. [103]
+{0,1}
+ 100
+ 48± 12
+ 100
+ 46± 14
+{0,1,2}
+ 100
+ 25± 4
+ 100
+ 10.3± 3.3
+{0,..,3}
+ 100
+ 12.3± 2.4
+ 100
+ 7.4± 2.2
+{0,..,4}
+ 100
+ 8.5 ± 1.3
+ 100
+ 3.6± 0.4
+{0,..,5}
+ 100
+ 4.5 ± 0.4
+ 100
+ 6.0± 1.4
+{0,..,6}
+ 100
+ 6.1 ± 1.0
+ 100
+ 7.1 ± 2.8
+{0,..,7}
+ 100
+ 8.5 ± 2.9
+ 70
+ 15 ± 6.5
+{0,..,8}
+ 100
+ 14.1 ± 4.2
+ 50
+ 22± 9
+{0,..,9}
+ 90
+ 39± 28
+ 50
+ 33± 17
+{0,..,10}
+ 60
+ 23± 5
+ 20
+ 395± 167
+{0,2}
+ 100
+ 33± 8
+ 100
+ 18± 5
+{0,3}
+ 100
+ 12.5 ± 4.2
+ 100
+ 23± 6
+{0,4}
+ 100
+ 12.1 ± 2.8
+ 100
+ 13.7± 2.7
+{0,5}
+ 100
+ 8.5 ± 2.3
+ 100
+ 10.4± 2.0
+{0,6}
+ 100
+ 7.7± 1.5
+ 100
+ 12.7± 3.1
+{0,7}
+ 100
+ 7.7± 1.5
+ 100
+ 14.5 ± 6.0
+{0,8}
+ 100
+ 7.5 ± 2.0
+ 100
+ 6.3± 1.3
+{0,9}
+ 100
+ 5.8± 1.6
+ 100
+ 7.5 ± 1.6
+{0,10}
+ 100
+ 5.6± 0.9
+ 100
+ 6.7± 1.7
+Table 2: The percentage of perfect solutions found,and the mean and standard derivation
+of the number of training streams required,for conventional versus peephole LSTM
+on the NMSD task withF=10 and various choices for the set of delaysI(n).
+In the next experiment we evaluate the inﬂuence of the range ofI(n),using the identity
+function instead of the logistic sigmoid as output squashing function. We letI(n) range
+over{0,i} or {0,..,i} for alli∈{ 1,..,10}. Results are reported in Table 2 for NMSD with
+F= 10. The training duration depends on the size of the set from whichI(n) is drawn,
+and on the maximum distance (MD) between elements in the set. A larger MD leads to
+a better separation of patterns,thus facilitating recognition. To conﬁrm this,we ran the
+NMSD task with F= 10 andI(n) ∈{ 0,i} withi∈{ 2,..,10} (size 2,MDi),as shown in
+the bottom half of Table 2. As expected,training time decreases with increasing MD. A
+larger set of possible delays should make the task harder. Surprisingly,forI(n) ∈{ 0,..,i}
+(sizei+1,MD i) withiranging from 1 to 5 the task appears to become easier (due to the
+simultaneous increase of MD) before the diﬃculty increases rapidly for largeri. Thus the
+task’s diﬃculty does not grow linearly with the number of possible delays,corresponding
+to values (states) inside a cell the network must learn to distinguish.
+We also observe that the results forI(n) ∈{ 0,1} are better than those obtained with
+a sigmoid function (compare with Table 1). Fluctuations in the stochastic input can cause
+127
+
+=== PDF PAGE 14 ===
+Gers, Schraudolph and Schmidhuber
+temporary saturation of sigmoid units; the resulting tiny derivatives for the backward pass
+will slow down learning (LeCun et al.,1998).
+MSD Analysis. LSTM learned to measure time in two ways. The ﬁrst is to slightly
+increase the cell statesc at each time step,so that the elapsed time can be told by the
+value ofsc. This kind of solution is shown on the left-hand side of Figure 5. (The state
+reset performed by the forget gate is essential only for continual online prediction over many
+periods.) The second way is to establish internal oscillators and derive the elapsed time
+from their phases (right-hand side of Figure 5). Both kinds of solutions can be learned with
+or without peephole connections,as it is never necessary here to close the output gate for
+more than one time step (see bottom row of Figure 5).
+Why may the output gate be left open? Targets occur rarely,hence the network output
+can be ignored most of the time. Since there is only one memory block,mutual perturbation
+of blocks is not possible. This type of reasoning is invalid though for more complex measur-
+ing tasks involving larger nets or more frequent targets. In that case it becomes mandatory
+to realize a solution where the output gate only opens when a target is requested,which
+cannot be done without peephole connections. Figure 6 compares the behavior of LSTM,
+where the output gate is open over long periods,to peephole LSTM,where the output gate
+opens only when a target is provided. In some cases the “cleaner” solutions with peep-
+hole connections took longer to be learned (see Tables 1 and 2),because they require more
+complex behavior. Overall there is no clear statistical advantage either for or against using
+peephole connections on the MSD task.
+4.3 Generating Timed Spikes (GTS).
+The GTS task reverses the roles of inputs and targets of the MSD task: the spike train
+T(n),deﬁned as for the MSD task,now is the network’s target,while the delayI(n)i s
+provided as input.
+GTS Results. The GTS task couldnot be learned by networks without peephole con-
+nections; thus we report results with peephole LSTM only. Results with various minimum
+spike intervalsF(Figure 7) suggest that the required training time increases dramatically
+withF,as with the NMSD task (Section 4.2). The network output during a successful test
+run for the GTS task withF=10 is shown on the top left of Figure 8. Peephole LSTM also
+solves the task forF=10 andI(n) ∈{ 0,1} or {0,1,2},as shown in Figure 7 (left).
+GTS Analysis. Figure 8 shows test runs with trained networks for the GTS task. The
+output gates open only at the onset of a spike and close again immediately afterwards.
+Hence,during a spike,the output of the cell equals its state (middle row of Figure 8).
+The opening of the output gate is triggered by the cell states
+c: it starts to open once the
+input from the peephole connection outweighs a negative bias. The opening self-reinforces
+via a connection from the cell output,which produces the high nonlinearity necessary for
+generating the spike. This process is terminated by the closing of the forget gate,triggered
+by the cell output spike. Simultaneously the input gate closes,so thats
+c is reset.
+In the particular solution shown on the right-hand side of Figure 8 forF=50,the role of
+the forget gate in this process is taken over by a negative self-recurrent connection of the cell
+in conjunction with a simultaneous opening of the other two gates. We tentatively removed
+128
+
+=== PDF PAGE 15 ===
+Learning Precise Timing with LSTM Recurrent Networks
+0
+0.5
+1
+ 
+in
+tk
+yk
+0
+0.5
+1
+ 
+0
+1
+sc
+yc 0
+10
+20
+ 
+0
+1
+0 10 20 30
+Time
+yin
+yout  
+yϕ
+0
+1
+0 10 20 30
+Time
+Figure 5: Two ways to time. Test run with trained LSTM networks for the MSD task
+withF= 10 andI(n) ∈{ 0,1}. Top: target valuestk and network outputyk;
+middle: cell statesc and cell outputyc; bottom: activation of the input gateyin,
+forget gateyϕ ,and output gateyout.
+the forget gate (by pinning its activation to 1.0) without changing the weights learnedwith
+the forget gate’s help. The network then quickly learned a perfect solution. Learning from
+scratchwithout forget gate,however,never yields a solution! The forget gate is essential
+during the learning phase,where it prevents the accumulation of irrelevant errors.
+The exact timing of a spike is determined by the growth ofs
+c,which is tuned through
+connections to input gate,forget gate,and the cell itself. To solve GTS forI(n) ∈{ 0,1}
+129
+
+=== PDF PAGE 16 ===
+Gers, Schraudolph and Schmidhuber
+0
+1
+2
+3
+in
+tk
+yk
+0
+1
+2
+in
+tk
+yk
+0
+4
+sc
+yc
+-2
+0 sc
+yc
+0
+1
+0 10 20 30
+Time
+yin
+yout  
+yϕ
+0
+1
+40 50 60 70
+Time
+yin
+yout  
+yϕ
+Figure 6: Behavior of peephole LSTM (left) versus LSTM (right) for the MSD task with
+F=10 andI(n) ∈{ 0,1,2}. Top: target valuestk and network outputyk; middle:
+cell statesc and cell outputyc; bottom: activation of the input gateyin,forget
+gateyϕ ,and output gateyout.
+orI(n) ∈{ 0,1,2},the network essentially translates the input into a scaling factor for the
+growth ofsc (Figure 9).
+4.4 Periodic F unction Generation (PFG)
+We now train LSTM to generate real-valued periodic functions,as opposed to the spike
+trains of the GTS task. At each discrete time step we provide a real-valued target,sampled
+with frequencyFfrom a target functionf(t). No input is given to the network.
+130
+
+=== PDF PAGE 17 ===
+Learning Precise Timing with LSTM Recurrent Networks
+Peephole LSTM
+F
+I(n) ∈
+ % Sol.
+ Train. [103]
+10
+ {0}
+ 100
+ 41± 4
+20
+ {0}
+ 100
+ 67± 8
+30
+ {0}
+ 80
+ 845± 82
+40
+ {0}
+ 100
+ 1152± 101
+50
+ {0}
+ 100
+ 2538± 343
+10
+ {0,1}
+ 50
+ 1647± 46
+10
+ {0,1,2}
+ 30
+ 954± 393
+0
+1
+2
+3
+0 10 20 30 40 50
+Training Streams [106]
+Time Delay F
+Figure 7: Results for the GTS task. Table (left) shows the minimum spike intervalF,set
+of delaysI(n),percentage of perfect solutions found,and mean and standard
+derivation of the number of training streams required. Graph (right) plots the
+number of training streams against the minimum spike intervalF,forI(n) ∈{0}.
+The task’s degree of diﬃculty is inﬂuenced by the shape offand the sampling frequency
+F. The former can be partially characterized by the absolute maximal values of its ﬁrst
+and second derivatives,max|f
+′|and max |f′′|. Since we work in discrete time,and with
+non-diﬀerentiable step functions,we deﬁne:
+f′(t): = f(t+1) −f(t),max |f′|≡ max
+t
+|f′(t)|,max |f′′|≡ max
+t
+|f′(t+1) −f(t)′|.
+Generally speaking,the larger these values,the harder the task.Fdetermines the number
+of distinguishable internal states required to represent the periodic function in internal state
+space. The largerF,the harder the task. We generate sinewavesf
+cos,triangular functions
+ftri,and rectangular functionsfrect,all ranging between 0.0 and 1.0,each sampled with two
+frequencies,F=10 andF=25:
+fcos(t) ≡ 1
+2
+(
+1 − cos
+( 2πt
+F
+))
+⇒ max |f′
+cos|= max |f′′
+cos|= π/F,
+ftri(t) ≡
+{
+2( t mod F )
+F if (tmod F)>F
+2
+2− 2( t mod F )
+F otherwise ⇒ max |f′
+tri|=2/F,max |f′′
+tri|=4/F,
+frect(t) ≡
+{
+1i f(tmod T)>F
+2
+0 otherwise ⇒ max |f′
+rect|= max |f′′
+rect|=1 .
+PFG Results. Our experimental results for the PFG task are summarized in Table 3.
+Peephole LSTM found perfect,stable solutions for all target functions (Figure 10). LSTM
+without peephole connections could solve onlyfcos withF= 10,requiring many more
+training streams. Without forget gates,LSTM never learned to predict thewaveform for
+more than two successive periods.
+131
+
+=== PDF PAGE 18 ===
+Gers, Schraudolph and Schmidhuber
+0
+1
+tk
+yk
+0
+1
+tk
+yk
+-4
+0
+sc
+yc
+0
+2
+sc
+yc
+0
+1
+0 10 20 30
+Time
+yin
+yout  
+yϕ
+0
+1
+0 50 100 150
+Time
+yin
+yout  
+yϕ
+Figure 8: Test run of a trained peephole LSTM network for the GTS task withI(n) ∈{0},
+and a minimum spike interval ofF= 10 (left) vs.F= 50 (right). Top: target
+valuestk and network outputyk; middle: cell statesc and cell outputyc; bottom:
+activation of the input gateyin,forget gateyϕ ,and output gateyout.
+The duration of training roughly reﬂected our criteria for task diﬃculty. We did not
+try to achieve maximal accuracy for each task: training was stopped once the “perfect
+solution” criteria were fulﬁlled. Accuracy can be improved by decreasing the tolerated
+maximum output errore
+max
+k during training,albeit at a signiﬁcant increase in training
+duration. Decreasingemax
+k by one half (to 0.15) forfcos withF= 25 also reduces the
+average
+√
+MSEof solutions by about one half,from 0.17± 0.019 down to 0.086± 0.002.
+Perfect solutions were learned in all cases,but only after (2704± 49)·103 training streams,
+as opposed to (149± 7)·103 training streams (yielding 60% solutions) before.
+132
+
+=== PDF PAGE 19 ===
+Learning Precise Timing with LSTM Recurrent Networks
+0
+1
+0
+1
+2
+yk   and   tk
+Input: in
+in
+tk
+yk
+-2
+0
+2
+sc
+yc
+0
+1
+50 60 70 80 90 100
+Time
+yin
+yout  
+yϕ
+Figure 9: Test run of a trained peephole LSTM network for the GTS task withF=10 and
+I(n) ∈{ 0,1,2}. Top: target valuestk and network outputyk; middle: cell state
+sc and cell outputyc; bottom: activation of the input gateyin,forget gateyϕ ,
+and output gateyout.
+PFG Analysis. For the PFG task,the networks do not have any external input,so
+updates depend on the internal cell states only. Hence,in a stable solution for a periodic
+target functiont
+k(t) the cell statessc also have to follow some periodic trajectorys(t)
+phase-locked totk(t). Since the cell output is the only time-varying input to gates and
+output units,it must simultaneously minimize the error at the output units and provide
+adequate input to the gates. An example of how these two requirement can be combined
+in one solution is shown in Figure 11 forf
+cos withF=10. This task can be solved with or
+133
+
+=== PDF PAGE 20 ===
+Gers, Schraudolph and Schmidhuber
+LSTM
+ Peephole LSTM
+tgt.
+ F
+ %
+ Training
+ %
+ Training
+fn.
+ Sol.
+ Str. [103]
+√
+MSE
+Sol.
+ Str. [103]
+√
+MSE
+10
+ 90
+ 2477± 341
+ 0.13± 0.033
+ 100
+ 145± 32
+ 0.18± 0.016
+fcos
+ 25
+ 0
+ >10000
+ —
+ 60
+ 149± 7
+ 0.17± 0.019
+10
+ 0
+ >10000
+ —
+ 100
+ 869± 204
+ 0.13± 0.014
+ftri
+ 25
+ 0
+ >10000
+ —
+ 50
+ 4063± 303
+ 0.13± 0.024
+10
+ 0
+ >10000
+ —
+ 80
+ 1107± 97
+ 0.12± 0.014
+frect
+ 25
+ 0
+ >10000
+ —
+ 20
+ 748± 278
+ 0.12± 0.012
+Table 3: Results for the PFG task,showing target functionf,sampling frequencyF,the
+percentage of perfect solutions found,and the mean and standard derivation of
+the number of training streams required,as well as of the root mean squared error√
+MSEfor the ﬁnal test run.
+without peephole connections because the output gate never needs to be closed completely,
+so that all gates can base their control on the cell output.
+Why did LSTM networks without peephole connections never learn the target function
+fcos forF=25,although they did learn it forF=10? The output gate is part of an uncon-
+trolled feedback loop: its activation directly determines its own input (here: itsonly input,
+except for the bias) via the connection to the cell output—but no errors are propagated
+back on this connection. The same is true for the other gates,except that output gating can
+block their (thus incomplete) feedback loop. This makes an adaptive LSTM memory block
+without peephole connections more diﬃcult to tune. Additional support for this reasoning
+stems from the fact that networks with peephole connections learnf
+cos withF= 10 much
+faster (see Table 3). The peephole weights of solutions are typically of the same magnitude
+as the weights of connections from cell output to gates,which shows that they are indeed
+used even though they are not mandatory for this task.
+The target functionsf
+tri andfrect required peephole connections for both values ofF.
+Figure 12 shows typical network solutions for thefrect target function. The cell outputyc
+equals the cell statesc in the second half of each period (whenfrect = 1) and is zero in
+the ﬁrst half,because the output gate closes the cell (triggered bysc,which is accessed via
+the peephole connections). The timing information is read oﬀsc,as explained in Section
+4.2. Furthermore,the two states of thefrect function are distinguished:sc is counted up
+whenfrect = 0 and counted down again whenfrect = 1. This is achieved through a negative
+connection from the cell output to the the cell input,feeding negative input into the cell
+only when the output gate is open; otherwise the input is dominated by the positive bias
+connection. Networks without peephole connections cannot use this mechanism,and did
+not ﬁnd any alternative solution. Throughout all experiments peephole connections were
+necessary to trigger the opening of gates while the output gate was closed,by granting
+unrestricted access to the timer implemented by the CEC. The gates learned to combine
+this information with their bias so as to open on reaching a certain trigger threshold.
+134
+
+=== PDF PAGE 21 ===
+Learning Precise Timing with LSTM Recurrent Networks
+0
+1 tk
+yk
+0
+1 tk
+yk
+0
+1 tk
+yk
+0
+1
+tk
+yk
+0
+1
+0 10 20 30 40
+Time
+tk
+yk
+0
+1
+0 25 50 75 100
+Time
+tk
+yk
+Figure 10: Target valuestk and network outputyk during test runs of trained peephole
+LSTM networks on the PFG task for the periodic functionsfcos (top),ftri (mid-
+dle),andfrect (bottom),with periodsF=10 (left) andF=25 (right).
+5. Discussion
+In this section we will discuss limitations and possible improvements of LSTM and give
+ﬁnal conclusions.
+5.1 Network initialization
+At the beginning of each stream cell states and gate activations are initialized to zero. This
+initial state is almost always quite far from the corresponding state in the same phase of
+135
+
+=== PDF PAGE 22 ===
+Gers, Schraudolph and Schmidhuber
+0
+1
+tk
+yk 0
+1
+tk
+yk
+-6
+-4
+-2
+0
+sc
+yc
+0.0
+-0.2
+-0.4
+-0.6
+ 
+sc
+yc
+0
+1
+0 10 20 30
+Time
+yin
+yout  
+yϕ
+0
+1
+0 10 20 30
+Time
+yin
+yout  
+yϕ
+Figure 11: Test runs of a trained LSTM network with (right) vs. without (left) peephole
+connections on thefcos PFG task withF=10. Top: target valuestk and network
+outputyk; middle: cell statesc and cell outputyc; bottom: activation of the
+input gateyin,forget gateyϕ ,and output gateyout.
+later periods in the stream. Figure 13 illustrates this for thefcos task. After few consecutive
+periods,cell states and gate activations of successful networks tend to settle to very stable,
+phase-speciﬁc values,which are typically quite diﬀerent from the corresponding values in
+the ﬁrst period. This suggests that the initial state of the network should be learned as
+well,as proposed by Forcada and Carrasco (1995),Bulsari and Sax´en (1995),instead of
+arbitrarily initializing it to zero.
+136
+
+=== PDF PAGE 23 ===
+Learning Precise Timing with LSTM Recurrent Networks
+0
+1 tk
+yk
+0
+1 tk
+yk
+0
+1
+sc
+yc
+0
+1
+2
+3
+4 sc
+yc
+0
+1
+0 10 20
+Time
+yin
+yout 
+yϕ
+0
+1
+0 25 50
+Time
+yin
+yout 
+yϕ
+Figure 12: Test runs of trained peephole LSTM networks on thefrect PFG task withF=10
+(left) andF=25 (right). Top: target valuestk and network outputyk; middle:
+cell statesc and cell outputyc; bottom: activation of the input gateyin,forget
+gateyϕ ,and output gateyout.
+5.2 Limitations of LSTM
+LSTM excels on tasks in which a limited amount of data (which neednot be specially
+marked though) must be remembered for a long time. Where additional processing of short-
+term information is necessary LSTM performs at least as well as other RNN algorithms
+(Hochreiter and Schmidhuber,1997,Gers et al.,2000). Here we brieﬂy point out the
+limitations of LSTM,and RNNs in general.
+137
+
+=== PDF PAGE 24 ===
+Gers, Schraudolph and Schmidhuber
+-4
+-3
+0 5 10 15 20
+Cycle
+sc
+0.9
+1
+0 5 10 15 20
+0
+0.1
+0.2
+yin , yϕ
+yout
+Cycle
+yin
+yout  
+yϕ
+Figure 13: Cell states and gate activations at the onset (zero phase) of the ﬁrst 20 cycles
+during a test run with a trained LSTM network on thefcos PFG task with
+F=10. The initial state (at cycle 0) is quite far from the equilibrium state.
+Memory capacity remains a problem for RNNs. For LSTM,memory is limited by the
+number of memory blocks in the network. It is unlikely that this limitation can be over-
+come simply by increasing the network size homogenously. Modularization of the network
+topology—and thus the task—will be necessary to keep learning eﬀective. How such mod-
+ularization can be learned or performed eﬀectively and how the network modules should be
+interconnected is not generally clear.
+RNNs are also limited in the complexity of the solutions they can learn. LSTM for
+example easily learns to instantiate a counter (equivalent to a one-symbol stack),and by
+combining two counters it can even learn a simple context-sensitive language (Gers and
+Schmidhuber,2001). This seems to be the current limit though—no RNN has learned to
+instantiate a stack or a queue for a non-trivial number of symbols (say,a dozen).
+Due to the error truncation we employed,the gating curcuitry of the LSTM architecture
+in its present form is not fully recurrent; the gates therefore depend on (classes of) individual
+input patterns for their operation. Thus in cases where memorization,recall,or forgetting
+are to be triggered by speciﬁc,temporally extended,possibly noisy inputsequences,it may
+become necessary to preprocess the input signal with an appropriate feature detector before
+passing it on to the LSTM network. We have encountered this limitation when trying to
+extract prosodic information from speech data (Cummins et al.,1999).
+5.3 Conclusion
+We have presented a neural network architecture that can learn to recognize and robustly
+generate precisely timed events separated by signiﬁcant time lags.
+Previous work demonstrated LSTM’s advantages over traditional RNNs on tasks in-
+volving long time lags between relevant input events. Those tasks,however,did not require
+the network to extract information conveyed by the duration of intervals between these
+events. Here we have shown that LSTM can solve such highly nonlinear tasks as well,by
+learning to precisely measure time intervals,provided we furnish LSTM cells with peephole
+138
+
+=== PDF PAGE 25 ===
+Learning Precise Timing with LSTM Recurrent Networks
+connections that allow them to inspect their current internal states. It is remarkable that
+peephole LSTM can learn exact and extremely robust timing algorithms without teacher
+forcing,even in case of very uninformative,rarely changing target signals. This makes it
+a promising approach for numerous real-world tasks whose solution partly depend on the
+precise duration of intervals between relevant events.
+Since the original development of LSTM our work has concentrated on improving struc-
+ture and wiring of the nonlinear,multiplicative gates surrounding and protecting LSTM’s
+constant error carousels. The LSTM variant with peepholes and forget gates used in this
+paper clearly outperforms traditional LSTM,and has become our method of choice for RNN
+applications. We are using it to ﬁnd prosody information in speech data (Cummins et al.,
+1999),and to detect and generate rhythm and music (Eck and Schmidhuber,2002).
+139
+
+=== PDF PAGE 26 ===
+Gers, Schraudolph and Schmidhuber
+Appendix A. Peephole LSTM with Forget Gates in Pseudo-code
+init network:
+reset: CECs: scv
+j =ˆscv
+j =0 ; partials: dS=0 ; activations: y=ˆy=0 ;
+forward pass:
+input units: y= current external input;
+roll over: activations: ˆy=y; cell states: ˆscv
+j =scv
+j;
+loop over memory blocks, indexed j{
+Step 1a: input gates (19):
+zinj = ∑
+m winj m ˆym + ∑Sj
+v=1winj cv
+j ˆscv
+j ; yinj = finj (zinj );
+Step 1b: forget gates (20):
+zϕ j = ∑
+m wϕ j m ˆym + ∑Sj
+v=1wϕ j cv
+j ˆscv
+j ; yϕ j = fϕ j (zϕ j );
+Step 1c: CECs, i.e the cell states (1, 4):
+loop over the Sj cells in block j, indexed v{
+zcv
+j = ∑
+m wcv
+j m ˆym ; scv
+j = yϕ j ˆscv
+j + yinj g(zcv
+j ); }
+Step 2:
+output gate activation (21):
+zoutj = ∑
+m woutj m ˆym + ∑Sj
+v=1woutj cv
+j scv
+j
+; youtj = foutj (zoutj );
+cell outputs (5):
+loop over the Sj cells in block j, indexed v{ ycv
+j = youtj scv
+j ; }
+} end loop over memory blocks
+output units (7): zk = ∑
+m wkm ym ; yk = fk(zk);
+partial derivatives:
+loop over memory blocks, indexed j{
+loop over the Sj cells in block j, indexed v{
+cells (12), (dSjv
+cm :=
+∂scv
+j
+∂w cv
+jm
+):
+dSjv
+cm = dSjv
+cm yϕ j + g′(zcv
+j )yinj ˆym ;
+input gates (13, 22), ( dSjv
+in,m :=
+∂scv
+j
+∂w injm
+,dSjv
+in,cv′
+j
+:=
+∂scv
+j
+∂w injcv′
+j
+):
+dSjv
+in,m = dSjv
+in,m yϕ j + g(zcv
+j )f′
+inj (zinj )ˆym ;
+loop over peephole connections from all cells, indexed v′ {
+dSjv
+in,cv′
+j
+= dSjv
+in,cv′
+j
+yϕ j + g(zcv
+j )f′
+inj (zinj )ˆsv′
+c ; }
+forget gates (14, 23), ( dSjv
+ϕm :=
+∂scv
+j
+∂w ϕjm ,dSjv
+ϕcv′
+j
+:=
+∂scv
+j
+∂w ϕjcv′
+j
+):
+dSjv
+ϕm = dSjv
+ϕm yϕ j +ˆscv
+j f′
+ϕ j (zϕ j )ˆym ;
+loop over peephole connections from all cells, indexed v′ {
+dSjv
+ϕcv′
+j
+= dSjv
+ϕcv′
+j
+yϕ j +ˆscv
+j f′
+ϕ j (zϕ j )ˆsv′
+c ; }
+}} end loops over cells and memory blocks
+140
+
+=== PDF PAGE 27 ===
+Learning Precise Timing with LSTM Recurrent Networks
+backward pass (if error injected):
+errors and δs:
+injection error: ek = tk −yk;
+δs of output units (9): δk = f′
+k(zk)ek;
+loop over memory blocks, indexed j{
+δs of output gates (11):
+δoutj = f′
+outj (zoutj )
+(∑Sj
+v=1 scv
+j
+∑
+kwkcv
+j
+δk
+)
+;
+internal state error (18):
+loop over the Sj cells in block j, indexed v{
+escv
+j
+= youtj
+(∑
+kwkcv
+j δk
+)
+; }
+} end loop over memory blocks
+weight updates:
+output units (8): ∆wkm = αδk ym ;
+loop over memory blocks, indexed j{
+output gates (10):
+∆wout,m = αδout ˆym ; ∆wout,cv
+j = αδout scv
+j ;
+input gates (16):
+∆win,m = α∑Sj
+v=1 escv
+j
+dSjv
+in,m ;
+loop over peephole connections from all cells, indexed v′ {
+∆win,cv′
+j
+= α∑Sj
+v=1 escv
+j
+dSjv
+in,cv′
+j
+; }
+forget gates (17):
+∆wϕm = α∑Sj
+v=1 escv
+j
+dSjv
+ϕm ;
+loop over peephole connections from all cells, indexed v′ {
+∆wϕcv′
+j
+= α∑Sj
+v=1 escv
+j
+dSjv
+ϕcv′
+j
+; }
+cells (15):
+loop over the Sj cells in block j, indexed v{
+∆wcv
+j m = αescv
+j
+dSjv
+cm ; };
+} end loop over memory blocks
+141
+
+=== PDF PAGE 28 ===
+Gers, Schraudolph and Schmidhuber
+Acknowledgment
+This work was supported by the Swiss National Science Foundation under grant number
+2100-49’144.96,“Long Short-Term Memory”.
+References
+Y. Bengio and P. Frasconi. An input output HMM architecture. InAdvances in Neural Information
+Processing Systems 7 ,San Mateo CA,1995. Morgan Kaufmann.
+Y. Bengio,P. Simard,and P. Frasconi. Learning long-term dependencies with gradient descent is
+diﬃcult.IEEE Transactions on Neural Networks ,5(2):157–166,1994.
+A.B. Bulsari and H. Sax´en. A recurrent network for modelling noisy temporal sequences.Neuro-
+computing,7:29–40,1995.
+Fred Cummins,Felix Gers,and J¨urgen Schmidhuber. Language identiﬁcation from prosody without
+explicit features. InProceedings of EUROSPEECH’99 ,volume 1,pages 371–374,1999.
+K. Doya and S. Yoshizawa. Adaptive neural oscillator using continuous-time backpropagation learn-
+ing.Neural Networks,2(5):375–385,1989.
+D. Eck and J. Schmidhuber. Learning the long-term structure of the blues. InProc. Intl. Conf.
+Artiﬁcial Neural Networks,Lecture Notes in Computer Science. Springer Verlag,Berlin (in press),
+2002.
+Mikel L. Forcada and Rafael C. Carrasco. Learning the initial state of a second-order recurrent
+neural network during regular-language inference.Neural Computation,7(5):923–930,1995.
+F. A. Gers and J. Schmidhuber. LSTM recurrent networks learn simple context free and context
+sensitive languages.IEEE Transactions on Neural Networks ,2001.
+F. A. Gers,J. Schmidhuber,and F. Cummins. Learning to forget: Continual prediction with LSTM.
+Neural Computation,12(10):2451–2471,2000.
+S. Hochreiter. Untersuchungen zu dynamischen neuronalen Netzen. Diploma thesis,Insti-
+tut f¨ur Informatik,Lehrstuhl Prof. Brauer,Technische Universit¨at M¨unchen,1991. See
+www7.informatik.tu-muenchen.de/˜hochreit.
+S. Hochreiter,Y. Bengio,P. Frasconi,and J. Schmidhuber. Gradient ﬂow in recurrent nets: The
+diﬃculty of learning long-term dependencies. In S. C. Kremer and J. F. Kolen,editors,A Field
+Guide to Dynamical Recurrent Neural Networks . IEEE Press,2001.
+S. Hochreiter and J. Schmidhuber. Long short-term memory.Neural Computation,9(8):1735–1780,
+1997.
+Y. LeCun,L. Bottou,G.B. Orr,and K.-R. M¨uller. Eﬃcient backprop. In Genevieve B. Orr and
+Klaus-Robert M¨uller,editors,Neural Networks—Tricks of the Trade ,volume 1524 ofLecture
+Notes in Computer Science ,pages 5–50. Springer Verlag,Berlin,1998.
+B. A. Pearlmutter. Gradient calculations for dynamic recurrent neural networks: A survey.IEEE
+Transactions on Neural Networks ,6(5):1212–1228,1995.
+D. C. Plaut,S. J. Nowlan,and G. E. Hinton. Experiments on learning back propagation. Technical
+Report CMU–CS–86–126,Carnegie–Mellon University,Pittsburgh,PA,1986.
+142
+
+=== PDF PAGE 29 ===
+Learning Precise Timing with LSTM Recurrent Networks
+A. J. Robinson and F. Fallside. The utility driven dynamic error propagation network. Technical
+Report CUED/F-INFENG/TR.1,Cambridge University Engineering Department,1987.
+J. Schmidhuber. A ﬁxed size storageO(n3) time complexity learning algorithm for fully recurrent
+continually running networks.Neural Computation,4(2):243–248,1992.
+H. T. Siegelmann and E. D. Sontag. Turing computability with neural nets.Applied Mathematics
+Letters,4(6):77–80,1991.
+S. Townley,A. Ilchmann,M. G. Weiss,W. McClements,A. C. Ruiz,D. Owens,and D. Praetzel-
+Wolters. Existence and learning of oscillations in recurrent neural networks. Technical Re-
+port AGTM 202,Universitaet Kaiserslautern,Fachbereich Mathematik,Kaiserslautern,Germany,
+1999.
+Fu-Sheng Tsung and Garrison W. Cottrell. Phase-space learning. InAdvances in Neural Information
+Processing Systems,volume 7,pages 481–488. The MIT Press,1995.
+M. G. Weiss. Learning oscillations using adaptive control. Technical Report AGTM 178,Universitaet
+Kaiserslautern,Fachbereich Mathematik,Kaiserslautern,Germany,1999.
+R. J. Williams and J. Peng. An eﬃcient gradient-based algorithm for on-line training of recurrent
+network trajectories.Neural Computation,2(4):490–501,1990.
+R. J. Williams and D. Zipser. A learning algorithm for continually running fully recurrent net works.
+Neural Computation,1(2):270–280,1989.
+R. J. Williams and D. Zipser. Gradient-based learning algorithms for recurrent networks and their
+computational complexity. In Y. Chauvin and D. E. Rumelhart,editors,Back-propagation:
+Theory, Architectures and Applications,chapter 13,pages 433–486. Hillsdale,NJ: Erlbaum,1992.
+143

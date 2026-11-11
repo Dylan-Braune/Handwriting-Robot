@@ -1,0 +1,213 @@
+\begingroup
+\raggedbottom
+\setlength{\textfloatsep}{12pt}
+\setlength{\intextsep}{12pt}
+\renewcommand{\resstep}[1]{\par\smallskip\noindent\QualificationSection{#1}\par\nobreak\smallskip}
+\label{sec:results}
+The six qualification tests follow the Project Proposal. Tables and figures give the measurements, while Section~\ref{sec:discussion} discusses their engineering meaning. Each test points to its complete records in Appendix~\ref{app:res-evidence}.
+
+\subsection{Summary of results achieved}
+\label{sec:res-summary}
+Table~\ref{tab:res-summary} summarises the measured outcomes. Geometric agreement relative to natural writing is reported separately from character accuracy.
+\begin{table}[H]\centering\small
+\begin{tabularx}{\linewidth}{p{.25\linewidth}X}\toprule
+Requirement & Recorded result\\\midrule
+R1. Reproduce text and retain writer style & Reader score on physical output 84.41\%. Writer identification 86.41\% of lines and 14/14 page pools. Normalised geometric agreement 86.68\% on the repeated-word subset.\\[3pt]
+R2. At least 95\% text and writer accuracy & Reader 94.06\%. Writer identification 153/156 lines (98.08\%).\\[3pt]
+R3. At most 4 s per reproduced character & All 25 completed ODROID requests pass. Largest recorded value 3.875 s per character.\\[3pt]
+R4. Classification within $2+0.025x$ s & Recorded totals 46.26 and 55.49 s, against 14.50 and 26.55 s allowed.\\[3pt]
+R5. At most 0.5 mm dimensional error & All 70 feature lengths from ten samples are within the limit. Largest absolute error 0.49 mm.\\[3pt]
+R6. At least ten stored styles & Eleven stored profiles, all represented in physical output.\\\bottomrule
+\end{tabularx}
+\caption{Results against the proposal.}\label{tab:res-summary}
+\end{table}
+\FloatBarrier
+
+\subsection{Qualification tests}
+\label{sec:res-qtp}
+\subsubsection{Test material, configuration and measurement definitions}
+\label{sec:res-method}
+The evaluation covers six IAM writers and five personal writers, labelled A, B, O, T and Y. Fourteen reproduced pages give 184 transcript-paired lines. Physical motion and request timings are recorded by the ODROID. Saved-image verification uses the retained photographs and original handwriting. The checkpoint identities and measurement setups are listed once in Appendix~\ref{app:res-provenance}.
+
+The reader score uses Levenshtein character edits, following the character-error convention~\cite[p.~2]{graves2006}. Writer identification counts correct line labels, with page pooling reported separately. Wilson intervals summarise observed line decisions~\cite[pp.~209--212]{wilson1927}. Shared pages and writers limit their interpretation as independent observations.
+\begin{equation}
+A_c=100\left(1-\frac{\sum_i d_{\rm edit}(\hat t_i,t_i)}{\sum_i |t_i|}\right).
+\label{eq:res-char}
+\end{equation}
+
+The direct geometric check compares word skeletons. Precision counts reproduced skeleton points within the distance tolerance of the original, and recall reverses the two sets. Their harmonic mean follows the point-set F-score definition~\cite{tanks2017}.
+\begin{equation}
+F=\frac{2PR}{P+R},\qquad
+Q_k=100\frac{\overline F_{{\rm robot},k}}{\overline F_{{\rm genuine},k}}.
+\label{eq:res-geometric}
+\end{equation}
+Here $Q_k$ is a project-defined comparison with writer $k$'s measured natural variation. Averaging the eleven $Q_k$ values gives equal weight to writers. It is a relative geometric score, rather than a character-accuracy percentage or a correlation coefficient.
+
+\reportqt{qt:r1}{Reproduction of digital text in a trained writer's style (R1)}
+\resstep{Objectives of the test or experiment}
+Measure text recovery, writer identification and direct shape agreement after physical reproduction.
+\resstep{Equipment used}
+The gantry, ODROID N2+, IMX179 camera, stored profiles, recorded classifier predictions and saved original and reproduced word crops.
+\resstep{Test setup and experimental parameters}
+The fourteen pages contain a common paragraph, a pangram and source text. Classification uses the recorded reader and stroke-normalised writer models. Geometry uses 83 repeated words from all eleven writers. Each word is scaled uniformly to 48 pixels in total ink height, with at most five pixels of translation and a 4.8-pixel stroke-distance tolerance.
+\resstep{Steps followed in the test or experiment}
+Draw and photograph the pages, pair their lines with transcripts and retain the reader edits and writer labels. For geometry, compare a genuine word and its robot reproduction against the same references from other pages by that writer. Exclude the genuine probe's own page. Average all reference comparisons, then normalise each writer's robot score by that writer's genuine-to-genuine score.
+\resstep{Results or measurements}
+Table~\ref{tab:res-r1-metrics} separates the classifier outcomes from the geometric verification. Figure~\ref{fig:res-writers} shows the classifier scores by writer, including the actual variation between styles. The full line records and row-normalised confusion matrix are in Appendix~\ref{app:res-page-records}.
+\begin{table}[H]\centering\small
+\begin{tabularx}{\linewidth}{Xr}\toprule
+Recorded quantity & Result\\\midrule
+Physical reader character score, $100(1-853/5471)$ & 84.41\%\\
+Correct physical writer labels & 159/184 (86.41\%)\\
+Correct pooled page identities & 14/14\\
+Writers above 85\% physical character score & 7/11\\
+Normalised geometric agreement, equal writer mean & 86.68\%\\
+Repeated-word verification coverage & 83 words, 11 writers\\\bottomrule
+\end{tabularx}
+\caption{Physical-output classifier and geometry results.}\label{tab:res-r1-metrics}
+\end{table}
+\begin{figure}[H]\centering
+\includegraphics[width=\linewidth]{Figures/rev_physical_classifier_scores.pdf}
+\caption{Physical-output scores by writer. Writer bars include Wilson intervals.}
+\label{fig:res-writers}\end{figure}
+
+Figure~\ref{fig:res-geometric} gives the geometric result relative to each writer's own variation. Its 100\% reference means equal agreement to the measured natural baseline. Figure~\ref{fig:res-geometric-examples} shows original and robot word crops with their registered skeletons. The complete banks, word scores and reference choices are retained in Appendix~\ref{app:res-geometric}.
+\begin{figure}[H]\centering
+\includegraphics[width=\linewidth]{Figures/rev_geometric_baseline.pdf}
+\caption{Geometric agreement relative to natural writing. Counts are repeated words.}
+\label{fig:res-geometric}\end{figure}
+\begin{figure}[H]\centering
+\includegraphics[width=\linewidth]{Figures/rev_geometric_examples.pdf}
+\caption{Measured word examples. Dark blue is original, light blue reproduced, grey overlap.}
+\label{fig:res-geometric-examples}\end{figure}
+\resstep{Observations}
+Character scores range from 60.97\% to 97.01\%. Geometric agreement relative to natural writing ranges from 74.26\% to 97.47\% using ordinary reference averages. Twenty-five of 166 eligible source-passage words lack an exact reference. A further 58 of the 141 comparable words lack cross-page repeats for a natural baseline.
+\resstep{Statistical analysis}
+The 159/184 writer decisions have a descriptive 95\% Wilson interval of 80.7\% to 90.6\%. Figure~\ref{fig:res-geometric} uses 10\,000 paired word-type resamples within the fixed writers and reference banks. Table~\ref{tab:app-geometric-summary} gives that range and the closest-reference sensitivity check. The baseline subset contains shorter words than the full geometric population.
+\FloatBarrier
+
+\reportqt{qt:r2}{Decoding original handwriting and identifying its writer (R2)}
+\resstep{Objectives of the test or experiment}
+Compare original-line text recognition and writer identification with the two 95\% targets.
+\resstep{Equipment used}
+Recorded validation line crops, their transcripts and writer labels, the evaluated checkpoints and the numerical inference implementation.
+\resstep{Test setup and experimental parameters}
+The reader uses 976 public IAM and 100 photographed validation lines. The writer test uses 156 original lines across eleven writers. Decoding is greedy, without a language model. Writer input uses the 0.17 stroke-width setting.
+\resstep{Steps followed in the test or experiment}
+Apply fixed preparation and inference, retain character edit counts and writer predictions, then aggregate by dataset and writer. Pool writer decisions separately from individual-line accuracy.
+\resstep{Results or measurements}
+Table~\ref{tab:res-r2-reader} gives the reader populations. Figure~\ref{fig:res-validation} shows dataset variation and writer intervals. Appendix~\ref{app:res-validation} gives the full breakdown, confusion matrix and comparison-model results.
+\input{3_Main_Report/results_tables/r2_reader}
+\begin{figure}[H]\centering
+\includegraphics[width=\linewidth]{Figures/rev_classifier_validation.pdf}
+\caption{Original-handwriting validation scores. Dashed lines mark 95\%.}
+\label{fig:res-validation}\end{figure}
+\resstep{Observations}
+The reader gives 94.06\% pooled character accuracy. Writer identification is 153/156 (98.08\%), and all eleven pooled writer groups are correct. The reader is 0.94 percentage points below target.
+\resstep{Statistical analysis}
+The writer result has a 95\% Wilson interval of 94.50\% to 99.34\%. Reader character edits share words, lines and writers, so a character-wise binomial interval is not assigned. Separate population scores are retained instead.
+\FloatBarrier
+
+\reportqt{qt:r3}{Time to reproduce digital text on paper (R3)}
+\resstep{Objectives of the test or experiment}
+Test whether a completed request containing $x$ characters takes at most $4x$ seconds.
+\resstep{Equipment used}
+ODROID N2+, gantry, request timer and preserved execution log.
+\resstep{Test setup and experimental parameters}
+Retain positive-character drawing requests with explicit program-end confirmation. The total includes generation and physical drawing. Stopped jobs and commissioning shapes are excluded.
+\resstep{Steps followed in the test or experiment}
+Associate each timing record with its completion marker, divide total time by character count and group the retained records by request length.
+\resstep{Results or measurements}
+Table~\ref{tab:res-r3-confirmed} gives the completed requests. Figure~\ref{fig:res-r3} shows every observation and the measured range at each length. All 25 complete records are in Appendix~\ref{app:res-speed}.
+\input{3_Main_Report/results_tables/r3}
+\begin{figure}[H]\centering
+\includegraphics[width=\linewidth]{Figures/rev_reproduction_times.pdf}
+\caption{Completed reproduction requests and observed timing ranges.}
+\label{fig:res-r3}\end{figure}
+\resstep{Observations}
+All 25 requests are below 4 s per character. The largest value is $166.61/43=3.875$ s per character. Nine 378-character requests take 507.57 to 1085.01 s.
+\resstep{Statistical analysis}
+There are one to nine observations at each of six lengths, from 43 to 378 characters. The all-pass fraction has a descriptive Wilson interval of 86.7\% to 100\%. The records do not sample all possible text and path combinations.
+\FloatBarrier
+
+\reportqt{qt:r4}{Time to decode a photographed page and identify its writer (R4)}
+\resstep{Objectives of the test or experiment}
+Compare complete embedded classification with the allowance $2+0.025x$ seconds.
+\resstep{Equipment used}
+ODROID N2+, request-stage timer and preserved classification log. The supporting optimisation benchmark uses the recorded development-host experiment.
+\resstep{Test setup and experimental parameters}
+The two embedded records contain 500 characters over 16 lines and 982 over 22 lines. The timer includes loading, conditioning, segmentation, cropping and both networks. Camera acquisition is outside this boundary.
+\resstep{Steps followed in the test or experiment}
+Read the complete totals and stage times, calculate the character-dependent allowances and compare the measured and allowed values.
+\resstep{Results or measurements}
+Figure~\ref{fig:res-r4} shows the measured stages and complete totals. Table~\ref{tab:res-r4-total} gives the numerical comparison. The full stages and supporting acceleration measurements are in Appendix~\ref{app:res-classification-time}.
+\begin{table}[H]\centering\small
+\begin{tabular}{rrrrr}\toprule
+Characters & Measured / s & Allowed / s & Overrun / s & Measured / allowed\\\midrule
+500 & 46.26 & 14.50 & 31.76 & 3.19\\
+982 & 55.49 & 26.55 & 28.94 & 2.09\\\bottomrule
+\end{tabular}
+\caption{Embedded classification totals.}\label{tab:res-r4-total}
+\end{table}
+\begin{figure}[H]\centering
+\includegraphics[width=\linewidth]{Figures/rev_classification_times.pdf}
+\caption{Recorded classification stages and time allowances.}
+\label{fig:res-r4}\end{figure}
+\resstep{Observations}
+Both requests exceed their allowances. Network execution accounts for 67.6\% of the combined recorded time. A supporting fourteen-page benchmark reduces network time from 359.8 to 130.3 s with batching and a different backend, retaining every reader output.
+\resstep{Statistical analysis}
+Two complete embedded requests are available. Their stage breakdowns locate the recorded time expenditure but do not establish a general latency distribution. Host benchmark factors are reported separately from measured embedded timings.
+\FloatBarrier
+
+\reportqt{qt:r5}{Gantry dimensional accuracy and repeated geometric samples (R5)}
+\resstep{Objectives of the test or experiment}
+Compare repeated square and triangle feature lengths with the 0.5 mm error limit.
+\resstep{Equipment used}
+Final calibrated gantry, pen, paper and the author's metal non-digital vernier caliper. The instrument model and least count are not recorded.
+\resstep{Test setup and experimental parameters}
+Ten supplied samples each contain four nominal 100.00 mm square sides, an 80.00 mm triangle base and two nominal 56.57 mm slopes. These give 70 readings. Errors use the supplied two-decimal nominal lengths.
+\resstep{Steps followed in the test or experiment}
+Measure all seven features on each sample, subtract the nominal length and retain signed errors. Group the readings by feature and sample without treating seven sides of one drawing as seven independent drawings.
+\resstep{Results or measurements}
+Figure~\ref{fig:res-geometry} contains every signed error. Figure~\ref{fig:res-repeatability} gives each feature's mean and sample standard deviation, together with each sample's largest error. Table~\ref{tab:res-gantry-summary} summarises the complete set. Appendix~\ref{app:res-geometry-calculation} retains all 70 readings and both feature and sample summaries.
+\input{3_Main_Report/results_tables/gantry_summary}
+\begin{figure}[H]\centering
+\includegraphics[width=\linewidth]{Figures/rev_gantry_errors.pdf}
+\caption{All 70 signed feature-length errors in millimetres.}
+\label{fig:res-geometry}\end{figure}
+\begin{figure}[H]\centering
+\includegraphics[width=\linewidth]{Figures/rev_gantry_repeatability.pdf}
+\caption{Feature variation and largest error in each sample.}
+\label{fig:res-repeatability}\end{figure}
+\resstep{Observations}
+All 70 reported lengths are within 0.5 mm of nominal. The largest errors are the two triangle slopes in sample 5, at $-0.49$ and $+0.49$ mm. Square-side errors change sign between samples. The supplied measurements describe feature lengths rather than absolute bed coordinates.
+\resstep{Statistical analysis}
+Each feature has ten readings. Sample standard deviations describe variation among those readings. The minimum observed margin to the limit is 0.01 mm. Measurement uncertainty cannot be assigned from the retained record because caliper resolution and the nib-edge reading convention are unspecified.
+\FloatBarrier
+
+\reportqt{qt:r6}{Storage and use of multiple trained styles (R6)}
+\resstep{Objectives of the test or experiment}
+Check the required minimum of ten stored and usable writer styles.
+\resstep{Equipment used}
+Writer mapping, stored glyph profiles, generated jobs and fourteen physical output pages.
+\resstep{Test setup and experimental parameters}
+The evaluated set contains eleven identities. Each must have a nonempty stored glyph mapping and physical output.
+\resstep{Steps followed in the test or experiment}
+Compare model identities with profile keys and confirm the corresponding reproduced pages.
+\resstep{Results or measurements}
+Figure~\ref{fig:res-inventory} gives the stored character mappings by writer. All eleven styles have physical output. Appendix~\ref{app:res-inventory} gives the mapping and page counts.
+\begin{figure}[H]\centering
+\includegraphics[width=\linewidth]{Figures/rev_style_inventory.pdf}
+\caption{Stored character mappings in the eleven writer profiles.}
+\label{fig:res-inventory}\end{figure}
+\resstep{Observations}
+The style count exceeds the required minimum by one. Character coverage differs between profiles.
+\resstep{Statistical analysis}
+This is a complete inventory of the evaluated profiles, rather than a sample estimate.
+
+\subsubsection{Qualification under the proposal's field conditions}
+\label{sec:res-conditions}
+The recorded tests use the fixed indoor capture and gantry arrangement. The capture variations already shown in Design extend the visual evidence. No calibrated illuminance or vibration series is assigned to these results.
+\FloatBarrier
+
+\endgroup

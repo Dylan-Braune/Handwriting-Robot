@@ -1,0 +1,37 @@
+from pathlib import Path
+import re
+P=Path('Report/SubmissionRevision_2026-11-02');R=P/'3_Main_Report'
+p=R/'design/3_7_integration.tex';s=p.read_text();s=s.replace('The server connects page processing, stored models, writer profiles and the motion interpreter. The browser supplies requests and displays results.','The server connects page processing, models, profiles and motion control to the browser.')
+s=s.replace('A writing request stores its trajectory, preview, G-code and metadata as one generated job. Drawing is a separate action requiring connection and calibration. This allows the operator to inspect the path before movement. Table~\\ref{tab:des-contracts} records the interfaces and coordinate conventions.','Each generated job stores paths, preview, G-code and metadata. Drawing requires connection and calibration, allowing preview inspection first. Table~\\ref{tab:des-contracts} records the data interfaces.')
+s=s.replace('The ODROID runs numerical inference and motion control. NumPy provides array operations, Flask handles requests, image libraries load files, OpenCV captures camera frames and gpiod controls GPIO. The source code is supplied separately with the project.','The ODROID runs inference and motion control. NumPy supplies array operations, Flask handles requests, image libraries and OpenCV load or capture images, and gpiod controls GPIO.')
+s=s.replace('The pulse loop checks an abort event and confirmed end stops. A separate request thread allows a stop during drawing. End-stop trips latch a fault and invoke recovery under the configured conditions. Generated, refused, completed and interrupted jobs are recorded separately. The software stop does not independently disconnect motor power.','The pulse loop checks aborts and confirmed end stops. A separate request thread accepts stops during drawing. End-stop faults trigger the configured recovery. Job records distinguish generation, refusal, completion and interruption. Software stops do not independently disconnect motor power.')
+s=s.replace('Interface checks cover upload and camera consistency, writer-to-profile mapping, bounded G-code and interrupted-job reporting. The diagnostic retracing path bypasses recognition and synthesis, using thinning and tracing followed by ordinary machine conversion. Comparing its preview and drawing helps locate whether an error enters before or during execution.','Interface checks cover input consistency, profile mapping, G-code bounds and interruptions. Diagnostic retracing bypasses recognition and synthesis. Comparing its preview with the drawing separates extraction faults from execution faults.')
+s=s.replace('Stage records separate image processing, inference, generation and drawing. Generation timing is carried into the reproduction total. Accuracy and time requirements are evaluated in Results using the relevant image populations and ODROID records.','Stage timings separate processing, inference, generation and drawing. Reproduction totals include generation. Results evaluates accuracy and embedded runtime.')
+p.write_text(s)
+p=R/'design/3_5_classification.tex';s=p.read_text().replace('three strong first-stage feature channels','three strong feature channels before the first spatial pool');p.write_text(s)
+p=R/'5_Discussion.tex';s=p.read_text()
+repls={
+'The browser combines capture review, text entry, writer selection and preview. Calibration and the visible writing area assist setup. Paper and pen positioning remain manual, so the operator must check restraint and clearance before starting. Clear generated, running, stopped and completed states help distinguish a prepared path from physical execution.':'The browser combines capture review, text entry, writer selection and preview. The operator positions the paper and pen, then checks restraint, calibration and clearance. Separate generation and execution states make job progress clear.',
+'Belts, pulleys and the carriage create pinch points. The working area must remain clear during motion. End stops and software aborts assist normal operation, while independent motor-power removal would protect against an unresponsive controller. Driver temperature, wiring restraint and supply enclosures also require attention.':'Belts, pulleys and the carriage create pinch points, so the working area must remain clear. End stops and aborts assist operation. Independent motor-power removal would protect against an unresponsive controller. Driver temperature and restrained wiring also require attention.',
+'The borrowed ODROID will be returned. Motors, rails and drivers can be reused, and individual printed parts can be replaced. The printed material is not recorded, so no specific recycling claim is made. Digital previews reduce wasted paper during development, while physical tests remain necessary. Training electricity is estimated as a cost, without an energy-meter record or calculated environmental saving.':'The borrowed ODROID will be returned. Motors, rails and drivers can be reused, and printed parts replaced individually. Digital previews reduce wasted paper, while physical tests remain necessary. The printed material and training energy were not measured, so no specific recycling or environmental-saving figure is claimed.',
+'Personalised writing could assist a person who has difficulty writing, although this benefit has not been evaluated with users. Style reproduction also permits impersonation. Samples should be used with permission and machine-produced material identified where its origin matters.':'Personalised writing could assist someone who has difficulty writing, although user benefit is not evaluated here. Style reproduction also permits impersonation. Permission and clear identification of machine-produced material are therefore important.',
+'The five personal contributors signed consent forms, retained securely rather than publishing their signatures. Handwriting and profiles require appropriate collection, retention and access controls under the Protection of Personal Information Act':'Signed forms are retained securely for all five contributors. Handwriting and profiles require collection, retention and access controls under the Protection of Personal Information Act',
+'Signed consent was obtained from all five personal contributors. An institutional clearance or exemption reference is not present in the retained records, so consent is not presented as institutional approval.':'Participant consent is retained. Institutional clearance or exemption remains to be confirmed.'}
+for a,b in repls.items():s=s.replace(a,b)
+p.write_text(s)
+# Plain punctuation in normal prose from segmentation onward. Leave equations, citations, tables and algorithms intact.
+for p in [*list((R/'design').glob('3_[4-7]*.tex')),R/'4_Results.tex',R/'5_Discussion.tex',R/'6_Conclusion.tex']:
+ s=p.read_text();out=[];env=None
+ for line in s.splitlines():
+  if re.match(r'\\begin\{(equation|table|designalgorithm|figure|lstlisting)',line):env=line.split('{')[1].split('}')[0]
+  if not env and not line.startswith('\\'):
+   # Protect inline maths and commands including their arguments.
+   chunks=re.split(r'(\$[^$]*\$|\\(?:[A-Za-z]+\*?)(?:\[[^]]*\])?(?:\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\})*)',line)
+   for i,c in enumerate(chunks):
+    if i%2==0:
+     c=c.replace(' --- ','. ').replace(' -- ', ' to ').replace('—',',').replace('; ','. ').replace(': ','. ')
+     chunks[i]=c
+   line=''.join(chunks)
+  out.append(line)
+  if env and '\\end{'+env+'}' in line:env=None
+ p.write_text('\n'.join(out)+'\n')

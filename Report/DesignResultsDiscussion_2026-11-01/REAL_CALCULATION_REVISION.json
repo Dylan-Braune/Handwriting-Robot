@@ -1,0 +1,232 @@
+[
+  {
+    "file": "3_Main_Report/3_Design_and_Implementation.tex",
+    "old": "Established methods are referenced where introduced. The coordinate transforms, geometric heuristics and combined selection criteria are design choices developed for this system; their equations and worked examples are derived here. Numerical examples are calculations unless explicitly identified as recorded measurements. Implementation details are available in the submitted CleanPipeline3 source, with occasional module pointers provided below.\\par",
+    "new": "Established methods are referenced where introduced. The coordinate transforms, geometric heuristics and combined selection criteria are design choices developed for this system. The numerical substitutions below use the configured mechanism, stored handwriting and recorded offline processing traces; their inputs and scope are collected in Appendix~\\ref{app:des-real-calculations}. They establish how the calculations operate, while physical performance is assessed separately in Results. Occasional module pointers identify implementation detail in the separately submitted source."
+  },
+  {
+    "file": "3_Main_Report/design/3_3_hardware.tex",
+    "old": "Motor torque must be assessed at operating speed, rather than from holding torque alone. With feed $F$ in mm/min, Equation~\\ref{eq:des-rpm} gives the motor speed. A travel feed of 4000\\,mm/min corresponds to 100\\,rev/min.",
+    "new": "Motor torque must be assessed at operating speed, rather than from holding torque alone. The generated Owen job uses a travel feed of 2400\\,mm/min and drawing feed of 900\\,mm/min. With the installed 40\\,mm/revolution transmission, these correspond to 60 and 22.5\\,rev/min respectively, using Equation~\\ref{eq:des-rpm}."
+  },
+  {
+    "file": "3_Main_Report/design/3_3_hardware.tex",
+    "old": "Calculated example: For a chosen acceleration case, $r_p=0.006366$ m, $m=0.950$ kg, $a=0.5$ m/s$^2$, $F_f=0.0373$ N and $J_{\\rm rot}=10^{-5}$ kg\\,m$^2$ give $T_{\\rm req}=0.006366(0.0373+0.475)+10^{-5}(0.5/0.006366)=0.00405$ N\\,m. The resistance and inertia are assumed; this is not the installed motor's verified torque margin.",
+    "new": ""
+  },
+  {
+    "file": "3_Main_Report/design/3_3_hardware.tex",
+    "old": "At constant speed, only the resistance term remains. For the recorded moving mass of 0.950\\,kg, assuming $F_f=\\mu_fmg$ with $\\mu_f=0.004$ gives approximately $0.000237$\\,N\\,m. This illustrative value indicates a small resistance load, but the coefficient is unmeasured and the calculation excludes acceleration. The driver starts each segment without a controlled acceleration ramp, so allowable starting rate also depends on motor current and reflected inertia. Establishing a dynamic margin requires those quantities and a matching motor characteristic, rather than the steady-state estimate alone.",
+    "new": "At constant speed, Equation~\\ref{eq:des-torque} reduces to $T=r_pF_f=0.006366F_f$\\,N\\,m for the installed pulley, with $F_f$ in newtons. A numerical load margin requires measured carriage resistance, moving mass and reflected inertia. The available record does not establish these quantities sufficiently to substitute a verified operating load. The driver starts each segment without a controlled acceleration ramp, so a holding-torque rating alone cannot establish an allowable starting rate."
+  },
+  {
+    "file": "3_Main_Report/design/3_3_hardware.tex",
+    "old": "Algorithm~\\ref{alg:des-stepping} gives the major-axis form of the implemented loop. For a short illustrative command of eight $x$ steps and three $y$ steps, the initial error is four; $y$ pulses occur on iterations 2, 5 and 7. The commanded endpoint is therefore $(8,3)$, with the minor-axis movement spread along the segment. Reversing a direction changes its sign, not the interpolation rule.",
+    "new": "Algorithm~\\ref{alg:des-stepping} gives the major-axis form of the implemented loop. In the generated Owen file, the segment from $(17.024,239.996)$ to $(17.065,239.643)$\\,mm produces signed count changes $(3,-29)$ at the configured nominal 80 microsteps/mm. For example, the $x$ increment is $\\operatorname{round}(17.065\\times80)-\\operatorname{round}(17.024\\times80)=1365-1362=3$. The $y$ axis is therefore the major axis, with initial accumulator $\\lfloor29/2\\rfloor=14$; the three $x$ pulses are distributed among the 29 $y$ pulses. This evaluates the generated command at the nominal scale, rather than assuming a recovered physical homing count."
+  },
+  {
+    "file": "3_Main_Report/design/3_3_hardware.tex",
+    "old": "Calculated example: For an illustrative 10 mm move at $F=800$ mm/min with $N_M=800$, $N_m=0$, $\\tau=10/[(800/60)800]=0.0009375$ s and $t_{\\rm delay}=0.750$ s. A 10 mm diagonal with $N_M=N_m=566$ instead gives approximately 1.50 s of pulse delay.",
+    "new": "For that same generated segment, $d=\\sqrt{0.041^2+0.353^2}=0.355373$\\,mm, $v=900/60=15$\\,mm/s, $N_M=29$ and $N_m=3$. Equation~\\ref{eq:des-pulsetime} gives $\\tau=0.355373/(15\\times29)=0.000816950$\\,s and $t_{\\rm delay}=32\\tau=0.0261424$\\,s. The geometric feed budget is $d/v=0.0236915$\\,s. The extra delay follows from the separate minor-axis pulses; neither value is a measured motor execution time."
+  },
+  {
+    "file": "3_Main_Report/design/3_3_hardware.tex",
+    "old": "Calculated example: Using the configured $L_x=200.6$ mm and an illustrative counted $N_x=16048$ gives $\\kappa_x=80$ microsteps/mm. A target $x=20$ mm with $e=5$ mm becomes $n_x=\\operatorname{round}(25\\times80)=2000$. The step count is a chosen example, not a recovered calibration measurement.",
+    "new": "The configured travel dimensions give usable spans $200.6-2(5)=190.6$\\,mm and $261.3-2(5)=251.3$\\,mm after edge clearance. These values define the generated job\\textquotesingle s workspace. The numerical calibrated values of $\\kappa_x$ and $\\kappa_y$ additionally require the actual switch-to-switch counts $N_x,N_y$; a count has not been substituted where its measurement is unavailable."
+  },
+  {
+    "file": "3_Main_Report/design/3_3_hardware.tex",
+    "old": "For example, allocating 0.25\\,mm to scale error over 190.6\\,mm of $x$ travel requires the 200.6\\,mm reference travel to be known to approximately 0.263\\,mm. This allocation in Equation~\\ref{eq:des-scaleerror} is a design budget, not a measured uncertainty. Switch repeatability, backlash, pen compliance and squareness require the remaining error allowance.",
+    "new": "At the configured maximum $x$ travel, the multiplier in Equation~\\ref{eq:des-scaleerror} is $190.6/200.6=0.95015$. Thus reference-length uncertainty contributes approximately $0.95015|\\delta L_x|$ at the far end of the usable axis. This converts the actual geometry into a sensitivity coefficient; a measured uncertainty still requires the travel measurement and switch-repeatability record."
+  },
+  {
+    "file": "3_Main_Report/design/3_3_hardware.tex",
+    "old": "Here $R_S$ is the carrier's sense resistance and $V_{\\mathrm{ref}}$ is the measured reference voltage. For illustration only, $R_S=0.10\\,\\Omega$ and a 1.00\\,A trip setting would require $V_{\\mathrm{ref}}=0.80$\\,V. The actual setting depends on the installed resistor and reference voltage. Available torque and driver heating depend on that setting; the motor's 1.68\\,A phase rating does not mean the driver is operating at 1.68\\,A.",
+    "new": "Here $R_S$ is the carrier\\textquotesingle s sense resistance and $V_{\\mathrm{ref}}$ is the measured reference voltage. The installed motor\\textquotesingle s 1.68\\,A phase rating gives the conditional electrical bound $V_{\\rm ref}\\leq8R_S(1.68)$. If the reported R10 marking is confirmed as $R_S=0.10\\,\\Omega$, this is $V_{\\rm ref}\\leq1.344$\\,V before considering a lower limit imposed by carrier heating. This is a component-rating constraint, not the recorded adjustment: the actual current setting cannot be calculated without a measured $V_{\\rm ref}$."
+  },
+  {
+    "file": "3_Main_Report/design/3_3_hardware.tex",
+    "old": "The reported resistor marking is tentatively R10, corresponding to 0.10\\,$\\Omega$ if confirmed. This supports the illustrative resistance in Equation~\\ref{eq:des-current}, but does not supply the missing measured reference voltage. The ODROID uses its supplied mains adapter; its DC output rating remains to be confirmed separately from the 24\\,V stepper supply. The dedicated ODROID 3.3\\,V rail supplies the installed 3.3\\,V loads, including the pen motor. The GPIO connections carry the associated control and feedback signals.",
+    "new": "The reported resistor marking is tentatively R10 and must be checked before applying that bound. The ODROID uses its supplied mains adapter; its DC output rating remains to be confirmed separately from the 24\\,V stepper supply. The dedicated ODROID 3.3\\,V rail supplies the installed 3.3\\,V loads, including the pen motor. The GPIO connections carry the associated control and feedback signals."
+  },
+  {
+    "file": "3_Main_Report/design/3_4_segmentation.tex",
+    "old": "Calculated example: With illustrative $G=90$, $B_r=180$ and $t^*=0.70$, $R=90/180=0.50$ and $M=1$. Paper at $G=171$ under the same background gives $R=0.95$ and $M=0$.",
+    "new": "In the Owen01 page trace, pixel $(y,x)=(317,343)$ of the $800\\times600$ pre-deskew working image has $G=100$. Its 41 by 41 background window gives $B_r=161.43367$, hence $R=100/161.43367=0.619449$. The selected ratio threshold is $0.803906$, so this pixel enters the ink mask. These values come from the actual photograph after the documented reduction, rather than chosen grey levels."
+  },
+  {
+    "file": "3_Main_Report/design/3_4_segmentation.tex",
+    "old": "Calculated example: For four prefix entries $S_{11}=900$, $S_{01}=300$, $S_{10}=200$ and $S_{00}=80$, the window sum is $900-300-200+80=480$. A four-pixel window therefore has $B_r=120$.",
+    "new": "The same pixel\\textquotesingle s four prefix values are $20696850$, $18404173$, $18359673$ and $16338366$. Equation~\\ref{eq:des-integral} gives a window sum of $271370$, so $B_r=271370/1681=161.43367$. This is the local-background value used in the preceding mask decision."
+  },
+  {
+    "file": "3_Main_Report/design/3_4_segmentation.tex",
+    "old": "Calculated example: For a constructed candidate split with $\\omega_0=0.2$, $\\omega_1=0.8$, $\\mu_0=0.3$ and $\\mu_1=1.0$, the criterion is $0.2(0.8)(0.3-1.0)^2=0.0784$. A candidate giving 0.060 is inferior; the implementation searches all valid histogram splits.",
+    "new": "For this page\\textquotesingle s ratio histogram, the selected bin is 171. Its masses are $\\omega_0=0.07069375$ and $\\omega_1=0.92930625$, with mean bin indices 124.98356 and 217.71913. Their between-class variance is approximately $564.97942$ in squared bin-index units. Converting the selected bin centre to the ratio scale gives $t^*=(171+0.5)(1.2/256)=0.80390625$, the threshold used above."
+  },
+  {
+    "file": "3_Main_Report/design/3_4_segmentation.tex",
+    "old": "Calculated example: Two candidate row profiles $(0,6,0,6)$ and $(3,3,3,3)$ contain the same twelve ink pixels, but score $72$ and $36$. The first is preferred because the ink is more concentrated in rows.",
+    "new": "The Owen01 angle search gave squared-projection scores of 442973 at $+0.5^\\circ$, 464105 at $+1.0^\\circ$ and 439403 at $+1.5^\\circ$. The maximum over all seventeen tested angles was 464105, so the routine selected $+1.0^\\circ$. These scores are computed from the reduced mask used by the angle search, before the final mask is rebuilt."
+  },
+  {
+    "file": "3_Main_Report/design/3_4_segmentation.tex",
+    "old": "Calculated example: For local cost $C=0.10$ and predecessor pairs $(D,d)=(0.30,0),(0.20,1),(0.25,-1)$, the accumulated cost is $0.10+\\min(0.30,0.22,0.27)=0.32$. The selected predecessor changes row by one.",
+    "new": "In the traced boundary between centres 38 and 61, the selected predecessor at column 283 changes from row 50 to row 49 in working-image coordinates. Its stored predecessor cost is $0.00641966$, the movement penalty is $0.02$ and the new local cost is $0.0000226843$. Equation~\\ref{eq:des-seam} therefore gives $D\\simeq0.00641966+0.02+0.0000226843=0.02644234$. This traces one selected minimum of the actual dynamic programme; equal-cost alternatives can also occur."
+  },
+  {
+    "file": "3_Main_Report/design/3_4_segmentation.tex",
+    "old": "Calculated example: With $h_g=20$ pixels, blank ink and $y-y_m=10$ pixels, $C=0.012(10/20)^2=0.003$. Crossing ink at the midpoint costs $4$, over a thousand times as much locally. These are the implemented weights, not measured probabilities.",
+    "new": "At that boundary point, $y_m=(38+61)/2=49.5$, $h_g=(61-38)/2=11.5$ and the closed mask is zero. The implemented local cost is therefore $C=0.012[(49-49.5)/11.5]^2=0.0000226843$. It provides the local term used in the preceding accumulated-cost calculation."
+  },
+  {
+    "file": "3_Main_Report/design/3_4_segmentation.tex",
+    "old": "Calculated example: A chosen $80\\times1000$ crop gives $a=\\min(0.8,0.64)=0.64$, hence an approximately $51\\times640$ image plus white vertical padding. Its aspect ratio is retained, but its text body is shorter than 64 pixels.",
+    "new": "The archived first Owen01 line is $156\\times2170$ pixels. Its fit scale is $a=\\min(64/156,640/2170)=0.2949309$, giving a $46\\times640$ resized image after integer rounding. The routine places it nine rows below the top of the 64-row canvas, retaining its aspect ratio and filling the remaining rows with white."
+  },
+  {
+    "file": "3_Main_Report/design/3_5_classification.tex",
+    "old": "Calculated example: In one illustrative single-channel $3\\times3$ patch, set the nine inputs to $1,\\ldots,9$, all kernel weights to one and the bias to 0.5. The output is $z=0.5+45=45.5$ before normalisation and ReLU. These are illustrative weights, not learned parameters.",
+    "new": "For the first Owen01 line, channel 0 of the first convolution at canvas row 34, column 462 gives $\\sum WX=-1.150897$ with learned bias $b=-0.000435125$. Equation~\\ref{eq:des-conv} therefore produces $z=-1.151332$. The nine actual input and learned-weight values are retained in Appendix~\\ref{app:des-real-calculations}; this is a traced activation, not a chosen filter."
+  },
+  {
+    "file": "3_Main_Report/design/3_5_classification.tex",
+    "old": "Calculated example: For illustrative $z=3$, $\\mu_B=1$, $\\sigma_B^2=4$, $\\epsilon=10^{-5}$, $\\gamma=1.5$ and $\\beta=0.1$, $\\widehat z=2/\\sqrt{4.00001}\\simeq1$ and $y\\simeq1.6000$.",
+    "new": "At the same activation, the checkpoint stores $\\mu=0.2163021$, $\\sigma^2=0.02585394$, $\\gamma=1.0193636$ and $\\beta=0.1324657$. Using $\\epsilon=10^{-5}$ in Equation~\\ref{eq:des-bn} gives $y=1.0193636(-1.1513321-0.2163021)/\\sqrt{0.02585394+10^{-5}}+0.1324657\\simeq-8.53619$. The following ReLU sets this negative response to zero. These are the stored inference statistics, rather than statistics calculated from this single line."
+  },
+  {
+    "file": "3_Main_Report/design/3_5_classification.tex",
+    "old": "Calculated example: One scalar cell with $c_{t-1}=0.5$, $f_t=0.8$, $i_t=0.3$, $g_t=0.4$ and $o_t=0.7$ gives $c_t=0.8(0.5)+0.3(0.4)=0.52$ and $h_t=0.7\\tanh(0.52)=0.3344$.",
+    "new": "In the first forward LSTM layer for that line, frame 10 and cell 0 have $c_{t-1}=-2.7277257$, $f_t=0.7306111$, $i_t=0.6666368$ and $g_t=-0.8560218$. Equation~\\ref{eq:des-lstm} gives $c_t\\simeq-2.5635625$. With $o_t=0.000145395$, the cell emits $h_t\\simeq-0.000143680$. This records the memory calculation used while processing the real feature sequence."
+  },
+  {
+    "file": "3_Main_Report/design/3_5_classification.tex",
+    "old": "Calculated example: For a two-frame, two-symbol example targeting the symbol $a$, let $p_1(a)=0.8$ and $p_2(a)=0.7$, with the remaining mass assigned to blank. The admissible paths $(a,a),(a,\\varnothing),(\\varnothing,a)$ sum to $0.56+0.24+0.14=0.94$, giving $\\mathcal L=-\\log(0.94)=0.06188$.",
+    "new": "For the complete labelled line ``1.9. Vloggers using fame to support charities is a positive way, the recorded forward--backward total is $\\log Z=-0.47033843$. Equation~\ref{eq:des-ctc} gives $\\mathcal L_{\rm CTC}=0.47033843$ and $Z\\simeq0.6247908$. This loss was evaluated offline from the trained reader\textquotesingle s actual logits and known transcript, without updating its weights."
+  },
+  {
+    "file": "3_Main_Report/design/3_5_classification.tex",
+    "old": "Calculated example: In that example, the posterior occupancy of $a$ at frame 1 is $q_{1,a}=(0.56+0.24)/0.94=0.85106$. Its unaveraged logit derivative is $0.8-0.85106=-0.05106$, encouraging more probability on the target symbol.",
+    "new": "At frame 11, the probability of \\texttt{V} is $p_{11,V}=0.98030665$ and the target-constrained occupancy is $q_{11,V}=0.99999995$. The CTC logit derivative is therefore $p-q=-0.01969329$. It is negative because the admissible target paths require more \\texttt{V} probability than the current output supplies at that frame; the real-input finite-difference check in Appendix~\\ref{app:des-expanded-checks} checks this derivative."
+  },
+  {
+    "file": "3_Main_Report/design/3_5_classification.tex",
+    "old": "For the illustrative transcript ``letter'', the two adjacent \\texttt{t}s require separate emission runs with a blank between them. Advancing directly from one \\texttt{t} state to the next would collapse to a single character, so that skip transition is forbidden. This same restriction is retained during forced alignment in Section~\\ref{sec:des-alignment}; training sums admissible paths, whereas extraction selects one.",
+    "new": "The word ``Vloggers in this actual transcript contains adjacent \texttt{g}s. They require separate emission runs with a blank between them: a direct skip between identical label states would collapse to one character. The same restriction is retained during forced alignment in Section~\ref{sec:des-alignment}; training sums admissible paths, whereas extraction selects one."
+  },
+  {
+    "file": "3_Main_Report/design/3_5_classification.tex",
+    "old": "Calculated example: At the selected $\\rho=0.17$ and an illustrative estimated $h_x=24$ pixels, $w=\\operatorname{clip}(\\operatorname{round}(4.08),2,9)=4$ and the actual odd kernel is $k=5$. The redraw is 0 at dilated ink pixels and 255 elsewhere.",
+    "new": "The same Owen crop has an estimated body-band height of 38 pixels. At the selected $\\rho=0.17$, the width calculation gives $w=\\operatorname{clip}(\\operatorname{round}(0.17\\times38),2,9)=6$, then $k=2\\lfloor6/2\\rfloor+1=7$. The actual redraw therefore uses a seven-pixel square dilation before fitting the line to the network canvas."
+  },
+  {
+    "file": "3_Main_Report/design/3_6_reproduction.tex",
+    "old": "Calculated example: If $p_t(\\ell'_s)=0.7$ and the admissible predecessor log scores are $-2$ and $-3$, $V=\\log(0.7)+\\max(-2,-3)=-2.3567$. Extraction selects one predecessor; the CTC likelihood instead sums both.",
+    "new": "For the \\texttt{V} in that Owen line, frame 11 corresponds to state 11 of the blank-interleaved transcript. Its log emission is $-0.01988991$ and the three admissible predecessor scores are $-13.91888$, $-10.01139$ and $-1.3624485$. Equation~\\ref{eq:des-viterbi} selects their maximum and gives $V=-0.01988991-1.3624485=-1.3823384$. Backtracking assigns \\texttt{V} the frame interval $[11,12)$."
+  },
+  {
+    "file": "3_Main_Report/design/3_6_reproduction.tex",
+    "old": "Calculated example: For illustrative smoothed ink count 2, reference percentile 10 and $(b-y_{\\rm top})/h_x=0.2$, $C_x=2/10+1.15(0.2)=0.43$. At the same ink count but body height 1.0, the cost rises to 1.35.",
+    "new": "The refined right boundary of this \\texttt{V} is source column 193. Although smoothing gives $\\overline p_{193}=2.8$ and the positive-column reference is 14.36, the raw ink count at column 193 is zero. The explicit blank-column rule therefore overrides $2.8/14.36$ and assigns zero cut cost. This is a real case in which the gap rule prevents smoothing alone from penalising a clean separation."
+  },
+  {
+    "file": "3_Main_Report/design/3_6_reproduction.tex",
+    "old": "Calculated example: With chosen $b=40$, $y=28$, $h_x=24$, $x-x_L=12$, $\\tan\\phi=0.2$ and post-trim $\\delta=0.1$, $v=0.5$, $u_0=0.5-0.5(0.2)=0.4$ and stored $u=0.3$. The separate lead is $l=0.1$.",
+    "new": "A traced point on this \\texttt{V} is $(x,y)=(173,59)$, with left cut $x_L=146$, baseline $b=107$, $h_x=38$ and $\\tan\\phi=-0.0787017$. Equation~\\ref{eq:des-glyphcoords} gives $v=48/38=1.263158$ and $u_0=27/38-1.263158(-0.0787017)=0.809939$. After the implementation\\textquotesingle s three-decimal intermediate rounding and measured post-trim shift $\\delta=0.4472489$, the stored point is $(u,v)=(0.363,1.263)$ and the recorded lead is 0.447 x-heights."
+  },
+  {
+    "file": "3_Main_Report/design/3_6_reproduction.tex",
+    "old": "For unit-length descriptor $v_g$ and the normalised median reference $r_c$ for character $c$, the prior distance is $d(g,c)=1-v_g^Tr_c$. Internal consensus instead uses pairwise $L_1$ descriptor distances and chooses the medoid with the lowest total distance. These are two distinct comparisons: resemblance to a pooled character reference and resemblance to this writer's own forms. Algorithm~\\ref{alg:des-profile} gives their place in the complete profile-building procedure. For a chosen descriptor dot product of 0.9, prior distance is $1-0.9=0.1$. Three variants with pairwise $L_1$ distances 0.2, 0.6 and 0.5 have summed distances 0.8, 0.7 and 1.1, so the second is the medoid; it remains an observed glyph, rather than an averaged path.",
+    "new": "For unit-length descriptor $v_g$ and the normalised median reference $r_c$ for character $c$, the prior distance is $d(g,c)=1-v_g^Tr_c$. Internal consensus instead uses pairwise $L_1$ descriptor distances and chooses the medoid with the lowest total distance. These compare a pooled character reference with this writer\\textquotesingle s own forms. Dylan\\textquotesingle s first stored \\texttt{a} variant has recorded prior distance 0.114. Recomputing the pairwise rule on all nine final stored variants gives the smallest total distance, 33.3413, for variant index 4; the other totals range from 34.4306 to 42.9091. This demonstrates the selection rule on the final pool, without treating a new descriptor calculation as the historical filtering log. Algorithm~\\ref{alg:des-profile} gives its place in profile construction."
+  },
+  {
+    "file": "3_Main_Report/design/3_6_reproduction.tex",
+    "old": "Calculated example: If twelve of twenty eligible adjacent-letter pairs cross their source boundaries, $c=12/20=0.60$. This illustrative fraction describes observed connections, not the proportion of future joins guaranteed to succeed.",
+    "new": "For the single extracted Owen line used above, 39 eligible adjacent non-space glyph pairs were counted and three boundaries were crossed by a recovered skeleton. Equation~\\ref{eq:des-connectedness} gives $c=3/39=0.076923$. This line-level extraction trace illustrates what is counted; the final stored writer profile summarises its own complete source collection."
+  },
+  {
+    "file": "3_Main_Report/design/3_6_reproduction.tex",
+    "old": "Calculated example: Using the preceding glyph point, choose $h_x^{\\rm mm}=4$, $p_x=10$, $p_y=20$, $s=0.2$ and $d=0$. Then $x=10+4(0.1+0.3+0.2\\times0.5)=12$ mm and $y=20+4(0.5)=22$ mm.",
+    "new": "In the generated Owen sentence ``Writing with style.'', the first placement call uses $(u,v)=(-0.01134565,1.47270173)$, lead $l=0.25117988$, zero shear and drift, and $h_x^{\\rm mm}=4$. With the initial placement origin $(0,0)$, Equation~\\ref{eq:des-placement} gives $x=4(0.25117988-0.01134565)=0.9593369$\\,mm and $y=4(1.47270173)=5.8908069$\\,mm. This is the actual assembly point before later path processing and machine placement, not a replay of the earlier \\texttt{V} crop."
+  },
+  {
+    "file": "3_Main_Report/design/3_6_reproduction.tex",
+    "old": "Calculated example: An illustrative median prior distance $\\widetilde d=0.28$ gives $\\lambda=(0.28-0.24)/0.08=0.5$; distances below 0.24 or above 0.32 saturate at zero or one.",
+    "new": "The final Owen profile\\textquotesingle s stored glyph distances have median $\\widetilde d=0.18355$. Equation~\\ref{eq:des-anchor} gives $\\lambda=\\operatorname{clip}[(0.18355-0.24)/0.08,0,1]=0$. With no stored override, this is the anchoring value selected by the automatic rule for the generated job."
+  },
+  {
+    "file": "3_Main_Report/design/3_6_reproduction.tex",
+    "old": "Calculated example: For a 20-character target with two edit operations, $A=1-2/20=0.90$. If the selected writer posterior is $P=0.80$, $J=2(0.90)(0.80)/1.70=0.8471$. This constructed score explains selection and is not a measured stylistic-correlation result.",
+    "new": "For the recorded Owen candidate 1, the 19-character target ``Writing with style.'' differs from its reader output by one substitution, giving $A=18/19=0.9473684$. The selected-writer posterior is $P=0.5786133$, so Equation~\\ref{eq:des-jointscore} gives $J=0.7184359$. This is the actual score used to select the candidate in Figure~\\ref{fig:des-candidates}; it evaluates the software rendering rather than physical stylistic agreement."
+  },
+  {
+    "file": "3_Main_Report/design/3_6_reproduction.tex",
+    "old": "Here $t$ is intended text, $\\widehat t$ is recognised text, $d_{\\mathrm{edit}}$ is the minimum number of insertions, deletions and substitutions, using the reader error convention~\\cite[PDF p.~2, Sec.~2.1]{graves2006}, and $P$ is the model probability of the selected writer. The harmonic mean $J$ in Equation~\\ref{eq:des-jointscore} penalises a weak component. For example, $A=0.95$ and $P=0.30$ give $J\\approx0.456$, whereas $A=P=0.65$ give $J=0.65$. An arithmetic mean would give the former candidate 0.625 and obscure much of its poor writer score.",
+    "new": "Here $t$ is intended text, $\\widehat t$ is recognised text, $d_{\\mathrm{edit}}$ is the minimum number of insertions, deletions and substitutions, using the reader error convention~\\cite[PDF p.~2, Sec.~2.1]{graves2006}, and $P$ is the model probability of the selected writer. The harmonic mean $J$ in Equation~\\ref{eq:des-jointscore} makes a weak component limit the combined score. The actual candidate comparison below holds text and writer fixed, making the effect of the writer posterior visible without inventing scores."
+  },
+  {
+    "file": "3_Main_Report/design/3_6_reproduction.tex",
+    "old": "Calculated example: For a chosen origin $(0,250)$ mm, margins $(15,10)$ mm, scale $a=1$, bounds $x_0=0$, $y_1=20$, and no line shifts, trajectory point $(5,12)$ becomes $(x_m,y_m)=(20,232)$ mm. These illustrative coordinates must still pass workspace checks.",
+    "new": "The generated Owen trajectory has $x_0=0.9593369$\\,mm and $y_1=6.6340616$\\,mm. A point $(2.9829210,5.3303251)$\\,mm is placed using the configured origin $(0,251.3)$\\,mm, margins $(15,10)$\\,mm, unit fit scale and zero line shift. Equation~\\ref{eq:des-machinecoords} gives $(x_m,y_m)=(17.0235840,239.9962635)$\\,mm. Three-decimal file emission writes this point as \\texttt{X17.024 Y239.996}, connecting the trajectory calculation to the motion segment examined in Section~\\ref{sec:des-drive}."
+  },
+  {
+    "file": "3_Main_Report/design/3_6_reproduction.tex",
+    "old": "The physical x-height is first chosen from the page ruling and a stored x-height-to-pitch ratio where available. Otherwise the code uses a fraction of 0.46, giving an illustrative $8.4(0.46)=3.864$\\,mm x-height at the default 8.4\\,mm ruling. A probe of the actual requested text can reduce that value if robust line extent exceeds 1.25 rulings. The extent is measured using the 98th-percentile stroke tops and second-percentile bottoms, with exact extremes for fewer than eight strokes. It limits the influence of a few outlying strokes, but is not a guarantee that every extreme lies inside the nominal band.",
+    "new": "The physical x-height is first chosen from the page ruling and a stored x-height-to-pitch ratio where available. If that ratio is absent, the configured fallback gives $8.4(0.46)=3.864$\\,mm at the default 8.4\\,mm ruling. This is the fallback sizing rule, rather than the value passed to every job: the traced Owen job explicitly requests 4\\,mm. A probe of the requested text can reduce the selected value if robust line extent exceeds 1.25 rulings. The extent uses the 98th-percentile stroke tops and second-percentile bottoms, with exact extremes for fewer than eight strokes. It limits outliers but does not guarantee every extreme lies inside the nominal band."
+  },
+  {
+    "file": "3_Main_Report/design/3_6_reproduction.tex",
+    "old": "The generated file selects millimetres and absolute positioning. A travel move reaches the start of a stroke with the pen raised, the pen is lowered, drawing moves follow, and the pen is raised before the next travel. Figure~\\ref{fig:des-gcode-excerpt} gives an illustrative 10\\,mm segment; it is not a claim of a measured hardware test. The interpreter assigns \\texttt{M3} and \\texttt{M5} to pen down and pen up respectively.",
+    "new": "The generated file selects millimetres and absolute positioning. A travel move reaches the start of a stroke with the pen raised, the pen is lowered, drawing moves follow, and the pen is raised before the next travel. Figure~\\ref{fig:des-gcode-excerpt} reproduces the beginning of the actual generated Owen file used for these calculations. The interpreter assigns \\texttt{M3} and \\texttt{M5} to pen down and pen up respectively."
+  },
+  {
+    "file": "3_Main_Report/design/3_6_reproduction.tex",
+    "old": "Calculated example: For chosen $D_d=100$ mm, $D_u=50$ mm, $F_d=800$ mm/min, $F_u=4000$ mm/min, twenty transitions and two 0.35 s dwells, $t_{\\rm nom}=7.50+0.75+7.00=15.25$ s. It remains a nominal budget, not a measured job time.",
+    "new": "For this same generated file, the unrounded distance accumulators are $D_d=139.0263729$\\,mm and $D_u=158.1555743$\\,mm. At $F_d=900$ and $F_u=2400$\\,mm/min, with 56 pen transitions and two 0.35\\,s dwell settings, Equation~\\ref{eq:des-timebudget} gives $t_{\\rm nom}=9.2684249+3.9538894+19.6=32.8223142$\\,s. The job metadata reports 32.8\\,s after rounding. This is the converter\\textquotesingle s actual geometric budget, not a physical completion-time measurement."
+  },
+  {
+    "file": "3_Main_Report/design/3_7_integration.tex",
+    "old": "Calculated example: two line weights 100 and 300 with writer probabilities 0.90 and 0.60 give $\\overline p_k=[100(0.90)+300(0.60)]/400=0.675$.",
+    "new": "Applying this vote to the first two archived Owen01 crops gives ink weights 20204 and 21750, with Owen probabilities 0.9996674 and 0.9999279 from the selected 0.17-width model. Equation~\\ref{eq:des-pagevote} gives $\\overline p_{\\rm Owen}=(20204\\times0.9996674+21750\\times0.9999279)/41954\\simeq0.9998024$. This is a two-crop calculation trace, not the full-page evaluation reported in Results."
+  },
+  {
+    "file": "Appendices/design_implementation_details.tex",
+    "old": "Calculated example: For three scalar inputs $(-1,0,1)$, $\\gamma=1$, $\\epsilon=10^{-5}$ and incoming gradients $(1,0,0)$, the middle normalised input is zero. Its derivative is $-1/[3\\sqrt{2/3+10^{-5}}]=-0.40825$, despite its own incoming gradient being zero. The shared statistics couple the samples.",
+    "new": ""
+  },
+  {
+    "file": "Appendices/design_implementation_details.tex",
+    "old": "Calculated example: Using the main-text scalar cell $c_t=0.52$, $o_t=0.7$, $f_t=0.8$, with $dh_t=1$ and $dc_t^{\\rm next}=0$, gives $dc_t=0.7[1-\\tanh^2(0.52)]=0.5403$ and $dc_{t-1}=0.4322$, before any other accumulated paths.",
+    "new": ""
+  },
+  {
+    "file": "Appendices/design_implementation_details.tex",
+    "old": "Calculated example: At the first update choose $\\theta=1$, $g=0.2$, $\\lambda_w=10^{-5}$, $v_0=0$ and $\\eta=10^{-3}$. Then $g\\prime=0.20001$, $v_1=0.000400040001$ and $\\theta_1\\simeq0.990000$. The values illustrate the implemented update, not a recovered training step.",
+    "new": ""
+  },
+  {
+    "file": "Appendices/design_implementation_details.tex",
+    "old": "Calculated example: With zero initial moments, $g=0.2$, $\\theta_0=1$, $\\eta=10^{-3}$ and $\\lambda_w=10^{-4}$, $m_1=0.02$, $v_1=0.00004$, $\\widehat m_1=0.2$, $\\widehat v_1=0.04$ and $\\theta_1\\simeq0.9989999$.",
+    "new": ""
+  },
+  {
+    "file": "Appendices/design_implementation_details.tex",
+    "old": "Calculated example: For a reduced two-input patch $X_c=(1,2)^T$, kernel $W=(0.1,0.2)$ and incoming derivative $G=3$, the derivatives are $GX_c^T=(3,6)$ and $W^TG=(0.3,0.6)^T$. Overlapping patches add their contributions to shared input pixels.",
+    "new": ""
+  },
+  {
+    "file": "Appendices/design_implementation_details.tex",
+    "old": "Calculated example: For emission 0.7 and predecessor log scores $-2,-3$, $\\alpha=\\log(0.7)+\\log(e^{-2}+e^{-3})=-2.0434$. This exceeds the max-path score $-2.3567$ because both admissible paths contribute.",
+    "new": "For frame 11 and the \\texttt{V} state in the real Owen line, the predecessor log-forward scores are $-12.8882643$, $-8.9807719$ and $-0.1088294$, and the log emission is $-0.01988985$. Equation~\\ref{eq:app-ctcforward} gives $\\alpha=-0.01988985+\\log(e^{-12.8882643}+e^{-8.9807719}+e^{-0.1088294})\\simeq-0.12857619$. This sums the admissible predecessor mass, whereas the main-text forced alignment selects one predecessor."
+  },
+  {
+    "file": "Appendices/design_implementation_details.tex",
+    "old": "Calculated example: For neighbours $(P_2,\\ldots,P_9)=(1,1,1,0,0,0,0,0)$, the neighbour count is three, the circular transition count is one and all listed products are zero. A foreground centre therefore qualifies for deletion in the first subpass; the next subpass uses the updated image.",
+    "new": "During thinning of the actual Owen crop, the first recorded deletion in subpass one was pixel $(y,x)=(12,190)$ with neighbours $(P_2,\\ldots,P_9)=(0,0,1,1,1,1,0,0)$. Its neighbour count is four and its circular transition count is one. Both first-subpass products are zero because $P_2=0$ and $P_8=0$, so the pixel is deleted when the subpass mask is applied. This records a real boundary-pixel decision, rather than a constructed neighbourhood."
+  },
+  {
+    "file": "Appendices/design_implementation_details.tex",
+    "old": "Calculated example: For the controlled scalar loss $\\mathcal L(\\theta)=\\theta^2$, $\\theta=2$ and $\\varepsilon=10^{-4}$, the estimate is $[(2.0001)^2-(1.9999)^2]/0.0002=4$, matching $2\\theta$. This demonstrates the reference calculation, not a new whole-network gradient test.",
+    "new": "For the real Owen line\\textquotesingle s \\texttt{V} logit at frame 11, the two losses with $\\varepsilon=10^{-4}$ are $\\mathcal L_+=0.4703364611173033$ and $\\mathcal L_-=0.4703403997759956$. Equation~\\ref{eq:des-gradcheck} gives $g^{\\rm num}=-0.0196932934615$, compared with the analytic CTC derivative $-0.0196932934309$; the absolute difference is $3.06\\times10^{-11}$. This verifies that logit derivative on a real input without claiming a complete network-gradient or training-run test."
+  }
+]

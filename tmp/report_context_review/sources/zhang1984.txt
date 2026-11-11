@@ -1,0 +1,393 @@
+
+=== PDF PAGE 1 ===
+RESEARCH CONTRIBUTIONS 
+Image Processing 
+and Computer 
+Vision 
+Robert M. Haralick 
+Editor 
+A Fast Parallel Algorithm for 
+Thinning Digital Patterns 
+T. Y. ZHANG and C. Y. SUEN 
+ABSTRACT: A fast parallel thinning algorithm is proposed 
+in this paper. It consists of two subiterations: one aimed at 
+deleting the south-east boundary points and the north-west 
+corner points while the other one is aimed at deleting the 
+north-west boundary points and the south-east corner 
+points. End points and pixel connectivity are preserved. 
+Each pattern is thinned down to a "skeleton" of unitary 
+thickness. Experimental results show that this method is 
+very effective. 
+1. INTRODUCTION 
+It is well known that the general problem of pattern 
+recognition lies in the effectiveness and efficiency of 
+extracting the distinctive features from the patterns. 
+The stroke analysis method is a powerful approach to 
+recognizing certain types of digital patterns such as al- 
+phanumeric characters and ideographs. It should be 
+noted that the strokes thinned by hardware or software 
+are accompanied by different kinds of distortion. Differ- 
+ent thinning algorithms produce different degrees of 
+distortion [1-5, 7-12]. 
+There is no general agreement in the literature on an 
+exact definition of thinness. Pavlidis [6] describes a 
+thinning algorithm that determines skeletal pixels by 
+local operations. At the same time, the pixels are la- 
+beled so that the original image can be reconstructed 
+from its skeleton. The goal of this paper is to find a 
+© 1984 ACM 0001-0782/84/0300-0236 75¢ 
+faster and more efficient parallel thinning algorithm. 
+The distortion should be as little as possible. Experi- 
+mental results indicate that this method can be used to 
+thin a variety of digital patterns. 
+2. PARALLEL PICTURE PROCESSING 
+A binary digitized picture is defined by a matrix IT 
+where each pixel IT(i, j) is either 1 or 0. The pattern 
+consists of those pixels that have value 1. Each stroke 
+in the pattern is more than one element thick. Iterative 
+transformations are applied to matrix IT point by point 
+according to the values of a small set of neighboring 
+points. It is assumed that the neighbors of the point (i, j) 
+are (i - 1, j), (i - 1, j + 1), (i, j + 1), (i + 1, j + 1), 
+(i + 1, j), (i + 1, j - 1), (i, j - 1), and (i - 1, j - 1), as is 
+shown in Figure 1. In parallel picture processing, the 
+new value given to a point at the nth iteration depends 
+on its own value as well as those of its eight neighbors 
+at the (n - 1)th iteration, so that all picture points can 
+P, 
+(i- 1, j- 1) 
+P, 
+(i, j - 1) 
+P2 P3 
+(i- 1, j) (i- 1, j+ 1) 
+P1 
+(i, j) 
+P, 
+(i,j+ 1) 
+P~ Pe Ps 
+(i+ 1,j- 1) (i+ 1,j) (i+ 1,j+ 1) 
+FIGURE 1. Designations of the nine pixels in a 3 x 3 window. 
+236 Communications of the ACM March 1984 Volume 27 Number 3 
+
+
+=== PDF PAGE 2 ===
+Research Contributions 
+be processed simultaneously. It is assumed that a 3 x 3 
+window is used, and that each element is connected 
+with its eight neighboring elements. The algorithm pre- 
+sented in this paper requires only simple computations. 
+3. THINNING ALGORITHM 
+Our method for extracting the skeleton of a picture 
+consists of removing all the contour points of the pic- 
+ture except those points that belong to the skeleton. In 
+order to preserve the connectivity of the skeleton, we 
+divide each iteration into two subiterations. 
+In the first subiteration, the contour point P1 is de- 
+leted from the digital pattern if it satisfies the following 
+conditions: 
+(a) 2 _< B(P1) -< 6 
+(b) A(P~)= 1 
+(C) P2*P4*P6 = 0 
+(d) P4*P6*P8 = 0 
+where A(P1) is the number of 01 patterns in the ordered 
+set P2, P3, P4, - • - P8, P9 that are the eight neighbors of 
+P1 (Figure 1), and 
+B(Pi) is the number of nonzero neighbors of P1, 
+that is, 
+B(P1) = P2 + P3 + P4 + • • • + P8 + P9. 
+If any condition is not satisfied, e.g., the values of P2, 
+P3, P4, • • - P9 as shown in Figure 2, then 
+A(Pi) = 2 
+Therefore, P~ is not deleted from the picture. 
+In the second subiteration, only conditions (c) and (d) 
+are changed (Figure 3) as follows: 
+(c') P2*P4*P8 = 0 
+(d') P2*P6*P8 = 0 
+and the rest remain the same. 
+By conditions (c) and (d) of the first subiteration, it 
+will be shown that the first subiteration removes only 
+the south-east boundary points and the north-west cor- 
+ner points which do not belong to an ideal skeleton. 
+The proof for the first subiteration is given, that is, 
+the points to be deleted satisfy conditions: 
+0 0 I i 
+1 : P~ 0 
+1 I 0 0 
+\2 J 
+FIGURE 2. Counting the 01 patterns in the ordered set P2, P~, P4, 
+.... P~, P~. 
+West 
+North 
+P2 
+Pa Pl P4 
+Pa 
+South 
+East 
+FIGURE 3. Points under consideration and their locations• 
+.@~.~• @.~@. ~ 
+@@@@@@8@. @8#@@8@@. @@8@@88~. @@8@@@@~. .@@8@8@8 
+@8@@8@@@. @8@@@@8@. .@@@8888 
+@@@@@@~8. @@~0@@@8. .88@8@8@ 
+#@@@@@@@. @@@@@~@@. .@@8@~@@ 
+@@@~@8@@. @@@@@@@@. .@88@8@@ 
+@@8@~@@8. 8@~@@@@@. .@8@@@88 
+@@8@@8@@. @@~@@88@. .88888@~ 
+~8@@8@@@. @@@@@@@@. .8@@@@@@ 
+@~8@8@@@@@@88@@@8@@@@@8@@8@. 
+8808@@88088@8@@@@@@@@~8~8@8. 
+@@@@@@@O@@@@@@@@O@@@@@@~@@@. 
+@@8@888@8@88@8~@8@@8~@@@@8@. 
+888@8@8~8@@@@@8@@8@@@@@#@0. 
+@@@~@@@8~8@8@8@@8@@@@@@~8@8. 
+@888@@88~ .......... 888~88@@. 
+@@@@@8@@. @@@@@8@@. @@@@@@@@. ~#@@@@@8. 
+@@@@@@8@. @@@@@~8@. 
+@@@@8~@@. 8@@@@8@@. 
+@@@@@0@@. #@@@@0@@. 
+888@@8@~. @8@@@@@@. 
+8~8@@@@@. @@8@@@#8. 
+@@@@@@@@. #@#@@088. ~@#@@@#. @@@@@@@@. 
+°•o ........ o ...... 
+(a) 
+.•°.... 
+.@@@@88@ 
+.8@@8@@@ 
+.@@@8@8@ 
+.@@@@8@@ 
+.@@~8@@@ .@@@@@@@ 
+.@@@@88@ 
+.@@@8@@8 
+.@@@@@0@ 
+.@@@@@@@O@@@@@@@@@@@@@@@@@@ 
+.@@@@@@@@@@@@#@@O@~@@@@@@@@ 
+.~88@@8@@@@@~@~8@8@@@@@@@@@ 
+.8@8@@@@#@88@@@@@@8@@@@@8@@ 
+.@@@@@@@@@8@@@@088@@@@@@@@@ 
+.... @° .'. 
+.... ~o .• 
+.... @. .° 
+.... @. .. 
+• °@o °° 
+.° .@ .... 
+• ° o@.,°° 
+.. .@ .... 
+.. °@ .... 
+°° °@ .... 
+.°@.,o. .............. ~ .... 
+..@ .................. @ .... 
+..@ .................. @ .... 
+..8@@@@@@@@@~8@@8@#@@@ .... 
+• .@ .................. @ .... 
+• .@ .................. @ .... 
+..~ .................. @.o• 
+.@@@8@8@ .@@8@@@8 --@ ........ ~... 
+• 8@@@8@@ .@@@8@@@ --@ ........ @... 
+• @@@8~@@ .@888@@~ .-@ ........ ~... 8@@@@@@ .@8@@@@@ ..8 ........ ~... • .@ ........ 8... @@@@@@0 .@@@@88@ 
+@88@8@8 .@@@8@88 .................. 
+@8@@@@@ .@@@8@@@ 
+@@8@@@@ .@8@@@@@ .................. 
+@@8@@@8 .@@@@@@~ .................. 
+@@@@@@. .@@@8@@. 
+(b) (c) 
+FIGURE 4. Results of thinning the character 'H' by the subiterations. 
+March 1984 Volume 27 Number 3 Communications of the ACM 237 
+
+
+=== PDF PAGE 3 ===
+Research Contributions 
+(c) P2*P4*P6 = 0 (1) 
+(d) P4*P6*P8 = 0 (2) 
+The solutions to the set of equations (1) and (2) are P4 
+= 0 or P6 = 0 or (P2 = 0 and Ps = 0). So the point P1, 
+which has been removed, might be an east or south 
+boundary point or a north-west corner point. Similarly, 
+it can be proved that the point P1 deleted in the second 
+subiteration might be a north-west boundary point or a 
+south-east corner point. For example, the results of 
+processing the character "H" by both subiterations are 
+shown in Figure 4(a) and 4(b). The points marked by 
+"." have been removed. The final result is shown in 
+Figure 4(c). 
+By condition (a), the endpoints of a skeleton line are 
+preserved. Also, condition (b) prevents the deletion of 
+those points that lie between the endpoints of a skele- 
+ton line, as shown in Figure 5. The iterations continue 
+until no more points can be removed. 
+A flowchart of the proposed thinning algorithm is 
+shown in Figure 6. Initially, the original picture is 
+stored in matrix IT and a counter C is set to 0. The 
+result of the processed picture is stored in matrix IT. To 
+save memory space, only two matrices, IT and M, are 
+used in our computation. 
+Figures 7(a)-7(c) show the results obtained by our 
+algorithm for a Chinese character "@," a letter "B," 
+and a digital "moving body," respectively. Skeleton 
+points are marked by "*," or "@," and all those points 
+that have been deleted in the thinning process are 
+marked by "-." 
+The above algorithm yields very good results with 
+respect to both connectivity and contour noise immu- 
+nity. Furthermore, the conditions for searching those 
+points that should be deleted from the pattern are very 
+simple. In order to assess the performance of our algo- 
+rithm, we have chosen one given by Stefanelli and Ro- 
+senfeld [11] for comparison. Both algorithms were writ- 
+ten in FORTRAN, run on the same CDC Cyber 172 
+computer, and tested with the same digitized patterns. 
+The result shows that the execution time of our algo- 
+rithm is only 50 percent of the one given [11]. As can 
+be predicted, the execution time depends on the com- 
+plexity of the pattern and the thickness of the strokes: 
+0.505 CPU seconds for the Chinese character "~" 0.454 
+CPU seconds for the letter "B" and 1.163 seconds for 
+the moving body. 
+TABLE I. Comparison of CPU Time (in seconds) Consumed by 
+Different Parallel Thinning Algorithms 
+Method 
+Pattern 
+Four-Step Two-Step Our Algorithm 
+B 0.765 0.678 0.454 
+• ~ 1.031 0.882 0.505 
+Moving body 2.713 2.221 1.163 
+0 O-- 0 0 
+I I I 0 i 1 1 
+I 1 1 0 ,0 0 0 
+0 0~0 0 
+I I 
+1 1 1 1 
+; I O. 0~0 0 
+FIGURE 5. Preventin 9 the deletion of endpoints. 
+l 
+Start ) 
+I C=O 
+Search M (satisfied 
+the conditions of the 
+first subiteration) 
+C = C+l, ifM(i,j) = 1 
+IT = IT - M 
+C=O 
+Search M (satisfied 
+the conditions of the 
+second subiteration) 
+C = C + 1, if M(i,j) = 1 
+IT = IT - M 
+Yes 
+Yes 
+FIGURE 6. Flowchart of the thinning algorithm. 
+238 Communications of the ACM March 1984 Volume 27 Number 3 
+
+
+=== PDF PAGE 4 ===
+Research Contributions 
+,i ....... ~i ..... ; ............ iii 
+1,2 *,,;;'. .H,,,, ..... 
+'~,2 • ottt .... 
+..,. .... . .............. 
+~e .......... 
+(a) 
+• 
+..... @ ........ @@.. 
+.@ 
+.@ 
+.@ 
+.@ 
+.@ 
+.@ 
+.@ 
+.@ 
+.@ 
+• .@. ° 
+• °@o • 
+°@° • . 
+• °@° • 
+• o@• • ~ 
+• •@o ° 
+• .@• • 
+• .@@.. 
+° • o@o ° 
+.@ ......... @. 
+.@@@@@@@@@@@.. 
+.@ ......... @@.. 
+.@. . .@@.. 
+.@. . .@... 
+.@. . .@.. 
+.@ .... @.. 
+.@. . .@.. 
+.@. . .@.. 
+.@. . .@... 
+.@. . .@@.. 
+..... @ .......... @@.. 
+..@@@@@@@@@@@@@@@@.. 
+oo• ...... •.••o~oo• 
+(b) 
+..• ~ .. 
+..,.--- ... ...... 
+...... ~2j,~ 
+"" i; ..... ~ .... ~ 
+222,1 ~.2. 
+.* ........ "~;;22 
+..~... 
+(c) 
+::~;:::: 
+FIGURE 7. Thinning of different digital patterns. 
+4. SUMMARY 
+A parallel algorithm for thinning different types of digi- 
+tal patterns is presented in this paper. Each iteration is 
+divided into two subiterations that remove the bound- 
+ary and corner points of the digital patterns. After sev- 
+eral iterations, only a skeleton of the pattern remains. 
+The proposed algorithm appears to be very efficient 
+in the thinning of digital patterns and it compares fa- 
+vorably with those described in [11]. The results in 
+Table I indicate that our method is 1.5 to 2.3 times 
+faster than the four-step and two-step methods de- 
+scribed in [11] while the resulting skeletons look very 
+much the same. 
+REFERENCES 
+1. Arcelli, C., Cordelia, L.P. and Levialdi, S. From local maxima to 
+connected skeletons. IEEE Trans. Pattern Analysis and Machine Intell. 
+PAMI-3 (March 1981), 134-143. 
+2. Arcelli, C. A condition for digital points removal. Signal Processing 1, 
+4 (1979), 283-285. 
+3. Deutsch, E.S. Thinning algorithms on rectangular, hexagonal, and 
+triangular arrays. Commun. ACM 15, 9 (Sept. 1972), 827-837. 
+4. Hilditch, C.J. Linear skeletons from square cupboards. In: Machine 
+Intelligence IV, B. Mertzer and D. Michie, Eds., University Press, 
+Edinburgh, 1969, pp. 403-420. 
+5. Ogawa, H. and Tanguchi, K. Thinning and stroke segmentation for 
+handwritten Chinese character recognition. Pattern Recognition 15, 4 
+(1982), 299-308. 
+6. Pavlidis, T. A Flexible Parallel Thinning Algorithm. Proc. IEEE 
+Comput. Soc. Conf. on Pattern Recognition and Image Processing. Aug. 
+1981, pp. 162-167. 
+7. Rosenfeld, A. Connectivity in digital picture. J. ACM 17, 1 (Jan. 
+1971), 146-160. 
+8. Rosenfeld, A. A characterization of parallel thinning algorithm. Info. 
+Control 29 (Nov. 1975}, 286-291. 
+9. Rosenfeld, A. and Davis, L.S. A note on thinning• IEEE Trans. Syst. 
+Man Cybern. SMC-6, 3 (March 1976), 226-228. 
+10. Rutovitz, D. Pattern Recognition. Proc. Royal Statists. Soc. 129, Series 
+A (1966), 504-530. 
+11. Stefanelli, S. and Rosenfeld, A. Some parallel thinning algorithms for 
+digital picture• J. ACM 18 (April 1971), 255-264. 
+12. Tamura, H. A comparison of line thinning algorithms from digital 
+geometry viewpoint. Proc. 4th Int. Conf. Pattern Recognition, 1978, pp. 
+715-719. 
+CR Categories and Subject Descriptors: 1.5.2 [Pattern Recognition[: 
+Design Methodology--pattern analysis; 1.5.4 [Pattern Recognition[: Ap- 
+plications-computer vision 
+General Terms: Algorithms, Theory, Applications 
+Additional Key Words and Phrases: parallel algorithm, thinning of 
+digital patterns, skeletonization 
+Received 3/83; accepted 9/83 
+Authors' Present Addresses: T. Y• Zhang, Department of Computer Sci- 
+ence and Automatic Control, Chongqing University, Chongqing, China; 
+C. Y. Suen, Department of Computer Science, Concordia University, 
+1455 de Maisonneuve West, Montreal, Quebec H3G 1M8. Canada 
+Permission to copy without fee all or part of this material is granted 
+provided that the copies are not made or distributed for direct commer- 
+cial advantage, the ACM copyright notice and the title of the publication 
+and its date appear, and notice is given that copying is by permission of 
+the Association for Computing Machinery. To copy otherwise, or to 
+republish, requires a fee and/or specific permission. 
+March 1984 Volume 27 Number 3 Communications of the ACM 230 

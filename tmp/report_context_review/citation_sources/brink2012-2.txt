@@ -1,0 +1,90 @@
+Author's personal copy
+Writer identiﬁcation using directional ink-trace width measurements
+A.A. Brink a,/C3, J. Smit b, M.L. Bulacu a, L.R.B. Schomaker a
+a Institute of Artiﬁcial Intelligence and Cognitive Engineering (ALICE), University of Groningen, P.O. Box 407, 9700 AK Groningen, The Netherlands
+b Department of Medieval History, University of Amsterdam, Spuistraat 134, 1012 VB Amsterdam, The Netherlands
+article info
+Article history:
+Received 12 October 2010
+Received in revised form
+11 February 2011
+Accepted 5 July 2011
+Available online 18 July 2011
+Keywords:
+Behavioral biometrics
+Feature extraction
+Handwriting analysis
+Ink trace width
+Medieval handwriting
+Off-line
+Paleography
+Quill
+Writer identiﬁcation
+abstract
+As suggested by modern paleography, the width of ink traces is a powerful source of information for
+off-line writer identiﬁcation, particularly if combined with its direction. Such measurements can be
+computed using simple, fast and accurate methods based on pixel contours, the combination of which
+forms a powerful feature for writer identiﬁcation: the Quill feature. It is a probability distribution of the
+relation between the ink direction and the ink width. It was tested in writer identiﬁcation experiments
+on two datasets of challenging medieval handwriting and two datasets of modern handwriting. The
+feature achieved a nearest-neighbor accuracy in the range of 63–95%, which even approaches the
+performance of two state-of-the-art features in contemporary-writer identiﬁcation ( Hinge and Fraglets).
+The feature is intuitive and explainable and its principle is supported by a model of trace production by
+a quill. It illustrates that ink width patterns are valuable. A slightly more complex variant of Quill,
+QuillHinge, scored 70–97% writer identiﬁcation accuracy. The features are already being used by domain
+experts using a graphical interface.
+& 2011 Elsevier Ltd. All rights reserved.
+1. Introduction
+Historical handwriting written with a quill has a salient
+calligraphic appearance. The variability of the trace width,
+as illustrated in Fig. 1 , is caused by physical properties of the
+writing instrument and the individual writing style of the writer.
+In quantitative paleography [1], a recent methodology in the
+manual study of such historical documents, writing hands are
+discerned based on measurable characteristics. Two of the char-
+acteristics form the motivation for this paper: contrast, which is
+the difference of width between the thinnest and thickest traces,
+and the angle of writing , which describes the habitual orientation
+of the pen tip, determined by the angle between the thinnest ink
+traces and the base line. These characteristics suggest that trace
+width is an important feature for writer identiﬁcation and that it
+is relevant to relate trace width to the trace direction. Trace width
+and direction can both be determined automatically using simple
+contour-based image processing operations, and in this paper we
+will show that the combination of the two yields a powerful
+feature for automatic writer identiﬁcation. It is not limited to
+historical handwriting since modern handwriting contains trace
+subtle width variations as well.
+The value of directionality measurements for writer identiﬁca-
+tion is known [2– 5], but the added value of width measurements is
+new. Only one remotely related feature for writer identiﬁcation has
+been evaluated that is based on run lengths of black pixels [6,7].
+Apart from this approach, to the best of our knowledge, ink trace-
+width measurements have not been used for writer identiﬁcation.
+However, such measurements have been evaluated for a few other
+applications. One study used width measurements for stroke
+detection and structural analysis [8]. A second experiment
+included a distribution of coarse trace-width measurements in a
+signature veriﬁcation experiment [9]. In another study on signa-
+ture veriﬁcation, the trace width was used to express the mismatch
+between two signatures at corresponding locations [10].
+Our approach is different in that width measurements are
+combined with direction measurements, and used for writer
+identiﬁcation. The resulting statistic will be used as a text-
+independent writer identiﬁcation feature, called Quill. It consists
+of a combination of simple methods, including trace-width
+computation using a method based on Bresenham’s well-known
+line-drawing algorithm [11]. Quill depends on pen properties and
+individual movement style. In this paper, the power of such
+computational measurements of ink trace widths relative to the
+writing direction as a feature for writer identiﬁcation is explored
+on various handwriting datasets. We will show that its power to
+Contents lists available at ScienceDirect
+journal homepage: www.elsevier.com/locate/pr
+Pattern Recognition
+0031-3203/$ - see front matter & 2011 Elsevier Ltd. All rights reserved.
+doi:10.1016/j.patcog.2011.07.005
+/C3Corresponding author. Tel.: þ31 6 14855404.
+E-mail addresses: a.a.brink@ai.rug.nl (A.A. Brink), J.Smit1@uva.nl (J. Smit),
+bulacu@ai.rug.nl (M.L. Bulacu), schomaker@ai.rug.nl (L.R.B. Schomaker).
+Pattern Recognition 45 (2012) 162–171

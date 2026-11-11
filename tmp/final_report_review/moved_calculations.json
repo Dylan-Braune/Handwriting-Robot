@@ -1,0 +1,114 @@
+[
+  [
+    "Page conditioning and line segmentation",
+    "The recorded Owen01 trace uses a stored photograph reduced before analysis, producing an $800\\times600$ pre-deskew working image. At pixel $(317,343)$, $G=100$. Its $41\\times41$ background window has prefix values $20696850$, $18404173$, $18359673$ and $16338366$. Equation~\\ref{eq:des-integral} gives $\\Sigma=271370$, hence $B_r=271370/1681=161.43367$ and $R=100/161.43367=0.619449$."
+  ],
+  [
+    "Page conditioning and line segmentation",
+    "For that image, Otsu's criterion selects bin 171. Its class masses are 0.07069375 and 0.92930625, with mean bin indices 124.98356 and 217.71913, giving between-class variance approximately 564.97942. The corresponding ratio threshold is $(171+0.5)(1.2/256)=0.80390625$. Since the example pixel's ratio is lower, it is retained as ink. These values describe the reduced calculation trace; the native-page examples below are separate runs."
+  ],
+  [
+    "Page conditioning and line segmentation",
+    "In the Owen01 trace, the scores at $+0.5^\\circ$, $+1.0^\\circ$ and $+1.5^\\circ$ are 442973, 464105 and 439403. The largest score across all seventeen angles is 464105, so the selected rotation is $+1.0^\\circ$."
+  ],
+  [
+    "Page conditioning and line segmentation",
+    "In the recorded boundary between centres 38 and 61, $y_m=49.5$ and $h_g=11.5$. At row 49 the closed mask is zero, giving $C=0.012[(49-49.5)/11.5]^2=0.0000226843$. At column 283, the selected predecessor is row 50 with stored cost 0.00641966. Its one-row change adds 0.02, so the accumulated cost is $0.00641966+0.02+0.0000226843\\simeq0.02644234$. This connects the local penalty to an actual step of the path search."
+  ],
+  [
+    "Page conditioning and line segmentation",
+    "A separate sensitivity check varies the midpoint and step penalties over six fixed gaps from two pages. At the implemented 0.012/0.02 setting, mean midpoint offset is 0.363 working pixels; removing midpoint attraction raises it to 4.055 pixels. Every tested setting still crosses two raw-ink pixels across those seams. The check shows how the weights affect the path without establishing a unique optimum. The complete settings and outcomes are retained in Appendix~\\ref{app:des-seam-sweep}."
+  ],
+  [
+    "Network calculations",
+    "For the first Owen01 line, channel 0 of the first convolution at canvas row 34, column 462 gives $\\sum WX=-1.150897$ with learned bias $b=-0.000435125$. Equation~\\ref{eq:des-conv} therefore produces $z=-1.151332$. The nine actual input and learned-weight values are retained in Appendix~\\ref{app:des-real-calculations}."
+  ],
+  [
+    "Network calculations",
+    "At the same activation, the checkpoint stores $\\mu=0.2163021$, $\\sigma^2=0.02585394$, $\\gamma=1.0193636$ and $\\beta=0.1324657$. Using $\\epsilon=10^{-5}$ in Equation~\\ref{eq:des-bn} gives $y=1.0193636(-1.1513321-0.2163021)/\\sqrt{0.02585394+10^{-5}}+0.1324657\\simeq-8.53619$. The following ReLU sets this negative response to zero. These are the stored inference statistics, rather than statistics calculated from this single line."
+  ],
+  [
+    "Network calculations",
+    "In the first forward LSTM layer for that line, frame 10 and cell 0 have $c_{t-1}=-2.7277257$, $f_t=0.7306111$, $i_t=0.6666368$ and $g_t=-0.8560218$. Equation~\\ref{eq:des-lstm} gives $c_t\\simeq-2.5635625$. With $o_t=0.000145395$, the cell emits $h_t\\simeq-0.000143680$. This records the memory calculation used while processing the real feature sequence."
+  ],
+  [
+    "Network calculations",
+    "For the complete labelled line ``1.9. Vloggers using fame to support charities is a positive way'', the recorded forward--backward total is $\\log Z=-0.47033843$. Equation~\\ref{eq:des-ctc} gives $\\mathcal L_{\\rm CTC}=0.47033843$ and $Z\\simeq0.6247908$. This loss was evaluated offline from the trained reader's actual logits and known transcript, without updating its weights."
+  ],
+  [
+    "Network calculations",
+    "At frame 11, the probability of \\texttt{V} is $p_{11,V}=0.98030665$ and the target-constrained occupancy is $q_{11,V}=0.99999995$. The CTC logit derivative is therefore $p-q=-0.01969329$. It is negative because the admissible target paths require more \\texttt{V} probability than the current output supplies at that frame; the real-input finite-difference check in Appendix~\\ref{app:des-expanded-checks} checks this derivative."
+  ],
+  [
+    "Network calculations",
+    "The same Owen crop has an estimated body-band height of 38 pixels. At the selected $\\rho=0.17$, the width calculation gives $w=\\operatorname{clip}(\\operatorname{round}(0.17\\times38),2,9)=6$, then $k=2\\lfloor6/2\\rfloor+1=7$. The actual redraw therefore uses a seven-pixel square dilation before fitting the line to the network canvas."
+  ],
+  [
+    "Glyph extraction and reproduction calculations",
+    "For the \\texttt{V} in that Owen line, frame 11 corresponds to state 11 of the blank-interleaved transcript. Its log emission is $-0.01988991$ and the three admissible predecessor scores are $-13.91888$, $-10.01139$ and $-1.3624485$. Equation~\\ref{eq:des-viterbi} selects their maximum and gives $V=-0.01988991-1.3624485=-1.3823384$. Backtracking assigns \\texttt{V} the frame interval $[11,12)$."
+  ],
+  [
+    "Glyph extraction and reproduction calculations",
+    "The refined right boundary of this \\texttt{V} is source column 193. Although smoothing gives $\\overline p_{193}=2.8$ and the positive-column reference is 14.36, the raw ink count at column 193 is zero. The explicit blank-column rule therefore overrides $2.8/14.36$ and assigns zero cut cost. This is a real case in which the gap rule prevents smoothing alone from penalising a clean separation."
+  ],
+  [
+    "Glyph extraction and reproduction calculations",
+    "A traced point on this \\texttt{V} is $(x,y)=(173,59)$, with left cut $x_L=146$, baseline $b=107$, $h_x=38$ and $\\tan\\phi=-0.0787017$. Equation~\\ref{eq:des-glyphcoords} gives $v=48/38=1.263158$ and $u_0=27/38-1.263158(-0.0787017)=0.809939$. After the implementation's three-decimal intermediate rounding and measured post-trim shift $\\delta=0.4472489$, the stored point is $(u,v)=(0.363,1.263)$ and the recorded lead is 0.447 x-heights."
+  ],
+  [
+    "Glyph extraction and reproduction calculations",
+    "For unit-length descriptor $v_g$ and the normalised median reference $r_c$ for character $c$, the prior distance is $d(g,c)=1-v_g^Tr_c$. Internal consensus instead uses pairwise $L_1$ descriptor distances and chooses the medoid with the lowest total distance. These compare a pooled character reference with this writer's own forms. Dylan's first stored \\texttt{a} variant has recorded prior distance 0.114. Recomputing the pairwise rule on all nine final stored variants gives the smallest total distance, 33.3413, for variant index 4; the other totals range from 34.4306 to 42.9091. This demonstrates the selection rule on the final pool, without treating a new descriptor calculation as the historical filtering log. Algorithm~\\ref{alg:des-profile} gives its place in profile construction."
+  ],
+  [
+    "Glyph extraction and reproduction calculations",
+    "In the generated Owen sentence ``Writing with style.'', the first placement call, after calibration and jitter, uses $(u,v)=(-0.01134565,1.47270173)$, lead $l=0.25117988$, zero shear and drift, and $h_x^{\\rm mm}=4$. With the initial placement origin $(0,0)$, Equation~\\ref{eq:des-placement} gives $x=4(0.25117988-0.01134565)=0.9593369$\\,mm and $y=4(1.47270173)=5.8908069$\\,mm. This is the actual assembly point before later path processing and machine placement, not a replay of the earlier \\texttt{V} crop."
+  ],
+  [
+    "Glyph extraction and reproduction calculations",
+    "The final Owen profile's stored glyph distances have median $\\widetilde d=0.18355$. Equation~\\ref{eq:des-anchor} gives $\\lambda=\\operatorname{clip}[(0.18355-0.24)/0.08,0,1]=0$. With no stored override, this is the anchoring value selected by the automatic rule for the generated job."
+  ],
+  [
+    "Glyph extraction and reproduction calculations",
+    "For the recorded Owen candidate 1, the 19-character target ``Writing with style.'' differs from its reader output by one substitution, giving $A=18/19=0.9473684$. The selected-writer posterior is $P=0.5786133$, so Equation~\\ref{eq:des-jointscore} gives $J=0.7184359$. This is the actual score used to select the candidate in Figure~\\ref{fig:des-candidates}; it evaluates the software rendering rather than physical stylistic agreement."
+  ],
+  [
+    "Glyph extraction and reproduction calculations",
+    "In the worked Owen example, three pre-repair trials use the fixed text ``Writing with style.'', seeds 2026, 3003 and 3980, and the selected eleven-writer shape model with an explicit width fraction of 0.17. Candidate 1 has $(A,P,J)=(0.947,0.579,0.718)$, while candidate 3 has the same character score but $(P,J)=(0.464,0.623)$. The combined criterion therefore selects candidate 1. Its reader output begins with a lower-case ``w'', which accounts for one edit rather than perfect text recovery. This is an inspectable scoring example before repair, not a claim that the full default search or the physical system attained those scores."
+  ],
+  [
+    "Glyph extraction and reproduction calculations",
+    "The generated Owen trajectory has $x_0=0.9593369$\\,mm and $y_1=6.6340616$\\,mm. A point $(2.9829210,5.3303251)$\\,mm is placed using the configured origin $(0,251.3)$\\,mm, margins $(15,10)$\\,mm, unit fit scale and zero line shift. Equation~\\ref{eq:des-machinecoords} gives $(x_m,y_m)=(17.0235840,239.9962635)$\\,mm. Three-decimal file emission writes this point as \\texttt{X17.024 Y239.996}, connecting the trajectory calculation to the motion segment examined in Section~\\ref{sec:des-drive}."
+  ],
+  [
+    "Glyph extraction and reproduction calculations",
+    "For this same generated file, the unrounded distance accumulators are $D_d=139.0263729$\\,mm and $D_u=158.1555743$\\,mm. At $F_d=900$ and $F_u=2400$\\,mm/min, with 56 pen transitions and two 0.35\\,s dwell settings, Equation~\\ref{eq:des-timebudget} gives $t_{\\rm nom}=9.2684249+3.9538894+19.6=32.8223142$\\,s. The job metadata reports 32.8\\,s after rounding. This is the converter's actual geometric budget, not a physical completion-time measurement."
+  ],
+  [
+    "Glyph extraction and reproduction calculations",
+    "Figure~\\ref{fig:vt-timeparts} applies the same budget calculation to a separate offline generation of ``Writing with style.'' in four final profiles. The Owen job contains 58 pen transitions: its recorded components are 9.249\\,s drawing, 3.198\\,s travel and $58(0.35)=20.3$\\,s dwell, giving 32.747\\,s in total. Thus dwell contributes about 62\\% of this nominal budget; across the four jobs it contributes approximately 61--65\\%. The different path and transition counts distinguish these jobs from the earlier worked file. The breakdown identifies a drawing-side optimisation opportunity, but shortening dwell would require a physical test that the pen still clears and settles reliably. These estimates exclude the execution costs stated above and are not additional R3 timing measurements."
+  ],
+  [
+    "System integration calculation",
+    "Applying this vote to the first two archived Owen01 crops gives ink weights 20204 and 21750, with Owen probabilities 0.9996674 and 0.9999279 from the selected 0.17-width model. Equation~\\ref{eq:des-pagevote} gives $\\overline p_{\\rm Owen}=(20204\\times0.9996674+21750\\times0.9999279)/41954\\simeq0.9998024$. This is a two-crop calculation trace, not the full-page evaluation reported in Results."
+  ],
+  [
+    "Hardware calculation detail",
+    "where $T_{\\mathrm{req}}$ is the torque needed at constant velocity, $r=6.37$\\,mm is the pulley pitch radius from Equation~\\ref{eq:des-pulley}, $\\mu=0.004$ is the original assumed bearing-friction coefficient, $m=0.950$\\,kg is the complete moving assembly and $g=9.81$\\,m/s$^2$. The bearings support the weight, so the motor overcomes horizontal resistance rather than lifting the assembly. The relations $F_f=\\mu mg$ and $T=rF_f$ give this steady-speed estimate~\\cite{acarnley2002}."
+  ],
+  [
+    "Hardware calculation detail",
+    "This keeps the GPIO current far below the motor current, but the GPIO must still be rated to source at least 2.6\\,mA. The BC337 datasheet's saturation test uses 50\\,mA of base current for 500\\,mA of collector current, a conservative forced-current-gain ratio of 10~\\cite{bc337ds}. Using that ratio as a design check, 2.6\\,mA of base current supports about 26\\,mA of saturated collector current. That is slightly below the listed 30\\,mA rated motor current. To provide the same conservative saturation drive at 30\\,mA would require $R_B\\le(3.3-0.7)/(0.030/10)\\approx870\\,\\Omega$; at the listed 230\\,mA stall current it would require $R_B\\le(3.3-0.7)/(0.230/10)\\approx110\\,\\Omega$. The latter would draw about 23\\,mA from the GPIO, so the 1\\,k$\\Omega$ circuit is not guaranteed to saturate the transistor at rated or stall load. The 1\\,k$\\Omega$ resistor is the prototype's GPIO-current-limiting choice. A suitable logic-level MOSFET or motor driver would avoid relying on this base-current margin if the installed motor approaches those loads."
+  ],
+  [
+    "Hardware calculation detail",
+    "Using the nominal 80 microsteps/mm, a 1.6\\,ms homing-step period corresponds to 7.8125\\,mm/s. The counted switch-to-switch traverses alone would then need $(200.6+261.3)/7.8125\\approx59.1$\\,s; this excludes the initial searches, retractions and parking, and is not a measured calibration duration. The result is deliberately not stored between sessions, since a bump between sessions would silently invalidate it, and a failed calibration leaves movement unavailable until calibration succeeds. Algorithm~\\ref{alg:gan-calibrate} states the procedure."
+  ],
+  [
+    "Hardware calculation detail",
+    "The hand measurement of travel also sets the scale of every subsequent movement. An error $\\delta L$ scales every commanded position by $x\\,\\delta L/L$, so to keep that scale error below half of the 0.5\\,mm allowed by R5 over the 190.6\\,mm of usable X travel,\n\\begin{equation}\n\\delta L\\le\\frac{0.25\\ \\mathrm{mm}}{190.6\\ \\mathrm{mm}}\\,L=\\frac{0.25}{190.6}\\cdot200.6\\ \\mathrm{mm}=0.26\\ \\mathrm{mm}\\quad(0.13\\ \\%),\n\\label{eq:gan-budget}\n\\end{equation}\nand switch-trigger repeatability adds directly to the zero error on top of that. This is an allocation of half the positional-error allowance to scale error, not a measured uncertainty budget. Switch repeatability and mechanical compliance use part of the remaining allowance~\\cite[pp.~18--19]{jcgm2008}."
+  ],
+  [
+    "Hardware scale-error allocation",
+    "The hand measurement of travel also sets the scale of every subsequent movement. An error $\\delta L$ scales every commanded position by $x\\,\\delta L/L$, so to keep that scale error below half of the 0.5\\,mm allowed by R5 over the 190.6\\,mm of usable X travel,\n\\begin{equation}\n\\delta L\\le\\frac{0.25\\ \\mathrm{mm}}{190.6\\ \\mathrm{mm}}\\,L=\\frac{0.25}{190.6}\\cdot200.6\\ \\mathrm{mm}=0.26\\ \\mathrm{mm}\\quad(0.13\\ \\%),\n\\label{eq:gan-budget}\n\\end{equation}\nand switch-trigger repeatability adds directly to the zero error on top of that. This is an allocation of half the positional-error allowance to scale error, not a measured uncertainty budget. Switch repeatability and mechanical compliance use part of the remaining allowance~\\cite[pp.~18--19]{jcgm2008}."
+  ]
+]

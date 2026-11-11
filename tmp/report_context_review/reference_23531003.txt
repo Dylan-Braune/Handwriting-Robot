@@ -1,0 +1,3355 @@
+=== PDF PAGE 1 ===
+Neural Network: Analogue Implementation
+Final Report
+A. Sreekumar
+23531003
+Submitted as partial fulfilment of the requirements of Project EPR400
+in the Department of Electrical, Electronic and Computer Engineering
+University of Pretoria
+November 2026
+Study leader: Prof. W. du Plessis
+
+=== PDF PAGE 2 ===
+A. Sreekumar Part 1. Preamble
+Part 1. Preamble
+i
+
+=== PDF PAGE 3 ===
+A. Sreekumar Part 1. Preamble
+TABLE OF CONTENTS
+1. Literature study 2
+1.1. Neuron Types 2
+1.2. Network Architecture 4
+1.3. Training 5
+1.4. Other implementations of Spiking Neural Networks 7
+1.5. MNIST dataset 7
+2. Approach 9
+2.1. Feasability Analysis 9
+2.2. Neuron Design 9
+2.3. Simulation and Training 9
+2.4. Testing the network 10
+2.5. Component Choice and Mapping 10
+3. Design and implementation 11
+3.1. Design summary 11
+3.2. System block diagram 12
+3.3. MLP Neuron 15
+3.4. Input Selection 16
+3.5. Determining Network Parameters 20
+3.5.1. Training the digital models 21
+3.5.2. Hyperparameter selection 23
+3.5.3. MLP to SNN conversion 23
+3.6. LIF Neuron Design 26
+3.6.1. Neuron Theoretical Design 26
+3.6.2. Implementing voltage thresholds 30
+3.6.3. Simulations of the neuron 30
+3.6.4. Summer Verification 34
+3.6.5. LIF testing 34
+3.7. Final LIF Neuron 38
+3.8. Training with analogue characteristics 39
+3.8.1. Surrogate Gradient 39
+3.8.2. Final SNN 39
+3.9. Pulse summing 40
+3.10. Hybrid Network 42
+3.10.1. Training of the hybrid network 42
+3.10.2. Optimal brain damage 44
+3.10.3. Resistor mapping 45
+3.10.4. Hybrid network performance 46
+3.10.5. Idle outputs of the system 48
+3.11. PCB Design 49
+3.11.1. Physcial stackup of the PCB 49
+3.11.2. Resistor routing 50
+3.11.3. Additional design information 51
+ii
+
+=== PDF PAGE 4 ===
+A. Sreekumar Part 1. Preamble
+4. Results 53
+4.1. Summary of results achieved 53
+4.2. Qualification tests 53
+Qualification test 1: System Accuracy Measurement
+Objectives of the test or experiment53
+Equipment used53
+Test setup and experimental parameters53
+Steps followed in the test or experiment54
+Results or measurements55
+Observations56
+Statistical Analysis57
+Qualification test 2: Input number verification
+Objectives of the test or experiment57
+Results or measurements58
+Qualification test 3: Using only simple components
+Objectives of the test or experiment58
+Results or measurements58
+5. Discussion 60
+5.1. Critical evaluation of the design 60
+5.1.1. Interpretation of results 60
+5.1.2. Critical evaluation 64
+5.1.3. Unsolved problems 65
+5.1.4. Strong points of the design 65
+5.1.5. Expected failure conditions 65
+5.2. Considerations in the design 66
+5.2.1. Design ergonomics 66
+5.2.2. Health and safety 66
+5.2.3. Environmental impact 66
+5.2.4. Social and legal impact 67
+5.2.5. Ethics clearance 67
+6. Conclusion 68
+6.1. Summary of the work completed 68
+6.2. Summary of observations and findings 68
+6.3. Contribution 69
+6.4. Suggestions for future work 69
+7. References 71
+Appendix
+A. Input voltage example for a sample of every digit 76
+Zero 76
+One 76
+Two 77
+Three 78
+Five 79
+Six 80
+iii
+
+=== PDF PAGE 5 ===
+A. Sreekumar Part 1. Preamble
+Seven 81
+Eight 82
+Nine 83
+B. Additional Calculations for Idle-State Behaviour 85
+Calculations for output neuron 6 85
+Calculations for output neuron 7 85
+C. Testing System Design and Validation 86
+Providing Inputs 86
+Circuit Holder 96
+Reading output 96
+D. Confusion Matrices of all runs 101
+E. Bill of Materials 104
+Final Network PCB 104
+DAC PCB 105
+F. Note of thanks 107
+1
+
+=== PDF PAGE 6 ===
+A. Sreekumar Part 1. Preamble
+1. Literature study
+A artifical neural network (ANN) refers to a computational model that models the behaviour
+of biological neurons in order to create relationships between input data and outputs [ 1].
+These networks are modelled on the biological neural networks that the brain uses for pattern
+recognition. Relationships between "neurons" are defined by the weights and biases that
+connect them to one another and are set by training the network with data and correcting the
+weights to more accurately reflect the relationships between inputs and outputs. The neuron
+sums the weighted inputs, maps it to a non-linear activation function (used to account for
+non-linear relationships [2]) and provides an output. Neural networks are used for speech
+recognition [1], cancer research [1] and fraud detection systems.
+In most intances, these models are often implemented in the digital domain, as the
+size of these networks for more complex tasks can become large. The data required to train
+these networks is most often stored in the digital domain. The connections between neurons,
+as well as the neurons themselves can be modelled in the analogue domain. This approach is
+often used when access to a computer in the envrionment is limited or restricted. An example
+is provided by Agnelli et al. [3], who developed an analogue neural network to classify strokes.
+In remote places were computers may be limited in power, analogue neural networks can
+be considered for implementation rather than buying a more expensive computer. Agnelli
+also notes that sensors can be fed directly to the analougue neural network without their data
+needing to be converted to a digital value, which can also offer gains in edge computing by
+storing inferences made with the data rather than the raw data itself (thereby reducing the
+amount of data needed to be stored).
+In this implementation of the analogue neural network, the use case was rather defined as digit
+recognition. The MNIST dataset was chosen for the training of the network. The use of this
+widely avaliable dataset that is often used as a benchmark digital neural networks can be used
+for the same purpose in the analogue domain. The use of a public dataset also ensures that the
+data was not manipulated to fit the needs of the analogue nature of the implementation.
+Due to this project building upon the work of the previous implementation by Koen [4], sufficent
+knowledge was required to understand the previous network in order to understand what changes
+can be made to create sufficent differentiation between this implementation and the previous
+one and improve the system. The two primary points of differentiation considered was either
+changing the activation function function used in the neuron or changing the type of neural
+network. Both options were investigated before a decision was made regarding which direction
+should be taken.
+1.1 Neuron Types
+The perceptron (also refered to as the McCulloch-Pitt Neuron) is the simple modelling of a neuron
+[2]. The perceptron involves the summing of different inputs that are weighted independently
+of each other. The sum of these weights is then provided as the input to a non-linear activation
+function to map non-linear relationships. The output of this combination is considered the output
+of the perceptron, which can then be used as inputs to other neurons or as the output of the
+network, depending on it’s location. The visual representation of the concepts mentioned above
+2
+
+=== PDF PAGE 7 ===
+A. Sreekumar Part 1. Preamble
+is shown in Figure 1. A bias term exists to give the neuron a lower threshold [2]. Networks build
+out of perceptrons are refered to as Multi-Layer Perceptrons (MLP) neural networks.This neuron
+was the one implemented by Koen [4], as a result other types of neurons had to be considered for
+implementation of the system, to create sufficent differentiation between this implementation
+and the previous one.
+Figure 1. Basic structure of a perceptron neuron.
+Another neuron considered for implementation was the leaky-integrate and fire (LIF) [5]. The
+LIF is similar to the perceptron in the sense that it too sums various inputs at differing weights.
+The LIF neuron has three properties that distinguish it from an perceptron: membrane potential,
+a threshold, and a leak factor. A spiking neuron accumulates input over time (referred to as a
+membrane potential), and when the membrane potential is greater than or equal to the predefined
+threshold, the neuron will output a spike. The leak factor refers to how much of the membrane
+potential is lost over time, to allow for decaying back to the neuron’s initial state if it has not
+received any inputs for a long period of time. Information between neurons is encoded in the
+form of both the presence and the timing of the spikes. The basic behaviour of a LIF is illustrated
+in Figure 2.
+Figure 2. Behaviour of a spiking neuron with rate encoded inputs, image adapted from
+Eshraghian et al. [5].
+Eshraghian et al. [5] also provided a electrical representation of the LIF neuron. The signal can
+be modelled as a current, with the threshold denoted as θ and the membrane potential denoted as
+U(t) . A lack of input will result in the capacitor (as shown in Figure ??) will gradually decrease
+3
+
+=== PDF PAGE 8 ===
+A. Sreekumar Part 1. Preamble
+to 0, thus implementing the "leaky" part of the LIF. The resistor (as shown in Figure ??) will
+provide a path to ground and also aid in setting the time for the leaking to occur in. The primary
+task in completing the design of the LIF would be to implement the mechanism that determines
+wheather the threshold has been exceeded and subsequently the neuron triggers a spike.
+Figure 3. Electrical circuit equivalent of the LIF neuron , image sourced from Eshraghian
+et al. [5].
+1.2 Network Architecture
+The network architecture utilized remains constant regardless of the type of neuron used. During
+the training phase, the weight values are optimized to minimize the value of the loss function,
+thereby iteratively improving the predictive accuracy of the model. The architecture of a neural
+network is presented in Figure 4. Each line shows a weighted input, with each neuron functioning
+differently based on the type of network that it corresponds too.
+Figure 4. Neural network architecture showing the connections between adjacent layers.
+4
+
+=== PDF PAGE 9 ===
+A. Sreekumar Part 1. Preamble
+The network can either update it’s weights based on the data that it receives and adjust them
+during operation (on-chip training) or train in software and they cannot be changed once they are
+translated to the analogue domain (off-chip training) [6] . On-Chip training required components
+at higher levels of integration (such as a memistor [7]), which would violate the requirements of
+the system and make the project more expensive.
+The variation in the architecture emerges when considering how inputs are provided to
+the network [5]. The MLP requires the voltages to be constant signals. The input encoding of an
+SNN can be done in multiple ways: keeping the input a constant DC, varying the number of
+spikes in an interval to reflect the intensity of the input (rate encoding), varying the length of a
+spike to reflect input intensity,or the time at which the spike was fired reflecting input intensity
+(latency encoding). In the analogue domain, where time is continous, the latency encoding
+cannot be considered fesiable as a seperate device would be required to take note of the timing
+of the pulse, or it would require much more circuitry. Rate encoding or DC inputs as suitable
+options for a purely analogue spiking neural network (SNN).
+Reading the outputs of both networks will require distinct methods. In the MLP neuron, the
+output neuron with the highest value can be considered the output of the system. In a SNN,
+output classification can be done in one of 2 ways, rate encoding or latency encoding. Latency
+encoding will require more complex circuitry to measure, as such rate encoding is prefered of
+the two options.
+1.3 Training
+The previous implementation of the project used a Re-LU activation function, and in order to
+create differentiation, other activation function’s implementation’s in the analogue domain was
+considered. The two options considered was the sigmoid function, as the other option considered
+(tanh) did not have reputable implementations in the analogue domian. The sigmoid function is
+defined as:
+σ(x)= 1
+1+e −x.(1)
+The sigmoid function can be represented in the analogue domain as a circuit that would require
+at least 8 transistors for implementation [8]. The output labeled V is the sigmoid function, with
+the reference voltage being used to set the midpoint of the sigmoid function. This presented
+the sigmoid function as a possible alternative to the use of the ReLU function that was used
+previously.
+A SNN can be trained further through backward propagation; however, due to the spik-
+ing nature of the neuron as well as the fact that there is no explicit activation function, the
+derivative will be 0 at any point except the spike is outputted (where it will be a discon-
+tinuity, due to the spike being a step function) ,thus not allowing for backward propagation.
+To mitigate this property, a surrogate gradient can instead be used for training purposes
+[5]. This function will mimic the gradient of a well-known activation function and use
+this to adjust the weights of the SNN such that the accuracy of the system can be increased.
+The standard gradients used for MLP systems are applicable for use as surrogates for the SNN [5].
+5
+
+=== PDF PAGE 10 ===
+A. Sreekumar Part 1. Preamble
+Training an SNN from scratch using a surrogate gradient descent takes much more
+time than training an ANN [ 9] and requires the development of dedicated scripts to attempt
+the same. In the event that a different activation function approach is chosen over changing
+the neuron type, this time spent training the network would be wasted. As such, methods of
+converting an exsisting MLP neural network to an SNN were explored. This allowed for the
+MLP network developed for comparison purposes to be used for training. The algorithms
+suggested by Li et al. [ 9] are created for an integrate and fire (IF) neuron rather than a LIF
+neuron, and as such they cannot be used directly. Consequently, another source will need to be
+found for use in training the Spiking Neural Network.
+Diehl et al.[ 10] provide 2 main startegies that can be used for conversions between the
+ANN and the SNN: data-based normalisation and model-based normalisation. These methods
+exist to solve the problem of oversaturation, where the spike rate required to represent the
+intensity of the input is greater than the rate achieveable in either the analogue or digital domain.
+Model-based normalisation is a method that adjusts the weights such that the maximum input
+received by a neuron does not exceed the threshold set by the neuron. As such over-activation
+cannot occur on any neuron [10]. This approach however, assumes that all neurons or inputs can
+simultaneously fire, which may not be the case, so this approach could be an overcorrection.
+Furthermore, as this method is applied per layer in the neural network, deeper layers may go
+completely quiet due to their weights being substantially scaled so highly to account for previous
+normalisation.
+Data-based normalisation involves looking at the output of every activation function in
+the network and scaling the weights such that the highest output of a neuron would emit a single
+spike [10], while taking the maximum input weight(to prevent the neuron from spiking multiple
+times).
+In the event that an SNN is developed, the data-based normalisation may be considered
+in order to prevent the oversaturation. The overcorrection brought about by model-based
+normalisation can affect the accuracy quite significantly, especially in a system with the size
+contraints that the one proposed has. Diehl et al. [10] suggests Data-Based Normalisation if both
+short latencieis and high accuracies are required, which further backs up this decision.
+Rather than training the SNN from scratch using a surrogate gradient, the option to convert an
+exsisting ANN to an SNN was chosen to reduce training time without losing much accuracy.
+The surrogate gradient can be used afterwards to train the SNN further if this is deemed necessary.
+Knowledge distillation is a method of training a neural network wherein a larger teacher model
+aims to tranfer it’s learnings to a smaller student model [11]. The primary aim is to teach the
+student network the complex relationship that the teacher is able to infer through training [11].
+The predictions of the teacher network is used alongside the training data in the training of the
+student network.
+This method was considered for use to train the neural networks in the hopes that it
+would increase accuracy, but the limited number of inputs to the network (being restricted to
+16) would mean that the teacher’s networks accuracy would not be large enough to increase
+the accuracy of the student network (the one to be implemented in the analogue domain)
+6
+
+=== PDF PAGE 11 ===
+A. Sreekumar Part 1. Preamble
+meaningfully. As such, this method was not used for training the neural networks.
+1.4 Other implementations of Spiking Neural Networks
+Asghar et al. [12] created a design for a LIF neuron that they used to classify the MNIST dataset,
+achieving a 94% accuracy. Their neuron design proves that an analogue SNN can be used to
+classify digits. Their system shows two possible issues that may arise with the system. Firstly,
+the implementation used 81 inputs as opposed to the maximum of 16 that this system is allowed
+to use. Secondly, their implementation used 141 neurons, which would be a very expensive
+circuit to create. Thirdly, their system used 180nm CMOS transistors and a complex neuron that
+is not fesiable for design and implementation in the brief amount of time avaliable. Their circuit
+uses a Binary Exponential Charge Injector (BECI) to inject a charge into the neuron as required,
+which would require complex circuitry to accomplish. Overall, this implementation only shows
+fesiability, however however their use of the Schmitt Trigger to generate the spikes was noted.
+Ramirez et al. [13] made a single neuron to model the properties. Their use of switches provided
+a basis for using switches to implement the reset of the neuron once the voltage exceeds the
+threshold. This approach however uses control units in order to control the timing of spike
+generation, which violates the third requirement of the system. As such this neuron cannot be
+implemented as designed, to create the SNN either.
+Inspiration can be taken from each of the neurons mentioned above, but the neuron
+will have to be built from first principles to meet the requirements if an SNN is chosen for
+implementation.
+1.5 MNIST dataset
+The MNIST dataset is used to train and test a network. The training dataset contains 60000
+samples while the test dataset contains 10000 samples [ 14]. Each image has a resolution of
+28x28 (784 inputs per image). All images are black and white images as well as being size
+normalised. Each image was also centred by computing the center of mass of the pixels and
+translating the image such that the center of mass is at the centre of the image. The pre-processed
+nature of the dataset will make it easier to extract features from the images. All digits with their
+complete variations (open or closed loop 4’s and 7’s with a line in the middle) is represented in
+the dataset. An example of a image in the MNIST dataset is shown in Figure 5.
+7
+
+=== PDF PAGE 12 ===
+A. Sreekumar Part 1. Preamble
+Figure 5. Example digit from the MNIST dataset.
+The importance of the seperation of the train and test data (as described by Russel et al. [ 2]) was
+noted. All network parameters will need to be formed with the training data, with the test dataset
+only being used to test both the digital simulation and the analogue neural network to compare
+accuraries. The system will be tested using never-before seen data to expose any overfitting.
+8
+
+=== PDF PAGE 13 ===
+A. Sreekumar Part 1. Preamble
+2. Approach
+2.1 Feasability Analysis
+Before the neuron was designed, a simulation had to be made to determine if a neural network
+with a low number of neurons and 16 inputs was sufficent to classify data points from the MNIST
+dataset. A MLP neural network was created with three activation functions being considered
+(ReLU, tanh and sigmoid). The tanh and sigmoid were considered as alternative activation
+functions to create sufficent differentiation from the previous implementation. The RELU was
+created as it was the best activation function for conversion to an SNN [10], in the event that a
+SNN was chosen for implementation.
+For these 3 networks, different input reduction techniques were explored. The inputs
+chosen for use are made up of a few used for letter recongition [15] that could be translateable
+to digits, and the remaining catered specifically to digit recognition ([16]). The features were
+specifically chosen to maximise the accuracy of the system chosen.
+The network simulations were then used to find learning parameters that can maximise
+the accuracy of the network through a large monte carlo simulation. Once the optimal RELU
+network was found, it was converted to a SNN through the methods obtained from literature
+review [5],[10].
+In order to create sufficent differentiation between this implementation and the previ-
+ous one, the SNN was chosen for implementation over just changing the activation function
+using LIF neurons as recommeded by Eshraghian et al. [5].
+2.2 Neuron Design
+A LIF neuron was designed , simulated, and then built using components avaliable to the PCB
+supplier (JLCPCB). A comparison between theoretical expectations and measured results were
+iteratively used as feedback to improve the design, with the neuron designed optimised to a lower
+size.
+2.3 Simulation and Training
+The performance of the neuron was recorded and transfered to software in order to train the
+network with it’s analogue characteristics, such as operating range as well as the frequency of
+the spikes based on the input voltages. The effect this had on accuracy forced changes in the
+weight and bias values such that the detrimental effects can counteracted. The weights obtained
+from this step were used to create the final weights that would be deployed in the final network.
+The behaviour of the neuron was used to create a custom surrogate gradient that mirrored the
+behaviour of the neuron rather than a function that may not have been a true representation of
+the neuron behaviour.
+9
+
+=== PDF PAGE 14 ===
+A. Sreekumar Part 1. Preamble
+Once the network was trained to achieve a sufficent accuracy, the type of neural net-
+work to be implement had to be considered again. The spiking neuron design was completed to a
+sufficent degree, however many questions still remained regarding the summing of these spikes
+at the output layer. While a design for a neuron capable of summing this network was developed
+and considered, there was not sufficent time to continue to investigate whether this design was
+feasible to create a whole neural network. Furthermore, components required to implement a
+complete SNN would increase the cost of the final circuit considerably due to an increase in both
+the size of the board and the amount of components. As such, the final circuit was implemented
+as a hybrid network, with the hidden layer neurons being MLP neurons, and the output layer
+neurons being the Spiking Neurons. The two approaches were combined to create a new type of
+network were created in order to train this hybrid network.
+While neuron reduction techniques were explored, the cost of neuron reduction on ac-
+curacy resulted in this not being implemented. The final network was implemented with 20
+neurons as originally specified.
+2.4 Testing the network
+To account for improvements suggested by Koen, a more robust and efficent testing system was
+designed. This involved the use of a Digital-To-Analogue Converter (DAC) being used to provide
+the input voltages to the circuit, along with the use of microcontrollers to read the spiking outputs
+to classify them based on the most amount of spikes in the period of interest. These results were
+then used to test the accuracy of the system without a user having to set the input voltages by
+hand as it had to be done in Koen’s implementation, thereby allowing for quicker system testing.
+As this was not an explict part of the system, rather a interface to interact with the system, the
+design is detailed in Appendix C.
+2.5 Component Choice and Mapping
+As the components used to create the system would be placed by JLCPCB, all components
+used had to adhere to the ones they held in stock and meet the requirements of the system. The
+resistors that would represent the weights would have to be approximated to the nearest available
+value such that the number of distinct resistor values that would need to be purchased is reduced
+to it’s lowest possible number.
+10
+
+=== PDF PAGE 15 ===
+A. Sreekumar Part 1. Preamble
+3. Design and implementation
+3.1 Design summary
+Deliverable or task Implementation Completion of deliverable or task,
+and section in the report
+Selection of Input Features A combination of 16 inputs from
+Frey et al.[15] and other digit spe-
+cific features [16] was selected us-
+ing a greedy search algorithm. The
+algorithm was implemented in py-
+thon from first principles by the stu-
+dent.
+Completed
+Section 3.4
+Simulation of neural network for
+feasiability
+Code created in python and run
+using selected inputs to find op-
+timal hyperparameters of the net-
+work. The network characteristics
+were reviewed to make a decision
+regarding which neural network is
+to be implemented in the analogue
+domain.The simulation was created
+in python from first principles by
+the student.
+Completed
+Section 3.5
+Designing of a LIF neuron using
+components specified
+The student designed and built a
+single spiking neuron on a bread-
+board to verify that it can be used to
+create a SNN. The simulation was
+done in LTSPICE by the student be-
+fore it was made on the bench.
+Completed
+Section 3.6
+Appendix E
+Designing a system for pulse sum-
+ming
+The student designed a summer cap-
+able of summing pulses rather than
+DC voltages. This was simulated
+using LTSPICE.
+Partially Completed
+Section 3.9
+Software simulation of the final net-
+work
+Based on the analogue properties of
+the neuron, a final simulation was
+developed from first principles that
+accounts for this was designed to
+obtain final weights of the network.
+Completed
+Section 3.8
+Section 3.10
+Creation of final PCB Weights obtained from the previ-
+ous step were mapped to resistors,
+and the final PCB was designed
+KICAD and manufactured with JL-
+CPCB, who also handled compon-
+ent assembly.
+Completed
+Section 3.11
+Appendix E
+Table 1. Design Summary
+11
+
+=== PDF PAGE 16 ===
+A. Sreekumar Part 1. Preamble
+3.2 System block diagram
+The simulation used to pick which type of neural network as well as choosing a input reduction
+technique is shown in Figure 6.Figure 7 illustrates the structure of the final analogue neural
+network and how it interacts with the testing architecture (the design of which can be found
+in Appendix C). The software used for off-chip training of the SNN (which was chosen for
+implementation) is shown as a software flow diagram in Figure 8.
+Figure 6. Workflow used for the feasibility simulation.
+12
+
+=== PDF PAGE 17 ===
+A. Sreekumar Part 1. Preamble
+Figure 7. Hardware block diagram of the system.
+13
+
+=== PDF PAGE 18 ===
+A. Sreekumar Part 1. Preamble
+Figure 8. Software block diagram of the off-chip SNN training process.
+14
+
+=== PDF PAGE 19 ===
+A. Sreekumar Part 1. Preamble
+3.3 MLP Neuron
+The MLP neuron is based on the design developed by Koen [4] for letter recognition due to ease
+of implementation and components that were easy to source. Its weighted inputs are summed
+using a circuit with inverting and non-inverting amplifier stages. This neuron was rexamied to
+look at possible sources of differentiation. The virtual ground [ 17] in the neuron means that
+weights can be set without considering their effect on other weights (which would not be the
+case for resistors connected to a node without a operational amplifier). The possible use of a
+current mirror [18] would increase circuit size unessarily, with neither of the options offering
+an ability to account for negative weights. As such, the Koen summer is a cheap and effective
+solution to sum the input voltages.
+Figure 9. Koen’s MLP neuron circuit for letter recognition.
+The output voltage of each neuron’s summing stage is given by Equation 2:
+Vo= RARC
+RB
+p
+∑
+i=1
+Vi
+Ri
+−RC
+n
+∑
+j=1
+Vj
+R j
+(2)
+Here, p and n are the numbers of positive- and negative-weight inputs, respectively. The resistor
+valuesR A,R B, andR C are specified later in the design.
+The activation function is a saturation-limited ReLU, defined in Equation 3:
+ReLU(x)=
+⎧⎪⎪⎪⎪⎨⎪⎪⎪⎪⎩
+0,x≤0,
+x,0<x<V sat,
+Vsat,x≥V sat.
+(3)
+The input to the circuit x,=V o, is the summer output voltage from Equation 2, and Vsat is the
+saturation limit to be determined later in the design.
+One limitation is that the neuron output is not at a digital logic level, so a microcontroller cannot
+read it directly without additional circuitry as the voltage outputs could exceed that which can be
+read by digital logic levels.The circuit is also not suited to sum pulses, so in the event the SNN is
+chosen for implementation, the summer will need to be modified to sum pulses instead of DC
+voltages.
+15
+
+=== PDF PAGE 20 ===
+A. Sreekumar Part 1. Preamble
+3.4 Input Selection
+The system had to have a minimum of 16 inputs, as such the 784 inputs of the MNIST dataset
+had to be reduced to meet this requirement. Three dimensionality reduction techniques were
+considered for this approach: averaging of pixels, Principal Component Analysis (PCA) and
+feature extraction based on pixel location.
+The input intensities must be voltage values that can be outputted to the system. In or-
+der to ensure that all values can be outputted by the testing system, a normalisation method was
+used, as proposed by Frey et al. [15] that normalises it to the distribution of that feature. This
+method mapped intensities to values between 0 and 16, but for the purposes of this system, the
+values were mapped such that the maximum value of a particular feature is mapped to 3.2V ,
+and the minimum is mapped to 0.1V . The upper bound was chosen due to all 3.3V systems
+being able to provide it comfortably, and the lower bound was chosen as 0 means a lack of
+information, which is not the case as it does have a intensity, but it is just small. The equation
+used to normalise the inputs is:
+Vnorm=Vmin
++ f−min_val
+max_val−min_val(Vmax−Vmin).
+(4)
+This equation simplifies to the following based on the values used:
+Vnorm=0.1V+ f−min_val
+max_val−min_val
+×(3.2V−0.1V).
+(5)
+As each entry in the MNIST dataset contains 784 pixels, to reduce the inputs down to 16, 49
+pixels would have to be averaged. This was done by averaging a block of 7x7 down to one value.
+The values were then normalised using equation 5.
+PCA [ 19] is a method of dimensionality reduction that involves first centring the data,
+computing the covariance matrix and then finding k eigenvalue and eigenvectors (wherek is the
+dimension to which the input must be reduced to, which for this system is 16). The dataset is
+projected to these eigenvectors. The dimensionality reduction is achieved with the formula 6:
+Z=X∗W(6)
+where X is the datapoint of interest, W is the eigenvectors of interest compiled into a matrix and
+Z the outputs of the PCA function. These values were then normalised using equation 5.
+Frey et al.[ 15] suggested the use of specific features that could be used to classify char-
+acters based on the distribution of the pixels in the image. This was validated on letters and
+used by Koen for his implementation of the system, but it was found that transfering these to
+digits was feasible as both letters and digits have similarities in their shape (0 is similar to O, 1
+is similar to I, 2 is similar to Z, etc.). Frey et al. [ 15]’s more deterministic approach was also
+the basis for setting the maximum input requirement to 16 inputs. The paper linearly scaled
+these values to integers ranging from 0 to 15. For the system, the scaling was changed from
+0.1 to 3.2V discussed earlier. The minimum was set to 0.1 as 0 would be the same as a lack of
+information (to preserve the difference between no input and a input of a small magnitude). 3.2V
+16
+
+=== PDF PAGE 21 ===
+A. Sreekumar Part 1. Preamble
+was chosen as the upper value so that the voltages could comfortably match what the DAC used,
+could output (it was able to output up to 5V [20], but a overly convservative safety factor was
+used to not damage the DAC). The 16 inputs defined by Frey et al. are shown below.
+1. The horizontal position of the center of the smallest rectangular box that can be drawn
+with all “on” pixels inside the box.
+2. The vertical position of the above box.
+3. The width, in pixels, of the box.
+4. The height, in pixels, of the box.
+5. The total number of “on” pixels in the character image.
+6. The mean horizontal position of all “on” pixels relative to the center of the box and divided
+by the width of the box. This feature has a negative value if the image is “left-heavy”.
+7. The mean vertical position of all “on” pixels relative to the center of the box and divided
+by the height of the box.
+8. The mean squared value of the horizontal pixel distances as measured in feature 6.
+9. The mean squared value of the vertical pixel distances as measured in feature 7.
+10. The mean product of the horizontal and vertical distances for each “on” pixel, as measured
+in features 6 and 7.
+11. The mean value of the squared horizontal distance multiplied by the vertical distance for
+each “on” pixel.
+12. The mean value of the squared vertical distance multiplied by the horizontal distance for
+each “on” pixel. This measures the correlation of vertical variance with horizontal position.
+13. The mean number of edges (an “on” pixel immediately to the right of either an “off”
+pixel or the image boundary) encountered when scanning from left to right at all vertical
+positions within the box.
+14. The sum of the vertical positions of edges encountered as measured in feature 13.
+15. The mean number of edges (an “on” pixel immediately above either an “off” pixel or the
+image boundary) encountered when scanning from bottom to top at all horizontal positions
+within the box.
+16. The sum of the horizontal positions of edges encountered as measured in feature 15.
+Frey et al. [ 15] tailored their data inputs to the University of California, Irvine (UCI) letter
+recognition dataset, which had varying sizes, aspect ratio changes and positional jitter that
+required warping for correction. This is not the case in the MNIST, as all digits sizes are centre-
+of-mass centred and size normalised [16]. Furthermore, a few digits can appear very similar to
+one another (such as 1 an 7) that require other features to provide clear distinction. A list of 7
+possible digit-specific features that could improve network accuracy [16] was considered for use
+as possible inputs. The digit-specific parameters are shown below.
+17
+
+=== PDF PAGE 22 ===
+A. Sreekumar Part 1. Preamble
+1. Count the number of loops in the image.
+2. Each digit is thinned using the thinning alogrithmn proposed by Zhang et al. [21], with the
+alogrithmn being applied until no other pixels can be removed. In this skeleton,the number
+of line ends (endpoints) and places where lines splits or crosses (junctions) are counted.
+3. Horizontal crossings may be counted at one-quarter, one-half, and three-quarters of the
+image height.
+4. Measure how many pixels are on on either size of the vertical centre of the image.
+In order to select the optimal features that can maximise accuracy, the MLP neural network was
+simulated using a greedy search, where different permutations of these 23 features were used in
+order to find the best 16 features for use in the system. During each run, the feature that increased
+accuracy the most was selected and then the search was continued until the 16 features were
+finalised. The inputs were also mean centred before being used to create the network.
+The final 16 inputs chosen from this test is presented in Table 2, they are listed in the order of
+selection.
+Step Name Description Source
+1 Mean vertical offset Mean vertical offset of the on-
+pixels, divided by the box height.
+Frey
+2 Skeleton endpoints Number of endpoints in the
+Zhang–Suen skeleton.
+Digit-specific features
+3 Vertical spread Mean v2, representing vertical
+spread.
+Frey
+4 Loop count Number of enclosed holes in the
+digit.
+Digit-specific features
+5 Mean horizontal offset Mean horizontal offset of the on-
+pixels, divided by the box width.
+Frey
+6 Mean vertical edges Mean number of vertical edges. Frey
+7 Vertical variance–horizontal pos-
+ition correlation
+Meanv 2h. Frey
+8 Vertical positions of horizontal
+edges
+Sum of the vertical positions of
+horizontal edges.
+Frey
+9 Box width Width of the bounding box. Frey
+10 Diagonal correlation Mean hv, representing diagonal
+correlation.
+Frey
+11 Horizontal positions of vertical
+edges
+Sum of the horizontal positions
+of vertical edges.
+Frey
+12 Horizontal centre Horizontal centre of the bound-
+ing box, measured in pixels from
+the left.
+Frey
+13 Horizontal spread Mean h2, representing horizontal
+spread.
+Frey
+14 Horizontal variance–vertical po-
+sition correlation
+Meanh 2v. Frey
+15 Crossing count at 50% height Number of on-pixel runs cross-
+ing a line at 50% of the bounding-
+box height.
+Digit-specific features
+16 Vertical-axis symmetry Agreement between the cropped
+image and its horizontal mirror.
+Digit-specific features
+Table 2. Final 16 input features
+18
+
+=== PDF PAGE 23 ===
+A. Sreekumar Part 1. Preamble
+An example of the features in Table 2 applied to a single digit is shown in Figure 10. The
+complete list of digital inputs per output class is shown in the Appendix E. The sample is a ’4’,
+and three of the sixteen inputs account for most of that identity:
+1. Vertical ink spread (f9) is low, at 0.63 V .The ink of a ’4’ concentrates about the junction of
+its strokes rather than spreading over the full height of the bounding box.
+2. The skeleton has four endpoints, which maps to the a open ’4’ terminates (to one of four
+stroke tips: the top of the diagonal, the foot of the upper-left stroke, the right end of the
+crossbar, and the bottom of the stem).
+3. Because this sample contains no loops, the loop_count feature is at the 0.1 V floor.
+This is consistent with an open-form ’4’ rather than a closed-triangle ’4’. The feature is
+exclusionary rather than defining: it rules out ’0’, ’8’, ’9’, and ’6’, but cannot distinguish a
+’4’ from a ’1’, ’3’, ’5’, or ’7’.
+Figure 10. MNIST sample 9 and the corresponding input-feature voltages.
+The three methods described above were implemented on the training dataset to find which
+among them yielded the highest accuracy. It was implemented using a MLP neural networks
+with the RELU, tanh and Sigmoid activation functions. Despite the ReLU function not being
+implemented due to the possible similarity to previous implementations, the ReLU function is
+still considered as the optimal activation function when converting to an SNN [10]. The results
+of the comparison are presented in the Table 3
+19
+
+=== PDF PAGE 24 ===
+A. Sreekumar Part 1. Preamble
+Input-reduction method Accuracy by activation function
+ReLU Tanh Sigmoid
+7×7 pixel averaging 79.51±0.23 80.26±0.11 80.11±0.39
+Principal Component
+Analysis (PCA)
+88.86±0.17 89.36±0.26 89.35±0.31
+Feature extraction 91.75±0.16 91.51±0.12 91.67±0.17
+Table 3. Accuracy of input-reduction methods by activation function
+Based on the results, the feature extraction is the method that yields the highest accuracy across
+all results and regardless of activation functions. The performance of the ReLU options that will
+be converted to the SNN. As such, this input method was chosen for the system.
+All of the inputs calculated were positive values (due to how they can be represented
+by the DAC). This means that all gradients carry the same sign and as such, it will only be
+able to move in the same direction (weather positive or negative) which significantly slows
+down learning and requires many more sample and epochs to train [22]. Mean centering was
+recommended by Lecun et al. [ 22] (referred to as mean cancellation in the paper, but mean
+centering in the majority of other sources consulted) as a solution to this problem and was used
+to simplify training.
+The mean centering of the inputs cannnot be replicated in the analogue domain as the
+DAC was unable to input negative voltages to the circuit. As such, a compensation factor is
+required to offset each of the bias values. If the output of the summing function of a neuron S is
+defined as:
+S=W¯x+b(7)
+where W is the weight vector, ¯xis the input feature vector, and b is the neuron’s bias term.
+Equation 7 uses uncentred features. Mean-centering the input vector subtracts its mean vector ¯µ,
+whose elements are the means of the corresponding input features:
+S=W(¯x−¯µ)+b(8)
+Expanding this expression gives:
+S=W¯x−W¯µ+b(9)
+Thus, to use uncentred inputs while preserving the mean-centred result, decrease each bias by
+W ¯µ.
+3.5 Determining Network Parameters
+The system was expected to lose 10% accuracy when converting from the digital simu-
+lation to the analogue domain due to effects that were unacconuted for (such as resistor
+tolerances, parastic capacitance and any others not known at this time). This value was
+expected as Koen’s implementation [ 4] lost 12% accuracy during his conversion (89.0%
+accuracy in software vs. 77% accuracy in hardware). In order to minimise the impact of this
+transfer, the heuristic used to make all decisions was to select the option that maximised accuracy.
+Training was done off-chip as on-chip methods would require more complex compn-
+ents such as memistors [7], which would violate the system requirements.
+20
+
+=== PDF PAGE 25 ===
+A. Sreekumar Part 1. Preamble
+MLP neural networks with Sigmoid and Tanh activation functions were considered,
+alongside a network with a RELU activation functions used for conversion to a SNN (as
+recommended by Diehl et al. [10]).
+The size of the network was to be minimised to reduce the costs of the circuit. The
+maximum number of neurons had to be greater than or equal to 10, as there are 10 distinct
+outputs of the system. While binary encoding was considered to represent the outputs, one-hot
+encoding was chosen as this increased the accuracy of the network as the network learnt the
+difference between each digit rather than the difference between each bit. The maximum number
+of neurons was a limit set to 20 (obtained by doubling the number of output neurons).
+3.5.1 Training the digital models
+The accuracy of the neural network is measured through a loss functionL. Backward propagation
+is the process that determines how much each weight contributes to that loss and adjusts the
+weights so as to minimise the output of the loss function [2]. The contribution of each weight
+and bias to the output is quantified by taking the derivative of the loss functions with respect to
+every weight and bias in the network.
+A forward pass produces outputs zi at the final layer. The softmax function is used to convert
+these outputs into probability distributions [23, pp. 135] :
+softmax(zi)= exp(zi)
+∑K
+j=1 exp(z j)
+,i=1, . . . ,K,(10)
+where zi is the ith output value and K is the number of classes, which is 10 for this network. The
+softmax preserves the ordering of its inputs, so the predicted class is the same one that would be
+obtained by taking the output of largest magnitude for the MLP, or the output neuron with the
+highest spike count for the SNN. That approach would rather be taken for the analogue circuit as
+the softmax function would be a very large circuit.
+The softmax function was used in the digital simulation to produce a differentiable dis-
+tribution on which the loss can be defined. A hard maximum has a derivative of zero everywhere,
+which means backpropogation cannot be used.
+The cross entropy measures the mismatch between the softmax output and the true la-
+bel [23, pp. 666], which is a one-hot encoded vector y. The natural logarithm converts the
+product of per-sample probabilities into a sum, which allows the loss to be averaged over a
+mini-batch, and it inverts the exponential introduced by Equation 10. The loss function is derived
+to be:
+L=−
+K
+∑
+c=1
+yc ln ˆyc,(11)
+where y is the one-hot label vector andˆythe predicted distribution. The negative sign is introduced
+because the natural logarithm of a probability is either negative or zero, so the sign ensures that
+the loss is always positive. Sinceyis one-hot, all but one term vanish:
+L=−ln ˆyt,t=the index of the true class. (12)
+21
+
+=== PDF PAGE 26 ===
+A. Sreekumar Part 1. Preamble
+Averaged over a mini-batch ofmsamples, this gives the quantity evaluated during training:
+L=−1
+m
+m
+∑
+n=1
+K
+∑
+c=1
+y(n)
+c log ˆy(n)
+c .(13)
+Throughout the calculations below, a(l) is the output of layer l and z(l) its the output of the
+summing function (before the activation function is applied):
+z(l) =W (l) a(l−1)+b(l) ,a (l) =g(z(l)) ,(14)
+At the output layer, no gradient can be defined since that layer is the last layer. As such, the
+gradient of the loss function in relation to the outputs of the system is defined as :
+δ(L) = ∂L
+∂z(L) =ˆy−y,(15)
+which is the initial value of the backward pass. Each preceding layer’s error term follows from
+the recursion
+δ(l) =[(W(l+1))
+⊺
+δ(l+1)]⊙g′(z(l)) ,(16)
+where⊙denotes element-wise multiplication and g′is the derivative of the activation function of
+layerl. The gradient of each weight matrix and bias vector is then read off as
+∂L
+∂W (l) =δ (l) (a(l−1))
+⊺
+, ∂L
+∂b(l) =δ (l) .(17)
+wherea (l−1)is the activation stored during the forward pass.
+The gradients used during backward propagation for the activation functions considered are:
+dReLU(x)
+dx =
+⎧⎪⎪⎪⎪⎨⎪⎪⎪⎪⎩
+0,x≤0,
+1,0<x<V sat,
+0,x≥V sat.
+(18)
+dtanh(x)
+dx =1−tanh2(x).(19)
+dσ(x)
+dx =σ(x) [1−σ(x)].(20)
+For the derivative of the saturated RELU (as shown in 18), if the neuron is driven by a voltage
+above Vsat, the error terms will be 0 and the neuron’s weights cannot be updated from that point
+onwards.
+Finally, the gradients of Equation 17 are applied by gradient descent with learning rate η, with
+the learning rate referring to how much each weight is adjusted by at every step of backward
+propogation [24]:
+W(l) ←W (l)−η ∂L
+∂W (l) ,b (l) ←b(l)−η ∂L
+∂b(l) .(21)
+22
+
+=== PDF PAGE 27 ===
+A. Sreekumar Part 1. Preamble
+3.5.2 Hyperparameter selection
+The hyperparameters of interest that were varied to determine the optimal MLP neural network
+for each activation function, is the batch size (number of forward passes before the weights are
+updated) and the learning rate. Each network had this training for a maximum of 50 epochs. The
+training stopped once accuracy began to decline due to overfitting.
+K-fold cross-vaildation was used to spilit the MNIST training dataset to train the net-
+work. The technique involves spliting the dataset into k subsets of equal size [ 25]. Training
+is done on k−1subsets with the last subset being used to test the network. During every run,
+20% of this dataset was kept for validation purposes, and the other 80% was kept for testing
+purposes. These parameters were chosen to ensure that there was sufficent data for both training
+and testing. K-fold cross-validation was used to reduce the probability of the model’s accuracy
+being due to overfitting rather than learning the deeper trends of the data [25],[26] . This spilt is
+done randomly, as such seeding could affect results. In order to ensure that the results of the
+experiment are statiscally valid, the experiment was repeated 30 times per network for each of
+the parameter sweeps, and the accuracy was averaged across the 30 runs.
+Batch gradient descent refers to the method wherein the gradient is calculated based on
+the error of the entire dataset [ 26][ch.8]. Stochastic gradient descent refers to the method
+whereing the gradient in calculated based on the error of smaller batches [ 26][ch.8]. While
+batch gradient descent offers lower training times, the regularisation stochastic gradient descent
+will further reduce overfitting (hypothesied to be due to the added noise [26][ch.8]). As such,
+stochastic gradient descent was chose for use. The use of lower batch sizes was chosen due to
+the additional noise (thus further preventing overfitting).
+Lower batch sizes need low learning rates to account for the noise associated with them
+[26][ch.8]. The parameters chosen there were delibertly chosen to be small to account for this
+property. The following batch-size and learning-rate arrays were swept:
+• Batch sizes:[8, 16, 32, 64]
+• Learning rates:[0.001, 0.003, 0.005, 0.01, 0.03, 0.06, 0.1]
+The final hyperparameters selected for each network are presented in Table 4. The weights of
+these networks were saved for use in later steps.
+Activation function Learning rate Batch size Maximum epochs
+ReLU 0.06 8 45
+Tanh 0.06 16 47
+Sigmoid 0.1 8 47
+Table 4. Selected hyperparameters for each activation function
+3.5.3 MLP to SNN conversion
+Eshraghian et al. [5] meantioned two ways to implement the lowering of the membrane potential:
+23
+
+=== PDF PAGE 28 ===
+A. Sreekumar Part 1. Preamble
+1. A soft reset that only deducts the threshold voltage from the membrane voltage when a
+spike is fired.
+2. A hard reset that lowers the membrance threshold to 0V whenever the neuron is fired.
+Due to the continous nature of signals in the analogue domain, the membrane potential cannot
+exceed the threshold set. While a digital implementation simulates time and can calculate what
+the voltage will be between each time step simulated (for both the soft and hard resets), this is
+not possible in the analogue domain - the spike will be fired as soon as the membrane potential
+crosses the threshold. Due to this reason, the soft reset cannot be used to develop this system,
+and this will contribute to a lower accuracy [5]. The hard reset must be used and it will happen as
+soon as the membrane potential crosses 1V . The use of hysteresis or other methods will simply
+increase the delay at which a spike is fired. This is shown in Figure 11.
+Figure 11. Difference between the hard and soft reset proposed by Eshraghian et al. [ 5]
+and what is feasiable for the system.
+The neural network with a saturated RELU activation function was converted to the SNN neural
+network, as this was the one recommended for conversion [10].
+The MLP neurons with RELU functions were replaced with LIF neurons. In order to
+prevent oversaturation of the neuron (the frequency needed to represent the signal driving the
+neuron cannot be fired by the neuron), the weights and biases of the neuron must be normalised
+(as described by Diehl et al. [10]). The scaling was done such that all the inputs that drive the
+neuron are within an operating window in which oversaturation will not occur.
+The normalisation of the hidden layer was done by examing all outputs each neuron r
+over 1000 calibration samples and recording all outputs. The outputs in the 99th percentile was
+then chosen for normalisation purposes (to reduce the effect of any outliers that could result a
+normalisation factor that is unessarily big). The output of the summing function of each neuron
+is assumed to be z, with i being the neuron for which the factor was determined. The equations
+for determining the normalisation factor (λ, shown in equation 22) and applying it to all relevent
+24
+
+=== PDF PAGE 29 ===
+A. Sreekumar Part 1. Preamble
+weights (equation 23) is presented below [10]:
+λ1,i= 1
+Vth
+P99({z(1)
+i ∣z(1)
+i >0}),(22)
+(W(1)
+SNN)i j=
+W(1)
+i j
+λ1,i
+, (b(1)
+SNN)i= b(1)
+i
+λ1,i
+.(23)
+λ1,i will lower the amplitude of the signals going into the next layer, and this must be compensated
+for. All the weights going to the output layer must be mulitplied by the normalisation factor of
+the neuron from which they originate. This is shown in equation 24, where j denotes the neuron
+of origin.
+˜W(2)
+i j =W (2)
+i j λ1,j .(24)
+The normalisation of the output layer cannot be done in the same manner as done for the hidden
+layer. If the factor is taken per neuron, it could affect the output of the network (as each neuron
+will have it’s own constant, which means that each output voltage will be affected independently
+of one another). A layer wide normalisation factor was instead calculated such that every neuron
+was changed by the maximum output among all of them. This is presented below. Once again,
+the 99th percentile is used to reduce the effect of outliers.
+λ2= 1
+Vth
+P99({ ˜z(2) ∣˜z(2) >0 }),W (2)
+SNN=
+˜W(2)
+λ2
+,b (2)
+SNN= b(2)
+λ2
+.(25)
+The output of the system is determined by counting which output neuron spikes the most in a
+particular interval, as shown in equation 26.
+ˆc=argmax
+i
+T
+∑
+t=Tw
+s(L)
+i [t].(26)
+The parameters used to make the conversion is shown in the table below.
+Symbol Description Value
+Ncal Calibration samples 1000
+P99 Normalisation percentile 99
+T Simulation steps 200*∆t
+τm Membrane time constant 100 steps
+Vth Firing threshold 1
+∆t Timestep 1
+Table 5. Conversion parameters.
+The timestep refers to the basic unit of time in the simulation. The 1 second is very large, and
+the results in this simulation could be worse than other ones due to this larger∆tvalue.
+The membrane constant refers to how many time steps the membrane will take to reach 37% of
+it’s inital charge if no other inputs have been received. This represented the RC that is to be
+implemented in the analogue domian.
+The calibration samples refers to the number of samples from the traiing dataset used
+to calculate normalisation constants.
+25
+
+=== PDF PAGE 30 ===
+A. Sreekumar Part 1. Preamble
+The result of the converted SNN was 85%. Assuming that 10% will be lost in the con-
+version between analogue and the digital domain, this network can meet the 75% accuracy
+expected if it is implemented in the analogue domain.
+3.6 LIF Neuron Design
+3.6.1 Neuron Theoretical Design
+The LIF neuron consists of a leak function, a integrate function and a fire function. The leak and
+integrate stages are implemented using a resistor-capacitor combination (Figure 3). The neuron
+must satisfy two requirements:
+1. It must reset the membrane potential to 0 V after every firing event, implementing the hard
+threshold described by Eshraghian et al. [5].
+2. It must produce spikes with a consistent width, while the firing frequency varies with the
+summer-output magnitude (higher summer outputs produce higher firing frequencies) to
+implement the fire function
+The voltage across the capacitor must be reduced to 1 V during the reset. While options
+such as current mirrors and capacitor charge distributions were considered to remove
+charge from the membrane threshold, this was not considered viable due to the number of
+components required for these circuits to be implemented. Furthermore, due to the soft reset
+not being viable in the analogue domain, such complex circuitry was not neccessary as the
+threshold needs to be bought to 0 V , which can be done by connecting the membrane voltage to
+ground for a period long enough such that the charge stored in the capacitor can be dropped to 0 V .
+The LIF neuron’s leak constant refers to how long it would take for a signal to be for-
+gotten (leak out). This value is set to be the same for all neurons, and is calculated using
+Equation 27.
+τleak=R leak⋅Cleak (27)
+The target leak time constant, τleak, was 10µs . To obtain this value, a 1nF capacitor was selected
+because it is widely available. Setting this value without further considerations is acceptable,
+as the weights will be adjusted such that the accuracy level can be maintained. The required
+resistance is therefore:
+Rleak= τleak
+Cleak
+(28)
+Rleak= 1µs
+1nF (29)
+Rleak=10kΩ(30)
+For the hidden-layer neurons, DC input voltages are summed and the output is a spike train, so
+the neuron’s behaviour under DC input must be considered. The summer outputVo and resistor
+Ri is modeled in Figure 12a. The Rc in the image refers to the circuit right after the voltage
+source. The thevinin equivalent was used to find the equivalent resistance seen by the capacitor.
+When equivalent resistance is found using Thevinin’s theorem, the voltage source is modeled as
+26
+
+=== PDF PAGE 31 ===
+A. Sreekumar Part 1. Preamble
+a open circuit [27]. The circuit used to calculate the equivalent resistance Rth is shown in Figure
+12b.
+(a) Circuit representation of the summer in
+relation to the membrane voltage.
+(b) Norton-equivalent voltage source with
+series resistance.
+Figure 12. Circuit used to findR th.
+Rth’s value is:
+Rth= RiRc
+Ri+R c
+. (31)
+As such, the voltage across the capacitor,Vmem, follows the RC step response [28]:
+Vmem(t)=V s+(V0−Vs)e−t/τRC,
+τRC=R thCl
+(32)
+Here, V0 is the initial capacitor voltage, Vs is its final voltage after the step, and Req is the
+resistance seen by the membrane capacitance Cmem.The inital voltage of the capacitor is assumed
+to be 0 V , as such, the equation simplifies to:
+Vmem(t)=V s−Vse−t/τRC,
+Vmem(t)=V s(1−e−t/τRC)
+(33)
+For an applied step voltage V>V th, solving for the time required for the membrane voltage to
+27
+
+=== PDF PAGE 32 ===
+A. Sreekumar Part 1. Preamble
+reach the threshold gives:
+tfire(V)=−τRC ln(1−Vth
+V ),
+f(V)= 1
+tfire(V) = −1
+τRC ln(1−Vth
+V )
+(34)
+The frequency of these resets will be the same frequency of the output spikes, with this frequency
+being defined with the equation below:
+f(V)= 1
+tfire(V) = −1
+τRC ln(1−Vth
+V ) (35)
+The leak of the neuron can be implemented using a switch where one point is connected to the
+node that carries the membrane threshold, and another point is connected to ground. The output
+of the comparator can be used to turn on the connection between these two points, since the
+reduction in charge should only happen when the neuron fires a spike.
+A switch that is turned on by a digital input was required for use in this system , and
+the SN74HC4066 was chosen due to high avaliability for the PCB manufractuer (JLCPCB).
+This chip however contains four of these modules [29], so 1 chip can be used for four neurons,
+which will have to be accounted for when routing.
+The neuron must fire once the voltage drops below 1 V . A comparator is a component
+that can output high when one voltage is greater than another, as such this component was
+chosen. Furthermore, a comparator can perform this in a single chip rather than having multiple
+components to perform the same function, thus reducing the size of the final circuit.
+Hysteresis was not added to this comparator as the small spikes that occur close to 1 V
+will result in such little spikes that they should not affect the final results. This was accounted for
+during the resistor mapping of the neural network created using the LIF neuron.
+During the design of the reset function, it was mentioned that the node that represented
+the membrane threshold must be connected to ground for a sufficently long enough time for the
+discharge to occur. The reset will be instaneous, as such a method must be developed to increase
+the length of the spike such that the node can be completely discharged. Other implementations
+[30] used ALU’s and other complex components to meet this function, which violates the
+requirements of the system.
+The solution developed was the creation of a pulse stretcher that used a resistor, capa-
+citor and an additional comparator. The output of the inital comparator will be strected by the
+resistor and the capacitor. This strected value will then be the input to another comparator with a
+lower voltage threshold (0.5 V) such that is will be on for longer than the inital one is on for,
+thus giving the membrane potential sufficient time to be discharged to 0 V . The additional time
+for which the circuit will stay on (τstretch) can be represented by Equation 36:
+τstretch=R stretch⋅Cstretch (36)
+where Rstretch and Cstretch are the resistance and capacitance of the corresponding components in
+the figure.
+The circuit diagram of the LIF neuron design developed to this point is shown in Figure 13.
+28
+
+=== PDF PAGE 33 ===
+A. Sreekumar Part 1. Preamble
+Figure 13. Circuit diagram of the LIF neuron design.
+A pulse-stretching interval of 1µs was selected. Using the same approach as in Equation 28,
+withC stretch=1nF, the required resistance isR stretch=1kΩ.
+Two comparator chips were in consideration for use, the LM393 or the TLV3201. The
+choice was restricted to these two components as the manufacturer of the PCB (JLCPCB) only
+had these 2 comparators avaliable for use. The LM393 has two comparators on a single chip
+while the TLV0201 has 1 comparator.The use of two comparators to both generate the spikes
+and the pulse stretcher meant that the LM393 was chosen due to it having the required number
+of comparators on a single chip. However these comparators require pull-up resistors at the
+output as they are open-drain.
+The LM1458 operational amplifier used for the summer supports supply rails of up to
+±18V[31]. The design uses ±15Vrails to keep the device below its maximum rating and
+provide a safety margin. The saturation voltage, Vsat, defined in Equation 3, is 15V. The
+LM1458 was selected for its small footprint and low cost compared with alternatives such as the
+TL072.
+Based on the summer equation, values must be selected for RA, RB, and RC. Following
+the previous implementation [4], RA and RB should be equal and one decade lower than RC so
+that their gain factors cancel. To use standard resistor values, RA=R B=10kΩ and RC=100kΩ
+were selected. The summer equation can therefore be rewritten as:
+Vo=100kΩ
+p
+∑
+i=1
+Vi
+Ri
+−100kΩ
+n
+∑
+j=1
+Vj
+R j
+(37)
+The voltage to which the pull-up resistor is connected (Vr) will control the amplitude of the output
+of the comparator. In order to allow commonly avalaible and inexpensive microncontrollers to
+read the output pulses, Vr for the output layer neurons is 3.3 V . TheVr for the output layer affects
+how much charge is develivered to the next neuron. As long as all neurons in the hidden layer is
+connected to the same Vr, what it’s actual magnitude is will not affect network accuracy as the
+frequency of the spikes will still be varied (and is not affected by Vr). The Vr for the hidden layer
+was chosen to be 5 V to reduce the number of traces required during PCB design.
+29
+
+=== PDF PAGE 34 ===
+A. Sreekumar Part 1. Preamble
+3.6.2 Implementing voltage thresholds
+The required comparator thresholds are 1V and 0.5V. Both are generated from the available 5V
+rail using voltage-divider circuits. The voltage divider circuit is shown in Figure 14.
+Figure 14. Circuit diagram of the voltage divider.
+The equation used to calculate the component value is Equation 38,[32].
+Vth=Vs
+R2
+R1+R 2
+.(38)
+For the 1V threshold, the divider ratio is 1/5=0.2:
+Vth,1=5V R2
+R1+R 2
+=1V,(39)
+R2=4R 1.(40)
+ChoosingR 1=10kΩgivesR 2=40kΩ. For the 0.5V threshold, the divider ratio is 0.5/5=0.1:
+Vth,2=5V R2
+R1+R 2
+=0.5V,(41)
+R2=9R 1.(42)
+Choosing R1=22.1kΩ gives an ideal R2=198.9kΩ , rounded to the standard value 200kΩ. This
+yieldsV th,2≈0.498V.
+3.6.3 Simulations of the neuron
+Neuron simulations were made using LTSPICE. The circuit used in the simulation is shown in
+Figure 15. The model of the switch, comparator and operational amplifier models were not
+available on LTSPICE. As such, their closet equivalents were found. The LT1720 comparator
+is a open drain comprator that was used for simulation, with universal opamp 2 being used
+for the LT1458. The switch was modelled as a custom switch with the characteristics of the
+SN74HC4066 (on resistance of 150Ω , off resistance of 10 MΩ, and a switching threshold of
+3.5 V) [29]. A delay of 1 ns was added to the switch to account for the switching time.
+30
+
+=== PDF PAGE 35 ===
+A. Sreekumar Part 1. Preamble
+Figure 15. Values used in the LIF neuron simulation.
+The output of the summer (denoted as Vo in Figure 15) is calculated by substituting the relvent
+parameters to equation 37. X denotes the voltage that will be varied throughout the simulation.
+The voltage driving Vmem is half of what the summer outputs, as the resistor’s are in parallel
+(as shown in Figure 12), which acts as a voltage divider that halves the voltage at that node
+(calculated using equation 38).
+Vo=(XV)× 100
+40 +(2.2V)×100
+60 +(2.1V)×100
+60
+−(0.6V)×100
+20 −(0.6V)×100
+20 −(1.1V)×100
+40
+Vo=X×2.5+3.667V+3.5V−3V−3V−2.75V
+Vo=2.5X−1.417V
+(43)
+Initially, X was set to 1.4 V . Figure 16 shows the output spikes alongside the mem-
+brane reset mechanism. The membrane voltage does decrease to 0V as intended. It was noted
+that the spike width is most changed by the delay of the switch. In this simulation, the switch
+delay was set to 1ns, with the width of the spike being this exact value. Varying the delay was
+the biggest contributor to changing spike width.
+The effect of the second comparator is shown in Figure 17. Vcomp1 is the output of
+the first comparator, which is smaller than the final spike. The second comparator provides a
+bit more pulse width, as well as bettering the shape of the pulse to a square wave. The increase
+in pulse width is minimal, however it can still be kept to it being inexpensive to add the second
+comparator (LM393 chips come with 2 comparator’s per chip [33]).
+31
+
+=== PDF PAGE 36 ===
+A. Sreekumar Part 1. Preamble
+Figure 16. Simulated individual spike of the LIF neuron and the membrane reset.
+Figure 17. Pulse stretcher used in the LIF neuron design.
+Figures 18, 19, and 20 show the comparator output as the input voltage is varied. These
+simulations were used to check whether the results agree with Equation 35. Substituting the
+resistor values into Equation 31 gives a Thevenin resistance of Rth=5kΩ . The corresponding
+input voltages applied to Vmem were 1.17V, 1.42V, and 1.67V. The frequencies of the spikes
+is calculated (using Equation 35) is: 102.73 kHz, 163.39 kHz and 218.45 kHz. The values
+were measured in simulation to be 93.93 kHz, 156.5 kHz, and 216.83 kHz, which are in 10 %
+tolerance (within one order of magnitude of the expected value). As such, Equation 35 can be
+considered to model the relationship between the voltage and the frequency correctly. Through
+simulation, it was also verified that asVo increases, the frequency of the output increases (as
+expected). The simulation proves that the design developed is ready to be built on the bench to
+characterise it’s behaviour further.
+32
+
+=== PDF PAGE 37 ===
+A. Sreekumar Part 1. Preamble
+Figure 18. Simulated comparator output at an input voltage of1.17V.
+Figure 19. Simulated comparator output at an input voltage of1.42V.
+Figure 20. Simulated comparator output at an input voltage of1.67V.
+33
+
+=== PDF PAGE 38 ===
+A. Sreekumar Part 1. Preamble
+3.6.4 Summer Verification
+The was a pre-exisiting level of confidence in the performance of the summer based on the work
+done by Koen [4], however it was still critical to verify Koen’s results. The test setup conducted
+was a bit more simple than the one done by Koen 9 due to the forementioned confidence, with
+additional input testing being considered in the event that the summer did not function as expected.
+The test circuit used is shown in Figure 21.
+Figure 21. Circuit used to verify the summer.
+The test was done for an output that is both a positive voltage and one for a negative voltage. The
+theorectial output for the positive voltage test is:
+LetV 1=1V andV 2=1V was calculated as follows (using equation 2):
+Vo= 100kΩ
+10kΩ V1+(−100kΩ
+20kΩ )V 2
+=10(1V)−5(1V)
+=5V
+(44)
+A output of 4.97 V was measured at the output, as such the summer can be considered working
+for positive voltages.
+The theoretical output for the negative voltage is (calculated using equation 2):
+LetV 1=1V andV 2=2V was calculated as follows:
+Vo= 100kΩ
+10kΩ V1+(−100kΩ
+20kΩ )V 2
+=10(0.5V)−5(1.5V)
+=−2V
+(45)
+The final measured output was 0 V , due to the half wave rectifier correcting the voltage to comply
+with the activation function, as such this output is expected.
+3.6.5 LIF testing
+The neuron in simulation was created on the bench. The circuit diagram of the bench neuron is
+shown in Figure 22, alongside the components used to implement them. Only the integrate and
+34
+
+=== PDF PAGE 39 ===
+A. Sreekumar Part 1. Preamble
+fire parts of the neuron were verified as the summer was verified seperately.
+Figure 22. Circuit used to verify the integrate and fire part of the neuron.
+It was later found that all that the capacitor did was act as a delay [33], it did not actually affect
+the pulse width at all. This was found after the creation of the final PCB, as such the neural
+network will still contain the delay. The delay should not affect performance as the same action
+will just be performed mariginally later than expected, which will not impact system performance
+since classification will not be affected by the spike being slightly later than expected. The
+magnitude of this delay is defined by the formula [33]:
+∆t=RCln( VCC
+Vref
+)
+=(1kΩ)(1nF)ln( 5V
+0.5V)
+=2.3µs.
+(46)
+The reset mechanism does function and reset the voltage,however it lowers the voltage a bit
+below 0 V (to -80 mV) due to the fast switching that occurs. The reset mechanism is shown in
+Figure 23.
+Figure 23. Measured membrane voltage during repeated reset cycles.
+35
+
+=== PDF PAGE 40 ===
+A. Sreekumar Part 1. Preamble
+The neuron’s performance was tested by applying DC voltages at the input of the LIF neuron (to
+replace the summer). This voltage (Vo) was changed by 0.1V, with the output of the LIF neuron
+being recorded for each of these changes. The result of this test is shown in Figure 24.
+Figure 24. Bench Neuron Performance.
+In the diagram, it is noted that the gradient of the curve begins to decrease as the voltage
+increases. This is due to oversaturation [ 10], where the neuron is unable to fire at a rate that
+matches the change in voltage due to the components used in it. This results in the width of
+each spike increasing as the voltage increases (particularly in the region where the gradient is
+decreasing). While the average DC value of the pulse can be considered higher , these regions
+cannot be used as simply counting pulses will not be enough to determine the maximum value,
+rather both the frequency and width will have to be taken into account.
+This behaviour can be seen in Figure 25. The width of the pulses can be seen to in-
+crease as the voltage input increases. As the frequency is still higher for 7 V than it is at 3.3 V ,
+te pulse width is not a significant issue. The oversaturation can be seen for 10 V , where the
+higher pulse width means that the frequency of the spikes is lower (due to oversaturation). This
+means that a output that is actually at a higher intensity and cannot be read to reflect this higher
+intensity.
+(a) 3.3 V input
+ (b) 7 V input
+ (c) 10 V input
+Figure 25. Measured output traces of the LIF design at three input voltages.
+36
+
+=== PDF PAGE 41 ===
+A. Sreekumar Part 1. Preamble
+It must be noted that the neuron only starts spiking at 1.7 V input instead of 1 V . The reason for
+this is that the resistor at the output of the summer (Ri) lowers the voltage slightly as the loading
+effect of this resistor reduced the effective voltage at (Vmem). Varying the value of Ri changed the
+operating range of the neuron. At lower Ri values, the neuron began to spike earlier, but began to
+oversaturate at lower voltages. At higher Ri values, the spiking begins at higher voltages and the
+increase continues until the input gets to Vsat. The ideal operating range was found when Ri was
+set to 10kΩ, which gave the operating window shown in Figure 24. This operating range gave
+the widest window for the increase while having a reasonable start to when the spiking begins.
+The importance of a good operating window is shown again when reading the outputs
+of the system. Conisistent pulse widths are crucial if microcontrollers are to be used to count the
+number of pulses (which is used for the classification output). While the value can be averaged
+through a low pass filter, this will increase circuitry futher and make the board more expensive.
+As such, the gradient decrease and gradual regions should not be in the operating window of the
+neuron.
+Each pulse has an output with a width of 600 ns. This number is the time for which
+Vmem stays above 1 V . The reason this time is so large is due to the characteristics of the switch.
+The SN74HC4066 has a input transition rise and fall time of 467 ns. This differed from the
+value assumed in simulation of 1 ns.This number was obtained by interpolating between the two
+values provided in the datasheet [29] in the following manner:
+( ∆t
+∆v)(5V)=500ns+ 400ns−500ns
+6V−4.5V (5V−4.5V)
+=500ns−66.6 ns
+V (0.5V)
+≈467ns
+(47)
+The remaining length is due to the second comparator. The fall of the signal to 0.5 V adds the
+additional time, with breadboard parasitic capacitance also having a role. This was confirmed
+on the bench neuron by looking at how long it takes for Vmem to be reset to 0 V . This had a
+duration of 600 ns in the bench neuron, as shown in Figure 26. As such, the only pulse width
+meachism implemented that was actually meaningful was the second comprator, and even it’s
+effect is negligiable. The main contributor to spike width is the characteristics of the switch.
+Figure 26. Measured membrane reset duration of the bench neuron.
+37
+
+=== PDF PAGE 42 ===
+A. Sreekumar Part 1. Preamble
+3.7 Final LIF Neuron
+Figure 27 is the circuit diagram of the final LIF neuron that was designed and verified. This will
+be used to create the final analogue neural network. All components used to builf the neuron is
+also labelled in the image, with the value of the weight resistors to be determined during training.
+Figure 27. Circuit diagram of the bench neuron.
+In addition to accounting for the reduction of the LIF that occured during verificiation of the
+neuron’s performance, a problem that was previously unconsidered was fixed, inputing negative
+voltages to the comparator. The comparator did not show any damage when it was driven by
+negative voltages, although this is not recommended. As such, it was decided that the LIF
+should only be driven by postive voltages and 0V otherwise, which would not affect the neurons
+performance as the neuron is not expected to fire for negative voltages.
+While the use of a single diode was considered, it would drop the voltage output of the
+operational amplifier by 0.7V [34], which would require adjustment of all software weights to
+account for this. Alternatively, a half wave rectifier could instead be used. This circuit could
+account for the voltage drop and adjust it’s output in order to compensate for the voltage drop
+[35, p. 453]. This means that the MLP neuron designed by Koen [4] is used as the input to the
+firing system.
+The performance of the neuron does vary over time, with the gradient of the graph flu-
+cating heavily. In order to ensure that output’s can be differentiated sufficently, the operating
+range before the fire section must be restricted. The region in which the neuron is to perform is
+referred to as the working window, and is shown in Figure 28.
+1 2 3 4 5 6 7 8 9 10
+Summer output voltage (V)
+1.7 V 6.5 V
+working window
+47 kHz 405 kHz
+Figure 28. Working window in relation to measured neuron performance.
+38
+
+=== PDF PAGE 43 ===
+A. Sreekumar Part 1. Preamble
+Across the 48 measured segments between the 1.7,V cut-in and 6.5,V the slope never falls below
+13,kHz/V and averages 74.6kHz/V , so every operating point inside the window returns a usable
+gradient. Above the bound the median segment slope falls to 10.5kHz/V and 90% of segments
+sit below 40kHz/V . A summer output above 6.5V would get a gradient one order of magnitude
+lower than one below it. Above 9V , the gradient begins to become negative, as such this part
+cannot be used at all, so pulse counting could not be able to classify the output properly (the
+average voltage would be higher, but the number of pulses would decrease).
+The use of the operating window means that at any point in time, every neuron is ex-
+pected to fire and that the frequency of the pulses will be the method to determine which output
+a data point was classified into.
+3.8 Training with analogue characteristics
+3.8.1 Surrogate Gradient
+The surrogate gradient used to train the spiking neural network is the behaviour of the bench
+neuron. The bench performance was stored as a look-up table (LUT). This gradient was used
+over more conventional ones such as ReLU [5] to account for the analogue uncertainties. The
+behvaviour of the bench neuron was approximated into a piecewise function, with the gradient
+changing based on the value of Vo. The gradient of interest is only in the operating window as
+this region of neuron operation is where the neuron is expected to function, Vo should always fall
+under the operating window. The surrogate gradient is shown in Equation 48. The gradient used
+to train the network is defined by the equation below:
+∂f
+∂V ∣
+V∈[Vk,Vk+1]
+= fk+1−fk
+Vk+1−Vk
+,(48)
+where k denoted the nearest point in the LUT that the voltage corresponds too.
+3.8.2 Final SNN
+The MLP network is converted to an SNN again. The spikes are converted to a average voltage
+for processing purposes, with the voltage being averaged over a timeτsyn (which was determined
+through a parameter sweep). No additional normalisation was done. The average voltage is
+calculated with the formula:
+Average V oltage=frequency×pulse width×amplitude (49)
+The amplitudes of the spikes was 3.3V (so that a microcontroller can read the output voltages).
+The SNN however has an issue that the MLP does not, which is that the signals between the
+hidden layer and the output layer are pulses rather than constant DC voltages. This means that
+these pulses would need to be averaged over a specified period of time (the reason as to why
+averaging is used will be discussed in section 3.9). The duration over which the pulses should be
+averaged is a parameter that was swept in the training of the network.
+The maximum freuquency of an output in the working window shown in Figure 28 is
+39
+
+=== PDF PAGE 44 ===
+A. Sreekumar Part 1. Preamble
+405.6kHz. This number was used to calculate the minimum time step of the simulation. A safety
+factor of 15 was applied to this number. The equation used to calculate the minimum timestep of
+the network is:
+∆t= 1
+k fmax
+= 1
+15×405.2kHz=164.5ns.(50)
+The application of such a conservative safety factor is to ensure that the the continuous nature of
+the analogue implementation can be better captured while keeping training times low.
+The time over which the pulses should be averaged (denoted as τsyn above) was de-
+termined through a parameter sweep, the results of which is presented in the table below. The
+SNN was trained for 20 epochs after conversion to improve accuracy. Each forward propogation
+was run for 300us.
+τsyn Constant counting window
+(µs) Steps Accuracy (%)
+10 1275 89.98
+20 1458 89.91
+30 1640 89.95
+40 1822 89.88
+50 2005 89.94
+60 2187 89.92
+70 2369 89.94
+80 2552 90.02
+90 2734 89.93
+Table 6. Gated accuracy against the synaptic filter time constantτ syn
+The results above shown that the time over which the pulse is averaged does not have an impact
+on accuracy. The choice inτ syn is more based on the avaliability of components to realise it.
+3.9 Pulse summing
+If the pulses are assumed to be as wide as they were in the bench neuron performance (where
+each pulse had a rise time tr of 600 ns) and a maximum magnitude of 4.88 V , the required slew
+rate for the operational amplifier would be:
+Slew rate= V
+tr
+(51)
+Slew rate= 4.88 V
+600×10−9s (52)
+Slew rate=8.13×106 V/s (53)
+The use of an operational amplifier capable of this performance in the analogue domain is
+impossible. Furthermore, the Gain Bandwidth Product (GBP) of operational amplifiers will
+affect the performance of the system. The maximum frequency the operating window previously
+defined is fmax. The maximum weight that the circuit can have is Gmax. As such, the GBP
+required for such a operational amplifier used in the summer is:
+GBP=f max⋅Gmax (54)
+40
+
+=== PDF PAGE 45 ===
+A. Sreekumar Part 1. Preamble
+With the maximum frequency that can be fired by the system being 400 kHz and the maximum
+weight in the SNN being 14, the required GBP is:
+GBP=400kHz×14.11=5.644MHz (55)
+For the neural network that was trained, the value of the GBP is not achievable by operational
+amplifiers that is within budget and widely avaliable for use by JLCPCB. As such, the pulse
+summer that was designed and works in simulation is not feasiable for implementation in the
+analogue domain.
+In order to resolve this issue, a pulse averager was considered. This would be the addi-
+tion of another capacitor as a integrator to the summer, such that the whole summer acts as a low
+pass filter. This would smooth the output of the summer, and make it viable for implementation
+using the LM1458, as the output of the summer does not need to change as rapidly as before.
+The integrator time constant was set by the 100 kΩ feedback resistor and a selected 10 nF
+capacitor. Their product gives τ=RC=(100 kΩ)(10 nF)=1 ms . The 10 nF capacitor was
+selected because it is widely available.
+Figure 29. Circuit Diagram for the proposed pulse summer.
+As these operational amplifiers are not widely available, the performance of the pulse summer
+could not be verified by being built on the bench. With the limited time avaliable, a summer
+was created using a 3.3nF capacitor to create a low pass filter. Two pulses, one of 400 kHz and
+another of 100 kHz were summed together. The results of this bench experiment are shown in
+Figure 30.
+41
+
+=== PDF PAGE 46 ===
+A. Sreekumar Part 1. Preamble
+Figure 30. Inconsistent pulse lengths observed with the RC filter.
+The inconsistent pulse widths (some pulses being longer than others) is a clear sign of the
+oversaturation. While this problem could potentially be resolved with further experimentation ,
+the deadline for the system meant that there was insufficent time to make tweaks to the training
+script to account for this unfeasability. As such, the SNN was not chosen to be implemented in
+the analogue domain.
+If this approach was continued, another surrogate gradient would need to be recorded,
+with this surrogate gradient not being equivalent due to an inability to create a pulse of the same
+shape as the output of the LIF neuron designed. As such, the simulation model would also need
+to be recreated, all of which could not be completed in the limited time avaliable.
+3.10 Hybrid Network
+In order to manage the time contraint and the GBP problems mentioned in section 3.10, the
+decision was made to rather use a hybrid neural network than a complete SNN.
+The hybrid network is a design that involves the MLP neurons being placed in the hid-
+den layer, with the LIF neurons in the output layers. The LUT that was created was used as the
+surrogate gradient to train the output layer neurons, with the saturated RELU function used as
+the gradient of the MLP neurons. The operational amplifiers would not be summing pulses,
+rather DC voltages where the GBP will not be a factor. All of the circuitry required to build
+this network has already been indepently verified, and as such sufficent confidence existed to
+consider this network feasible in the analogue domain. The value of the maximum weights, are
+kept from the training of the SNN.
+3.10.1 Training of the hybrid network
+The RELU MLP from the feasability simulation was converted into the hybrid neural network.
+The weights from that network were first loaded to all relevent weights. Subsequently, the
+network was trained for a further 20 epochs in order to adjust the weights for the specifications
+42
+
+=== PDF PAGE 47 ===
+A. Sreekumar Part 1. Preamble
+of the bench LIF neuron. The gradient used for the LIF function was equation 48.
+Using the results of the bench neuron (as shown in Figure 24), the frequency of the
+output spikes can be defined using a numerical approximation (midpoint approximation), with
+this being the gradient used for training. Surrogate gradient descent was then applied to train the
+remaining weights.
+The working window of the neuron was previously defined as 6.5V (the section of Fig-
+ure 24’s gradient is considered increasing). In these regions, the gradients between points
+fluctuate widely. In order to lower the effect of any comparator jitter (due to hysteresis) as
+well as to apply a safety factor such that the whole functionality of the neuron can stay in the
+increasing gradient sector of the network, the working window was further restricted to an
+operating window, as shown in Figure 31.
+2 3 4 5 6
+Summer output voltage (V), within the 1.7 V to 6.5 V working window
+1.9 V 4.2 V
+operating window
+101 kHz 297 kHz
+Figure 31. Operating window of the LIF neuron.
+In order to ensure that the output of all neurons to the output layer was around this voltage, layer
+normalisation (as defined by Diehl et al. [ 10] and used for the SNN) was used. Once again,
+values from the 99th and 1st percentile were used to calculate the change needed for the weights
+to reduce the effect of outliers. The equation used for the scaling is adapted from equation 25, as
+described by Reuckauer et al. [36] . The equations used were:
+[V tgt
+lo ,V tgt
+hi ]=[1.9,4.2]V:
+s= V tgt
+hi −Vtgt
+lo
+P99(zℓ)−P1(zℓ) ,(56)
+δ=V tgt
+lo −sℓ P1(zℓ),(57)
+where s refers to a multiplicative scale and δ refers to an additive value. These factors were
+applied using the formula:
+z=s(W x+b hw)+δ=(sW)
+⌟⟨⟨⟪rl⟫⌟⟨l⟪4
+Wdep
+x+(sb+δ)
+⌟⟨⟨⟪rl⟫l⟩⟩⟪⌟⟪⟨⟨⟪rl⟫mo⟨⌟⟪⟨⟨⟪rl⟫mo⟨⌟⟪⟨⟨⟪rl⟫mo⟨⌟⟪⟨⟨⟪rl⟫mo⟨⌟⟪⟨⟨⟪rl⟫mo⟨⌟⟪⟨⟨⟪rl⟫mo⟨⌟⟪⟨⟨⟪rl⟫mo⟨⌟⟪⟨⟨⟪rl⟫mo⟨⌟⟪⟨⟨⟪rl⟫mo⟨⌟⟪⟨⟨⟪rl⟫mo⟨⌟⟪⟨⟨⟪rl⟫mo⟨⌟⟨⟨⟪rl⟫m⟩⟨⌟⟪⟨⟨⟪rl⟫mo⟨⌟⟪⟨⟨⟪rl⟫mo⟨⌟⟪⟨⟨⟪rl⟫mo⟨⌟⟪⟨⟨⟪rl⟫mo⟨⌟⟪⟨⟨⟪rl⟫mo⟨⌟⟪⟨⟨⟪rl⟫mo⟨⌟⟪⟨⟨⟪rl⟫mo⟨⌟⟪⟨⟨⟪rl⟫mo⟨⌟⟪⟨⟨⟪rl⟫mo⟨⌟⟪⟨⟨⟪rl⟫mo⟨⌟⟪⟨⟨⟪rl⟫mo⟨⌟⟨⟨⟪rl⟫r⟩⟩⟩⟪
+bdep
+,(58)
+where z is the output of the summer, Wis the weight matrix, x is the inputs to the summer and b
+is the bias. The resulting weights and biases (denoted as Wdep and bdep) were then the deployed
+weights.
+A side effect of using the piecewise defined gradient is that the gradients fluctuate heavily, which
+can lead to massive changes or under changes of the weights every step, since this learning
+rate is constant. In order to solve this issue, PyTorch’s Adam Optimizer was used. The Adam
+43
+
+=== PDF PAGE 48 ===
+A. Sreekumar Part 1. Preamble
+Optimizer sets two factors used to change the learning rate that is used to train the network [37].
+The learning rate is set as:
+η=−α m
+p (59)
+Where alpha is the value that the learning rate is set to ( 1×10−4), m is the momentum of the
+Adam Optimizer [37] (the average gradient over the recent batches) and p is the per-parameter
+scaling (how big each outputs gradients typically is). This is the only use of a library function in
+the implementation, as there was insufficent time to implement the Adam optimizer from first
+principles.
+3.10.2 Optimal brain damage
+Methods of reducing the number of connections and components used were explored. The
+most efficent way to remove many connections at once is to remove an entire neuron from the
+network, which is refered to as optimal brain damage [ 2]. The effects of removing a neuron
+should be absorbed by the other weights and biases in the network. The removal of a neuron
+reduces the amount of resistors needed in the network by 27 resistors (16 inputs to the neuron,
+10 output weights, and the 1 bias weight) alongside all the components of the actual neuron.
+This process can only be done on the hidden layer neurons, as there must be 10 output layer
+neurons due to the 10 possible digits that a data entry can be classified into.
+Each neuron in the network was removed one at a time to find the one that will cause
+the lowest drop in accruacy, after which the network was trainined for 10 epochs to regain
+accuracy. This process was repeated until the network consisted of only 12 neurons. The results
+of this operation on the hybird neural network can be seen in Figure 32. The top x-axis refers to
+how many resistors will be in the final circuit, which decreases per neuron removed.
+Figure 32. Results of optimal brain damage on the hybrid neural network (on validation
+data).
+44
+
+=== PDF PAGE 49 ===
+A. Sreekumar Part 1. Preamble
+The drop in accuracy due to one neuron is minimal, and up to 2 neurons can be dropped without
+an significant impact in accuracy (once the expected 10% drop is accounted for ). This will keep
+the number of weights down from 280 to 226.
+The reduction of weights and other components will not however reduce the size of the
+final network (and the PCB size). The number of distinct resistor values dropped due to this is
+expected to be minimal (these resistors will be used as weights between other neurons). This
+process will not create sufficent cost reductions for it to be considered viable (most of the cost of
+the PCB originates from the fee to load components onto the features). As such, the network
+with 20 neurons was chosen for implementation in the analogue domain.
+3.10.3 Resistor mapping
+The weights that were calculated during of the hybrid neural network were converted to resistor
+values using the following formula:
+Ri= 100k
+∣wi∣ (60)
+where wi is a weight and Ri is the resistor associated with that weight. The number of resistors
+to be placed could further be reduced by removing the lowest value weights (highest value
+resistors) and seeing it’s effect on accuracy. If all weights were implemmented, 280 resistors
+would be used to create the weights. To further reduce the number of resistors placed, all weights
+that require Ri>1MΩ were not used. The threshold was set at 1MΩ because the 1% tolerance at
+this resistance is equal to the RC value chosen during neuron design. The use of the threshold did
+not affect accuracy significantly(91.96% vs. 89.83%). This reduced the number of resistors to be
+placed down to 237 resistors (15% of resistors were removed without losing much accuracy).
+All experiments conducted was based on the network where these weights were removed.
+Bias values were modelled as a contant voltage with a weighted input to the summer.
+The weights and constant voltage used was calculated using the following formula:
+Vidle=100kΩ× Vrail
+Rbias
+(61)
+where Vrail is the voltage to which the bias value is connected too. This is varied for each bias
+in order to ensure maximum precision. The Vrail was calculated during the resistor mapping
+and alternated between 5V and 3.3V , with the value that produces the closest accuracy to the
+intended bias value being chosen as theV rail.
+E-Series values refer to the set series to which standard resistor values are organised
+into [38]. The notation for which series is an E-X where X is the number of resistors per decade.
+The higher X is, the lower the tolerance of the resistors will be. The resistors were mapped to the
+closest resistor based on the E-Series values. The ideal accuracy was 89.93%. The resulting
+accuracy is shown in the Table 7.
+45
+
+=== PDF PAGE 50 ===
+A. Sreekumar Part 1. Preamble
+Series Distinct values Mean snap error (%) Validation accuracy
+(%)
+E6 12 9.67 79.18
+E12 23 4.50 83.36
+E24 42 2.24 87.48
+E48 77 1.26 89.01
+E96 116 0.60 89.58
+Table 7. Accuracy after mapping every resistor to the nearest value in each E-series.
+E96 offered the higest accuracy, however E48 was not that far behind (only a 0.57% difference
+in accuracy). E48 components have a higher tolerance than E96 (2% vs 1%), which leads to
+more variation between boards. In order to increase the reliability of the system, E96 was chosen.
+However this resulted in over 153 distinct resistor values needing to be purchased, which would
+increase costs significantly. Instead of this, a tolerance was applied to every resistor to choose a
+neighbouring E96 resistor intead. This tolerance was swept to find an optimal tolerance, with the
+results presented in Table 8.
+Tolerance Distinct values Mean snap error (%) Validation accuracy
+(%)
+0% (plain E96) 116 0.60 89.58
+±2% 67 1.10 89.4
+±3% 50 1.70 89.00
+±5% 34 2.46 86.67
+±10% 20 4.93 82.50
+±20% 11 9.03 75.68
+Table 8. Merging neighbouring resistors to reduce the number of distinct resistors.
+The weights generated with a tolerance of±3%was chosen for implementation as a good tradeoff
+between accuracy and tolerance (only a 0.58% drop in accuracy in exchange for halving the
+number of distinct resistors). The use of this process effectively meant that E48 resistors were
+used in the end over E96 ones (1% tolerance plus a further 3% maximum tolerance).
+3.10.4 Hybrid network performance
+The class-wise validation results for the final hybrid network (on the test data that it was never
+exposed to previously) is shown as a confusion matrix in Figure 33, with the true digit being what
+the label of the digit was and the predicted digit being what the network classfied the data point as.
+Recall measures the proportion of true positives detected by the system for a particular
+class to the total samples of that class in the data as shown in equation 62. Precision refers to the
+proportion of true positives detected by the system to all classifications made into that particular
+class of the system, as shown in equation 63.
+Precision= T P
+T P+FP (62)
+Recall= T P
+T P+FN (63)
+46
+
+=== PDF PAGE 51 ===
+A. Sreekumar Part 1. Preamble
+For each class, TP, FP and FN denote true positives, false positives and false negatives, respect-
+ively.
+Figure 33. Confusion matrix for the final hybrid network.
+0 is the strongest output class while 8 is the second weakest , which is a property that is a part
+of the MNIST dataset, as confirmed by Sikar et al. [39]. The way the data is structured in the
+MNIST makes 8 the hardest digit to recognise intrinsically. There are two confusions that are
+symmetrical to each other: 2↔3 (63 against 62) and 4↔9 (28 against 22). This is also a
+property of the MNIST test dataset that is an issue found in larger neural networks, as such they
+cannot be expected to be corrected completely.
+Precision and recall trend in opposite directions. The two low recall digits ( 5 and 8)
+have high precision, as such they are missed rather than overclaimed. Digits 2 and 3 have high
+recall compared to their precision, which means other digits are being misclassfied into these
+classes. This is further shown in Table 9. Net flow refers to how many samples are misclassified
+into a output class minus the samples lost to other output classes. 0, 2 and 3 gain the most
+samples, while 5 and 8 lose most samples. It can be said that 8’s are classfied into 0 while 5 is
+classified into 2 and 3. This error is also a one way error. For example: 85 5’s are read as 2, but
+only 19 2’s are read as5’s. This suggests that the neuron is not activating in an expected manner
+47
+
+=== PDF PAGE 52 ===
+A. Sreekumar Part 1. Preamble
+and is thus under performing relative to the other neurons in the network. This is a property
+that can only be changed by changing the inputs to the network to correct this, but it cannot be
+done at this time. The count margin refers to the median margin between the output of a output
+neuron and it’s strongest rival.
+Digit 0 1 2 3 4 5 6 7 8 9
+Net
+flow
++90 +6 +75 +77 +14 −164 −60 +65 −133 +30
+Count
+margin
+51 57 21 20 34 16 25 29 18 24
+Table 9. Per-class performance
+While the margins presented in Table 9 are sufficent for a software simulation, the system’s
+accuracy could be affected by these low counting margins in the analogue domain by classifying
+into the second highest class due to analogue uncertainties that are instrinsic to the PCB
+implementation.
+The resistor snapped neural network was designed as a PCB, with the full list of resist-
+ors calculated found in Appendix E.
+3.10.5 Idle outputs of the system
+Due to the use of biases, the network will have an output when all of the inputs to it is 0. The
+output layer neurons for output classes 2, 6 and 7 will be firing spikes during this stage, and this
+is expected. The performance of the analogue neural network when no inputs are connected to it
+provides a good way to test the circuit’s functionality independent of the testing architecture.
+The outputs of the hidden-layer neurons in the idle state are listed in Table 10. Neur-
+ons with an output of 0 V are omitted. The equations were calulated using Equation
+61.
+Neuron Vidle
+2 6.310 V
+3 3.759 V
+4 2.008 V
+6 8.209 V
+7 9.56 V
+10 8.209 V
+Table 10. Hidden-layer neuron outputs in the idle state
+The weighted inputs contributing to output neuron 2 during idle operation are listed in Table 11.
+48
+
+=== PDF PAGE 53 ===
+A. Sreekumar Part 1. Preamble
+Source Weight Sign V
+2 698 kΩ − −0.9 V
+3 549 kΩ − −0.689 V
+4 462 kΩ − −0.44 V
+6 390 kΩ − −1.391 V
+10 105 kΩ + 7.818 V
+Bias 215 kΩ +3.3 V 1.58 V
+Table 11. Weighted inputs to output neuron 2 during idle operation
+The resulting summed output voltage is:
+Σ=5.919 V (64)
+The gradient between the two closed voltages measured (5.9V and 6.0V was measured) and used
+to approximate the output frequency. The equation used to calculate the corresponding frequency
+of every voltage is:
+f(V)≈f k+ fk+1−fk
+Vk+1−Vk
+(V−Vk),V k≤V≤Vk+1 (65)
+m42= 385.0−381.3
+6.0−5.9 =37.0 kHz/V,f(5.9)≈381.9 kHz.(66)
+As such, a output frequency of 381.9 kHz can be expected from neuron 2’s output. Similar
+calculations were done for the other neurons, with the calulations presented in Appendix B. The
+results for the other neurons provided output spikes with frequencies of 281.6 kHz for output
+neuron 6, and 369.8 kHz for output neuron 7.
+3.11 PCB Design
+3.11.1 Physcial stackup of the PCB
+The use of components that require various distinct operating voltages to functions (+15V and
+-15V for the operational amplifiers,+5V for the comparator and bias voltages and 3.3V for the
+comparator outputs and bias voltages) meant that routing all of these voltages on 2 layers would
+require a significantly larger PCB to route all traces used to power components . The amount of
+ground traces required to connect all the ground’s with one another would also increase the size
+of the circuit. In order to minimise the size of the final network PCB, it was designed as a 4-layer
+PCB. The use of the ground plane had the added benefit of increasing the signal integrity across
+all traces in the system [40]. It was placed in the second layer as the majority of components
+(sources of cross talk) is present there, and so the shielding offered by the ground plane was
+placed as close as possible to the source.
+The physical stackup of the PCB is shown in Figure 34. The top and bottom layers are
+used to route connections between components. The ground plane was placed in the second
+layer to prevent any noises from the power plane affecting the signals in the top layer (where
+most of the signals are routed on). The bottom plane has components in order to reduce PCB
+size. A few output layer traces were routed on the power routing plane to efficently use the space
+49
+
+=== PDF PAGE 54 ===
+A. Sreekumar Part 1. Preamble
+available without using too many vias.
+Figure 34. Physical stackup of the PCB.
+Routing power between components was done by routing traces to a thicker trace (referred to
+as the power trace) to which other traces connected, which has a width of 2mm to facilitate the
+higher current that will flow through these traces to power the components and biases used. All
+other connecting traces had a width of 0.2mm as the current draw should be minimal compared
+to the power trace.
+3.11.2 Resistor routing
+Each neuron would have a maximum of 17 (16 input and 1 bias) weights associated with it. As
+each weight is a resistor, finding a strategy to route connections between all of the weights and
+the neuron they feed is neccessary to efficently use the space available. The traces will also
+have to be routed such that traces on the same layer do not overlap. These constraints called
+for the development of a routing strategy that is represented in Figure 35. All weights in the
+same column are associated with the same input voltage, and the weights in the same row are
+associated with the same output summer that the weights feed. The small circles in the figure
+represent the vias used to swap between the layers.
+The red and yellow traces are located on the first layer (red layer in Figure 34) and the
+purple and green traces are on the bottom layer (blue layer in Figure 34). The red traces in
+Figure 35 is used to connect all weights that are associated with the same input voltages. The
+yellow traces are used to connect the weighted voltage to the relevent sign that it is associated
+with (positive or negative). The postive and negative traces are then connected to the relevent
+summers through the red traces that are routed in-between the weights. The traces are shown to
+jump over each other for visual clarity, however this does not reflect the behaviour of traces in
+the final circuit. An example of the strategy being used in the PCB design is shown in Figure 36.
+50
+
+=== PDF PAGE 55 ===
+A. Sreekumar Part 1. Preamble
+Figure 35. Example of how the traces between weights and neurons was done on the final
+network PCB.
+Figure 36. Example of the routing strategy on the PCB.
+3.11.3 Additional design information
+The PCB was designed using KiCAD. In order to make routing easier, the replicate layout
+plugin was used such that the routing of one neuron would be replicated for all other neurons,
+thus reducing the amount of repetitive routing that was required. The use of this plugin required
+the use of hierachical sheets in the schematic [41].
+51
+
+=== PDF PAGE 56 ===
+A. Sreekumar Part 1. Preamble
+All components were placed by JLCPCB through their Printed Circuit Board Assembly
+(PCBA), and as such the component footprints could be small as no components are hand
+soldered. This option allowed for further reduction of the PCB size. The weights are mostly
+footprints with 0603 resistors, however a few of the resistors were only available in bigger or
+smaller footprints, and as such specific weights had to have different sizes. All 1nF capacitors
+had 0201 footprints, and 100nF capacitors with a 0603 footprint was used at all voltage terminals
+of the operational amplifiers and the comparator. For further protection, at the pins where power
+enters the circuit, each of those pins have 2 decoupling capacitors, one at a 100nF and another at
+10uF to tune out fluctuations at both high and low frequencies [42].
+The components used in the analogue neural network are all discrete components or
+simple semi-conductors as specified . The full bill of materials of all components used, alongside
+their footprints, are found in Appendix E.
+The final circuit had a size of 202mm x 150mm with a total 573 components utillized.
+An image of the final PCB is shown in Figure 37.As a play on words of the synaptic arrays (an
+alternative term to the weight matrix), the system was named Synara.
+Figure 37. Final PCB.
+52
+
+=== PDF PAGE 57 ===
+A. Sreekumar Part 1. Preamble
+4. Results
+4.1 Summary of results achieved
+4.2 Qualification tests
+Qualification test 1: System Accuracy Measurement
+Objectives of the test or experiment
+Measure the accuracy of the analogue neural network on the MNIST test set to see if it meets
+the 75% specification set. The qualification test was done on both PCB’s manufractured to
+increase the statistical validity of the test. All uses of the word circuit in this section refer to
+the analogue neural network.
+Equipment used
+• 2x power supplies to supply +15 V , -15 V , 5 V and 3.3 V . Gwinstek GPE-3323 DC
+power supplies were used to get the results.
+• DAC60516RUYT
+• ESP32
+Test setup and experimental parameters
+The detailed design of the test setup (including the circuit holder, the DAC operation and
+communication and the firmware in the ESP32’s) is in Appendix C. The details below are a
+summary.
+1. The analogue neural network was attached to the circuit holder.
+2. The stand that holds the two ESP32 was attached above the circuit.
+3. The grounds of the ESP32s, DAC module and the circuit were connected.
+4. The DAC’s SPI pins were connected to the ESP32.
+5. 3.3V , 5V and±15V supplies were connected to the circuit in the order specified.
+6. The outputs of the DAC were connected as inputs to the circuit.
+Two results are considered close when the gap between the winning class and the output class
+that had the second highest output is less than 10% of the winning class’s output. 10% was
+chosen as the difference between the outputs is an order of magnitude of the winner. These
+outputs are considered independent events, and their classifation between classes is considered
+to have an equal probability. The metrics used to verify system robustness and statistical
+validity is defined below, with the metrics being averaged over 3 runs for both PCB’s:
+53
+
+=== PDF PAGE 58 ===
+A. Sreekumar Part 1. Preamble
+1. Accuracy: The ratio of correct predictions to the total number of data points in the
+MNIST test dataset (10,000).
+2. Tied measurements: The number of samples for which two output neurons produce the
+same frequency.
+3. Accuracy after worst-case drop: The accuracy assuming all close results are classified
+incorrectly.
+4. Accuracy after best-case drop: The accuracy assuming all close results are classified
+correctly.
+5. Median gap between the winning class and the second-highest output class.
+6. Mean gap between the winning class and the second-highest output class.
+Metrics for the software model will be included in the results for easier comparison between
+the models. Metrics for the model was averaged over 100 runs due to each run taking less time
+to complete.
+Steps followed in the test or experiment
+Details regarding the design of the testing system can be found in Appendix C. The general
+data flow is shown in Figure 38.
+1. The laptop sends the voltages the DAC needs to produce for a specific data point in the
+MNIST test dataset to the ESP32 which is used to communicate the magnitudes of the
+voltages to the DAC using Serial Peripheral Interface (SPI) communication protocol.
+2. The DAC produces these voltages as inputs to the analogue neural network.
+3. A short delay of 20ms is added to let the DAC voltages settle to their new value and for
+the output neurons to lose all stored charge. The ESP32 that is reading the pulse stores
+the results for 100ms.
+4. The results recorded during the interval of intrest is transmitted back to the laptop for
+storage. A 20ms transfer delay is added to let the DAC voltage settle.
+5. The DAC output is changed to the next datapoint.
+54
+
+=== PDF PAGE 59 ===
+A. Sreekumar Part 1. Preamble
+Figure 38. Data flow of the system accuracy test.
+This is done for all 10000 datapoints in the MNIST dataset. The duration that the test lasted
+was 2000s as each datapoint is expected to take 200ms to process (including delays).
+Results or measurementsThe confusion matrix is used to present the results of the system,
+with the confusion matrix corresponding to the run that had the lowest accuracy (of 87.82%)
+presented in order to show the worst case performance of the system. The observations derived
+from the confusion matrices stayed consistent between each run. The confusion matrices of all
+other runs used to create the average accuracy is presented in Appendix D. Table ?? shows the
+difference in performance of each neuron between hardware and software.
+55
+
+=== PDF PAGE 60 ===
+A. Sreekumar Part 1. Preamble
+Figure 39. Confusion matrix for the worst performing run.
+Digit Difference (pp)
+0 -0.2
+1 -0.4
+2 -2.8
+3 -0.2
+4 -1.1
+5 -3.0
+6 -8.6
+7 1.6
+8 -7.8
+9 0.7
+Table 13. Per-class accuracy difference (hardware minus software).
+Observations
+1. The system identifies 1 best overall. It is the only class above 96% in both precision and
+recall.
+2. The highest recall belongs to 0 at 98.9%, and the highest precision to 6 at 97.1%.
+56
+
+=== PDF PAGE 61 ===
+A. Sreekumar Part 1. Preamble
+3. The 5 and 8 are the worst performing by recall, at 72.1% and 73.0%, with 8 being
+misclassified as 9 (99 rows) and 0 (59 rows), and 5 as 3 (85 rows) and 2 (82 rows).
+4. Classes 6 and 8 combine high precision with low recall, at 97.1/81.1% and 95.1/73.0%,
+while class 0 shows the reverse at 84.2/98.9%.
+5. Neuron 2 absorbs the most false positives at 237 and records the lowest precision at
+78.4%, followed by neuron 3 at 204.
+6. Classes 5, 8 and 6 account for 693 of the 1218 misclassified rows between them.
+7. The same two classes are weakest in both the measured and the simulated matrix, 5 and
+8 ranking last and second-last in each.
+8. Class 6 is the single structural difference between the digital implementation and the
+circuit, falling 8.6% from 89.7% to 81.1% and moving from fifth place to eighth.
+9. Class 8 loses a comparable 7.8% but keeps its ranking, while classes 0, 1 and 3 agree to
+within 0.4% and classes 7 and 9 are better on hardware by 1.6% and 0.7%.
+10. Neurons 7, 9 and 3 catch almost every genuine instance of their own class, reaching
+89–99 % recall, but they also collect the rows that the higher-onset neurons abandon,
+which drags their precision down to 81–85 %.
+11. Neurons 1 and 4 are the only two neurons on the board whose precision and recall are
+close to one another (% — 98.1/96.7 % and 93.3/92.6 % respectively).
+12. Neuron 2 is the only neuron that fails in both directions, recording the lowest precision
+in the array at 78.4 % alongside a below-average 83.2 % recall and 237 false positives.
+13. One entry (MNIST 9478, which has a true label of 5) is not classified to any output. On
+some runs (2 out of the 6 conducted), entry 6635 is classified as a tie between 2 and 3.
+Statistical Analysis
+Table 14 presents the results of all six measured hardware runs, their overall mean, and the
+as-built software model (averaged over 10 runs) for comparison.
+Board 1 Board 2 Hardware Software
+Metric r1 r2 r3 r1 r2 r3 mean mean
+Accuracy (%) 88.49 87.92 87.82 88.55 88.48 88.59 88.31 89.00
+Top-2 accuracy (%) 96.09 95.92 95.88 96.10 96.09 96.13 96.04 96.61
+Tie rate (%) 0.02 0.00 0.01 0.00 0.01 0.00 0.01 0.92
+Worst-case drop (pp) -5.33 -5.56 -5.45 -5.46 -5.45 -5.45 -5.45 -5.27
+Best-case improvement (pp) 4.46 4.89 4.90 4.74 4.74 4.74 4.75 5.28
+Median gap (% of winner) 36.00 35.45 35.41 35.76 35.77 35.79 35.70 32.60
+Mean gap (% of winner) 40.83 40.36 40.34 40.69 40.71 40.73 40.61 35.04
+Table 14. Headline metrics for the six measured sweeps.
+Qualification test 2: Input number verification
+57
+
+=== PDF PAGE 62 ===
+A. Sreekumar Part 1. Preamble
+Objectives of the test or experiment
+Verify that the analogue neural network has a maximum of 16 inputs.
+Results or measurementsThe DAC used to input voltages only has a maximum of 16 inputs
+[20]. The Analogue neural network only has enough header pins to accept 16 inputs, and
+the inputs specified is in Table 2. The DAC breakout board and its output pins are shown in
+Figure 40.
+Figure 40. DAC breakout board showing the analogue output pins.
+Qualification test 3: Using only simple components
+Objectives of the test or experiment
+Ensure that components at a higher level of integration are not used to create the Analogue
+Neural Network.
+Results or measurementsThe component list for the MLP neuron is:
+• Resistors
+• Capacitors
+• Operational amplifier
+• Diodes
+The additional components used for every LIF neuron are:
+• Comparator
+• Switch
+58
+
+=== PDF PAGE 63 ===
+A. Sreekumar Part 1. Preamble
+The complete bill of materials regarding the specific components alongside their LCSC numbers
+[43] (used to cross reference with the PCB manufactuer for PCBA) is presented in Appendix
+E.
+59
+
+=== PDF PAGE 64 ===
+A. Sreekumar Part 1. Preamble
+5. Discussion
+5.1 Critical evaluation of the design
+5.1.1 Interpretation of results
+Throughout the development of the hybrid network, the inital accuracy achieved in software
+was 91.08%, with this decreasing to 89.61% after every weight was mapped to resistors. While
+a drop of 10% was expected when converting from the software simulation, this proved not to
+be the case as the final network achieved an average accuracy of 88.3%, which is only a drop
+0f 0.9%. This accuracy is 13.3% higher than the 75% accuracy that was aimed for, as such the
+accuracy requirement can be met. These requirements were met alongside having 16 inputs.
+The only components used to create the network were simple semi-conductors and discrete
+components. As such, all requirements specified in the proposal are met.
+The high accuracy achieved also validates the method used to train the hybird net-
+work. The process of using a bench neuron’s performance under different voltages to create a
+custom gradient allowed for easier way to absorb non-idealities without having to account for
+every single one individially. Not all idealities were accounted for as the circuit’s accuracy
+did still drop, however this can be attributed to differences between a breadboard and PCB.
+Breadboard’s have more parasitic capacitance that can affect output frequencies, but this is not
+expected to have played a major role as the less capacitance should impact every neuron.
+This behaviour can be better explained in the process through which the surrogate
+gradient was created. Due to a lack of components and time, only one bench neuron was
+used to create the surrogate gradient. This result can not be considered statically significant
+since differeing components can lead to deviances [44]. A more accurate system could have
+possibly been acheived if the surrogate gradient was created using the behaviour of multiple
+neurons and using the average performance to create the gradient to account for variations in
+component behaviour. There could also be differences in performance between each neuron
+(due to the different components used). This violates a condition assumed by the software
+simlulation: that every neuron had identical performance.
+The operating window of the PCB neuron is higher than that of the breadboard neuron, which
+is known due to the fact that for output classes in the software simulation where there were
+very low frequency outputs (around 70kHz), the hardware equivalent prodcued no output
+for those same data points. The use of the operating window to ensure every neuron had
+some kind of output for every input provided to it did not hold in the circuit. This may be
+due to the component tolerances mentioned before. A stronger candidate emerges when
+acknowledging that the breadboard neuron was made using 10% tolerance resistors, the PCB
+neurons were made using 1% tolerance. The variation in resistor value shift the operating
+window caused by changes to the Rl and Ri (as denoted in Figure) moved the operating
+window. The component tolerances of those resistors resulted in the operating window
+being shifted higher. This is further backed up by the the hardware output frequencies being
+60
+
+=== PDF PAGE 65 ===
+A. Sreekumar Part 1. Preamble
+lower in magnitude than their software equivalents (however as every output frequency is
+lower, the ordering is not affected). Measuring the operating window of the neuron on
+PCB and using that as the surrogate gradient could have increased the network accuracy further.
+Results between boards is shown in Table 14. As all discrete components used (ex-
+cept the decoupling capacitors) had a tolerance of 1% was used to create the circuit, not much
+board-to-board variation was expected. The monte carlo simulations conducted affirm this, as
+all accuracies for the board’s sit in an interval of 0.77%. These differences can be attributed to
+component differences and different operating behvaiour, which can be expected [44]. Another
+possible difference is that tolerances of the cermaic capacitors used vary as temperature
+changes, so a board that has been on for longer might have slightly worse performance [45].
+The design can be considered consistent acorss boards due to the low difference in accuracy
+between them. The other metrics measured are also consistent amongst the boards (in an
+interval of less than 0.1%) is further proof of consistency.
+The little variation between boards is due to data points that have close results (defined as
+when the gap between the winning class and the output class that had the second highest
+output is less than 10% of the winning class’s output) being classified into other outputs.
+These can be due to temperature differences (the amount of time for which the board was on)
+or other analougue non-idelaties (such as power supply ripple) that caused small variations in
+the spike count that lead to a different classification.
+The assumption that every close result is misclassified (which has a low probability
+assuming that the classification of each entry is independent of each other) was used to
+calauclate the worst case accuracy drop (shown in Table 14). The worst drop in accuracy is
+5.56%, and the resulting accuracy would be 82.36%, which is still above system specifications.
+The inverse metric (best case improvement) has a maximum value of 4.9%, which shows that
+the system accuracy could rise as high as 92.72%.
+The top 2 accuracy metric (shown in Table 14) being very high (averaged around
+96.04%) shows that when the circuit is wrong, the second highest output is most often the
+actual answer. This means that when the circuit is wrong, most times it is meaningfully close
+to the right answer.
+The circuit has outputs were there is a tie, which did also occur in the software. The
+ties are not a major issue since the application is met, but can mostly be attributed to the
+preprocessing rather than the network design. Ties could be falsely indentified by the testing
+system (the ESP pulse counting does have the granularity to detect minute differences).
+Across all boards, the MNIST test entry 9478 is not classified into any output. The
+entry is a 5, and is shown in Figure 41. The output of the output layer summers is shown in
+Table 15. The highest output of it’s summer in software is 1.9707V , which is 0.07V above the
+original operating window. The shifted operating window of the neurons is expected to be the
+reason beind this behaviour, causing all relevent voltages to be outside the operating window,
+and as such no output is provided.
+61
+
+=== PDF PAGE 66 ===
+A. Sreekumar Part 1. Preamble
+0 1 2 3 4 5 6 7 8 9
+V2 (V) 1.164 1.010 1.915 1.161 1.524 1.880 0.534 1.323 1.971 0.424
+Rate (kHz) 0 0 102.4 0 0 99.3 0 0 105.8 0
+Table 15. Simulated output stage for MNIST test entry 9478 (label 5).
+Figure 41. MNIST test entry 9478 (label 5).
+The difference in median and mean gap (as shown in Table 14) shows that the gap in frequency
+of the output spikes is right skewed data (meaning that more results are towards the higher end
+[46]). The right skewed nature of the data makes it easier to differentiate between the correct
+output, and eases the accuracy requirement needed of the testing system. This could explain
+the high accuracy as there is less opportunity to misclassify as the gap is most often large.
+The mean and median are higher in the hardware implementation than in the software
+implementation, meaning it is easier for the hardware to differentiate between outputs that the
+software. This could contribute to the little accuracy loss seen (there are less "close" results
+that could be misclassified easily with the test mechanism).
+The difference in accuracy per digit (as shown in Table 13) shows that the most af-
+fected class is 8 and 6, both of which have their outputs reduced by 8.6% and 7.8% respectively.
+This result is also prevelent across the 2 boards, which points at a reason greater than
+component differences, rather something more intrinsic with the design or conversion that
+caused this. The reason was found to be the shifted operating window. Classes 6 and 8
+have a larger share of their firing events close to the limits of the operating window when
+the class should be 6 or 8, which causes the misclassification. The only method to solve
+this problem would be to remeasure the operating window and reorder the board, but the
+accuracy gained from this is not substainsal enough (increase of 1.7%) for this to be considered.
+62
+
+=== PDF PAGE 67 ===
+A. Sreekumar Part 1. Preamble
+Neuron 0 has a high recall of 98.9% but a low precison of 84.2% (as shown in Fig-
+ure 39). The precison of the neuron decreased in the conversion (the digital simulation had
+a precison of 91.8 %, as shown in Figure 8). The decrease in percision is not due to the
+misperformance of neuorn 0, but rather the lack of decrease in recall of neuron 6 and 8, with
+alot of these entries being absorbed by neuron 0.
+Neuron 1 is the best performing neuron, with a high precision and recall (98.1% and
+96.7% respectively, as shown in Figure 39). The metrics are very similar to the digital
+simulation’s performance (97.9% for precision and 98.4% for recall, as shown in Figure 8).
+Neuron 4 has a precision of 92.6% and a recall of 93.3% (as shown in Figure 39), which
+makes it very similar to Neuron 1. Both of these neurons performs similar to the software
+model (as shown in Figure 8).
+Neuron 2’s precision and recall is both very low (78.4% and 83.2%, as shown in Fig-
+ure 39). 2 is the only digit ro be classified into every other digit, which is highly unusal. This
+should be attributed to the selection of input features (in both hardware and software, as shown
+in Figure 8 ), with the permutation that gave the network the highest accuracy affecting 2’s
+classification the most. Solving this low performance would involve having to chose a new set
+of inputs, but that would lower overall network accuracy and can not be done at this stage.
+Neuron 2’s recall and precision dropped as other classes were absorbed into it, with a high
+concentraion of 3’s, which is the same behaviour as the digital implementation.
+Neuron 3 has a precision of 81.5% and a recall of 89.2%(as shown in Figure 39).
+Most times 3’s are identifies correctly (shown by the high recall). The class does absorb alot of
+neuron2’s outputs, which is due the input features selected. Many 5’s were classified as 3 as
+shown in Figure 8, which can be attributed to the input combinations used.
+Neuron 5 has a precision of 91.2% and a recall of 72.1%(as shown in Figure 39) (,
+as shown in Figure 8). The low recall is due to the misidentification to neurons 2 and 3, which
+is due to the input features selected. The high precision suggests that when the prediction of 5
+is made, the network is mostly correct.
+Neuron 7 has a precision 85.1% and a recall of 96.1% (as shown in Figure 39). Neuron 9 has a
+precision of 82.9% and a recall of 89.7%(as shown in Figure 39). These two neurons can be
+thought of as stable performers that did not have a significant difference between the hardware
+confusion matrix and the software one(as shown in Figure 8).
+Neuron 6 has a precision of 97.1%, but a very low recall of 81.1% (as shown in Fig-
+ure 39). This is a significant differences from the recall of the neuron in the digital simulation (
+85.7% precision and 89.7% recall, as shown in Figure 8). Neuron 8 shares the same behaviour:
+with a 95.11% precision and a 73% recall (as shown in Figure 39) in hardware. This is
+compared to the software precision of 93.6% and a recall of 80.8% (as shown in Figure 8).
+In both cases, the recall is going up because the number of total samples identified as 8 is
+decreasing.
+The neurons above is the most affected by the practice of using one neuron to ap-
+proximate the performance of all neurons. Of the 181 sixes and 263 eights the board
+63
+
+=== PDF PAGE 68 ===
+A. Sreekumar Part 1. Preamble
+misclassifies, 80 and 72 respectively are errors the board introduced. Those introduced errors
+are similar: the median margin between the winning and runner-up outputs is 5.6% and 6.6%
+of the winner. This can be atrributed to component tolerances and the approximation being
+inaccurate for these 2 neurons in particular. Neuron 8 is further affected by the fact that neural
+networks trained with the MNIST dataset are inherently bad at identifying 8’s [39].
+Table 16 compares the measured MNIST accuracy of this network with other ana-
+logue neural networks that were trained with the MNIST. Accuracies reported are collected
+from physical hardware. The networks that acheieved a higher accuracy have the full 784
+inputs of the MNIST that could boost their accuracy and they used more complex components
+or developed a network using transistor levels. The size of the network for Yan et al. [7] and
+Ashragar et al. [ 12] used considerably larger and more complex networks to achieve their
+higher accuracy. The network is noted to perform better than networks that were much more
+complex and worked at a transistor level. This can be attributed to the input preprocessing
+techniques used (Ye et al. [47] used a compressed network which could lower their accuracy).
+Work Hardware Network MNIST input Accuracy
+(%)
+Yaoet al.[7] Memristor arrays, 8×2048 cells 5-layer CNN 28×28 raw 96.19
+Asgharet al.[12] 180 nm CMOS chip, 3.6 mm2 core 81–30–20–10 SNN 9×9 compressed 94.66
+Kianiet al.[48] Two 128×64 crossbars, 64 ReLUs 2-layer perceptron 28×28 raw 93.63
+Huet al.[49] 128×64 Ta/HfO 2 1T1M array Single layer 28×28 raw 89.90
+This implement-
+ation (Synara)
+Discrete op-amps, E96 resistors 16–10–10, spiking out 16 features 88.31
+Yeet al.
+(chip) [47]
+180 nm CMOS, 1.7 mm2 die 49–10–10 FCNN 7×7 compressed 87.64
+Yeet al.(sys-
+tem) [47]
+Discrete 1 % resistors, 8-layer PCB 49–10–10 FCNN 7×7 compressed 87.52
+Table 16. Measured analogue hardware on MNIST.
+The system’s results show that it performs at a similar level of magnitude to some of the
+best performing analogue neural networks. With the design contraints placed, this result is
+significant. Any improvements to this accuracy would require more inputs to the system or a
+larger neural network.
+5.1.2 Critical evaluation
+The LIF neuron developed in this imWhile this may appear as a redundant structure, the LIF
+neuron has an advantage in its ability to interface with external structures. If the outputs can
+be converted to the digital domain more easily, the network can be used in edge computing
+applications and it makes it easier to present the outputs of the network to a user (without
+needing a oscilloscope, as Koen’s [4] system required). This can make the use of LIF neurons
+more attractive for use in a subsystem.
+The methodology of building only 1 LIF neuron on the bench before deeming it functional for
+use is not statistically valid. The importance of that result required greater experimentation to
+show the validity of it’s performance before scaling the prototype.
+The need to use 2 power supplies and 4 distinct voltage sources to operate the analogue neural
+network makes it more cumbersome to use, this can be reduced to one power supply by creating
+64
+
+=== PDF PAGE 69 ===
+A. Sreekumar Part 1. Preamble
+appropriate reference voltages for 5V and 3.3V from +15V .
+5.1.3 Unsolved problems
+The summer that was completed for the LIF neuron was not verfied due to time constraints, and
+this should be solved if a future project hopes to implement a full SNN for digit recognition.
+5.1.4 Strong points of the design
+The design is a proof of concept for the LIF neuron in the analogue domain using discrete
+components and simple semi-conductors shows that a SNN in the analogue domain is feasiable.
+The methodology of creating a surrogate gradient using the performance of the neuron is one
+that can be used during the designs of other analogue SNN’s or neural networks in general.
+This decision meant that there would be less deviation between the system and the software
+simulation without having to explictly account for each analogue non-ideality in the creation
+of the simulation (it was all represented in the surrogate gradient, and the saturated RELU
+used to train the MLP).
+The outputs of the system stay within digital logic levels, which makes converting
+the outputs from the analogue domain to the digital one easier (which was done by the
+testing system designed). This increase in interfaceability shows that SNN’s or Hybrid
+neural networks such as this one should rather be used when using the system for real-world
+applications due to the range of their voltage output. This methodology of using LIF neurons at
+just the output layers can be also be considered for use in other analogue neural networks.The
+increased interfacability meant that the entire dataset could be run through the network with
+relative ease and a result could be measured outright (as compared to Koen9 who was not able
+to run the entire dataset through his circuit due to a lack of time).
+The circuit size was minimised through efficent routing techniques and double sided
+component placement (alongside the use of a ground plane), with the routing technique used
+being a solution for other neural networks to efficently route large amounts of weights.
+The system is able to acheive an accuracy of at least one order or magnitude above
+the specifications of the system. The result was also at similar levels of magnitude to
+comparable ones made in literature that had more inputs and were larger in neuron size and
+number of weights.
+5.1.5 Expected failure conditions
+If the PCB faces significant damage, it is expected to stop working. If the incorrect voltage is
+provided to power the components (higher than specified at the relevent input), the components
+will be damaged and stop functioning. Swapping the +15V and -15V inputs to the system will
+cause significant damage and can result in the system no longer functioning due to all of the
+65
+
+=== PDF PAGE 70 ===
+A. Sreekumar Part 1. Preamble
+operational amplifiers using being damaged.
+5.2 Considerations in the design
+5.2.1 Design ergonomics
+The system was designed with the intension of minimising the circuit size to make it easier to
+handle. Mounting holds was added to the circuit to keep it stable during testing and prevent
+any movement that can affect measurement. The design of a test system capable of interfacing
+with the system makes it easier for an external user to use the circuit.
+The use of ground planes results in the amount of traces in the circuit to be minim-
+ised as all it needs is a small trace and a via to make a ground connection. This design decision
+further minimised the size of the circuit.
+The system was designed with sufficent ground connections avaliable such that every
+power supply pin and their relevent ground (along with the connections for the testing
+system) could be made without needing the use of a breakout board. One was still used in
+the testing of the system in order to verify the voltages going into the system to prevent damage.
+All inputs and outputs are labelled clearly to prevent any singals being routed to the
+wrong pin.
+A base for the circuit was designed using pepg material in order to minimise touching the
+circuit with human hands.
+5.2.2 Health and safety
+The system itself must not inherently have health or safety issues due to the user having
+minimal interactions with the system after it is set-up, as the testing architecture is used to
+interface with the system. The use of FR4 material to create the PCB means that the circuit
+has a degree of fire resistance as FR4 is a flame retardant [50].
+User’s are adviced to not drop the circuit on any part of themselves to avoid any possible
+injuries.
+5.2.3 Environmental impact
+The system does not have any major impacts on the environment during use. In the event
+that the circuit becomes decommisioned, it should be desposed carefully such that it can be
+recycled for minimal wastage.
+66
+
+=== PDF PAGE 71 ===
+A. Sreekumar Part 1. Preamble
+5.2.4 Social and legal impact
+The system does not have any legal impact as digital equivalents of the network are used
+without any legal ramifcations. If any changes are made to the system such that it’s size is
+decreased (as done by Asghar et al. [ 12]), analogue neural networks can be considered to
+combine the data from many sensors to place models in locations where their is not enough
+space for large amounts of compute.
+5.2.5 Ethics clearance
+There was no need for ethics clearance in the use of this system as all training and testing data
+used was part of the public MNIST dataset.
+67
+
+=== PDF PAGE 72 ===
+A. Sreekumar Part 1. Preamble
+6. Conclusion
+6.1 Summary of the work completed
+This report describes the implementation of an Analogue Neural Network used for digit
+recognition. A literature survey was conducted to examine previous implementation of the
+network and understand the complexity of the project. 16 inputs were chosen out of a possible
+23 through a greedy search to determine the ideal permuations of inputs to prioirtise accuracy.
+Networks with RELU, tanh and sigmoid activation functions, alongside a SNN were simulated
+in software to determine which proved most feasiable for implementation in the analogue
+domain. The SNN was chosen for implementation.
+An LIF neuron was designed, simulated using LT-Spice and built to see the feasibil-
+ity of the SNN. The performance of this neuron was used to create a surrogate gradient for
+the SNN. A neuron design was finalised and a digital SNN was trained using the analogue
+non-idealities. Pulse summing concerns (caused by a time contraint) meant that it could not be
+implemented properly. The decision was made to switch to the hybrid neural network that
+was a combination of a MLP neuron and the proposed LIF neuron. The hybrid network was
+converted trained and its weights were converted to equivalent resistor values. While network
+size reduction techniques were investigated, the student did not use them due to the impact on
+cost of the PCB being negligiable. The network was made as a PCB (which was designed
+using KiCAD) and manufactured by JLCPCB. The accuracy of the network was measured to
+be 88.3%. The system performs most strongly with identifying 1’s and 4’s, with the worst
+performing digits being 5.
+The final circuit was tested using a test system that was specifically designed for this
+purpose, which is shown in Appendix C. The list of all components used to create the circuit is
+in Appendix E.
+6.2 Summary of observations and findings
+The student was able to create a analogue neural network that met The methodology used by
+the student to pick the correct features for use in the analogue neural network is a technique
+that can be used for many other optimization problems where the number of inputs of a system
+needs to be reduced.
+The designed network was able to exceed the accuracy specified (88.3% vs 75%) while adhering
+to the other design contraints.
+The project shows that a LIF neuron can be designed using simple semiconductors and discrete
+components such that it can be used to create a full SNN.
+The student has met all relevent requirements specified in the project proposal.
+68
+
+=== PDF PAGE 73 ===
+A. Sreekumar Part 1. Preamble
+6.3 Contribution
+The student was able to find methods to reduce input dimensionality such that the accuracy
+specified could be met despite a 97% decrease in inputs (when compared to the MNIST
+dataset). The student designed and verified an LIF neuron from the approved list of discrete
+components and simple semiconductors . The student also created a custom surrogate gradient
+based on the behaviour of the created neuron that can be used for training, which is a simplier
+way to account for analogue non-idealities than having to account for each one in a simulation,
+as such making the simulation closer to the analogue network without additional challenges.
+The student developed routing methods for weights such that the amount of space can be
+minimised. The students design improved on the previous implementation of the system [4] by
+making all outputs readable by a microcontroller, which makes the system easier to interface
+with.
+Despite not being able to complete the SNN, the student was able to complete a
+design for a pulse summer that could make it’s implemntation feasible and can be built upon
+for future implementations should another student attempt to create a complete SNN in the
+analogue domain.
+6.4 Suggestions for future work
+The next step in taking this project forward is to the system is to create a full SNN. The
+proposed design can be improved in order to account for pulse summing that the neuron would
+be faced with. The proposed use of a low pass filter should be verified and then implemented
+to create a new pulse summer that can work with the designed LIF neuron, or to improve it for
+better performance in the analogue domain.
+Another implementation of the project can be considered where the RELU activation
+function used by Koen [4] is replaced with the sigmoid function as described by Chabane et
+al.[8] for the creation of a MLP neural network that is sufficently different from both previous
+implementations of the system. This is a potential undergraduate project that a future student
+could do in the time allocated to the final year project.
+It must be noted that any analogue neural network that is expected to be used in in-
+dustry would need to be implemented at a transistor level (PMOS and NMOS level, an
+example of which was made by Asghar et al. [12]). This would make the additional mobility
+offered by the implementation of a neural network in the analogue network meaningful, and
+the small footprint would open up the use of such systems in other devices.
+The use of the QMNIST instead of the MNIST can also be considered [ 51]. The
+QMNIST is the MNIST with more samples that contain more variety. Future implementation
+can use QMNIST instead of MNIST in hopes that it can increase accuracy further. Training
+using a more "complex" dataset means that performance from additional datapoints that are
+collected will also increase.
+69
+
+=== PDF PAGE 74 ===
+A. Sreekumar Part 1. Preamble
+The offline training of the system is a issue as this would require a new neural net-
+work to be developed if the dataset becomes outdated. The inability to change the weights
+after deployment can be solved by the use of memistors, which are potentiometers whose
+values can be tuned electrically [52]. Memistors will however prove difficult to tune due to
+the inherent asymmetry of the memistor [52] and the non-linearity of the conductance of the
+memistor makes tuning it to a particular value difficult [52].
+70
+
+=== PDF PAGE 75 ===
+A. Sreekumar Part 1. Preamble
+7. References
+[1] A. Krogh, “What are artificial neural networks?”Nature Biotechnol., vol. 26, no. 2, pp.
+195–197, Feb. 2008.
+[2] S. J. Russell and P. Norvig,Artificial Intelligence: A Modern Approach, 3rd ed. Harlow,
+UK: Pearson Education, 2016.
+[3] J. P. Agnelli, A. Çöl, M. Lassas, R. Murthy, M. Santacesaria, and S. Siltanen, “Classification
+of stroke using neural networks in electrical impedance tomography,”Inverse Problems,
+vol. 36, no. 11, p. 115008, Nov. 2020.
+[4] R. Koen, “Neural network analogue implementation,” Department of Electrical, Electronic
+and Computer Engineering, University of Pretoria, Pretoria, South Africa, EPR400 Project
+Report, Nov. 2022.
+[5] J. K. Eshraghian, M. Ward, E. O. Neftci, X. Wang, G. Lenz, G. Dwivedi, M. Bennamoun,
+D. S. Jeong, and W. D. Lu, “Training spiking neural networks using lessons from deep
+learning,”Proceedings of the IEEE, vol. 111, no. 9, pp. 1016–1054, Sep. 2023.
+[6] C. D. Schuman, T. E. Potok, R. M. Patton, J. D. Birdwell, M. E. Dean, G. S. Rose,
+and J. S. Plank, “A survey of neuromorphic computing and neural networks in hardware,”
+arXiv:1705.06963, 2017.
+[7] P. Yao, H. Wu, B. Gao, J. Tang, Q. Zhang, W. Zhang, J. J. Yang, and H. Qian, “Fully
+hardware-implemented memristor convolutional neural network,”Nature, vol. 577, no.
+7792, pp. 641–646, Jan. 2020.
+[8] L. T. Chabane, D.-K. G. Pham, P. Chollet, and P. Desgreys, “Design method of analog
+sigmoid function and its approximate derivative,” in2021 XXXVI Conference on Design of
+Circuits and Integrated Systems (DCIS), 2021, pp. 1–5.
+[9] Y . Li, S. Deng, X. Dong, R. Gong, and S. Gu, “A free lunch from ANN: Towards efficient,
+accurate spiking neural networks calibration,” inProceedings of the 38th International
+Conference on Machine Learning, ser. Proceedings of Machine Learning Research, vol.
+139. PMLR, 2021, pp. 6316–6325.
+[10] P. U. Diehl, D. Neil, J. Binas, M. Cook, S.-C. Liu, and M. Pfeiffer, “Fast-classifying,
+high-accuracy spiking deep networks through weight and threshold balancing,” in2015
+International Joint Conference on Neural Networks (IJCNN). IEEE, 2015, pp. 1–8.
+[11] D. Bergmann, “What is knowledge distillation?” IBM Think. [Online]. Available: https:
+//www.ibm.com/think/topics/knowledge-distillation, Apr. 2024, accessed: Oct. 16, 2026.
+[12] M. S. Asghar, S. Arslan, and H. Kim, “A low-power spiking neural network chip based on
+a compact LIF neuron and binary exponential charge injector synapse circuits,”Sensors,
+vol. 21, no. 13, p. 4462, Jun. 2021.
+[13] R. R. Ramirez-Morales, V . H. Ponce-Ponce, H. Molina-Lozano, J. H. Sossa-Azuela,
+O. Islas-García, and E. Rubio-Espino, “Analog implementation of a spiking neuron with
+memristive synapses for deep learning processing,”Preprints, May 2024, preprint, version
+1, posted 31 May 2024.
+71
+
+=== PDF PAGE 76 ===
+A. Sreekumar Part 1. Preamble
+[14] Y . LeCun, L. Bottou, Y . Bengio, and P. Haffner, “Gradient-based learning applied to
+document recognition,”Proceedings of the IEEE, vol. 86, no. 11, pp. 2278–2324, Nov.
+1998.
+[15] P. W. Frey and D. J. Slate, “Letter recognition using Holland-style adaptive classifiers,”
+Machine Learning, vol. 6, no. 2, pp. 161–182, 1991.
+[16] M. Ochse, “Re: Feature extraction for digit recognition,” Personal communication (email
+to the author), Jul. 2026, email, 21 July 2026, 09:59.
+[17] Electronics Notes, “Op amp summing amplifier: Virtual earth mixer,” https:
+//www.electronics-notes.com/articles/analogue_circuits/operational-amplifier-op-amp/
+virtual-earth-mixer-summing-amplifier.php, accessed: Oct. 26, 2026.
+[18] GeeksforGeeks, “Current mirror circuits,” https://www.geeksforgeeks.org/
+electronics-engineering/current-mirror-circuits/, Mar. 2026, last updated: Mar. 9,
+2026. Accessed: Oct. 26, 2026.
+[19] J. Shlens, “A tutorial on principal component analysis,”arXiv preprint arXiv:1404.1100,
+2014.
+[20] Texas Instruments,DAC60516 16-Channel, 12-Bit, Voltage-Output DAC With Internal
+Reference, Texas Instruments, Feb. 2025, datasheet.
+[21] T. Y . Zhang and C. Y . Suen, “A fast parallel algorithm for thinning digital patterns,”
+Commun. ACM, vol. 27, no. 3, pp. 236–239, Mar. 1984.
+[22] Y . LeCun, L. Bottou, G. B. Orr, and K.-R. Müller, “Efficient BackProp,” inNeural
+Networks: Tricks of the Trade, ser. Lecture Notes in Computer Science, G. B. Orr and K.-R.
+Müller, Eds. Berlin, Heidelberg: Springer, 1998, vol. 1524, pp. 9–50.
+[23] C. M. Bishop,Pattern Recognition and Machine Learning. Springer, 2006.
+[24] I. Belcic and C. Stryker, “What is learning rate in machine learning?” https://www.ibm.
+com/think/topics/learning-rate, IBM, Nov. 2024, accessed: Oct. 15, 2026.
+[25] GeeksforGeeks, “K-fold cross validation in machine learning,” https://www.geeksforgeeks.
+org/machine-learning/k-fold-cross-validation-in-machine-learning/, Sep. 2025, accessed:
+Oct. 28, 2026.
+[26] I. Goodfellow, Y . Bengio, and A. Courville,Deep Learning. Cambridge, MA, USA: MIT
+Press, 2016, sec. 5.3.
+[27] C. K. Alexander and M. N. O. Sadiku,Fundamentals of Electric Circuits, 7th ed. New
+York, NY , USA: McGraw-Hill, 2021.
+[28] W. McAllister, “RC step response,”Spinning Numbers. [Online]. Available: https://
+spinningnumbers.org/a/rc-step-response.html, Mar. 2025, accessed: Oct. 19, 2026.
+[29] Texas Instruments,SN74HC4066 Quadruple Bilateral Analog Switch, Texas Instruments,
+Dallas, TX, USA, Jul. 2003, datasheet SCLS325G, revised Jul. 2003.
+72
+
+=== PDF PAGE 77 ===
+A. Sreekumar Part 1. Preamble
+[30] P. Allred, D. Nichols, C. Lambert, A. Wolfert, S. Kim, M. R. Linford, B. Lunt, and S.-
+h. W. Chiang, “Rapid prototyping of analog spiking neuron for MNIST classification using
+hardware-in-the-loop,” in2025 IEEE 68th International Midwest Symposium on Circuits
+and Systems (MWSCAS), Lansing, MI, USA, Aug. 2025.
+[31] Texas Instruments,LM1458/LM1558 Dual Operational Amplifier, Texas Instruments,
+Dallas, TX, USA, Mar. 2013, datasheet SNOSBU4D, revised Mar. 2013.
+[32] All About Circuits, “V oltage divider calculator,” EETech Group, LLC. [Online]. Avail-
+able: https://www.allaboutcircuits.com/tools/voltage-divider-calculator/, accessed: Oct. 10,
+2026.
+[33] Texas Instruments,LM393, LM293, LM193, LM2903 Dual Differential Comparators,
+Texas Instruments, Dallas, TX, USA, Oct. 2017, rev. Z. [Online]. Available:
+https://www.ti.com/lit/ds/symlink/lm393.pdf
+[34] JLCPCB, “Diode voltage drop: Values, formula, and how to measure it,” https://jlcpcb.
+com/blog/diode-voltage-drop-guide, Jun. 2026, accessed: Oct. 16, 2026.
+[35] S. Franco,Design with Operational Amplifiers and Analog Integrated Circuits, 4th ed.
+New York, NY , USA: McGraw-Hill Education, 2015.
+[36] B. Rueckauer, I.-A. Lungu, Y . Hu, M. Pfeiffer, and S.-C. Liu, “Conversion of continuous-
+valued deep networks to efficient event-driven networks for image classification,”Frontiers
+in Neuroscience, vol. 11, p. 682, 2017.
+[37] D. P. Kingma and J. Ba, “Adam: A method for stochastic optimization,” in3rd International
+Conference on Learning Representations (ICLR), 2015.
+[38] I. Poole, “Standard resistor values: E3, E6, E12, E24, E48 & E96: E-series,” Electron-
+ics Notes. [Online]. Available: https://www.electronics-notes.com/articles/electronic_
+components/resistors/standard-resistor-values-e-series-e3-e6-e12-e24-e48-e96.php, ac-
+cessed: Oct. 9, 2026.
+[39] D. Sikar, A. Garcez, R. Bloomfield, T. Weyde, K. Peeroo, N. Singh, M. Hutchinson,
+D. Laksono, and M. Reljan-Delaney, “The misclassification likelihood matrix: Some
+classes are more likely to be misclassified than others,”arXiv preprint arXiv:2407.07818,
+2024.
+[40] Adrian, “The ultimate guide to PCB ground planes: Boost signal integrity
+and reduce EMI,” ALLPCB Blog, https://www.allpcb.com/blog/pcb-knowledge/
+the-ultimate-guide-to-pcb-ground-planes-boost-signal-integrity-and-reduce-emi.html, Jun.
+2025, accessed: Oct. 28, 2026.
+[41] M. Nemec, “KiCAD replicate layout plugin,” GitHub repository, accessed: Oct. 16, 2026.
+[Online]. Available: https://github.com/MitjaNemec/ReplicateLayout
+[42] P. Horowitz and W. Hill,The Art of Electronics, 3rd ed. Cambridge, U.K.: Cambridge
+University Press, 2015.
+[43] LCSC Electronics, “Lcsc electronics: Electronic components distributor,” https://www.lcsc.
+com, accessed: Oct. 16, 2026.
+73
+
+=== PDF PAGE 78 ===
+A. Sreekumar Part 1. Preamble
+[44] B. Cramer, S. Billaudelle, S. Kanya, A. Leibfried, A. Grübl, V . Karasenko, C. Pehle,
+K. Schreiber, Y . Stradmann, J. Weis, J. Schemmel, and F. Zenke, “Surrogate gradients
+for analog neuromorphic computing,”Proc. Nat. Acad. Sci. USA, vol. 119, no. 4, p.
+e2109194119, Jan. 2022.
+[45] Circuit Functions Inc., “Ceramic capacitor types, advantages & applications,” https://www.
+circuitfunctions.com/capacitor-info/, 2025, accessed: Oct. 28, 2026.
+[46] GeeksforGeeks, “Left skew vs right skew,” https://www.geeksforgeeks.org/data-science/
+left-skew-vs-right-skew/, Jun. 2025, accessed: Oct. 28, 2026.
+[47] J. Ye, W. Wang, C. Shi, X. Cui, W. Qu, P. Lin, X. Yu, R. Cheng, H. Wu, and B. Chen, “An
+overhead-reduced, efficient, fully analog neural-network computing hardware,”Science
+Advances, vol. 11, no. 43, p. eadv7555, Oct. 2025.
+[48] F. Kiani, J. Yin, Z. Wang, J. J. Yang, and Q. Xia, “A fully hardware-based memristive
+multilayer neural network,”Science Advances, vol. 7, no. 48, p. eabj4801, Nov. 2021.
+[49] M. Hu, C. E. Graves, C. Li, Y . Li, N. Ge, E. Montgomery, N. Davila, H. Jiang, R. S.
+Williams, J. J. Yang, Q. Xia, and J. P. Strachan, “Memristor-based analog computation
+and neural network classification with a dot product engine,”Advanced Materials, vol. 30,
+no. 9, p. 1705914, 2018.
+[50] JLCPCB, “FR4 PCB material manufacturing – fast & affordable,” https://jlcpcb.com/
+pcb-fabrication/fr4-pcb, 2026, accessed: Oct. 28, 2026.
+[51] F. Soriano, “QMNIST: The extended MNIST dataset (120k images),” Kaggle dataset,
+accessed 6 October 2026. [Online]. Available: https://www.kaggle.com/datasets/
+fedesoriano/qmnist-the-extended-mnist-dataset-120k-images
+[52] F. Caravelli and J. P. Carbajal, “Memristors for the curious outsiders,”Technologies, vol. 6,
+no. 4, p. 118, Dec. 2018.
+74
+
+=== PDF PAGE 79 ===
+A. Sreekumar Appendix
+Appendix
+75
+
+=== PDF PAGE 80 ===
+A. Sreekumar Appendix
+Appendix A. Input voltage example for a sample of every digit
+The figures below show one MNIST sample from each digit class and the corresponding input
+voltages for the 16 selected features. A brief feature-based interpretation is provided before each
+image.
+Zero
+The following list describes the sample shown in Figure 42 and how the network might recognise
+it as a 0 based on the input parameters provided to it.
+1. The skeleton has no endpoints at all, placing skel_endpoints on the 0.1 V floor. A
+closed ring terminates nowhere, so there are no free stroke tips to count.
+2. The mid-height scan crosses two strokes (cross_50 at 1.65 V), cutting the left and right
+walls of the ring.
+3. One enclosed loop is present, soloop_countsits at 0.72 V .
+Figure 42. Sample MNIST digit labelled zero and its corresponding input voltages.
+One
+The following list describes the sample shown in Figure 43 and how the network might recognise
+it as a 1 based on the input parameters provided to it.
+1. The bounding box is narrow, with 1 being the narrowest digit of them all based on entries
+from the MNIST dataset.
+2. Few stroke edges are found per column (f15 = 0.63 V) and their summed horizontal
+positions are correspondingly low (f16 = 0.61 V). A single unbranched stroke (such as the
+one in Figure 43) occupies few columns and presents one edge in each.
+76
+
+=== PDF PAGE 81 ===
+A. Sreekumar Appendix
+3. The cross-moment f10 is high at 2.83 V . Ink to the right of centre also sits above centre,
+which describes the rightward lean of the stroke that further narrows the digit to a 1.
+Figure 43. Sample MNIST digit labelled one and its corresponding input voltages.
+Two
+The following list describes the sample shown in Figure 44.
+1. Ink sits below the box centre (f7 = 1.18 V , 19th percentile), reflecting the heavy horizontal
+stroke along the base of the digit. The related third-order moment f11 is correspondingly
+low at 0.82 V , in the 5th percentile.
+2. The bounding box is 20 pixels wide, saturating f3 at the 3.2 V rail. The 2 is the widest
+class in the dataset, with a mean of 2.90 V .
+3. The skeleton has three endpoints ( skel_endpoints = 1.13 V): the tail of the upper
+curve, the free end of the base stroke, and the start of the diagonal.
+77
+
+=== PDF PAGE 82 ===
+A. Sreekumar Appendix
+Figure 44. Sample MNIST digit labelled two and its corresponding input voltages.
+Three
+The following list describes the sample shown in Figure 45.
+1. Vertical ink spread (f9) is high at 2.12 V , the opposite of the 4 in Figure 10. The two stacked
+bowls distribute ink over the full height of the bounding box rather than concentrating it at
+a junction.
+2. Many stroke edges are found per column (f15 = 1.92 V , 90th percentile), because a vertical
+scan of either bowl enters and leaves the stroke more than once.
+3. Ink lies to the right of the box centre (f6 = 1.90 V), as both bowls open leftward and leave
+the left of the box comparatively empty.
+78
+
+=== PDF PAGE 83 ===
+A. Sreekumar Appendix
+Figure 45. Sample MNIST digit labelled three and its corresponding input voltages.
+The digit 4 example and its feature analysis are presented in the main report in Figure 10.
+Five
+The following list describes the sample shown in Figure 46.
+1. Many stroke edges are present (f16 = 1.90 V , 91st percentile; f15 = 1.86 V), produced by
+the flat top bar and the lower bowl each presenting their own edges to a vertical scan.
+2. The bounding box is 20 pixels wide, saturating f3 at the 3.2 V rail, and ink sits left of its
+centre (f6 = 1.28 V) where the top bar runs out to the left.
+3. No loops are present (loop_count at the 0.1 V floor) and the skeleton has two endpoints,
+identifying the digit as a single open stroke despite its sharp change of direction.
+79
+
+=== PDF PAGE 84 ===
+A. Sreekumar Appendix
+Figure 46. Sample MNIST digit labelled five and its corresponding input voltages.
+Six
+The following list describes the sample shown in Figure 47.
+1. Ink lies far below the box centre (f7 = 0.60 V , 2nd percentile of the training set), concen-
+trated in the bowl at the foot of the digit. At 2.1 standard deviations from the other classes
+this is the strongest single indicator of a 6, and the related moment f11 is correspondingly
+low at 0.65 V .
+2. The digit is closed, so loop_count is high at 1.34 V , placing it with the 0, 8, and 9 rather
+than with the open digits.
+3. The skeleton retains only one endpoint (0.44 V), the free tip at the top of the upper arc; the
+remainder of the stroke closes on itself.
+80
+
+=== PDF PAGE 85 ===
+A. Sreekumar Appendix
+Figure 47. Sample MNIST digit labelled six and its corresponding input voltages.
+Seven
+The following list describes the sample shown in Figure 48.
+1. Ink lies well above the box centre (f7 = 2.41 V , 96th percentile), concentrated in the
+horizontal bar across the top. At 2.0 standard deviations this is the strongest indicator of a
+7, and it is the exact mirror of the 6: the two digits sit at opposite extremes of the same
+feature.
+2. The third-order moment f11 follows at 2.48 V (96th percentile), reinforcing the same
+vertical imbalance.
+3. No loops are present and the skeleton has two endpoints, the left end of the top bar and the
+foot of the diagonal, identifying an open two-stroke form.
+81
+
+=== PDF PAGE 86 ===
+A. Sreekumar Appendix
+Figure 48. Sample MNIST digit labelled seven and its corresponding input voltages.
+Eight
+The following list describes the sample shown in Figure 49.
+1. Two enclosed loops are present, placing loop_count at 1.34 V . The 8 is the only digit
+whose class mean exceeds one loop, and at 2.2 standard deviations from the remaining
+classes this is the strongest feature-to-class association anywhere in the selected set.
+2. The skeleton retains a single endpoint (0.44 V), the short tail at the upper right; a figure-of-
+eight is otherwise fully closed.
+3. Horizontal ink spread is low (f8 = 0.74 V , 4th percentile), as the waist between the two
+loops pulls the ink towards the vertical axis.
+82
+
+=== PDF PAGE 87 ===
+A. Sreekumar Appendix
+Figure 49. Sample MNIST digit labelled eight and its corresponding input voltages.
+Nine
+The following list describes the sample shown in Figure 50.
+1. One enclosed loop is present (loop_count = 0.72 V) and the skeleton retains a single
+endpoint (0.44 V), the descending tail. This topology — one loop, one free end — is
+shared with the 6.
+2. The two are separated by f7, which is high here at 2.31 V (93rd percentile) because the
+loop sits at the top of the digit, against 0.60 V for the 6 whose bowl sits at the bottom.
+3. The moments f11 and f12 are both high (2.19 V and 2.29 V , the latter in the 98th percentile),
+following from the same concentration of ink in the upper half.
+83
+
+=== PDF PAGE 88 ===
+A. Sreekumar Appendix
+Figure 50. Sample MNIST digit labelled nine and its corresponding input voltages.
+84
+
+=== PDF PAGE 89 ===
+A. Sreekumar Appendix
+Appendix B. Additional Calculations for Idle-State Behaviour
+The voltages of the source neurons are listed in Table 10 and were used in the calculations below.
+The bias voltage was calculated using Equation 61.
+Calculations for output neuron 6
+Source Weight Sign V
+2 198 kΩ + 3.994 V
+3 618 kΩ − −0.607 V
+4 309 kΩ − −0.690 V
+6 324 kΩ + 2.534 V
+10 215 kΩ − −3.818 V
+Bias 187 kΩ + 1.769 V
+Σ 3.182 V
+Table 17. Weighted inputs and summed voltage for output neuron 6 during idle operation
+The summing-node voltage lies between the bench measurements at 3.084 V and 3.184 V. The
+gradient between these measurements is:
+m14= 226.9 kHz−220.5 kHz
+3.2 V−3.1 V =64.0 kHz/V (67)
+The corresponding output spike rate is:
+f(3.182 V)≈220.5 kHz+64.0 kHz/V×(3.182−3.1)V=226.8 kHz (68)
+Calculations for output neuron 7
+Source Weight Sign V
+2 DNP — DNP
+3 119 kΩ + 3.269 V
+4 226 kΩ − −0.889 V
+6 698 kΩ + 1.176 V
+10 DNP — DNP
+Bias 178 kΩ + 1.834 V
+Σ 5.390 V
+Table 18. Weighted inputs and summed voltage for output neuron 7 during idle operation;
+DNP means do not populate
+Two of the five input weights are pruned (DNP), so this neuron sums three inputs and its bias.
+The summing-node voltage lies between the bench measurements at 5.384 V and 5.484 V. The
+gradient between these measurements is:
+m37= 369.6 kHz−367.0 kHz
+5.5 V−5.4 V =26.0 kHz/V (69)
+The corresponding output spike rate is:
+f(5.390 V)≈367.0 kHz+26.0 kHz/V×(5.390−5.4)V=367.2 kHz (70)
+85
+
+=== PDF PAGE 90 ===
+A. Sreekumar Appendix
+Appendix C. Testing System Design and Validation
+Providing Inputs
+Figure 51. DAC-generated input sample 0003.
+Feature Error (mV)
+f1 +50
+f3 +20
+f6 +30
+f7 +30
+f8 +30
+f9 +30
+f10 +20
+f11 +30
+f12 +30
+f14 +10
+f15 +20
+f16 +20
+loop_count +11
+skel_endpoints +9
+cross_50 +20
+vsym +40
+Table 19. Feature errors for DAC output, MNIST test entry 3 (true label 0). Error is
+measured minus CSV in mV .
+86
+
+=== PDF PAGE 91 ===
+A. Sreekumar Appendix
+Figure 52. DAC-generated input sample 0005.
+Feature Error (mV)
+f1 +50
+f3 +40
+f6 +0
+f7 +20
+f8 +10
+f9 +20
+f10 +20
+f11 +20
+f12 +40
+f14 +33
+f15 +24
+f16 +18
+loop_count +17
+skel_endpoints +23
+cross_50 +20
+vsym +40
+Table 20. Feature errors for DAC output, MNIST test entry 5 (true label 1). Error is
+measured minus CSV in mV .
+87
+
+=== PDF PAGE 92 ===
+A. Sreekumar Appendix
+Figure 53. DAC-generated input sample 0001.
+Feature Error (mV)
+f1 +0
+f3 +20
+f6 +40
+f7 +42
+f8 +40
+f9 +20
+f10 +30
+f11 +17
+f12 +20
+f14 +30
+f15 +40
+f16 +30
+loop_count +15
+skel_endpoints +23
+cross_50 +26
+vsym +30
+Table 21. Feature errors for DAC output, MNIST test entry 1 (true label 2). Error is
+measured minus CSV in mV .
+88
+
+=== PDF PAGE 93 ===
+A. Sreekumar Appendix
+Figure 54. DAC-generated input sample 0018.
+Feature Error (mV)
+f1 +50
+f3 +20
+f6 +40
+f7 +30
+f8 +30
+f9 +40
+f10 +25
+f11 +30
+f12 +30
+f14 +30
+f15 +40
+f16 +30
+loop_count +30
+skel_endpoints +15
+cross_50 +33
+vsym +40
+Table 22. Feature errors for DAC output, MNIST test entry 18 (true label 3). Error is
+measured minus CSV in mV .
+89
+
+=== PDF PAGE 94 ===
+A. Sreekumar Appendix
+Figure 55. DAC-generated input sample 0004.
+Feature Error (mV)
+f1 +30
+f3 +30
+f6 +30
+f7 +40
+f8 +30
+f9 +24
+f10 +30
+f11 +60
+f12 +90
+f14 +100
+f15 +40
+f16 +30
+loop_count +17
+skel_endpoints +20
+cross_50 +30
+vsym +20
+Table 23. Feature errors for DAC output, MNIST test entry 4 (true label 4). Error is
+measured minus CSV in mV .
+90
+
+=== PDF PAGE 95 ===
+A. Sreekumar Appendix
+Figure 56. DAC-generated input sample 0023.
+Feature Error (mV)
+f1 +30
+f3 +20
+f6 +30
+f7 +30
+f8 +16
+f9 +40
+f10 +20
+f11 +30
+f12 +30
+f14 +30
+f15 +40
+f16 +30
+loop_count +15
+skel_endpoints +23
+cross_50 +26
+vsym +40
+Table 24. Feature errors for DAC output, MNIST test entry 23 (true label 5). Error is
+measured minus CSV in mV .
+91
+
+=== PDF PAGE 96 ===
+A. Sreekumar Appendix
+Figure 57. DAC-generated input sample 0066.
+Feature Error (mV)
+f1 +50
+f3 +20
+f6 +30
+f7 +23
+f8 +20
+f9 +30
+f10 +10
+f11 +20
+f12 +40
+f14 +20
+f15 +30
+f16 +30
+loop_count +10
+skel_endpoints +10
+cross_50 +30
+vsym +40
+Table 25. Feature errors for DAC output, MNIST test entry 66 (true label 6). Error is
+measured minus CSV in mV .
+92
+
+=== PDF PAGE 97 ===
+A. Sreekumar Appendix
+Figure 58. DAC-generated input sample 0000.
+Feature Error (mV)
+f1 +20
+f3 +20
+f6 +40
+f7 +20
+f8 +30
+f9 +10
+f10 +40
+f11 +10
+f12 +30
+f14 +23
+f15 +20
+f16 +40
+loop_count +15
+skel_endpoints +23
+cross_50 +27
+vsym +50
+Table 26. Feature errors for DAC output, MNIST test entry 0 (true label 7). Error is
+measured minus CSV in mV .
+93
+
+=== PDF PAGE 98 ===
+A. Sreekumar Appendix
+Figure 59. DAC-generated input sample 0061.
+Feature Error (mV)
+f1 +20
+f3 +20
+f6 +30
+f7 +30
+f8 +13
+f9 +10
+f10 +30
+f11 +20
+f12 +20
+f14 +40
+f15 +20
+f16 +20
+loop_count +10
+skel_endpoints +10
+cross_50 +25
+vsym +20
+Table 27. Feature errors for DAC output, MNIST test entry 61 (true label 8). Error is
+measured minus CSV in mV .
+94
+
+=== PDF PAGE 99 ===
+A. Sreekumar Appendix
+Figure 60. DAC-generated input sample 0007.
+Feature Error (mV)
+f1 +30
+f3 +20
+f6 +50
+f7 +40
+f8 +30
+f9 +30
+f10 -10
+f11 +30
+f12 +20
+f14 +30
+f15 +40
+f16 +30
+loop_count +12
+skel_endpoints +11
+cross_50 +30
+vsym +40
+Table 28. Feature errors for DAC output, MNIST test entry 7 (true label 9). Error is
+measured minus CSV in mV .
+95
+
+=== PDF PAGE 100 ===
+A. Sreekumar Appendix
+Circuit Holder
+Reading output
+Input frequency (kHz) Measured count (100 ms)
+50 4998.70
+75 7498.2
+100 9997.4
+125 12496
+150 14996
+175 17495
+200 19994
+225 22494
+250 24993
+275 27493
+300 29992
+325 32491
+350 34991.2
+375 37490
+400 39989.90
+425 42489.2
+450 44988
+475 47488
+500 49987
+Table 29. Measured pulse counts over a 100 ms window for input frequencies from 50 kHz
+to 500 kHz
+Input voltage (V) Frequency (kHz) Pulse count
+1.7 40.77 4597.5
+2.1 108.146 10844
+2.6 164.15 16419
+3.1 204.8 20480
+3.6 243.3 24326
+4.1 273.215 27309.2
+4.6 304.08 30429
+5.1 330.96 33096
+5.6 355.63 35634
+6.1 378 37714
+6.6 400 39999.7
+7.1 415 41554
+7.6 431 43308
+8.1 445 44477
+8.6 461 46119
+9.1 475 47509
+Table 30. Measured output frequency and pulse count (100 ms window) for input voltages
+from 1.7 V to 9.1 V
+The data presented below was collected when specific MNIST test entries (one per digit) were
+ran through the circuit, with the measured frequency being compared to what the test system
+96
+
+=== PDF PAGE 101 ===
+A. Sreekumar Appendix
+detected. The test system output should be 100x lower than the oscilloscope measurement as the
+test system output was taken over 100ms.
+Index Value Pulse counted
+0 0 0
+1 0 0
+2 0 0
+3 185.3 18536
+4 0 0
+5 69.1 6908
+6 0 0
+7 286.2 28626
+8 0 0
+9 134.9 13489
+Table 31. Entry 0, true label 7.
+Index Value Pulse counted
+0 0 0
+1 0 0
+2 262.1 26217
+3 0 0
+4 0 0
+5 152.2 15223
+6 0 0
+7 0 0
+8 126.5 12648
+9 0 0
+Table 32. Entry 1, true label 2.
+Index Value Pulse counted
+0 223.3 22338
+1 0 0
+2 0 0
+3 0 0
+4 0 0
+5 0 0
+6 0 0
+7 0 0
+8 0 0
+9 0 0
+Table 33. Entry 3, true label 0.
+97
+
+=== PDF PAGE 102 ===
+A. Sreekumar Appendix
+Index Value Pulse counted
+0 125.6 12567
+1 0 0
+2 0 0
+3 0 0
+4 300.0 30008
+5 0 0
+6 0 0
+7 178.2 17823
+8 0 0
+9 182.0 18201
+Table 34. Entry 4, true label 4.
+Index Value Pulse counted
+0 0 0
+1 266.1 26622
+2 0 0
+3 0 0
+4 0 0
+5 0 0
+6 0 0
+7 101.9 10193
+8 0 0
+9 0 0
+Table 35. Entry 5, true label 1.
+Index Value Pulse counted
+0 62.3 6230
+1 0 0
+2 0 0
+3 0 0
+4 152.2 15224
+5 0 0
+6 0 0
+7 0 0
+8 95.3 9533
+9 237.8 23786
+Table 36. Entry 7, true label 9.
+98
+
+=== PDF PAGE 103 ===
+A. Sreekumar Appendix
+Index Value Pulse counted
+0 0 0
+1 0 0
+2 149.7 14977
+3 0 0
+4 0 0
+5 0 0
+6 76.7 7671
+7 0 0
+8 199.6 19965
+9 64.4 6440
+Table 37. Entry 18, true label 3.
+Index Value Pulse counted
+0 0 0
+1 0 0
+2 73.8 7381
+3 0 0
+4 0 0
+5 230.0 23013
+6 0 0
+7 0 0
+8 76.4 7645
+9 0 0
+Table 38. Entry 23, true label 5.
+Index Value Pulse counted
+0 0 0
+1 0 0
+2 102.2 10220
+3 0 0
+4 0 0
+5 65.8 6585
+6 0 0
+7 0 0
+8 114.0 11402
+9 0 0
+Table 39. Entry 61, true label 8.
+99
+
+=== PDF PAGE 104 ===
+A. Sreekumar Appendix
+Index Value Pulse counted
+0 254.1 25422
+1 0 0
+2 0 0
+3 0 0
+4 114.0 11442
+5 0 0
+6 244.9 24503
+7 0 0
+8 118.1 11810
+9 0 0
+Table 40. Entry 66, true label 6.
+100
+
+=== PDF PAGE 105 ===
+A. Sreekumar Appendix
+Appendix D. Confusion Matrices of all runs
+Figure 61. Confusion matrix for Board 1, run 1.
+Figure 62. Confusion matrix for Board 1, run 2.
+101
+
+=== PDF PAGE 106 ===
+A. Sreekumar Appendix
+Figure 63. Confusion matrix for Board 2, run 1.
+Figure 64. Confusion matrix for Board 2, run 2.
+102
+
+=== PDF PAGE 107 ===
+A. Sreekumar Appendix
+Figure 65. Confusion matrix for Board 2, run 3.
+Difference (pp) 0 1 2 3 4 5 6 7 8 9 Overall
+Board 1, run 1 0.1 -0.2 -2.5 -0.4 -0.7 -2.0 -5.4 0.8 -5.6 1.2 -1.4
+Board 1, run 2 0.0 -0.4 -2.6 -0.2 -0.9 -2.9 -8.5 1.5 -7.6 0.8 -2.0
+Board 1, run 3 -0.2 -0.4 -2.8 -0.2 -1.1 -3.0 -8.6 1.6 -7.8 0.7 -2.1
+Board 2, run 1 0.0 -0.4 -0.8 0.0 -1.1 -0.7 -6.9 0.7 -6.0 0.9 -1.4
+Board 2, run 2 -0.1 -0.2 -0.6 0.0 -1.1 -0.9 -7.1 0.6 -6.1 0.5 -1.4
+Board 2, run 3 0.1 -0.3 -1.1 -0.1 -1.1 -0.2 -6.8 0.6 -5.9 1.0 -1.3
+Hardware mean 0.0 -0.3 -1.7 -0.1 -1.0 -1.6 -7.2 0.9 -6.5 0.8 -1.6
+Table 41. Per-class accuracy difference (hardware minus software), every sweep.
+103
+
+=== PDF PAGE 108 ===
+A. Sreekumar Appendix
+Appendix E. Bill of Materials
+The two fabricated boards are itemised separately below. Quantities are the number of parts actu-
+ally populated on each assembled board.Footprint names follow the KiCad standard library con-
+vention, so an imperial code such as0603 denotes Resistor_SMD:R_0603_1608Metric
+for a resistor and Capacitor_SMD:C_0603_1608Metric for a capacitor. The LCSC part
+number is given so that the circuit can be reporduced, with the part numbers sourced form the
+LCSC website [43]
+Final Network PCB
+Component Footprint LCSC part Qty Tol.
+Resistors
+178 kΩ 0402 C3013156 7 ±1%
+280 kΩ 0402 C2929997 6 ±1%
+499 kΩ 0402 C2998054 2 ±1%
+549 kΩ 0402 C2085242 7 ±1%
+590 kΩ 0402 C2085400 2 ±1%
+1 kΩ 0603 C22548 10 1
+2.7 kΩ 0603 C2907008 10 1
+10 kΩ 0603 C98220 70 1
+16.5 kΩ 0603 C861693 2 ±0.1%
+20 kΩ 0603 C2907011 1 ±1%
+22.1 kΩ 0603 C2960862 11 ±1%
+23.2 kΩ 0603 C2930078 1 ±1%
+28 kΩ 0603 C2960810 3 ±1%
+32.4 kΩ 0603 C2998122 3 ±1%
+36.5 kΩ 0603 C2930095 2 ±1%
+40 kΩ 0603 C55205304 10 1
+40.2 kΩ 0603 C2933218 5 ±1%
+45.3 kΩ 0603 C2933224 7 ±1%
+48.7 kΩ 0603 C861429 5 ±0.1%
+52.3 kΩ 0603 C2933235 6 ±1%
+56.2 kΩ 0603 C2930117 3 ±1%
+60.4 kΩ 0603 C2933245 6 ±1%
+64.9 kΩ 0603 C2960807 9 ±1%
+69.8 kΩ 0603 C2930012 4 ±1%
+76.8 kΩ 0603 C705795 4 ±0.1%
+84.5 kΩ 0603 C2998081 4 ±1%
+90.9 kΩ 0603 C2930136 8 ±1%
+97.6 kΩ 0603 C2907079 5 ±1%
+100 kΩ 0603 C14675 20 1
+105 kΩ 0603 C2933128 3 ±1%
+115 kΩ 0603 C1509621 7 ±0.1%
+121 kΩ 0603 C861095 2 ±0.1%
+133 kΩ 0603 C2933141 4 ±1%
+143 kΩ 0603 C2933146 4 ±1%
+147 kΩ 0603 C2998060 4 ±1%
+158 kΩ 0603 C861139 7 ±0.1%
+187 kΩ 0603 C1854557 9 ±0.1%
+200 kΩ 0603 C2907009 15 ±1%
+215 kΩ 0603 C861226 7 ±0.1%
+226 kΩ 0603 C861233 5 ±0.1%
+continued on next page
+104
+
+=== PDF PAGE 109 ===
+A. Sreekumar Appendix
+continued
+Component Footprint LCSC part Qty Tol.
+249 kΩ 0603 C2933177 6 ±1%
+267 kΩ 0603 C2998118 8 ±1%
+309 kΩ 0603 C2999532 9 ±1%
+324 kΩ 0603 C3999394 10 ±0.1%
+357 kΩ 0603 C913223 4 ±1%
+392 kΩ 0603 C3996077 5 ±0.1%
+412 kΩ 0603 C2933219 4 ±1%
+442 kΩ 0603 C3013201 8 ±1%
+698 kΩ 0603 C5126055 4 ±1%
+787 kΩ 0603 C23250 3 ±1%
+787 kΩ 0603 C2076900 3 ±1%
+845 kΩ 0603 C2930132 2 ±1%
+931 kΩ 0603 C2907075 3 ±1%
+475 kΩ 1206 C2933711 3 ±1%
+750 kΩ 1206 C2933754 4 ±1%
+619 kΩ R_MiniMELF
+_MMA-0204
+C4098837 1 ±1%
+Capacitors
+1 nF 0201 C1864327 20 1
+100 nF 0603 C1591 57 1
+10 µF 1206 C89632 4 10
+Active devices
+1N4148WT SOD-523
+_L1.2-W0.8-
+LS1.6-RD
+C232841 40 –
+LM1458M SOP-8_L4.9-
+W3.9-P1.27-
+LS6.0-BL
+C444394 20 –
+LM393DR SOIC-8_L5.0-
+W4.0-P1.27-
+LS6.0-BL
+C67470 10 –
+SN74HC4066PWR TSSOP-14
+_L5.0-W4.4-
+P0.65-LS6.4-
+BL
+C2651899 3 –
+Table 43. Bill of materials for the final analogue neural network PCB. 563 components
+populated.
+DAC PCB
+The DAC board is a four-layer breakout carrying the input digital-to-analogue converter and its decoupling, with the
+digital interface and the analogue outputs broken out to two headers. The capacitors used for decoupling were the
+ones recommended by the datasheet of the Integrated Circuit (IC) [20].
+105
+
+=== PDF PAGE 110 ===
+A. Sreekumar Appendix
+Component Footprint LCSC part Qty
+DAC60516RUYT DAC_footprint:WQFN-28_L4.0-W4.0-P0.40-TL-EP2.6 C45431409 1
+1 µF Capacitor_SMD:C_0402_1005Metric C1518208 1
+100 nF Capacitor_SMD:C_0603_1608Metric C17702748 1
+150 nF Capacitor_SMD:C_0603_1608Metric C445687 1
+Conn_01x17_Pin Connector_PinHeader_2.54mm:PinHeader_1x17_P2.54mm_
+Vertical
+C725949 1
+Conn_01x10_Pin Connector_PinHeader_2.54mm:PinHeader_1x10_P2.54mm_
+Vertical
+C42372502 1
+Table 44. Bill of materials for the DAC PCB. Six components populated across six line
+items.
+106
+
+=== PDF PAGE 111 ===
+A. Sreekumar Appendix
+Appendix F. Note of thanks
+107

@@ -1,0 +1,9 @@
+from pathlib import Path
+import json,hashlib
+B=Path(__file__).resolve().parent;x=json.loads((B/'candidates.json').read_text())
+groups={
+'Wrong word or incomplete word after transcript/crop misalignment':['R00638','R00775','R00776','R00778','R00779','R00781','R00107','R00168','R00194','R00171','R00335','R00374','R00186'],
+'Foreign neighbouring ink or another line in reference crop':['R00786','R00806','R00838','R00099','R00088','R00152','R00181','R00059','R00040']}
+excluded=[dict(id=uid,reason=reason) for reason,ids in groups.items() for uid in ids];known={r['id'] for r in x['references']};assert all(r['id'] in known for r in excluded)
+review={'stage':'before any similarity score in this experiment','physical_proposals_visually_reviewed':len(x['physical']),'reference_proposals_visually_reviewed':len(x['references']),'excluded_references':excluded,'excluded_physical':[],'notes':['All writer contact sheets reviewed. Questionable source identities inspected in full-line context.','Unusual genuine handwriting retained, including Abhinav open circle i dots and 152 cursive is.','All physical proposals retained, including faint strokes, changed letterforms and poor joins. No score-driven pruning.','Rejected reference candidates are not replaced using shape scores.'], 'candidates_sha256':hashlib.sha256((B/'candidates.json').read_bytes()).hexdigest()}
+(B/'quality_review.json').write_text(json.dumps(review,indent=2));bad={r['id'] for r in excluded};accepted=dict(writers=x['writers'],physical=x['physical'],all_physical_proposals=x['physical'],references=[r for r in x['references'] if r['id'] not in bad],quality_review_sha256=hashlib.sha256((B/'quality_review.json').read_bytes()).hexdigest());(B/'accepted_candidates.json').write_text(json.dumps(accepted,indent=2));print('Accepted physical',len(accepted['physical']),'references',len(accepted['references']),'rejected',len(bad))

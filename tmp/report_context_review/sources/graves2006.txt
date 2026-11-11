@@ -1,0 +1,849 @@
+
+=== PDF PAGE 1 ===
+Connectionist Temporal Classiﬁcation: Labelling Unsegmented
+Sequence Data with Recurrent Neural Networks
+Alex Graves 1 alex@idsia.ch
+Santiago F ern´ andez1 santiago@idsia.ch
+F austino Gomez1 tino@idsia.ch
+J¨ urgen Schmidhuber1, 2 juergen@idsia.ch
+1 Istituto Dalle Molle di Studi sull’Intelligenza Artiﬁciale (IDSIA), Galleria 2, 6928 Manno-Lugano, Switzerland
+2 Technische Universit¨ at M¨ unchen (TUM), Boltzmannstr. 3, 85748 Garching, Munich, Germany
+Abstract
+Many real-world sequence learning tasks re-
+quire the prediction of sequences of labels
+from noisy, unsegmented input data. In
+speech recognition, for example, an acoustic
+signal is transcribed into words or sub-word
+units. Recurrent neural networks (RNNs) are
+powerful sequence learners that would seem
+well suited to such tasks. However, because
+they require pre-segmented training data,
+and post-processing to transform their out-
+puts into label sequences, their applicability
+has so far been limited. This paper presents a
+novel method for training RNNs to label un-
+segmented sequences directly, thereby solv-
+ing both problems. An experiment on the
+TIMIT speech corpus demonstrates its ad-
+vantages over both a baseline HMM and a
+hybrid HMM-RNN.
+1. Introduction
+Labelling unsegmented sequence data is a ubiquitous
+problem in real-world sequence learning. It is partic-
+ularly common in perceptual tasks (e.g. handwriting
+recognition, speech recognition, gesture recognition)
+where noisy, real-valued input streams are annotated
+with strings of discrete labels, such as letters or words.
+Currently, graphical models such as hidden Markov
+Models (HMMs; Rabiner, 1989), conditional random
+ﬁelds (CRFs; Laﬀerty et al., 2001) and their vari-
+ants, are the predominant framework for sequence la-
+Appearing in Proceedings of the 23 rd International Con-
+ference on Machine Learning , Pittsburgh, PA, 2006. Copy-
+right 2006 by the author(s)/owner(s).
+belling. While these approaches have proved success-
+ful for many problems, they have several drawbacks:
+(1) they usually require a signiﬁcant amount of task
+speciﬁc knowledge, e.g. to design the state models for
+HMMs, or choose the input features for CRFs; (2)
+they require explicit (and often questionable) depen-
+dency assumptions to make inference tractable, e.g.
+the assumption that observations are independent for
+HMMs; (3) for standard HMMs, training is generative,
+even though sequence labelling is discriminative.
+Recurrent neural networks (RNNs), on the other hand,
+require no prior knowledge of the data, beyond the
+choice of input and output representation. They can
+be trained discriminatively, and their internal state
+provides a powerful, general mechanism for modelling
+time series. In addition, they tend to be robust to
+temporal and spatial noise.
+So far, however, it has not been possible to apply
+RNNs directly to sequence labelling. The problem is
+that the standard neural network objective functions
+are deﬁned separately for each point in the training se-
+quence; in other words, RNNs can only be trained to
+make a series of independent label classiﬁcations. This
+means that the training data must be pre-segmented,
+and that the network outputs must be post-processed
+to give the ﬁnal label sequence.
+At present, the most eﬀective use of RNNs for se-
+quence labelling is to combine them with HMMs in the
+so-called hybrid approach (Bourlard & Morgan, 1994;
+Bengio., 1999). Hybrid systems use HMMs to model
+the long-range sequential structure of the data, and
+neural nets to provide localised classiﬁcations. The
+HMM component is able to automatically segment
+the sequence during training, and to transform the
+network classiﬁcations into label sequences. However,
+as well as inheriting the aforementioned drawbacks of
+
+=== PDF PAGE 2 ===
+Connectionist T emporal Classiﬁcation
+HMMs, hybrid systems do not exploit the full poten-
+tial of RNNs for sequence modelling.
+This paper presents a novel method for labelling se-
+quence data with RNNs that removes the need for pre-
+segmented training data and post-processed outputs,
+and models all aspects of the sequence within a single
+network architecture. The basic idea is to interpret
+the network outputs as a probability distribution over
+all possible label sequences, conditioned on a given in-
+put sequence. Given this distribution, an objective
+function can be derived that directly maximises the
+probabilities of the correct labellings. Since the objec-
+tive function is diﬀerentiable, the network can then be
+trained with standard backpropagation through time
+(Werbos, 1990).
+In what follows, we refer to the task of labelling un-
+segmented data sequences as temporal classiﬁcation
+(Kadous, 2002), and to our use of RNNs for this pur-
+pose as connectionist temporal classiﬁcation (CTC).
+By contrast, we refer to the independent labelling of
+each time-step, or frame, of the input sequence as
+framewise classiﬁcation .
+The next section provides the mathematical formalism
+for temporal classiﬁcation, and deﬁnes the error mea-
+sure used in this paper. Section 3 describes the output
+representation that allows RNNs to be used as tempo-
+ral classiﬁers. Section 4 explains how CTC networks
+can be trained. Section 5 compares CTC to hybrid and
+HMM systems on the TIMIT speech corpus. Section 6
+discusses some key diﬀerences between CTC and other
+temporal classiﬁers, giving directions for future work,
+and the paper concludes with section 7.
+2. Temporal Classiﬁcation
+Let S be a set of training examples drawn from a ﬁxed
+distribution DX ×Z . The input space X = ( Rm)∗ is
+the set of all sequences of m dimensional real val-
+ued vectors. The target space Z = L∗ is the set
+of all sequences over the (ﬁnite) alphabet L of la-
+bels. In general, we refer to elements of L∗ as label
+sequences or labellings. Each example in S consists
+of a pair of sequences ( x, z). The target sequence
+z = ( z1, z 2, ..., z U ) is at most as long as the input
+sequence x = ( x1, x 2, ..., x T ), i.e. U ≤ T . Since the
+input and target sequences are not generally the same
+length, there is no a priori way of aligning them.
+The aim is to use S to train a temporal classiﬁer
+h : X ↦→ Z to classify previously unseen input se-
+quences in a way that minimises some task speciﬁc
+error measure.
+2.1. Label Error Rate
+In this paper, we are interested in the following error
+measure: given a test set S′⊂ D X ×Z disjoint from S,
+deﬁne the label error rate (LER) of a temporal classi-
+ﬁer h as the normalised edit distance between its clas-
+siﬁcations and the targets on S′, i.e.
+LER(h, S ′) = 1
+Z
+∑
+(x, z)∈S′
+ED(h(x)) (1)
+where Z is the total number of target labels in S′,
+and ED(p, q) is the edit distance between the two se-
+quences p and q — i.e. the minimum number of inser-
+tions, substitutions and deletions required to change p
+into q.
+This is a natural measure for tasks (such as speech or
+handwriting recognition) where the aim is to minimise
+the rate of transcription mistakes.
+3. Connectionist Temporal Classiﬁcation
+This section describes the output representation that
+allows a recurrent neural network to be used for CTC.
+The crucial step is to transform the network outputs
+into a conditional probability distribution over label
+sequences. The network can then be used a classiﬁer
+by selecting the most probable labelling for a given
+input sequence.
+3.1. F rom Network Outputs to Labellings
+A CTC network has a softmax output layer (Bridle,
+1990) with one more unit than there are labels in L.
+The activations of the ﬁrst |L|units are interpreted as
+the probabilities of observing the corresponding labels
+at particular times. The activation of the extra unit
+is the probability of observing a ‘blank’, or no label.
+Together, these outputs deﬁne the probabilities of all
+possible ways of aligning all possible label sequences
+with the input sequence. The total probability of any
+one label sequence can then be found by summing the
+probabilities of its diﬀerent alignments.
+More formally, for an input sequence x of length T ,
+deﬁne a recurrent neural network with m inputs, n
+outputs and weight vector w as a continuous map Nw :
+(Rm)T ↦→(Rn)T . Let y = Nw(x) be the sequence of
+network outputs, and denote by yt
+k the activation of
+output unit k at time t. Then yt
+k is interpreted as the
+probability of observing label k at time t, which deﬁnes
+a distribution over the set L′T of length T sequences
+over the alphabet L′= L ∪ {blank}:
+p(π|x) =
+T∏
+t=1
+yt
+πt, ∀π ∈ L′T . (2)
+
+=== PDF PAGE 3 ===
+Connectionist T emporal Classiﬁcation
+0label probability
+""" """
+1
+0
+1
+n
+dcld ix v
+Framewise 
+the  sound  of
+Waveform
+CTC
+dh ax s aw
+Figure 1. F ramewise and CTC networks classifying a speech signal . The shaded lines are the output activations,
+corresponding to the probabilities of observing phonemes at particular times. The CTC network predicts only the
+sequence of phonemes (typically as a series of spikes, separated by ‘blanks’, or null predictions), while the framewise
+network attempts to align them with the manual segmentation (vertical lines). The framewise network receives an error
+for misaligning the segment boundaries, even if it predicts the correct phoneme (e.g. ‘dh’). When one phoneme always
+occurs beside another (e.g. the closure ‘dcl’ with the stop ‘d’), CTC tends to predict them together in a double spike.
+The choice of labelling can be read directly from the CTC outputs (follow the spikes), whereas the predictions of the
+framewise network must be post-processed before use.
+From now on, we refer to the elements of L′T as paths,
+and denote them π.
+Implicit in (2) is the assumption that the network out-
+puts at diﬀerent times are conditionally independent,
+given the internal state of the network. This is ensured
+by requiring that no feedback connections exist from
+the output layer to itself or the network.
+The next step is to deﬁne a many-to-one map B :
+L′T ↦→L≤ T , where L≤ T is the set of possible labellings
+(i.e. the set of sequences of length less than or equal to
+T over the original label alphabet L). We do this by
+simply removing all blanks and repeated labels from
+the paths (e.g. B(a − ab−) = B(−aa − − abb) = aab).
+Intuitively, this corresponds to outputting a new label
+when the network switches from predicting no label
+to predicting a label, or from predicting one label to
+another (c.f. the CTC outputs in ﬁgure 1). Finally, we
+use B to deﬁne the conditional probability of a given
+labelling l ∈ L≤ T as the sum of the probabilities of all
+the paths corresponding to it:
+p(l|x) =
+∑
+π∈B − 1(l)
+p(π|x). (3)
+3.2. Constructing the Classiﬁer
+Given the above formulation, the output of the classi-
+ﬁer should be the most probable labelling for the input
+sequence:
+h(x) = arg max
+l∈L≤ T
+p(l|x).
+Using the terminology of HMMs, we refer to the task of
+ﬁnding this labelling as decoding. Unfortunately, we do
+not know of a general, tractable decoding algorithm for
+our system. However the following two approximate
+methods give good results in practice.
+The ﬁrst method (best path decoding) is based on the
+assumption that the most probable path will corre-
+spond to the most probable labelling:
+h(x) ≈ B (π∗) (4)
+where π∗ = arg max
+π∈N t
+p(π|x).
+Best path decoding is trivial to compute, since π∗ is
+just the concatenation of the most active outputs at
+every time-step. However it is not guaranteed to ﬁnd
+the most probable labelling.
+The second method (preﬁx search decoding) relies on
+the fact that, by modifying the forward-backward al-
+gorithm of section 4.1, we can eﬃciently calculate the
+probabilities of successive extensions of labelling pre-
+ﬁxes (ﬁgure 2).
+Given enough time, preﬁx search decoding always ﬁnds
+the most probable labelling. However, the maximum
+number of preﬁxes it must expand grows exponentially
+with the input sequence length. If the output distri-
+bution is suﬃciently peaked around the mode, it will
+nonetheless ﬁnish in reasonable time. For the exper-
+iment in this paper though, a further heuristic was
+required to make its application feasible.
+Observing that the outputs of a trained CTC network
+
+=== PDF PAGE 4 ===
+Connectionist T emporal Classiﬁcation
+Figure 2. Preﬁx search decoding on the label alpha-
+bet X,Y . Each node either ends (‘e’) or extends the preﬁx
+at its parent node. The number above an extending node
+is the total probability of all labellings beginning with that
+preﬁx. The number above an end node is the probability of
+the single labelling ending at its parent. At every iteration
+the extensions of the most probable remaining preﬁx are
+explored. Search ends when a single labelling (here ‘XY’)
+is more probable than any remaining preﬁx.
+tend to form a series of spikes separated by strongly
+predicted blanks (ﬁgure 1), we divide the output se-
+quence into sections that are very likely to begin and
+end with a blank. We do this by choosing boundary
+points where the probability of observing a blank label
+is above a certain threshold. We then calculate the
+most probable labelling for each section individually
+and concatenate these to get the ﬁnal classiﬁcation.
+In practice, preﬁx search works well with this heuristic,
+and generally outperforms best path decoding. How-
+ever it does fail in some cases, e.g. if the same label is
+predicted weakly on both sides of a section boundary.
+4. Training the Network
+So far we have described an output representation that
+allows RNNs to be used for CTC. We now derive an
+objective function for training CTC networks with gra-
+dient descent.
+The objective function is derived from the principle of
+maximum likelihood. That is, minimising it maximises
+the log likelihoods of the target labellings. Note that
+this is the same principle underlying the standard neu-
+ral network objective functions (Bishop, 1995). Given
+the objective function, and its derivatives with re-
+spect to the network outputs, the weight gradients can
+be calculated with standard backpropagation through
+time. The network can then be trained with any of
+the gradient-based optimisation algorithms currently
+in use for neural networks (LeCun et al., 1998; Schrau-
+dolph, 2002).
+We begin with an algorithm required for the maximum
+likelihood function.
+4.1. The CTC F orward-Backward Algorithm
+We require an eﬃcient way of calculating the condi-
+tional probabilities p(l|x) of individual labellings. At
+ﬁrst sight (3) suggests this will be problematic: the
+sum is over all paths corresponding to a given labelling,
+and in general there are very many of these.
+Fortunately the problem can be solved with a dy-
+namic programming algorithm, similar to the forward-
+backward algorithm for HMMs (Rabiner, 1989). The
+key idea is that the sum over paths corresponding to
+a labelling can be broken down into an iterative sum
+over paths corresponding to preﬁxes of that labelling.
+The iterations can then be eﬃciently computed with
+recursive forward and backward variables.
+For some sequence q of length r, denote by q1:p and
+qr− p:r its ﬁrst and last p symbols respectively. Then
+for a labelling l, deﬁne the forward variable αt(s) to
+be the total probability of l1:s at time t. i.e.
+αt(s)
+def
+=
+∑
+π∈N T :
+B(π1:t)=l1:s
+t∏
+t′=1
+yt′
+πt′. (5)
+As we will see, αt(s) can be calculated recursively from
+αt− 1(s) and αt− 1(s − 1).
+To allow for blanks in the output paths, we consider
+a modiﬁed label sequence l′, with blanks added to the
+beginning and the end and inserted between every pair
+of labels. The length of l′ is therefore 2 |l|+ 1. In cal-
+culating the probabilities of preﬁxes of l′ we allow all
+transitions between blank and non-blank labels, and
+also those between any pair of distinct non-blank la-
+bels. We allow all preﬁxes to start with either a blank
+(b) or the ﬁrst symbol in l (l1).
+This gives us the following rules for initialisation
+α1(1) = y1
+b
+α1(2) = y1
+l1
+α1(s) = 0 , ∀s > 2
+and recursion
+αt(s) =
+{
+¯αt(s)yt
+l′
+s
+if l′
+s = b or l′
+s− 2 = l′
+s(
+¯αt(s) + αt− 1(s − 2)
+)
+yt
+l′
+s
+otherwise
+(6)
+where
+¯αt(s)
+def
+= αt− 1(s) + αt− 1(s − 1). (7)
+
+=== PDF PAGE 5 ===
+Connectionist T emporal Classiﬁcation
+Figure 3. illustration of the forward backward algo-
+rithm applied to the labelling ‘CA T’ . Black circles
+represent labels, and white circles represent blanks. Arrows
+signify allowed transitions. Forward variables are updated
+in the direction of the arrows, and backward variables are
+updated against them.
+Note that αt(s) = 0 ∀s < |l′| −2(T − t) − 1, because
+these variables correspond to states for which there are
+not enough time-steps left to complete the sequence
+(the unconnected circles in the top right of ﬁgure 3).
+Also αt(s) = 0 ∀s < 1.
+The probability of l is then the sum of the total prob-
+abilities of l′ with and without the ﬁnal blank at time
+T .
+p(l|x) = αT (|l′|) + αT (|l′| −1). (8)
+Similarly, the backward variables βt(s) are deﬁned as
+the total probability of ls:|l| at time t.
+βt(s)
+def
+=
+∑
+π∈N T :
+B(πt:T )=ls:|l|
+T∏
+t′=t
+yt′
+πt′ (9)
+βT (|l′|) = yT
+b
+βT (|l′| −1) = yT
+l|l|
+βT (s) = 0 , ∀s < |l′| −1
+βt(s) =
+{¯βt(s)yt
+l′
+s
+if l′
+s = b or l′
+s+2 = l′
+s(¯βt(s) + βt+1(s + 2)
+)
+yt
+l′
+s
+otherwise
+(10)
+where
+¯βt(s)
+def
+= βt+1(s) + βt+1(s + 1). (11)
+Note that βt(s) = 0 ∀s > 2t (the unconnected circles
+in the bottom left of ﬁgure 3) and ∀s > |l′|.
+In practice, the above recursions will soon lead to un-
+derﬂows on any digital computer. One way of avoid-
+ing this is to rescale the forward and backward vari-
+ables (Rabiner, 1989). If we deﬁne
+Ct
+def
+=
+∑
+s
+αt(s), ˆαt(s)
+def
+= αt(s)
+Ct
+and substitute α for ˆα on the RHS of (6) and (7), the
+forward variables will remain in computational range.
+Similarly, for the backward variables we deﬁne
+Dt
+def
+=
+∑
+s
+βt(s), ˆβt(s)
+def
+= βt(s)
+Dt
+and substitute β for ˆβ on the RHS of (10) and (11).
+To evaluate the maximum likelihood error, we need
+the natural logs of the target labelling probabilities.
+With the rescaled variables these have a particularly
+simple form:
+ln(p(l|x)) =
+T∑
+t=1
+ln(Ct)
+4.2. Maximum Likelihood T raining
+The aim of maximum likelihood training is to simul-
+taneously maximise the log probabilities of all the cor-
+rect classiﬁcations in the training set. In our case, this
+means minimising the following objective function:
+OM L(S, Nw) = −
+∑
+(x, z)∈S
+ln
+(
+p(z|x)
+)
+(12)
+To train the network with gradient descent, we need to
+diﬀerentiate (12) with respect to the network outputs.
+Since the training examples are independent we can
+consider them separately:
+∂OM L({(x, z)}, Nw)
+∂yt
+k
+= − ∂ln(p(z|x))
+∂yt
+k
+(13)
+We now show how the algorithm of section 4.1 can be
+used to calculate (13).
+The key point is that, for a labelling l, the product of
+the forward and backward variables at a given s and
+t is the probability of all the paths corresponding to l
+that go through the symbol s at time t. More precisely,
+from (5) and (9) we have:
+αt(s)βt(s) =
+∑
+π∈B − 1(l):
+πt=l′
+s
+yt
+l′
+s
+T∏
+t=1
+yt
+πt.
+Rearranging and substituting in from (2) gives
+αt(s)βt(s)
+yt
+l′
+s
+=
+∑
+π∈B − 1(l):
+πt=l′
+s
+p(π|x).
+
+=== PDF PAGE 6 ===
+Connectionist T emporal Classiﬁcation
+From (3) we can see that this is the portion of the total
+probability p(l|x) due to those paths going through l′
+s
+at time t. For any t, we can therefore sum over all s
+to get:
+p(l|x) =
+|l′|∑
+s=1
+αt(s)βt(s)
+yt
+l′
+s
+. (14)
+To diﬀerentiate this with respect to yt
+k, we need only
+consider those paths going through label k at time
+t. Noting that the same label (or blank) may be
+repeated several times for a single labelling l, we
+deﬁne the set of positions where label k occurs as
+lab(l, k ) = {s : l′
+s = k}, which may be empty.
+We then diﬀerentiate (14) to get:
+∂p(l|x)
+∂yt
+k
+= 1
+yt
+k
+2
+∑
+s∈lab(l,k )
+αt(s)βt(s). (15)
+Observing that
+∂ln(p(l|x))
+∂yt
+k
+= 1
+p(l|x)
+∂p(l|x)
+∂yt
+k
+we can set l = z and substitute (8) and (15) into (13)
+to diﬀerentiate the objective function.
+Finally, to backpropagate the gradient through the
+softmax layer, we need the objective function deriva-
+tives with respect to the unnormalised outputs ut
+k.
+If the rescaling of section 4.1 is used, we have:
+∂OM L({(x, z)}, Nw)
+∂ut
+k
+= yt
+k − 1
+yt
+kZt
+∑
+s∈lab(z,k )
+ˆαt(s) ˆβt(s)
+(16)
+where
+Zt
+def
+=
+|l′|∑
+s=1
+ˆαt(s) ˆβt(s)
+yt
+l′
+s
+.
+Eqn (16) is the ‘error signal’ received by the network
+during training (ﬁgure 4).
+5. Experiments
+We compared the performance of CTC with that of
+both an HMM and an HMM-RNN hybrid on a real-
+world temporal classiﬁcation problem: phonetic la-
+belling on the TIMIT speech corpus. More precisely,
+the task was to annotate the utterances in the TIMIT
+test set with the phoneme sequences that gave the low-
+est possible label error rate (as deﬁned in section 2.1).
+To make the comparison fair, the CTC and hybrid
+networks used the same RNN architecture: bidirec-
+tional Long Short-Term Memory (BLSTM; Graves &
+Schmidhuber, 2005). BLSTM combines the ability
+(b)
+erroroutput
+(c)
+(a)
+Figure 4. Evolution of the CTC Error Signal During
+T raining. The left column shows the output activations
+for the same sequence at various stages of training (the
+dashed line is the ‘blank’ unit); the right column shows
+the corresponding error signals. Errors above the horizon-
+tal axis act to increase the corresponding output activation
+and those below act to decrease it. (a) Initially the network
+has small random weights, and the error is determined by
+the target sequence only. (b) The network begins to make
+predictions and the error localises around them. (c) The
+network strongly predicts the correct labelling and the er-
+ror virtually disappears.
+of Long Short-Term Memory (LSTM; Hochreiter &
+Schmidhuber, 1997) to bridge long time lags with
+the access of bidirectional RNNs (BRNNs; Schuster
+& Paliwal, 1997) to past and future context. We
+stress that any other architecture could have been
+used instead. We chose BLSTM because our exper-
+iments with standard BRNNs and unidirectional net-
+works gave worse results on the same task.
+5.1. Data
+TIMIT contain recordings of prompted English speech,
+accompanied by manually segmented phonetic tran-
+scripts. It has a lexicon of 61 distinct phonemes, and
+comes divided into training and test sets containing
+4620 and 1680 utterances respectively. 5 % (184) of
+the training utterances were chosen at random and
+used as a validation set for early stopping in the hy-
+brid and CTC experiments. The audio data was pre-
+processed into 10 ms frames, overlapped by 5 ms, us-
+ing 12 Mel-Frequency Cepstrum Coeﬃcients (MFCCs)
+from 26 ﬁlter-bank channels. The log-energy was also
+included, along with the ﬁrst derivatives of all coeﬃ-
+cients, giving a vector of 26 coeﬃcients per frame in
+total. The coeﬃcients were individually normalised to
+have mean 0 and standard deviation 1 over the train-
+ing set.
+
+=== PDF PAGE 7 ===
+Connectionist T emporal Classiﬁcation
+5.2. Experimental Setup
+The CTC network used an extended BLSTM archi-
+tecture with peepholes and forget gates (Gers et al.,
+2002), 100 blocks in each of the forward and backward
+hidden layers, hyperbolic tangent for the input and
+output cell activation functions and a logistic sigmoid
+in the range [0 , 1] for the gates.
+The hidden layers were fully connected to themselves
+and the output layer, and fully connected from the
+input layer. The input layer was size 26, the soft-
+max output layer size 62 (61 phoneme categories plus
+the blank label), and the total number of weights was
+114, 662.
+Training was carried out with back propagation
+through time and online gradient descent (weight up-
+dates after every training example), using a learning
+rate of 10 − 4 and a momentum of 0 . 9. Network activa-
+tions were reset to 0 at the start of each example. For
+preﬁx search decoding (section 3.2) the blank proba-
+bility threshold was set at 99 . 99%. The weights were
+initialised with a ﬂat random distribution in the range
+[−0. 1, 0. 1]. During training, Gaussian noise was added
+to the inputs with a standard deviation of 0 . 6 to im-
+prove generalisation.
+The baseline HMM and hybrid systems were imple-
+mented as in (Graves et al., 2005). Brieﬂy, baseline
+HMMs with context independent and context depen-
+dent three-states left-to-right models were trained and
+tested using the HTK Toolkit 1. Observation probabil-
+ities were modelled by a mixture of Gaussians. Both
+the number of Gaussians and the insertion penalty
+were chosen to obtain the best performance on the
+task. Neither linguistic information nor probabilities
+of partial phone sequences were included in the system.
+There were more than 900 , 000 parameters in total.
+The hybrid system comprised an HMM and a BLSTM
+network, and was trained using Viterbi-based forced-
+alignment (Robinson, 1994). Initial estimation of tran-
+sition and prior probabilities of the one-state 61 mod-
+els was carried out using the correct transcription for
+the training set. Network output probabilities were
+divided by prior probabilities to obtain likelihoods for
+the HMM. The insertion penalty was chosen to obtain
+the best performance on the task.
+The BLSTM architecture and parameters were identi-
+cal to those used for CTC, with the following excep-
+tions: (1) the learning rate for the hybrid network was
+10− 5; (2) the injected noise had standard deviation
+0. 5; (3) the output layer had 61 units instead of 62
+1http://htk.eng.cam.ac.uk/
+Table 1. Label Error Rate (LER) on TIMIT . CTC
+and hybrid results are means over 5 runs, ± standard error.
+All diﬀerences were signiﬁcant ( p < 0.01), except between
+weighted error BLSTM/HMM and CTC (best path).
+System LER
+Context-independent HMM 38.85 %
+Context-dependent HMM 35.21 %
+BLSTM/HMM 33.84 ± 0.06 %
+Weighted error BLSTM/HMM 31.57 ± 0.06 %
+CTC (best path) 31.47 ± 0.21 %
+CTC (preﬁx search) 30.51 ± 0.19 %
+(no blank label). The noise and learning rate were set
+for the two systems independently, following a rough
+search in parameter space. The hybrid network had
+a total of 114 , 461 weights, to which the HMM added
+183 further parameters. For the weighted error exper-
+iment, the error signal was scaled to give equal weight
+to long and short phonemes (Robinson, 1991).
+5.3. Experimental Results
+The results in table 1 show that, with preﬁx search
+decoding, CTC outperformed both a baseline HMM
+recogniser and an HMM-RNN hybrid with the same
+RNN architecture. They also show that preﬁx search
+gave a small improvement over best path decoding.
+Note that the best hybrid results were achieved with a
+weighted error signal. Such heuristics are unnecessary
+for CTC, as its objective function depends only on
+the sequence of labels, and not on their duration or
+segmentation.
+Input noise had a greater impact on generalisation for
+CTC than the hybrid system, and a higher level of
+noise was found to be optimal for CTC.
+6. Discussion and Future Work
+A key diﬀerence between CTC and other temporal
+classiﬁers is that CTC does not explicitly segment its
+input sequences. This has several beneﬁts, such as re-
+moving the need to locate inherently ambiguous label
+boundaries (e.g. in speech or handwriting), and allow-
+ing label predictions to be grouped together if it proves
+useful (e.g. if several labels commonly occur together).
+In any case, determining the segmentation is a waste of
+modelling eﬀort if only the label sequence is required.
+For tasks where segmentation is required (e.g. protein
+secondary structure prediction), it would seem prob-
+lematic to use CTC. However, as can be seen from ﬁg-
+ure 1, CTC naturally tends to align each label predic-
+
+=== PDF PAGE 8 ===
+Connectionist T emporal Classiﬁcation
+tion with the corresponding part of the sequence. This
+should make it suitable for tasks like keyword spotting,
+where approximate segmentation is suﬃcient.
+Another distinctive feature of CTC is that it does
+not explicitly model inter-label dependencies. This is
+in contrast to graphical models, where the labels are
+typically assumed to form a kth order Markov chain.
+Nonetheless, CTC implicitly models inter-label depen-
+dencies, e.g. by predicting labels that commonly occur
+together as a double spike (see ﬁgure 1).
+One very general way of dealing with structured data
+would be a hierarchy of temporal classiﬁers, where the
+labellings at one level (e.g. letters) become inputs for
+the labellings at the next (e.g. words). Preliminary
+experiments with hierarchical CTC have been encour-
+aging, and we intend to pursue this direction further.
+Good generalisation is always diﬃcult with maximum
+likelihood training, but appears to be particularly so
+for CTC. In the future, we will continue to explore
+methods to reduce overﬁtting, such as weight decay,
+boosting and margin maximisation.
+7. Conclusions
+We have introduced a novel, general method for tem-
+poral classiﬁcation with RNNs. Our method ﬁts nat-
+urally into the existing framework of neural network
+classiﬁers, and is derived from the same probabilis-
+tic principles. It obviates the need for pre-segmented
+data, and allows the network to be trained directly for
+sequence labelling. Moreover, without requiring any
+task-speciﬁc knowledge, it has outperformed both an
+HMM and an HMM-RNN hybrid on a real-world tem-
+poral classiﬁcation problem.
+Acknowledgements
+We thank Marcus Hutter for useful mathematical dis-
+cussions. This research was funded by SNF grants
+200021-111968/1 and 200020-107534/1.
+References
+Bengio., Y. (1999). Markovian models for sequential
+data. Neural Computing Surveys , 2, 129–162.
+Bishop, C. (1995). Neural Networks for Pattern Recog-
+nition, chapter 6. Oxford University Press, Inc.
+Bourlard, H., & Morgan, N. (1994). Connnectionist
+speech recognition: A hybrid approach . Kluwer Aca-
+demic Publishers.
+Bridle, J. (1990). Probabilistic interpretation of feed-
+forward classiﬁcation network outputs, with re-
+lationships to statistical pattern recognition. In
+F. Soulie and J.Herault (Eds.), Neurocomputing: Al-
+gorithms, architectures and applications , 227–236.
+Springer-Verlag.
+Gers, F., Schraudolph, N., & Schmidhuber, J. (2002).
+Learning precise timing with LSTM recurrent net-
+works. Journal of Machine Learning Research , 3,
+115–143.
+Graves, A., Fern´ andez, S., & Schmidhuber, J.
+(2005). Bidirectional LSTM networks for improved
+phoneme classiﬁcation and recognition. Proceedings
+of the 2005 International Conference on Artiﬁcial
+Neural Networks . Warsaw, Poland.
+Graves, A., & Schmidhuber, J. (2005). Framewise
+phoneme classiﬁcation with bidirectional LSTM and
+other neural network architectures. Neural Net-
+works, 18, 602–610.
+Hochreiter, S., & Schmidhuber, J. (1997). Long Short-
+Term Memory. Neural Computation , 9, 1735–1780.
+Kadous, M. W. (2002). Temporal classiﬁcation: Ex-
+tending the classiﬁcation paradigm to multivariate
+time series . Doctoral dissertation, School of Com-
+puter Science & Engineering, University of New
+South Wales.
+Laﬀerty, J., McCallum, A., & Pereira, F. (2001). Con-
+ditional random ﬁelds: Probabilistic models for seg-
+menting and labeling sequence data. Proc. 18th In-
+ternational Conf. on Machine Learning (pp. 282–
+289). Morgan Kaufmann, San Francisco, CA.
+LeCun, Y., Bottou, L., Orr, G., & Muller, K. (1998).
+Eﬃcient backprop. Neural Networks: Tricks of the
+trade. Springer.
+Rabiner, L. R. (1989). A tutorial on hidden markov
+models and selected applications in speech recogni-
+tion. Proc. IEEE (pp. 257–286). IEEE.
+Robinson, A. J. (1991). Several improvements
+to a recurrent error propagation network phone
+recognition system (Technical Report CUED/F-
+INFENG/TR82). University of Cambridge.
+Robinson, A. J. (1994). An application of recurrent
+nets to phone probability estimation. IEEE Trans-
+actions on Neural Networks , 5, 298–305.
+Schraudolph, N. N. (2002). Fast Curvature Matrix-
+Vector Products for Second-Order Gradient De-
+scent. Neural Comp. , 14, 1723–1738.
+Schuster, M., & Paliwal, K. K. (1997). Bidirectional
+recurrent neural networks. IEEE Transactions on
+Signal Processing, 45, 2673–2681.
+Werbos, P. (1990). Backpropagation through time:
+What it does and how to do it. Proceedings of the
+IEEE, 78, 1550 – 1560.

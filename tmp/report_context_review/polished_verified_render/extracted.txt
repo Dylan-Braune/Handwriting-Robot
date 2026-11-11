@@ -1,0 +1,2699 @@
+D.R. Braune Design and implementation
+3. Design and implementation
+The Cartesian plotter constrains the workspace, pen state and motion required from the soft-
+ware. The design therefore starts with hardware, then follows page segmentation, text/writer
+classification and handwriting reproduction, before describing their integration.
+Numerical substitutions use the configured mechanism and recorded processing of stored hand-
+writing, with inputs and scope collected in Appendix B.7. Borrowed methods are referenced
+where introduced; project-specific transforms and heuristics are identified as design choices.
+These traces show how the calculations operate; physical qualification remains in Results.
+3.1 Design summary
+This section summarises the project design tasks and how they were implemented (see Table 1).
+The tasks follow the deliverables and student design work in the approved Project Proposal. Com-
+pletion refers to the implementation of a task; compliance with a numerical system specification
+is established separately by the qualification tests in the Results section.
+Deliverable or task Implementation Completion and
+report location
+Investigation of methods Compared recognition, conditioning and
+reproduction approaches.
+Completed; Literature
+Review; Sections 3.5,
+3.6.
+Page capture and image
+conditioning
+Camera arrangement, illumination
+normalisation, ink extraction and orientation
+correction.
+Completed;
+Sections 3.3.6 and 3.4.
+Separation of
+handwritten text
+Line detection, curved boundaries and ink
+ownership; later transcript-constrained glyph
+localisation.
+Completed;
+Sections 3.4, 3.6.2.
+Text and writer
+classifiers
+Convolutional features, sequence recognition
+and writer identification.
+Completed; Section 3.5.
+Network training
+implementations
+NumPy calculations and framework training;
+selected weights are framework-trained.
+Completed;
+Sections 3.5.5–3.5.7.
+Writer-specific trajectory
+maps and storage
+Aligned glyph extraction, skeleton tracing,
+variant filtering and persistent style profiles.
+Completed;
+Sections 3.6.2–3.6.5.
+Handwriting synthesis
+and G-code
+Text layout, glyph assembly, candidate
+selection and conversion to machine
+coordinates.
+Completed;
+Sections 3.6.6–3.6.8.
+Gantry, pen mechanism
+and motion control
+Custom mechanical assembly, two-axis drive,
+pen switching, end stops and calibration.
+Completed; Section 3.3.
+Processing and motion
+integration
+Server connects capture, processing, stored
+profiles and execution.
+Completed; Section 3.7.
+Subsystem verification Numerical checks and offline image/path
+experiments; formal integrated qualification is
+reported in Results.
+Completed;
+Sections 3.5.7, 3.4.6;
+Appendix B.
+Table 1. Design summary.
+1
+
+D.R. Braune Design and implementation
+3.2 System block diagram
+The complete system connects page capture, handwriting interpretation and physical reproduction.
+The camera supplies an image to the ODROID N2+, while the gantry receives motion commands
+from the same computer. Between these interfaces, line images, recognised strings, writer
+probabilities and pen trajectories are kept as different representations. Figure 1 shows the
+physical devices, supplies and signal paths; Figure 2 shows the software stages and the files
+passed between them. The text below explains how these two views relate to the project’s
+functional units and how a page request reaches the gantry.
+The hardware diagram distinguishes USB image data, GPIO control and switch feedback, motor
+power and mechanical coupling. The two A4988 drivers supply winding current to the X and Y
+motors; the ODROID supplies STEP and DIR signals rather than motor power through GPIO.
+Four switches provide axis-limit feedback and a fifth reports pen state. The pen motor has a
+separate transistor switching path. The Y drive’s cross-shaft is a mechanical connection between
+the two belt sides, not an electrical signal. The server coordinates image acquisition, inference
+and job execution.
+Figure 1. Hardware system block diagram supplied by the author. The detailed controller
+pins, signal levels and power connections are listed in Table 2.
+2
+
+D.R. Braune Design and implementation
+Figure requested:Three lanes for off-device preparation, ODROID page reading and ODROID
+writing. Show model training and transcript-guided glyph extraction; photographed page
+through conditioning, segmentation, reader and stroke-normalised writer vote; selected
+text/profile through best-of-N synthesis, trajectory and a G-code file boundary to the gantry
+interpreter. Draw model weights, line caches, profiles and job files as stored data. Include
+functional-unit identifiers on major blocks and a legend for processing, data, network and
+hardware-boundary links. Keep labels at least 8 pt at final size.
+design-software-block-diagram.pdf
+Figure 2. Software block diagram showing preparation, page reading and handwriting
+generation.
+The software diagram separates preparation, page reading and writing into three lanes. In
+preparation, labelled lines and known transcripts feed model training and transcript-guided glyph
+extraction; model weights, line caches and writer profiles are stored for later use. In page reading,
+conditioning and line segmentation precede the reader and stroke-normalised writer classifier,
+whose per-line outputs are combined into a page report. In writing, new text and a selected stored
+profile feed glyph layout and candidate scoring, then trajectory generation and a G-code file. The
+G-code file is the software-to-hardware boundary: the generator expresses geometry and pen
+state, while the gantry interpreter maps those commands to motor and pen signals. Training is
+identified as off-device; the request-time processing and motion stages are identified with the
+ODROID. The feedback from reader and writer scoring to candidate selection represents the
+implemented best-of-N search, not an independent measure of physical handwriting quality.
+Recognition and reproduction share models, but they do not perform the same operation. Recog-
+nition estimates unknown text from an image. Glyph extraction uses text that is already known
+to estimate where its characters occur. Reproduction arranges the extracted pen paths into new
+text and uses the reader and writer classifier to select among candidate renderings. Keeping
+these roles separate is important: a candidate-selection score indicates how a model judges the
+generated image, whereas an independently assessed physical page establishes what the complete
+machine actually reproduced.
+The final design reads complete lines rather than requiring isolated letters at FU 2.2. Character
+boundaries are instead recovered with known transcripts during profile construction. This avoids
+committing to uncertain cuts before recognising connected handwriting.
+The proposal’s functional units remain identifiable in this architecture. Camera acquisition and
+request handling implement FU 1; conditioning and line preparation implement FU 2.1–2.2;
+the two trained networks implement classification FU 2.3. Offline weight training corresponds
+to FU 2.4, while glyph extraction, profile storage and glyph retrieval implement FU 2.5–2.7.
+Trajectory conversion and the motion interpreter implement FU 2.8, followed by the axis drives,
+pen holder and lift in FU 3.1–3.4. Training and profile preparation produce stored artefacts
+before request-time recognition or writing; they are not repeated for each page.
+The system-level distinction is also a practical commissioning boundary. G-code describes mo-
+tion in millimetres and pen state without requiring the synthesiser to know GPIO pin assignments.
+Conversely, the motion interpreter can execute a geometric test file without loading handwriting
+models. A photographed page is therefore transformed into recognised text and a writer estimate
+through the read path; a separate writing request selects text and a stored writer profile, creates
+a trajectory and G-code, and sends that file to the interpreter. Keeping those requests distinct
+3
+
+D.R. Braune Design and implementation
+avoids implying that classifying a page alone causes the machine to reproduce it, while allowing
+faults to be located in image processing, trajectory generation or physical execution.
+3.3 Hardware design
+The hardware must hold the paper and pen securely, reach the required writing area, and convert
+a stored trajectory into repeatable motion. The design therefore combines a Cartesian belt drive
+with a separately actuated pen mechanism. The electrical interface is kept simple enough for
+direct control from the ODROID, while calibration relates software coordinates to the travel of
+the assembled machine.
+3.3.1 Plotter mechanics and mechanical construction
+The chosen method of text plotting is a Cartesian gantry system with two independent axes of
+movement and a pen up/down mechanism, consistent with the Cartesian arrangement illustrated
+by Teikari [1, p. 6, Fig. 4]. Complex kinematic equations and joint-dependent position errors are
+avoided by using separate x and y movements for reproduction. Linear GT2 timing belts and
+pulleys are used to convert rotary motion from stepper motors and axles to the desired Cartesian
+movements. Timing belts were chosen for their cost effectiveness and ability to provide relatively
+fast travel without a lead-screw transmission.
+A Cartesian gantry consists of stationary rails that guide movement in one axis, and a movable
+rail that guides the other axis of movement. For this system and the explanations that follow, the
+stationary rails guide y-axis movement, while the x-axis rail moves along the y-axis. Figure 3
+shows the axes of the gantry.
+Figure 3. Cartesian gantry axes and pen up/down mechanism.
+4
+
+D.R. Braune Design and implementation
+The x-axis rail needs to move with stability and consistency, which is why it is supported at both
+ends by the two y-axis rails. A single stepper motor was chosen to drive the pulleys on both sides
+to ensure synchronised motion and save costs. Two independent stepper motors driving one axis
+introduce a synchronisation concern because differences in missed steps or loading could offset
+one side relative to the other. The challenge with using one motor to drive two timing pulleys
+is extending its shaft to both pulleys without excessive load or twist in the new axle. A rigid
+coupler was used to extend the stepper motor shaft with a chromed steel rod.
+To reduce strain on the motors and allow smoother movement, linear bearings were fitted around
+the chromed rod rails so that the moving parts slide with low resistance. Bearing alignment is
+important as well as bearing diameter: an incorrectly aligned bearing can constrain the same rod
+in a different direction from the neighbouring bearing, increasing resistance instead of reducing
+it. During assembly, bearing fit and printed-part alignment were checked by sliding the parts
+along the rods before connecting the belts. The fit was adjusted where the assembled bearings
+restricted movement.
+The shared shaft couples the two sides mechanically, but does not remove all sources of error.
+Unequal belt tension, shaft torsion and a frame that is not square can still change the pen position.
+Belt tension must therefore be sufficient to maintain engagement without adding unnecessary
+bearing load. The pen holder also needs enough stiffness to prevent lateral deflection as the
+direction of travel changes. These effects concern physical accuracy and cannot be inferred from
+the nominal step resolution alone.
+The printed components locate bearings, support the motors and pulleys, fasten the belts, and
+guide the pen mechanism. Their relationship within the completed assembly is identified in
+Figure 4. The arrangement fixes the relative positions of the rail, belt and pen, so manufacturing
+fit and bracket stiffness affect the same position budget as the drive. The available travel is
+established in Section 3.3.4.
+Figure requested:Photograph or assembled CAD view with the custom brackets, cross-shaft,
+belt tensioning, rail bearings and paper restraint labelled.
+design-gantry-assembly.jpg
+Figure 4. Mechanical assembly and the components locating the pen relative to the page.
+3.3.2 Stepper motor selection and drive resolution
+A stepper motor turns through fixed angular increments as the winding-current pattern changes.
+The windings are the motor’s coils, and each current pattern establishes a magnetic field that
+pulls the rotor towards a corresponding position. The A4988 regulates these winding currents
+by chopping: it switches the drive to maintain the requested current level. Chopping continues
+even while a position is held; advancing the requested current pattern, rather than chopping itself,
+produces the next step [2, p. 9].
+Two stepper motors are used in the gantry plotter, one for the x and one for the y direction. The
+selected motor is the 42BYGH40-01 NEMA 17 bipolar stepper, with a 40 mm body length, a
+1.8○full-step angle and a rated current of 1.68 A per phase. Stepper control suits the required
+position commands because displacement follows from the number of commanded steps, without
+5
+
+D.R. Braune Design and implementation
+requiring an encoder for normal operation. The corresponding limitation is that the controller
+cannot determine whether every commanded step was physically completed.
+For the 20-tooth GT2 pulleys and 2 mm belt pitch, the travel per revolution and pitch radius
+follow from Equation 1. The radius is determined by tooth pitch, rather than by measuring the
+shaft or outside pulley diameter.
+ℓrev=N t p=20(2)=40 mm/rev,r p= Nt p
+2π =6.37 mm.(1)
+Here Nt is the tooth count and p is belt pitch. With 200 full steps per revolution and a microstep
+subdivisionµ s=16, the nominal commanded displacement is given by Equation 2.
+κ0= 200µs
+ℓrev
+=80 microsteps/mm,∆x 0= 1
+κ0
+=0.0125 mm.(2)
+The A4988 supports this subdivision through its microstep-selection inputs [ 2, p. 6, Table 1].
+The value in Equation 2 is substantially smaller than the proposal’s 0.5 mm positional-error
+limit. It establishes adequate command granularity, but is not a measurement of accuracy: belt
+compliance, frame geometry, switch behaviour and pen deflection remain between the step count
+and the mark on paper. Microstepping also does not guarantee that every intermediate mechanical
+position is equally accurate under load.
+Motor torque must be assessed at operating speed, rather than from holding torque alone. The
+generated Owen job uses a travel feed of 2400 mm/min and drawing feed of 900 mm/min. With
+the installed 40 mm/revolution transmission, these correspond to 60 and 22.5 rev/min respectively,
+using Equation 3.
+n= F
+ℓrev
+= 2400
+40 =60 rev/min.(3)
+The load model in Equation 4 separates translation and rotation. It applies to the belt-driven axis,
+with all lengths expressed in metres.
+Treq=r p(Ff+ma)+J rot
+a
+rp
+.(4)
+Here Ff is the resisting linear force, m is the translating mass, a is linear acceleration, and Jrot is
+the combined inertia of rotating parts referred to the motor shaft. The second axis carries the
+first-axis assembly, so its load must include that assembly. The rotational term must not also
+be included in m, which would count the same inertia twice. Equation 4 follows from T=r pF
+and angular accelerationa/r p; it is a load calculation, not a substitute for the motor’s measured
+torque–speed characteristic [3, page to verify] [verify source/page:acarnley2002].
+At constant speed, Equation 4 reduces toT=r pFf =0.006366F f N m for the installed pulley, with
+Ff in newtons. A numerical load margin requires measured carriage resistance, moving mass and
+reflected inertia. The available record does not establish these quantities sufficiently to substitute
+a verified operating load. The driver starts each segment without a controlled acceleration ramp,
+so a holding-torque rating alone cannot establish an allowable starting rate.
+To complete:Confirm the 0.950 kg mass and which axis it represents; measure carriage resistance and
+obtain the torque–speed or starting-rate data for the installed 42BYGH40-01 at the actual driver setting. A
+curve for a different motor cannot establish its torque margin.
+6
+
+D.R. Braune Design and implementation
+The ODROID coordinates the two axes using an integer error accumulator. For a move of ax
+and ay microsteps with ax ≥ay, the x axis is stepped on each iteration. The accumulator is
+reduced by ay and a y step is inserted whenever it crosses zero, before adding ax back. This
+is the Bresenham interpolation principle [4, p. 28]; it preserves the commanded endpoint and
+distributes the minor-axis steps along the line instead of completing one axis first.
+Algorithm 1 gives the major-axis form of the implemented loop. In the generated Owen
+file, the segment from (17.024,239.996) to (17.065,239.643) mm produces signed count
+changes (3,−29)at the configured nominal 80 microsteps/mm. For example, the x increment
+is round(17.065×80)−round(17.024×80)=1365−1362=3. The y axis is therefore the major
+axis, with initial accumulator ⌊29/2⌋=14; the three x pulses are distributed among the 29 y
+pulses. This evaluates the generated command at the nominal scale, rather than assuming a
+recovered physical homing count.
+Algorithm 1Coordinated axis stepping with interruption checks
+Require:Signed axis counts; pulse delay; connected GPIO interface.
+1:(N M,N m)←major and minor absolute counts; set directions
+2:e←⌊N M/2⌋
+3:fori←1toN M do
+4:ifabort requested or end stop confirmedthen
+5:returninterrupted, current position counters
+6:end if
+7: Pulse major axis; update its signed counter
+8:e←e−N m
+9:ife<0then
+10: Pulse minor axis; update its signed counter;e←e+N M
+11:end if
+12:end for
+13:returncompleted, current position counters
+The geometry and timing of this loop must be considered separately. The current implementation
+sleeps inside each axis-pulse call, so an iteration containing two pulses takes longer than one
+containing a single pulse. For major- and minor-axis counts NM and Nm, Equation 5 gives the
+delay contribution, excluding GPIO and interpreter overhead.
+tdelay=(N M+N m)τ,τ=max( d
+vNM
+,2×10−6),v=F/60.(5)
+For that same generated segment, d=
+√
+0.0412+0.353 2=0.355373 mm, v=900/60=15 mm/s,
+NM=29 and Nm=3 . Equation 5 gives τ=0.355373/(15×29)=0.000816950 s and tdelay=32τ=
+0.0261424 s. The geometric feed budget is d/v=0.0236915 s. The extra delay follows from the
+separate minor-axis pulses; neither value is a measured motor execution time.
+Here d is move length in millimetres andv is the requested speed in mm/s. Equation 5 means that
+a 45○move has approximately twice the intended delay contribution, whereas an axis-parallel
+move does not. A shared pulse scheduler could reduce this directional speed variation. The
+present arrangement maintains simple coordinated positioning, but its feed value must not be
+treated as a measured trajectory speed.
+7
+
+D.R. Braune Design and implementation
+3.3.3 Pen lift mechanism and drive circuit
+The pen has two required states: in contact with the page for a stroke, and clear of the page for
+travel. A compact geared motor and cam provide these states without adding a third positioning
+axis. The motor turns in one direction and the cam alternates the pen height as it rotates. A
+switch indicates the raised state. Compared with a servo, this arrangement uses a simple switched
+output and position indication, but it gives no commanded intermediate pen height or force.
+Figure 5 shows the two pen positions. The holder and page support are part of the same design
+decision: repeatable motor movement is of little value if a flexible holder changes the nib position
+or if a stack of paper changes contact pressure. A single restrained sheet on a rigid support
+reduces this variation. The mechanism was adjusted experimentally to achieve clearance during
+travel without excessive pressure during drawing.
+Figure 5. Cam-operated mechanism with the pen lowered and raised.
+The software checks the switch before energising the motor. If the desired state is already present,
+no pulse is required; an unnecessary rotation could move the pen away from the requested state.
+Otherwise the motor runs until the switch indicates the target or the timeout expires. The current
+control routine allows a 40 ms overrun after confirmation of the raised state to seat the cam. This
+feedback operation differs from the G-code generator’s settling dwell, which is described in
+Section 3.6.8.
+The low-side BC337 circuit in Figure 6 keeps the motor current out of the GPIO signal path.
+With a 1 kΩ base resistor and the assumed VBE =0.7 V , Equation 6 gives the approximate base
+current using the standard low-side resistor relation [5, section “Why NPN Devices Are Used in
+Low-Side Switches” ].
+IB= VGPIO−VBE
+RB
+= 3.3−0.7
+1000 =2.6 mA.(6)
+The calculation in Equation 6 establishes the nominal signal current only. It does not prove
+transistor saturation at motor startup or stall. The installed motor current, GPIO capability
+and transistor saturation conditions must be considered together [ 6, page to verify] [verify
+source/page: bc337ds]. Increasing base current without checking the GPIO rating would
+transfer the problem to the computer interface.
+8
+
+D.R. Braune Design and implementation
+Figure 6. Prototype pen-motor switching circuit supplied with the draft. Supply and
+protection details require confirmation against the installed circuit.
+The installed pen motor is powered from the ODROID’s dedicated 3.3 V supply pin, while the
+GPIO controls the transistor base through its resistor. The power pin and signal pin have different
+roles; moving the supply connection away from GPIO does not by itself establish that the rail
+can supply motor startup current. No flyback diode is fitted. Interrupting an inductive motor
+current can therefore impose a voltage transient on the switching stage [5, section “Protection
+and Wiring Techniques” ]. A diode across the motor, reverse-biased during normal operation,
+would provide a recirculation path; its current and voltage ratings must be selected from the
+motor and supply conditions. This is a limitation of the installed circuit, not a protection feature
+already implemented.
+To complete:Measure pen-motor running/startup current and confirm the 3.3 V rail’s available capacity.
+The user reports 10 kOhm pull-downs; confirm whether one is fitted at the transistor base as well as at
+switch inputs. Replace the prototype image with correct DC notation and actual installed components.
+Record the reason the motor-suppression diode was omitted before final submission.
+3.3.4 End stops, homing and dimensional calibration
+Four switches define the minimum and maximum travel of the two axes. Each is connected as
+an active-high input with a 10 kΩ pull-down, as shown in Figure 7. The pull-down defines the
+input while the contact is open. With the contact closed, its current is 3.3/10000=0.33 mA and
+dissipation is approximately 1.1 mW. The resistor is between input and ground, so it does not
+limit fault current if the GPIO is incorrectly configured as an output driven low.
+The control routine confirms a high reading with two further samples separated by 6 ms. Requir-
+ing three consistent readings rejects brief transients, at the cost of waiting approximately 12 ms
+when a potential trip is checked. Axis pulses are not continuously generated during this blocking
+check, so multiplying the full confirmation interval by the commanded feed would not correctly
+describe the software’s movement during debounce. Physical stopping distance also depends on
+the mechanics; it requires a measurement rather than a software-delay calculation alone.
+9
+
+D.R. Braune Design and implementation
+Figure 7. Active-high switch input with a 10 kΩpull-down.
+After startup, the step counters do not establish a known physical origin. Calibration therefore
+drives one axis towards either switch, reverses towards the other, and counts the switch-to-switch
+steps. Equation 7 converts this count to the scale used for motion.
+κx= Nx
+Lx
+,κ y= Ny
+Ly
+,n x=round[(x+e)κ x].(7)
+The configured travel dimensions give usable spans 200.6−2(5)=190.6 mm and 261.3−2(5)=
+251.3 mm after edge clearance. These values define the generated job’s workspace. The numer-
+ical calibrated values of κx and κy additionally require the actual switch-to-switch counts Nx,Ny;
+a count has not been substituted where its measurement is unavailable.
+Here Nx,Ny are measured step counts, Lx,L y are the independently measured switch-to-switch
+travels, and e=5 mm is the edge clearance. The corresponding expression applies to y. An
+axis retracts from the switch after calibration, and the origin lies inside the physical boundary.
+Absolute target counts are rounded and differenced against the tracked count, so rounding of one
+segment is not repeatedly accumulated as a new relative position error.
+The recorded travel constants in the current code are Lx=200.6 mm and Ly=261.3 mm. With
+5 mm clearance on both ends, the software travel limits are 190.6 by 251.3 mm before the writing
+margins are applied. These are configuration values describing the available travel; a separate
+calibration record is needed to state the measured microsteps per millimetre. The result of
+calibration is not retained as a valid position across a restart.
+Calibration compensates for scale error, but it cannot correct an imprecise reference measurement.
+If the travel measurement has errorδL , its first-order contribution to position error at commanded
+distancexis given by Equation 8.
+∣δx∣≃∣x∣∣δL∣
+L .(8)
+At the configured maximumx travel, the multiplier in Equation 8 is190.6/200.6=0.95015 . Thus
+reference-length uncertainty contributes approximately 0.95015∣δLx∣at the far end of the usable
+axis. This converts the actual geometry into a sensitivity coefficient; a measured uncertainty still
+requires the travel measurement and switch-repeatability record.
+10
+
+D.R. Braune Design and implementation
+3.3.5 Electrical integration and power distribution
+The motor-driver supply is operated at 24 V . The recorded supply-current indication is 0.35 A,
+with the supply current limit set to 2.11 A. These quantities have different meanings: the first is
+a reading at an operating condition, the second limits the available supply current, and neither
+specifies the winding-current regulation of an A4988. At the recorded operating condition,
+that supply delivers approximately 24(0.35)=8.4 W. This reading does not include a verified
+peak-load test or establish total consumption from both supplies.
+The ODROID-N2+ header provides 3.3 V digital I/O, and the A4988 logic supply operates from
+3 V to 5.5 V [7, “GPIO (40Pin header)” and “External I/O” sections, unpaginated][2, PDF p. 5,
+“Logic Supply V oltage Range”]. With the drivers’ logic supply connected to 3.3 V , the A4988
+minimum high input is 0.7(3.3)=2.31 V [2, PDF p. 4, Table 2]. A nominal 3.3 V ODROID
+output therefore has 3.3−2.31=0.99 V of nominal high-level margin. This is a compatibility
+calculation from specified levels, not a measurement at the installed driver pins. Hardkernel
+recommends a 12 V , 2 A adapter for the board, but the actual adapter fitted to this system has not
+been identified; the value shown in the supplied sketch is therefore not treated as a measured
+supply specification [7, “Power” section, unpaginated].
+Table 2 maps each motion-controller connection to the ODROID 40-pin header. Phys-
+ical header numbers and gpiochip0 line offsets are listed separately because they are
+different numbering systems. The assignments follow the active controller configuration
+in Software/CleanPipeline3/reproduce.py; the physical connections should be
+checked against the finished schematic before wiring or submission. The 3.3 V header pin and
+ground pins actually used, and the common return between the board and motor drivers, remain
+to be confirmed.
+Table 2. Controller pin, signal-level and supply map for the installed system.
+Header pin /
+GPIO line
+Connection Direction and nominal
+level
+Notes / verification
+USB host ODROID USB host →
+IMX179 camera
+USB data and bus power Camera current draw and cap-
+tured resolution are not estab-
+lished by the sensor’s advert-
+ised maximum.
+Ethernet / network ODROID RJ45 or Wi-
+Fi↔laptop/browser
+Network data; no GPIO
+voltage
+Operator request and response
+path.
+ODROID DC jack Supplied adapter →
+board power input
+Actual adapter output
+unknown
+The manufacturer’s 12 V/2 A
+recommendation is not con-
+firmation of the adapter in
+use [7, “Power” section, unpa-
+ginated].
+Continued on next page
+11
+
+D.R. Braune Design and implementation
+Table 2. Controller pin, signal-level and supply map (continued).
+Header pin /
+GPIO line
+Connection Direction and nominal
+level
+Notes / verification
+External supply+ 24 V supply → VMOT
+on both A4988 carriers
+24 V DC; supply limit
+set to 2.11 A
+A separate 0.35 A supply indic-
+ation was recorded under one
+operating condition; neither
+value is the motor phase-
+current setting.
+3.3 V header rail ODROID dedicated
+3.3 V output → both
+A4988 VDD inputs
+and pen-motor positive
+rail
+3.3 V supply Actual physical 3.3 V header
+pin and total rail loading must
+be confirmed on the installed
+harness.
+Ground return ODROID GND, driver
+logic/motor returns,
+switch returns and
+BC337 emitter
+0 V reference A common signal reference is
+required; exact grounding to-
+pology and physical GND pin
+are to be checked against the
+circuit.
+7 / 64DIR1_PIN→ X-
+driver DIR
+Output, nominal 0/3.3 V Direction state; software inver-
+sion is configured for X.
+11 / 68STEP1_PIN→
+X-driver STEP
+Output pulses, nominal
+0/3.3 V
+A4988 advances on STEP
+pulses; this is a logic input, not
+the motor supply.
+12 / 81DIR2_PIN→ Y-
+driver DIR
+Output, nominal 0/3.3 V Direction state; software inver-
+sion is configured for Y .
+13 / 69STEP2_PIN→
+Y-driver STEP
+Output pulses, nominal
+0/3.3 V
+A4988 advances on STEP
+pulses; this is a logic input, not
+the motor supply.
+15 / 72 X-min switch →
+X_MIN_PIN
+Input, active high, nom-
+inal 0/3.3 V
+Reported 10 k Ω pull-down;
+verify its fitted location and re-
+turn.
+16 / 65 X-max switch →
+X_MAX_PIN
+Input, active high, nom-
+inal 0/3.3 V
+Reported 10 k Ω pull-down;
+verify its fitted location and re-
+turn.
+18 / 66 Y-min switch →
+Y_MIN_PIN
+Input, active high, nom-
+inal 0/3.3 V
+Reported 10 k Ω pull-down;
+verify its fitted location and re-
+turn.
+22 / 67 Y-max switch →
+Y_MAX_PIN
+Input, active high, nom-
+inal 0/3.3 V
+Reported 10 k Ω pull-down;
+verify its fitted location and re-
+turn.
+33 / 70 Pen-up switch →
+PEN_SWITCH_PIN
+Input, active high, nom-
+inal 0/3.3 V
+High indicates the raised state.
+Confirm the switch model and
+pull-down arrangement from
+the installed circuit.
+Continued on next page
+12
+
+D.R. Braune Design and implementation
+Table 2. Controller pin, signal-level and supply map (continued).
+Header pin /
+GPIO line
+Connection Direction and nominal
+level
+Notes / verification
+35 / 71PEN_MOTOR_PIN→
+1 kΩ base resistor →
+BC337
+Output, nominal 0/3.3 V GPIO controls the transistor
+only; motor current is supplied
+by the dedicated 3.3 V rail. A
+10 kΩ base pull-down was re-
+ported; verify its connection.
+No flyback diode is fitted.
+A4988 outputs X/Y carrier 1A/1B and
+2A/2B → motor coil
+pairs
+Switched/chopped wind-
+ing drive from VMOT
+The coil voltage is not a fixed
+24 V STEP signal. Phase-
+current limit depends on VREF
+and sense resistance; actual
+VREF remains unmeasured [2,
+PDF pp. 4–5, 9].
+The A4988 current-trip setting follows Equation 9 [2, p. 9].
+Itrip,max= Vref
+8RS
+.(9)
+Here RS is the carrier’s sense resistance andVref is the measured reference voltage. The installed
+motor’s 1.68 A phase rating gives the conditional electrical bound Vref ≤8RS(1.68). If the
+reported R10 marking is confirmed as RS=0.10Ω , this is Vref≤1.344V before considering a
+lower limit imposed by carrier heating. This is a component-rating constraint, not the recorded
+adjustment: the actual current setting cannot be calculated without a measuredV ref.
+The reported resistor marking is tentatively R10 and must be checked before applying that bound.
+The ODROID uses its supplied mains adapter; its DC output rating remains to be confirmed
+separately from the 24 V stepper supply. The dedicated ODROID 3.3 V rail supplies the installed
+3.3 V loads, including the pen motor. The GPIO connections carry the associated control and
+feedback signals.
+The complete wiring needs a defined common logic reference between the ODROID, drivers and
+pen circuit. Motor-current returns should not be confused with signal paths, and driver supply
+decoupling must be located at the driver rather than relying on long supply leads. Figure 8 shows
+the complete supply and signal connections, with component values and the common reference
+identified.
+Figure requested:Complete circuit with GPIO offsets/physical pins, 24 V motor rail, ODROID
+supply, pen supply, driver logic rails, switch resistors and protection components.
+design-complete-circuit.pdf
+Figure 8. Complete electrical circuit and power distribution.
+To complete:Confirm each driver’s sense-resistor marking, measured Vref and cooling arrangement;
+record the ODROID adapter’s DC output rating, the operating state during the 0.35 A reading, and fitted
+decoupling.
+13
+
+D.R. Braune Design and implementation
+3.3.6 Image capture arrangement
+The image-processing input depends on the camera arrangement as well as the algorithms.
+A camera looking approximately normal to a flat page reduces perspective distortion, and a
+restrained page reduces local curvature that a single deskew angle cannot remove. The capture
+area must include the full writing region while keeping the relevant strokes large enough to survive
+the line crop and network resize. The proposal specifies well-lit operation; software illumination
+normalisation is intended to accommodate residual variation within that arrangement.
+The USB capture path returns a saved image to the same classification routine used for uploads.
+This gives both inputs a common orientation and segmentation procedure. The installed camera
+position, page restraint and illumination arrangement are identified in Figure 9.
+The camera is specified as an 8 MP USB autofocus unit with an IMX179 CMOS sensor and
+a 78○field of view. Its supplied resolution specification is 3264 by 2488 pixels. The capture
+module opens the UVC device through OpenCV , reuses an active preview handle when available,
+and otherwise discards an initial sequence of five frames before saving the last readable frame.
+This gives the camera time to settle, but does not verify sharpness or autofocus convergence.
+The current routine does not explicitly request that advertised resolution, so the saved frame
+dimensions must be checked rather than equating sensor specification with operating resolution.
+Figure requested:Photograph of the actual camera and page mount, labelled with working
+distance, page area and illumination direction.
+design-camera-arrangement.jpg
+Figure 9. Page capture arrangement used to supply images to the processing pipeline.
+To complete:Verify the supplied camera specification against its label and saved frame dimensions; add
+working distance and mounting dimensions. Describe only the lighting arrangement actually used; do not
+claim a measured lux range without a measurement.
+3.3.7 Hardware verification and practical limitations
+The purpose of hardware verification is to establish that a coordinate command produces the
+intended type of movement before handwriting is introduced. Axis-aligned lines expose scale and
+direction errors; diagonal lines expose coordinated stepping and frame geometry; repeated pen
+changes expose clearance and pressure problems. The square-and-triangle comparison already
+included in the draft is useful for this purpose (Figure 10). Its visual agreement supports correct
+interpretation of the commanded shape, but does not by itself establish the proposal’s absolute
+accuracy or repeatability specification.
+The design’s principal strength is the direct relationship between orthogonal coordinates and
+motor displacement, combined with a mechanically shared drive on the two sides of the moving
+rail. Its principal uncertainties lie in physical compliance and open-loop execution. A missed
+step changes the actual position without changing the tracked count, and calibration cannot
+retrospectively recover where that happened. Controlled acceleration, a more consistent pulse
+scheduler and improved mechanical constraint are possible remedies, but their expected benefit
+14
+
+D.R. Braune Design and implementation
+(a) Commanded trajectory
+ (b) Physical drawing
+Figure 10. Geometric commissioning example comparing the commanded path with the
+physical drawing. Formal positional qualification is reported in Results.
+must be separated from the performance of the implemented machine. The formal dimensional
+and repeated-drawing measurements in Results assess the resulting mechanical accuracy.
+15
+
+D.R. Braune Design and implementation
+3.4 Page conditioning and line segmentation
+The recogniser requires an image containing one line of text. A photograph, however, may
+contain uneven illumination, a rotated page, printed rules, page edges and strokes extending
+between neighbouring lines. The purpose of this stage is to remove those disturbances while
+preserving the shape and relative spacing of the handwriting. The implemented sequence in
+segment.py works mainly on a half-resolution image, then returns to the full-resolution image
+to build the line crops.
+3.4.1 Input conditions and processing sequence
+The working image is a two-dimensional array of grey values. Where a colour array reaches the
+deskew routine, its channels are averaged to obtain brightness. Reducing the analysis image by
+averaging each 2×2block reduces its pixel count by a factor of four. Averaging is preferred to
+selecting every second pixel because a thin stroke then contributes to the reduced image even if
+it falls between sampling positions. A further reduced mask is sufficient for the angle search,
+where only the arrangement of whole lines is needed.
+The intermediate representations in Figure 11 separate illumination correction, ink extraction,
+line boundaries and final crops. Inspecting these representations localises a missing stroke to
+the operation that removed it. The output includes the line images together with their order and
+diagnostic information such as skew angle, pitch and rejected crops.
+(a) Original Owen01
+(b) Local brightness ratio
+(c) Thresholded ink
+(d) Actual seam locations
+Native input: 2448 x 3264; 20 crops; deskew +1.0 deg.
+Output line 1
+Output line 2
+Figure 11. Processing stages used to obtain separate text-line images from a photographed
+page.
+16
+
+D.R. Braune Design and implementation
+A straight horizontal boundary is adequate only when there is a blank row between lines.
+Handwritten descenders and ascenders can overlap in vertical position without belonging to the
+same line. The chosen design first locates the lines, finds curved boundaries between them, then
+uses component geometry to refine which line owns each ink piece. This is more appropriate
+than treating every connected ink component as a character, since cursive words may form a
+single component.
+Algorithm 2 links the representations used in Figure 11. The order matters: rules and artefacts are
+removed before estimating final line centres, whereas faint-ink recovery occurs after ownership
+has been established.
+Algorithm 2Photographed page to ordered line crops
+Require:Grey page on its chosen line axis.
+Ensure:Ordered full-resolution crops, coordinates and diagnostics.
+1:(G f ,G h,M,R,θ)←Deskew(G)
+2:M←RemovePrintedStructure(M,G h)
+3:(M,C)←DropArtifactPieces(M,R)
+4:(P,c)←LineCentres(M)
+5:b←SeamCuts(M,c,P)
+6:O←AssignOwnership(M,C,b,c,P)
+7:L←∅; normalise full-resolution brightness
+8:for eachline indexndo
+9:C n ←BuildLineCrop(n,O,G f ,P)
+10:ifC n has sufficient ink and heightthen
+11: AppendC n, its fixed-canvas view and bounding box toL
+12:end if
+13:end for
+14:L←DropSolidCrops(L); renumber retained crops
+15:returnL, seams, ratio image and diagnostics
+3.4.2 Lighting normalisation and ink extraction
+The first requirement is to distinguish ink from paper under an illumination gradient. A single
+threshold applied directly to brightness can classify a shadowed part of the page as ink while
+losing pale strokes elsewhere. Local-mean comparison addresses this illumination problem in
+adaptive thresholding [8, PDF pp. 2–3, Secs. 2.2–3]. The present design instead forms a local
+brightness ratio and selects its threshold from the ratio histogram. Equation 10 compares each
+pixel with its own local background estimate instead.
+R(y,x)= G(y,x)
+max[Br(y,x),1] ,M(y,x)=1[R(y,x)<t ∗].(10)
+In the Owen01 page trace, pixel (y,x)=(317,343) of the 800×600pre-deskew working image
+has G=100 . Its 41 by 41 background window givesBr=161.43367 , hence R=100/161.43367=
+0.619449. The selected ratio threshold is 0.803906, so this pixel enters the ink mask. The trace
+uses the documented reduction of the stored photograph.
+Here G is grey intensity on the 0–255 scale, Br is a square-window mean with radius r, R is
+normalised brightness, and M is the binary ink mask. The floor of 1 prevents division by zero in
+black regions. The code uses r=max(8,min(40,round(H/41))) , where H is the working-image
+17
+
+D.R. Braune Design and implementation
+height. The radius follows image size within bounded limits: it must average over strokes without
+following their darkness as if it were illumination.
+The mean is evaluated through a summed-area table, using the four-corner rectangle sum de-
+scribed by Bradley and Roth [8, PDF p. 2, Eq. (2)]. For an exclusive prefix sum S, the window
+sum is obtained from four accesses, as shown in Equation 11.
+Σ[y0,y1)×[x0,x1)=S(y 1,x 1)−S(y0,x 1)−S(y1,x 0)+S(y 0,x 0).(11)
+The same pixel’s four prefix values are20696850, 18404173, 18359673 and 16338366. Equa-
+tion 11 gives a window sum of 271370, so Br =271370/1681=161.43367 . This is the local-
+background value used in the preceding mask decision.
+The window area divides this sum to giveBr. Equation 11 makes the cost per window independent
+of its radius after the prefix image has been constructed. Edge replication is used by this local-
+mean routine so that the boundary is not darkened by artificial zero padding.
+Otsu’s criterion selectst∗from the ratio histogram rather than from the original grey histogram [9,
+page to verify] [verify source/page: otsu1979]. Equation 12 gives the between-class variance
+being maximised.
+t∗=argmaxt ω0(t)ω 1(t)[µ0(t)−µ1(t)]
+2
+.(12)
+For this page’s ratio histogram, the selected bin is 171. Its masses are ω0=0.07069375 and
+ω1=0.92930625 , with mean bin indices 124.98356 and 217.71913. Their between-class variance
+is approximately 564.97942 in squared bin-index units. Converting the selected bin centre to the
+ratio scale givest ∗=(171+0.5)(1.2/256)=0.80390625, the threshold used above.
+Here ω0,ω 1 are the histogram masses below and above a candidate threshold and µ0,µ 1 are their
+means. The normalisation in Equation 10 first brings paper towards a common level, allowing
+the global criterion in Equation 12 to operate on a more consistent image. The implementation
+uses 256 bins over the clipped ratio range 0–1.2.
+Large solid regions are then removed because the dark surround or a binder interior can survive
+thresholding without representing handwriting. The page region is estimated from its bright
+connected area, and long nearly horizontal or vertical ink runs are masked as printed structure.
+Run thresholds are expressed relative to line pitch, rather than fixed photograph dimensions.
+The horizontal and vertical limits are respectively 1.25 and 1.4 pitches. These are geometric
+heuristics: a long handwritten underline can satisfy the same condition as a printed rule, so the
+algorithm is designed for text extraction rather than preserving every mark on a page.
+3.4.3 Page orientation and skew correction
+Orientation is treated at two scales. A quarter turn changes which axis contains the line gaps; a
+small skew changes how sharply ink is concentrated along rows. For the quarter-turn decision,
+the code compares the fraction of nearly empty rows in the current image and its 90○rotation. A
+turn is accepted only when the rotated score exceeds the original by a factor of 1.35. This margin
+avoids rotating a page merely because two weak scores differ slightly. Sparse or unusually
+arranged text can still make the row-gap evidence ambiguous.
+18
+
+D.R. Braune Design and implementation
+After choosing the line axis, the deskew routine tests angles from −4○to+4○at 0.5○spacing.
+Equation 13 gives its objective, related to projection-profile methods [10, page to verify] [verify
+source/page:postl1986].
+θ∗=argmax
+θ
+∑
+y
+pθ(y) 2,p θ(y)= ∑
+x
+Mθ(y,x).(13)
+The Owen01 angle search gave squared-projection scores of 442973 at+0.5○, 464105 at+1.0○
+and 439403 at+1.5○. The maximum over all seventeen tested angles was 464105, so the routine
+selected+1.0○. These scores are computed from the reduced mask used by the angle search,
+before the final mask is rebuilt.
+Here pθ is the row ink count at a candidate angle. Squaring favours concentrated rows over the
+same amount of ink spread across many rows. Rather than rotating the complete mask for every
+trial, the implementation maps ink coordinates to candidate rows and counts them. The selected
+rotation is then applied to the full and working grey images, and the mask is recomputed. This
+avoids repeatedly interpolating a binary image.
+A page and its upside-down version have the same line-axis structure. The server therefore
+uses the reader to compare up to three sampled line crops in both directions. It compares the
+mean best-frame log score, reuses the selected readings and reverses line order when necessary.
+This is an orientation heuristic, not an independent measure of text correctness. A reader that is
+confidently wrong can select the wrong orientation, particularly when little text is available.
+3.4.4 Line detection and separation
+The line pitch P provides the main scale reference for later decisions. A smoothed row profile
+is formed from the central writing region; candidate peaks must exceed 6% of its maximum.
+The preferred estimate is the median distance between peaks, subject to a lower bound based
+on component height. This check prevents the ascender, body and descender bands of a single
+large line from being treated as separate line spacings. Autocorrelation and a component-height
+estimate provide fallbacks when direct gaps are unsuitable.
+Line centres are selected in order of peak strength, with a minimum separation of 0.6P. This
+suppresses several peaks within the same line. The code also supports merging peaks separated
+by a shallow valley, but that additional rule is not automatically active for every photographed
+page; its default threshold disables merging. The distinction matters because a rule that improves
+rendered text need not improve the shadows and artefacts of a real photograph.
+Between each pair of centres, a minimum-cost seam crosses the image from left to right. The
+dynamic programme in Equation 14 follows the seam-carving principle [11, PDF p. 3, Sec. 3].
+D(y,x)=C(y,x)+min
+∣d∣≤s
+{D(y+d,x−1)+0.02∣d∣}.(14)
+In the traced boundary between centres 38 and 61, the selected predecessor at column 283
+changes from row 50 to row 49 in working-image coordinates. Its stored predecessor cost is
+0.00641966, the movement penalty is 0.02 and the new local cost is 0.0000226843. Equation 14
+therefore gives D≃0.00641966+0.02+0.0000226843=0.02644234 . This traces one selected
+minimum of the actual dynamic programme; equal-cost alternatives can also occur.
+19
+
+D.R. Braune Design and implementation
+Here D is accumulated cost, C is the local cost and s=7 is the allowed row change per column.
+Backtracking from the minimum final cost returns the boundary. Equation 14 penalises unneces-
+sary vertical movement while allowing a boundary to bend around a descender.
+The project-specific cost in Equation 15 combines an ink-crossing penalty with a weaker attraction
+to the space between line centres. These terms adapt the minimum-cost seam principle to the
+detected text-line gaps; the weights are engineering choices examined by the sensitivity check
+below.
+C(y,x)=4 ̃M(y,x)+0.012( y−ym
+hg
+)
+2
+.(15)
+At that boundary point, ym=(38+61)/2=49.5 , hg=(61−38)/2=11.5 and the closed mask is
+zero. The implemented local cost is thereforeC=0.012[(49−49.5)/11.5] 2=0.0000226843. It
+provides the local term used in the preceding accumulated-cost calculation.
+Here ̃M is the mask after morphological closing, a dilation followed by erosion that fills narrow
+breaks and gaps [12, p. 541, Def. 36], ym is the midpoint of the neighbouring centres and hg is
+half their separation. The closing radius is max(2,⌊0.07P⌋)pixels. Closing fills narrow gaps
+that would otherwise let a seam enter a stroke, without simply treating a thick dilation around
+every letter as real ink. In Equation 15, the midpoint term resolves low-ink alternatives; it is
+deliberately much weaker than the ink penalty. The examples in Section 3.4.6 examine the
+resulting boundaries and the cases that still defeat these geometric preferences.
+A new sensitivity check on six fixed gaps from two real pages varies the midpoint and step
+penalties separately. At the implemented 0.012/0.02 setting, mean midpoint offset is 0.363
+working pixels; removing the midpoint attraction raises it to 4.055 pixels. All tested settings
+still cross two raw-ink pixels across those seams, so this checks the weights’ effects rather than
+proving an optimum. Appendix B.6 gives the settings and retained outcomes.
+3.4.5 Ink ownership and classifier crop preparation
+Seams initially divide the image into bands, but a pixel-by-pixel cut can separate a dot from its
+stem or clip a curved descender. Connected-component ownership therefore refines the band
+assignment. Components are found with row runs and union operations, following connected-
+component labelling principles [13, pp. 476–479]. The implementation includes diagonal contact,
+giving eight-connected components. Large pieces can still contain writing from more than one
+line, so component labelling alone is not a complete line assignment.
+Algorithm 3 summarises the correction order. For a component spanning several bands, a
+band holding at least 15% of its in-band ink is substantial. The uppermost substantial band
+supplies the reference owner for small-piece corrections; otherwise the largest overlap is used.
+Large components are not indiscriminately moved into that band: their pixels retain seam-band
+assignment except where the small-piece and narrow-tail rules apply. This distinction preserves
+a word’s main body while recovering a protruding part.
+An i dot between two text lines illustrates the need for this sequence. A seam may put it with
+the upper line because of its vertical position, while a stem below supplies evidence for the
+lower line. Closing used for component analysis can also join the dot to an unrelated descender;
+the raw mask is therefore revisited rather than treating the closed component as unquestionable
+evidence. A ring-shaped mark needs the additional hole test so that an open hook is not treated
+20
+
+D.R. Braune Design and implementation
+Algorithm 3Refining seam bands into ink ownership
+Require:Ink maskM, componentsC, seams, centres and pitchP.
+1:for eachcomponentC∈Cdo
+2: Count overlapa C,n with each seam bandn
+3:S←{n∶a C,n≥0.15∑j aC,j}
+4: Choose topmostSas reference owner, or maximum overlap ifS=∅
+5: Correct eligible narrow tails and small pieces; reject remote specks
+6: Associate compact dots with plausible stems using pitch-scaled guards
+7:end for
+8:O←corrected ownership, preserving large-piece seam assignments
+9:for eachraw component near a neighbouring linedo
+10:ifdetached-dot or enclosed-ring guards passthen
+11: Transfer eligible pixels to the supported stem’s line; protect correction
+12:end if
+13:end for
+14: Reassign residual fragments lacking their own body-band support
+15:returnO; excluded pixels retain no line index
+as a detached loop. These are geometric decisions with ambiguous cases, rather than knowledge
+of the intended character.
+The final crop is built from the full-resolution image and the refined ownership map. Contrast
+adjustment improves faint ink, while ownership restricts recovery so that strengthening one line
+does not simply pull a neighbouring stroke into it. The recogniser receives an aspect-preserving
+fit on a 64 by 640 canvas. Equation 16 defines the common scale for an original crop of height h
+and widthw.
+a=min( 64
+h , 640
+w ),(h ′,w′)≃(ah,aw).(16)
+The archived first Owen01 line is 156×2170pixels. Its fit scale is a=min(64/156,640/2170)=
+0.2949309, giving a 46×640resized image after integer rounding. The routine places it nine
+rows below the top of the 64-row canvas, retaining its aspect ratio and filling the remaining rows
+with white.
+Remaining space is padded white, with the ink left-aligned and vertically centred. The shared
+scale in Equation 16 avoids stretching narrow letters differently from wide ones. Very long lines,
+however, become short in height when fitted to the width limit, which reduces the detail available
+to the networks.
+The full-resolution crop uses a soft interpolation of its own ink mask to avoid jagged cut edges.
+A separate ownership exclusion is resized with nearest-neighbour interpolation: interpolating a
+yes/no ownership decision could partly return a neighbour’s ink. Local thresholding can recover
+faint strokes within a neighbourhood of this line, but cannot recover ink already assigned to
+another line. Contrast is stretched between a robust ink level and paper level, followed by a
+darkness exponent of 0.55. This strengthens faint writing without replacing its geometry with a
+solid rectangular band.
+The final solid-crop guard rejects a crop only when its dark-pixel fraction exceeds both 15% and
+three times the page’s median crop fraction. Requiring both prevents one unusually dense but
+genuine line from being rejected merely because other lines are sparse. This reduces the chance
+of a solid shadow receiving a strong writer vote in Section 3.7. If every crop would be rejected,
+21
+
+D.R. Braune Design and implementation
+the implementation retains the input crop list; crop rejection is therefore a guard rather than a
+guarantee of valid text.
+3.4.6 Segmentation verification and limitations
+Figure 12 uses three actual photographs of the same three-line handwritten page from the camera
+roll. Their shadows and page presentation differ; no illuminance or physical rotation angle
+was recorded. The unchanged native images were processed through the line-axis decision and
+segmentation, without manually correcting an unsuccessful orientation.
+The striped-shadow capture produced three crops. The diffuse-shadow capture produced four, so
+matching the writing visually remains necessary even under milder-looking illumination. The
+third capture was left on the wrong line axis: its gap scores were 0.379 and 0.400, giving a ratio
+of only 1.054 against the required 1.35, and segmentation produced 28 slices. Reaching the −4○
+deskew limit could not correct a missed quarter turn. These cases expose a sparse-page limitation
+of row-gap orientation; they do not establish a lighting operating range or a success rate. An
+acquisition guide or a separately verified orientation method would address the ambiguity before
+fine deskewing.
+The fuller Owen page in Figure 11 produced 20 crops at native resolution, matching its 20
+labelled text lines. That count checks gross splitting, not every boundary pixel. Appendix B
+records the capture filenames, extended digital perturbations and independent algorithm checks,
+including failures after additional image reduction.
+Capture A: diffuse shadow
+4 crops; deskew -1.0 deg
+Detail of photographed writing
+Capture B: striped shadow
+3 crops; deskew +1.0 deg
+Detail of photographed writing
+Capture C: changed page angle
+28 crops; deskew -4.0 deg
+Detail of photographed writing
+Actual 28 October photographs; illumination and angle were not instrumented.
+Figure 12. Actual repeated photographs and segmentation diagnostics for the same sparse
+page. Capture C retains the unsuccessful axis decision.
+The scale-based thresholds and curved boundaries accommodate changes in handwriting size
+and overlapping vertical extents without assigning every page a fixed pixel spacing. Their
+22
+
+D.R. Braune Design and implementation
+assumptions also define the limitations. Highly irregular line spacing weakens a single pitch
+estimate, touching strokes from two lines can defeat component ownership, and sparse pages
+provide weak orientation evidence. Severe perspective or page curvature is not corrected by
+a global rotation. Improving the mount addresses the latter at source; more general page
+rectification would add processing and require its own verification.
+3.5 Neural network design, training and classification
+The classification stage has two outputs: the text in a line and the identity of its writer. Both
+depend on stroke features, but text recognition must preserve their horizontal order while writer
+identification must combine evidence across the line. Two networks therefore use the same
+convolutional architecture with different heads. The recogniser follows the CNN–BiLSTM
+approach of Kizilirmak and Yanikoglu [14, pp. 4–5]; the project implements and integrates that
+architecture with its own preprocessing, training and handwriting-reproduction pipeline.
+3.5.1 Training data, labels and evaluation separation
+Public IAM handwriting [15, page to verify] [verify source/page: marti2002] and the photo-
+graphed personal contributions provide examples with known text and writer identity. Public
+line images supply text-recognition training data, while writer-labelled pages and the personal
+samples support writer identification and style extraction. The eleven writers selected for the
+reported evaluation and intended demonstration are six database writers (150, 152, 153, 384,
+552 and 588) and five personal contributors. A stored profile, a classifier output class and an
+evaluated writer are different objects; the checkpoint’s recorded class mapping defines how its
+output indices are interpreted.
+The data pipeline pairs every crop with its transcript and writer label. The same preparation
+functions are used by the first-principles and framework training routes so that a comparison does
+not silently change segmentation or label handling. Blank or unusable labelled lines are excluded.
+Characters outside the configured alphabet are filtered by the label encoder; they cannot be
+recognised as separate output symbols unless the alphabet and output layer are extended.
+The page-based writer dataset holds out an IAM page per writer, while the personal data use a
+fixed-seed 15% line split. A page split and a line split provide different separation: a held-out
+personal line can share camera conditions, page background and writing session with training
+lines. It is therefore appropriate to describe those samples as held-out lines, rather than as wholly
+unseen capture sessions. Augmented versions of a sample must remain within its assigned
+training partition.
+Preparing public forms also requires excluding printed prompts and signatures before matching
+detected lines to their transcripts. The eleven-writer classifier corpus contains 1186 labelled lines:
+517 IAM and 669 photographed lines, split into 1031 training and 155 held-out lines. The final
+reader instead uses a joint corpus of Teklia pre-cut IAM lines and the five photographed writers;
+its exact training and validation counts are not preserved in the available record.
+Evaluation separation concerns three inputs: the writer classifier’s training lines, the reader’s
+training lines and the pages used to build glyph profiles. Holding a line out of one classifier does
+not exclude it from the other corpus, and constructing a profile from an evaluation page already
+23
+
+D.R. Braune Design and implementation
+exposes its letterforms. Cross-corpus source identifiers and profile-page manifests are therefore
+needed before describing combined performance as independent of those inputs.
+To complete:Record reader split counts and the source pages used to construct final glyph profiles. Keep
+the reported writer holdout distinct from a wholly independent capture-session test.
+3.5.2 Shared convolutional feature extractor
+The input tensor has dimensions (B,1,64,640) , where B is batch size. The grey crop is inverted
+and scaled to [−1,1], making dark ink positive and white padding negative. Table 3 gives the
+implemented feature-map dimensions. Two pooling operations reduce the width to 160 positions;
+there is no third spatial pooling stage before height is collapsed.
+Stage Operation Output excluding batch
+Input Aspect-preserving line fit and intensity scaling 1×64×640
+1 Two 3×3convolutions, each with batch normalisation
+and ReLU; 2×2 max pool
+32×32×320
+2 Four convolution/normalisation/ReLU blocks; 2×2
+max pool
+64×16×160
+3 Six convolution/normalisation/ReLU blocks 128×16×160
+Height reduction Maximum over the remaining height 128×1×160
+Table 3. Implemented convolutional backbone shared in architecture by the text and writer
+networks. The two models have separately trained parameters.
+The convolutional feature extraction follows the reference architecture [14, pp. 4–5]. Equation 17
+writes the layer operation explicitly for the numerical implementation. For output channel o, the
+input-channel and kernel sums combine into one feature value.
+zo,y,x=b o+ ∑
+c
+∑
+i,j
+Wo,c,i,j Xc,y+i,x+j .(17)
+For the first Owen01 line, channel 0 of the first convolution at canvas row 34, column 462
+gives ∑W X=−1.150897with learned bias b=−0.000435125. Equation 17 therefore produces
+z=−1.151332. The nine actual input and learned-weight values are retained in Appendix B.7.
+Here W is the learned kernel, b its bias and X the padded input. Equation 17 is the cross-
+correlation convention used by the implementation. Image patches are rearranged into a matrix
+and multiplied by flattened kernels, rather than evaluating a Python loop for every multiply.
+This follows the matrix formulation of convolution [ 16, page to verify] [verify source/page:
+chellapilla2006]. The choice improves the practicality of the numerical route while
+leaving the layer’s calculation visible.
+Batch normalisation evaluates Equation 18, with channel statistics computed over the batch and
+spatial dimensions during training [17, PDF pp. 4–5, Alg. 1].
+̂z= z−µB√
+σ 2
+B+ε
+,y=γ ̂z+β.(18)
+At the same activation, the checkpoint stores µ=0.2163021 , σ 2=0.02585394 , γ=1.0193636
+and β=0.1324657 . Using ε=10 −5in Equation 18 gives y=1.0193636(−1.1513321−
+24
+
+D.R. Braune Design and implementation
+0.2163021)/
+√
+0.02585394+10 −5+0.1324657≃−8.53619. The following ReLU sets this negat-
+ive response to zero. These are the stored inference statistics, rather than statistics calculated
+from this single line.
+Here γ,β are learned channel parameters and ε stabilises division. At inference, stored running
+statistics replace µB,σ 2
+B, making Equation 18 a fixed affine operation. The following ReLU
+applies max(0,y) and max pooling retains the largest feature in each local window. These
+operations progressively convert pixel neighbourhoods into learned responses while reducing the
+spatial size passed to the task heads.
+Common layer pattern; reader and writer have separately trained weights
+Grey input
+1 x 64 x 640
+2 conv + BN + ReLU
+32 x 64 x 640
+2 x 2 max pool
+4 conv + BN + ReLU
+64 x 32 x 320
+2 x 2 max pool
+6 conv + BN + ReLU
+128 x 16 x 160
+no spatial pool
+Maximum over height
+128 features x 160 frames
+Reader: 2 bidirectional LSTMs
+256 units per direction per layer
+160 frames x 512 features
+Linear -> 75 classes per frame
+CTC training / greedy decoding
+Writer: mean over width -> 128
+Linear -> 96, ReLU, dropout (training)
+Linear -> K writer classes
+Cross-entropy training
+Softmax writer probabilities
+Figure 13. Architecture of the text reader and writer classifier.
+Figure 13 makes the different uses of horizontal position explicit. The term “shared” refers to
+architecture and numerical building blocks; it does not mean that the trained writer classifier uses
+the reader’s current weight tensors.
+3.5.3 Text recognition using sequence modelling and CTC
+The text head treats the 160 feature columns as a sequence. Each column contains 128 features
+after height pooling. Two bidirectional LSTM layers, each with 256 hidden units per direction,
+combine evidence from both sides of a character before a linear head produces scores over the
+alphabet and the blank class. The configured alphabet contains 74 characters, giving 75 output
+classes including blank. The chosen input geometry and decoding are part of this project’s
+implementation rather than an assertion that every setting in the reference study was reproduced.
+The LSTM state update in Equation 19 retains an additive memory path [18, p. 5, Eqs. (9)–(11)].
+ct =f t⊙ct−1+i t⊙gt,h t =o t⊙tanh(ct).(19)
+In the first forward LSTM layer for that line, frame 10 and cell 0 have ct−1=−2.7277257,
+ft =0.7306111 , it =0.6666368 and gt =−0.8560218. Equation 19 gives ct ≃−2.5635625. With
+25
+
+D.R. Braune Design and implementation
+ot =0.000145395, the cell emitsh t ≃−0.000143680. This records the memory calculation used
+while processing the real feature sequence.
+Here ct is cell state, ht is hidden output, it,f t,o t are sigmoid input, forget and output gates, and
+gt is the candidate update. Each is computed from the current feature vector and previous hidden
+state. The implementation omits the additional cell-to-gate peephole connections shown in
+the cited source. The backward direction applies the same type of recurrence to the reversed
+sequence, and the two outputs are concatenated. Equation 19 explains why the implemented
+reader has sequence state in addition to convolutional features.
+The gates are obtained from one matrix calculation, split in input, forget, candidate and output
+order: [ai,a f ,a g,a o]T =W xxt+Whht−1+b x+b h. Sigmoid is applied to ai,a f ,a o and tanh to ag.
+Concatenating both directions gives 512 features per frame; the second recurrent layer therefore
+receives 512 inputs rather than the first layer’s 128. At inference the entire line is available, so
+using right-hand context does not require predicting future input.
+CTC trains from a line transcript without requiring character positions [ 19, PDF pp. 2–3].
+Equation 20 sums the probabilities of frame paths that collapse to the target string.
+LCTC=−log ∑
+π∶B(π)=ℓℓℓ
+T
+∏
+t=1
+pt(πt).(20)
+For the complete labelled line “1.9. Vloggers using fame to support charities is a positive
+way”, the recorded forward–backward total is logZ=−0.47033843. Equation 20 gives LCTC=
+0.47033843 and Z≃0.6247908. This loss was evaluated offline from the trained reader’s actual
+logits and known transcript, without updating its weights.
+Here pt(k) is the frame probability for symbol k, ℓℓℓ is the transcript, and B merges consecutive
+repeats before deleting blanks. For example, the path a,a,∅,b,b collapses to “ab”, while a,∅,a
+preserves “aa”. The dynamic programme uses blank-interleaved states with transitions that stay,
+advance one state, or skip a blank when the adjacent labels differ. Arithmetic is performed in log
+space to avoid multiplying many small probabilities.
+The CTC collapse and best-path decoding rules follow Graves et al. [ 19, PDF pp. 2–3]; the
+implementation produces T=160 frames. A target with L labels and r adjacent repeated-label
+pairs requires at least L+r frames. The extended lattice has 2L+1 states, but not every state
+must be visited; that number is not a universal minimum sequence length. At inference, greedy
+frame decisions are collapsed by the same rule. This avoids a dictionary or language model, but
+a locally plausible wrong frame path can remain wrong even where a beam search could recover
+an alternative.
+Algorithm 6 describes the numerical loss and derivative. Let αt,s include the current state’s
+emission, while βt,s accounts only for emissions after frame t. The derivative used by the
+implementation is then Equation 21, with the occupancy convention obtained by adapting the
+CTC forward–backward derivation [19, PDF pp. 5–6].
+qt,k = ∑
+s∶ℓ′s=k
+exp(αt,s+β t,s−logZ), ∂L
+∂z t,k
+=p t(k)−qt,k .(21)
+At frame 11, the probability of V is p11,V =0.98030665 and the target-constrained occupancy
+is q11,V =0.99999995 . The CTC logit derivative is therefore p−q=−0.01969329. It is negative
+because the admissible target paths require more V probability than the current output supplies at
+that frame; the real-input finite-difference check in Appendix A.6 checks this derivative.
+26
+
+D.R. Braune Design and implementation
+Here Z is the total probability of admissible target paths, z denotes logits and q is posterior class
+occupancy. The convention for β avoids counting the current emission twice. Equation 21 is
+averaged over the batch in the trainer, without an additional target-length division. Algorithm 6 in
+Appendix A.5 gives the full forward–backward procedure with explicit blank/repeat transitions.
+The word “Vloggers” in this actual transcript contains adjacentgs. They require separate emission
+runs with a blank between them: a direct skip between identical label states would collapse to
+one character. The same restriction is retained during forced alignment in Section 3.6.2; training
+sums admissible paths, whereas extraction selects one.
+3.5.4 Writer identification and stroke normalisation
+Writer identification should combine the shape evidence distributed along a line. It therefore
+averages the 160 column features rather than passing them through a sequence decoder. A
+128-element feature vector is mapped through a 96-unit hidden layer, ReLU and a final K-class
+output. Dropout with probability 0.2 is active in the hidden head during training and omitted
+during inference [ 20, pp. 1931, 1934]. Here K is the number of writers represented by that
+checkpoint.
+The initial classifier operated on handwriting as photographed and performed well on those
+samples. Ink width can itself carry writer-identification information: Brink et al. explicitly use
+directional ink-trace width as a feature and relate it to the pen and writing style [ 21, p. 162].
+The photographed input also retains darkness and capture variation, which the initial network
+was not constrained to ignore. The gantry uses its own pen, so reproducing the selected writer’s
+geometry does not reproduce the same ink appearance. A classifier that relies on those cues
+would therefore provide an unsuitable basis for judging whether the robot preserved the writer’s
+style.
+The later classifier uses stroke-normalised input to restrict this source of variation. Ink is
+binarised, reduced to a centreline with Zhang–Suen thinning [22, p. 237], then expanded using
+morphological dilation [12, p. 533, Def. 1] before the fixed-canvas fit. Equation 22 combines
+these established operations with the project-selected width rule.
+Is=255 [1−δk(thin(M))],w=clip (round(ρh x),2,9 ),k=2⌊w/2⌋+1.(22)
+The same Owen crop has an estimated body-band height of 38 pixels. At the selected ρ=0.17 ,
+the width calculation givesw=clip(round(0.17×38),2,9)=6 , then k=2⌊6/2⌋+1=7. The actual
+redraw therefore uses a seven-pixel square dilation before fitting the line to the network canvas.
+Here hx is estimated x-height, ρ is the selected width fraction and δk is square dilation with an
+odd k-pixel kernel. The actual discrete kernel is important: nearby fractions can produce exactly
+the same transformed image. The code contains a default fraction of 0.14 and supports explicit
+training widths; the final model and its preprocessing must use matching settings.
+The stroke-normalised classifier is used for writer identification and synthesis evaluation in the
+final design described here. This reduces dependence on ink appearance while retaining the letter
+geometry that the gantry can reproduce. It does not make the classifier completely independent
+of capture conditions, since thresholding and skeletonisation can themselves change a faint or
+touching stroke. It also removes potentially useful evidence from original handwriting, making
+the choice a deliberate trade-off between photograph-specific discrimination and consistency
+across original and reproduced writing.
+27
+
+D.R. Braune Design and implementation
+Figure 14 shows this transformation on existing real crops. The comparison makes the individual
+operations visible: binary extraction defines what ink is retained, thinning reduces it to a
+centreline, and dilation restores a controlled width. A matched ink-versus-shape comparison
+on original and reproduced samples can then test the reason for the choice without substituting
+classifier confidence for independent stylistic agreement.
+Original
+Binary mask
+Skeleton
+Fixed width
+Owen
+Yeukita
+Figure 14. Stroke-normalisation stages on selected Owen and Yeukita crops at the selected
+width fraction of 0.17.
+To complete:Add a matched ink-versus-shape design comparison when available; do not compare differ-
+ent writer populations as if only preprocessing changed. Verify the selected checkpoint’s preprocessing in
+the final submitted configuration.
+The width-selection tooling separates deterministic preparation from repeated learning. It
+skeletonises and redraws each crop once per candidate width, saving images together with writer
+names, labels and split membership. Training then augments those prepared images each epoch.
+A fixed split and controlled initialisation make the widths comparable without changing the
+writer population at the same time. The preparation code records cases where normalisation
+returns no usable ink and the raw crop is retained; these fallbacks should be counted when
+interpreting a nominally shape-based dataset.
+Table 4 records the supplied eleven-class validation sweep. All four runs had a 50-epoch budget
+and used the framework writer model on a Google Colab T4 GPU. The reported epoch is the
+best saved epoch, not the stopping epoch. The 0.17 setting gave the highest held-out accuracy in
+this sweep and defines the selected eleven-writer configuration; this is a preprocessing choice
+evaluated on validation data, not the integrated robot’s writer-identification result.
+Width fractionρ Best saved epoch Held-out writer accuracy
+0.06 38 98.06%
+0.09 43 97.42%
+0.11 39 98.06%
+0.17 43 99.35%
+Table 4. Stroke-width selection using the same eleven-writer population and held-out
+partition.
+28
+
+D.R. Braune Design and implementation
+The selected checkpoint stores its width as 0.17. Both preparation and inference for that con-
+figuration must use this value; the module default of 0.14 is not its training setting. Figure 14
+illustrates the selected transformation on existing crops. Reusing the held-out partition to choose
+width makes it model-selection data; an independent test set remains necessary for an unbiased
+final performance claim.
+3.5.5 Training procedure and model selection
+The implemented training routes update the convolutional backbone and task-specific head
+together. Convolution weights use variance-scaled initialisation; normalisation scales begin at
+one and offsets at zero. Training-time augmentation changes line geometry while preserving
+its label. The implemented transforms include shear, small rotations, perspective changes and
+elastic distortion. These operations are applied only to the training view, while validation retains
+a consistent preprocessing path.
+The text trainer supports public lines, page-derived lines and a joint source that mixes public and
+personal examples. In the joint configuration, a personal-sample fraction controls their represent-
+ation rather than letting a much larger public dataset determine the entire batch distribution. The
+default fraction is 0.20. This is a sampling choice, not a claim that personal and public samples
+are interchangeable. Its value and the training source must accompany any comparison between
+checkpoints.
+Table 5 summarises the numerical training recipe exposed by the current implementation. The
+number of epochs is a run setting and should be reported from the actual training record, rather
+than taking a command-line default as the completed run.
+Setting Reader Writer classifier
+Objective CTC loss Cross-entropy
+Optimiser RMSprop AdamW
+Initial learning rate 10−3default 10−3default
+Weight decay 10−5 10−4
+Learning-rate schedule Plateau reduction, factor 0.5, pa-
+tience 5, minimum 10−5
+Cosine annealing over the con-
+figured run
+Gradient-norm clipping Not applied by the current NumPy
+text loop
+Maximum norm 5
+Best-checkpoint criterion Lowest validation loss Highest validation accuracy
+Table 5. Training settings implemented in the first-principles trainer. Final run settings
+require their own training records.
+Cross-entropy penalises the writer model’s predicted probability of the true class. For label y
+and probabilities pk, its per-sample loss is−logpy, with logit derivative pk−1[k=y] [18, p. 6,
+Eqs. (13)–(14)]. The CTC backward pass similarly relates each predicted frame probability
+to its target-state occupancy, calculated by forward and backward recurrences through the
+alignment lattice [19, PDF pp. 4–6]. These gradients are propagated through the task head and the
+convolutional stages; they are not supplied to the numerical trainer by automatic differentiation.
+Validation runs with dropout disabled and stored normalisation statistics. A low training loss
+alone does not select the model. Separate checkpoint and best-model files preserve progress
+29
+
+D.R. Braune Design and implementation
+while retaining the selected validation model. Reproducible batching, declared splits and saved
+writer mappings support later evaluation, but comparable recipes do not imply identical weights
+or learning curves across implementations.
+Algorithm 7 identifies the operations actually required for a first-principles training batch.
+Forward caches store quantities needed by the derivatives, rather than rerunning stochastic
+augmentation or dropout during the backward pass. The complete numerical batch/update
+procedure appears in Algorithm 7 in Appendix A.5; the calculations remain explicit in the
+source.
+3.5.6 First principles and framework implementations
+The first-principles route in train.py evaluates the forward pass, backward pass, loss and
+optimiser updates using explicit NumPy operations. NumPy supplies array arithmetic and
+matrix operations; it does not supply a convolutional network, automatic differentiation or a
+CTC training function in this route. The learned parameters are stored as named arrays. The
+inference module reads these arrays and evaluates the forward operations without requiring a
+machine-learning framework.
+The framework route in trainlibrary.py expresses the corresponding networks using
+PyTorch layers and automatic differentiation. Both routes use the project’s data preparation,
+parameter naming and named-array export layout. This makes the framework implementation
+useful as a numerical reference while allowing either training route to supply weights to the
+NumPy inference code.
+The selected reader and eleven-writer weights were trained using PyTorch and exported to named
+arrays. The first-principles contribution comprises the implemented numerical training operations
+and the operational NumPy forward path. Fixed-parameter comparisons verify the numerical
+calculations; the provenance of the selected weights remains the framework training route.
+Matching the architecture is not sufficient to establish a matched training experiment. The current
+numerical CTC function averages unnormalised sequence losses across the batch, whereas the
+framework trainer constructs CTC with its default mean reduction, which normalises each
+sequence by target length before averaging [23, CTCLoss, “Parameters” ]. The framework loop
+also zeroes impossible-alignment losses. These conventions must be matched for a controlled
+training comparison because target-length weighting changes the influence of short and long
+lines. Named-array export remains compatible with both routes.
+The reader checkpoint is paper_cnn_bilstm_ctc_joint_best.npz; the selected
+eleven-writer checkpoint is author_shape_11_pw170_weights.npz. The reader’s
+training computer, completed epoch count and original learning-rate/batch settings are not
+preserved in the supplied record. The implementation defaults in Table 5 must therefore not be
+presented as recovered settings for that historical run.
+The operation-by-operation comparison is retained in Table 8, Appendix A.7.
+Equation 17 and the shape progression in Table 3 define the implemented forward calculation. Its
+numerical correspondence and the backward operations are checked separately in Section 3.5.7.
+This separation distinguishes a correct description of an architecture from evidence that its
+calculations were implemented correctly.
+30
+
+D.R. Braune Design and implementation
+The patch-matrix weight/input derivatives, their algebraic derivation and the patch-storage
+calculation are given in Appendix A.6.
+3.5.7 Network verification and design limitations
+Verification separates numerical correspondence from learning performance. For the first, the
+implementations receive the same parameters and inputs, with matched precision, normalisation
+state and stochastic masks. Differences in logits, loss and gradients then test the implementation.
+A second experiment trains each route on the same split with recorded initialisation and settings,
+and compares learning behaviour and held-out predictions. These experiments answer different
+questions: separately trained weights can differ even when the underlying operations agree.
+The existing comparison archive contains a controlled text experiment using 500 training lines,
+40 validation lines and 40 test lines over 15 epochs. It is useful supporting evidence for the
+implementation, but it is not the final eleven-writer system evaluation. A separate archived
+double-precision comparison uses two random 64 by 640 inputs and identical initial weights,
+checking the reader and a thirteen-output writer head. Table 6 summarises its recorded values.
+The writer dropout is disabled for this comparison so that unrelated random masks do not
+dominate the difference.
+Recorded comparison metric Reader Writer classifier
+Maximum logit difference / maximum magnitude 2.12×10−14 3.04×10−15
+Absolute loss difference 1.14×10−13 1.78×10−15
+Worst ranked gradient relativeL 2 difference 2.80×10−13 6.01×10−14
+Table 6. Archived float64 implementation comparison from the CleanPipeline2 verification
+script. This is a controlled numerical check, not a final-model recognition result.
+The logit metric in Table 6 divides the largest absolute difference by the larger maximum
+magnitude, with a 10−8denominator floor. Gradient differences are ∥gN−gT∥2/∥gT∥2, where
+gN and gT are numerical-route and framework gradients. Tensors whose maximum gradient
+magnitude is below10−6are retained in the archive but excluded from the worst-ranked summary:
+dividing roundoff by a nearly zero gradient gives an unhelpful relative error. These results support
+close agreement for that tested configuration; they do not establish equivalence for every input,
+code revision or training trajectory.
+To complete:Confirm applicability of the archived comparison to the submitted implementation and
+add the matched final training comparison. Obtain any missing final reader/writer comparisons from the
+existing project work.
+A separate, newly run small-lattice check enumerated all 45=1024 frame paths for a repeated-
+label target and compared their summed probability with the numerical CTC loss. The absolute
+loss difference was 4.44×10−16; central differences over all 20 logits gave a maximum absolute
+derivative difference of 3.63×10−11. This verifies that finite example, including the required
+blank between repeated labels. Its construction and limits appear in Appendix B; it is not a
+learned-model accuracy measurement.
+The finite-difference reference, numerical substitution and its treatment of non-smooth operations
+are recorded in Equation 40 in Appendix A.6.
+31
+
+D.R. Braune Design and implementation
+The main design limitations concern what the input and training population can support. Fixed-
+width fitting limits detail in long lines; a closed writer head always selects among its trained
+classes; and line-level personal holdout does not establish independence from page or capture
+conditions. Stroke normalisation improves consistency with the pen plotter but can destroy detail
+when thresholding or thinning fails. These limitations should be assessed through appropriate
+examples and held-out measurements, rather than by treating a high softmax probability as proof
+of generalisation. Formal recognition and writer-identification qualification remains in Results.
+3.6 Style extraction and handwriting reproduction
+Recognising a line does not provide the motion needed to write it. The reproduction stage must
+recover usable pen paths from a writer’s examples, store the properties that distinguish that
+writer, and assemble the paths into text that was not necessarily present in the examples. The
+chosen representation is a library of normalised glyph trajectories accompanied by line-level
+style measurements. Profile extraction and trajectory assembly are implemented in style.py
+and synthesise.py, respectively. This representation provides explicit control over scale
+and movement, while making the limits of character-based reproduction visible.
+3.6.1 Choice of reproduction representation
+The available writer samples are a few labelled pages photographed after writing. A glyph library
+can reuse these observations without fitting a separate generative network for each writer. Haines
+et al. provide a relevant precedent: their standard experiments used approximately four A4 pages
+per writer [24, PDF p. 4, Sec. 4]. This is evidence that a small-page collection can support a
+glyph-based approach, not a guarantee that four pages cover every character or writing context.
+The present library likewise depends on the characters and variants actually observed.
+The offline data also influenced the choice. Graves’s recurrent synthesis model learns from
+ordered pen positions and end-of-stroke markers [ 18, p. 18]; these are not recorded in this
+project’s photographs. A skeleton supplies geometric paths, but cannot recover their true order,
+speed or pressure. Using it as measured online training data would introduce an unsupported
+assumption.
+Learned image generators remain a valid alternative, including methods that need very few
+references from a new writer. For example, One-DM uses one style reference at generation,
+but its IAM experiment trains with 339 writers and its implementation uses four RTX 3090
+GPUs [25, p. 9]. A small reference set must therefore be distinguished from the corpus and
+computation needed to train the generator. Developing and training an additional generator from
+first principles on the ODROID was outside the chosen computational scope; no training-time
+comparison was measured. The glyph approach instead retains explicit trajectories that can be
+scaled, joined and converted directly to machine coordinates. Its trade-off is weaker modelling
+of connected, context-dependent letterforms, examined at the end of this subsection.
+32
+
+D.R. Braune Design and implementation
+3.6.2 Character alignment and glyph extraction
+The extraction input is a line image and its known transcript. Character boundaries are not
+supplied as labels. The alignment builds on the blank-interleaved CTC lattice [19, PDF pp. 4–
+5]. Instead, the trained reader gives a probability distribution for every output frame, and
+forced alignment finds the highest-scoring CTC path consistent with the supplied text. This is a
+localisation problem: the transcript constrains which labels must occur, while the frame scores
+indicate where they most plausibly occur.
+The alignment uses the same permitted transitions as the CTC training lattice, but maximises
+a path score instead of summing all path probabilities. Equation 23 gives the recurrence by
+replacing path summation in the CTC lattice with maximisation [19, PDF pp. 4–5].
+V(t,s)=logp t(ℓ′
+s)+max
+r∈P(s)
+V(t−1,r).(23)
+For the V in that Owen line, frame 11 corresponds to state 11 of the blank-interleaved transcript.
+Its log emission is −0.01988991and the three admissible predecessor scores are −13.91888,
+−10.01139and−1.3624485. Equation 23 selects their maximum and gives V=−0.01988991−
+1.3624485=−1.3823384. Backtracking assignsVthe frame interval[11,12).
+Here ℓ′is the blank-interleaved transcript andP(s) is the permitted predecessor set: stay, advance
+one state, or skip an admissible blank. Backtracking yields the frames assigned to each character.
+Equation 23 makes clear why correct text does not guarantee correct boundaries: several spatial
+allocations can remain plausible under the same transcript.
+An output frame is converted through the network canvas to the original crop using the inverse of
+its aspect-preserving scale. If a frame edge istout ofTand the crop was scaled bya, its initial
+horizontal location is approximately (640t/T)/a , clamped to the source width. This undoes the
+resize rather than assuming that every crop occupied the complete 640-pixel width.
+The baseline and x-height are operational estimates from the line’s horizontal ink profile, not
+annotated typographic measurements. With p(y)= ∑x M(y,x) , the implementation takes the first
+and last rows satisfying p(y)≥0.45maxp as the body-band top and baseline; their difference
+gives hx. Bands below three pixels are rejected. This common scale makes glyph dimensions
+comparable across source resolutions, although unusual capitals, short lines or a large descender
+can bias the estimated body band.
+The worked example in Figure 15 uses an archived original Owen line crop, visually matched to
+the first line of its page transcript, with the joint reader checkpoint. The reader recovered the full
+line, and the extraction routine then generated the displayed boundaries and normalised paths.
+Correct text does not certify a correct individual cut: small punctuation and neighbouring strokes
+still require inspection. The archived crop is identified separately from the new whole-page
+segmentation run in the evidence manifest.
+The initial boundaries are refined by looking for thin, low ink near the expected cut. Equation 24
+defines the project-specific column cost used for this refinement. It combines low ink density
+with a preference for cutting a shallow connector near the baseline.
+Cx= px
+q0.60({p j∶p j>0}) +1.15clip( b−ytop(x)
+hx
+,0,3).(24)
+33
+
+D.R. Braune Design and implementation
+The refined right boundary of this V is source column 193. Although smoothing gives p193=2.8
+and the positive-column reference is 14.36, the raw ink count at column 193 is zero. The explicit
+blank-column rule therefore overrides 2.8/14.36 and assigns zero cut cost. This is a real case in
+which the gap rule prevents smoothing alone from penalising a clean separation.
+Here px is smoothed column ink count, the denominator is its 60th percentile over positive
+counts, b is baseline position, and ytop(x) is the highest ink row in that column. A denominator
+floor prevents division by zero. A true blank column is assigned zero cost. The search radius
+is approximately half an x-height, with a smaller penalty for distance from the initial boundary.
+The two terms in Equation 24 favour a narrow connector near the baseline over cutting through
+the body of a letter.
+One shared boundary array is enforced to remain increasing, with a minimum cell width of
+max(1,0.08h x) pixels. Independently snapping neighbouring boundaries could place both at the
+same gap and create an empty glyph. Figure 15 shows the refined cuts and resulting character
+shapes.
+Known transcript: 1.9. Vloggers using fame to support charities is a positive way
+Original line crop
+Refined shared boundaries (red)
+1
+.
+9
+.
+V
+l
+o
+g
+g
+Figure 15. Transcript-constrained character localisation and refinement of glyph
+boundaries.
+3.6.3 Skeleton tracing and pen path construction
+Ink is an area, whereas the gantry needs a path. Zhang–Suen thinning reduces the line mask
+to a one-pixel centreline [22, p. 237]. The complete line is thinned before character cells are
+separated. Thinning each cut cell independently would introduce an artificial image edge at every
+character boundary and could change the recovered centreline there.
+The skeleton is treated as a graph: adjacent ink pixels form edges, and endpoints and junctions
+determine where paths begin or split. Redundant diagonal edges are suppressed when an
+orthogonal route already connects the same local pixels. The default tracer first splits paths at
+junctions, prunes short dangling spurs, then greedily rejoins nearby ends with a continuation
+angle below 75○. Thus the default is not simply one pen lift per junction. A separate through-
+34
+
+D.R. Braune Design and implementation
+junction tracer exists but is not enabled by default. Neither procedure establishes natural pen
+order: the image records final ink, and several stroke sequences can create the same graph.
+Traced paths are divided at the character boundaries and simplified while limiting geometric
+deviation, following the polyline-simplification principle of Douglas and Peucker [ 26, page
+to verify] [verify source/page: douglas1973]. Short spurs and cut ligature tails require care
+because a genuine small stroke can resemble a skeleton artefact. Isolated dots may thin to a single
+point with no traceable edge; these are recovered as short paths rather than silently discarded.
+A detached t or f crossbar can extend over the next character cell. The extractor checks its width,
+flatness and height and, when the configured crossbar rule applies, assigns the complete bar to
+the corresponding letter instead of splitting it at a vertical cut. Such an overlap is not recorded as
+an in-word pen connection. Without this distinction, a crossbar would both contaminate the next
+glyph and inflate the profile’s connectedness.
+The project uses the following coordinate transform to separate source-image size, baseline and
+slant from the geometry to be stored. Equation 25 first expresses each path point relative to the
+cut boundaryx L and baselineb, using the estimated x-heighth x and slantφ.
+v= b−y
+hx
+,u 0= x−xL
+hx
+−vtanφ,u=u 0−δ.(25)
+A traced point on this V is (x,y)=(173,59) , with left cut xL =146 , baseline b=107 ,
+hx =38 and tanφ=−0.0787017 . Equation 25 gives v=48/38=1.263158 and u0 =27/38−
+1.263158(−0.0787017)=0.809939. After the implementation’s three-decimal intermediate
+rounding and measured post-trim shift δ=0.4472489 , the stored point is (u,v)=(0.363,1.263)
+and the recorded lead is 0.447 x-heights.
+Image rows increasing downwards become glyph height increasing upwards. After trimming
+eligible ligature tails, the code sets δ=min(u 0+vtanφ) over the remaining points, subtracts it
+from the stored horizontal coordinates and records lead l=clip(δ,0,1.5) . Thus the stored path
+and its lead are separate quantities: they preserve the relation between the character cell and
+the ink rather than forcing every cell to start at its first stroke. Slant is removed for storage and
+reapplied during placement. The glyph can then be drawn at a chosen physical x-height instead
+of a fixed number of source pixels.
+Entry and exit positions are recorded along with whether the skeleton crosses a character boundary.
+This distinguishes a measured original connection from a merely small visual gap. The extracted
+paths still represent a geometric reconstruction, rather than the writer’s true pen trajectory:
+retracing, pressure and movement direction cannot generally be recovered uniquely from a static
+image.
+3.6.4 Glyph selection and library quality
+The library must retain variation without giving every cut equal credibility. A recogniser can
+assign the correct transcript while placing one boundary inside a letter, so alignment is followed
+by geometric and consistency checks. Low-confidence lines are filtered relative to the writer’s
+own alignment distribution. Per-glyph checks reject implausible width, height, stroke count, pen
+length and disagreement between ink width and the allocated character advance.
+The width gate allows up to 2.1 x-heights for ordinary characters and 2.9 for wide characters
+such as m and w. Further width and height checks use the character’s own distribution, rather than
+35
+
+D.R. Braune Design and implementation
+applying one absolute size to every letter. The 40th-percentile width provides a reference less
+easily enlarged by a few cuts that contain part of a neighbour. Tightening is retained only when
+enough variants survive to form a usable pool. These gates encode plausible glyph geometry;
+their exact values are engineering heuristics, not universal typographic laws.
+A cross-writer shape prior supplies a second check. Each variant is represented by a smoothed,
+normalised 12×12occupancy descriptor. Pooling descriptors of the same character across writers
+gives a robust reference shape. Its role is to reject malformed cuts from a writer’s own library,
+not to copy another writer’s letter into it. Internal consensus then favours variants close to the
+writer’s typical form. The ordinary variant pool is limited to twelve per character; an accepted
+denoised prototype can be prepended as an additional candidate.
+For unit-length descriptor vg and the normalised median reference rc for character c, the prior
+distance is d(g,c)=1−v Tg rc. Internal consensus instead uses pairwise L1 descriptor distances and
+chooses the medoid with the lowest total distance. These compare a pooled character reference
+with this writer’s own forms. Dylan’s first storeda variant has recorded prior distance 0.114.
+Recomputing the pairwise rule on all nine final stored variants gives the smallest total distance,
+33.3413, for variant index 4; the other totals range from 34.4306 to 42.9091. This demonstrates
+the selection rule on the final pool, without treating a new descriptor calculation as the historical
+filtering log. Algorithm 4 gives its place in profile construction.
+Algorithm 4Labelled handwriting to a persistent writer profile
+Require:Labelled original linesL, trained reader and writer identifier.
+1:G←∅;S←∅
+2:for each(G, ℓ)∈Ldo
+3:A←ForcedAlign(G, ℓ); estimate baseline, x-height and slant
+4:ifalignment or body band is unusablethen continue
+5: Refine shared increasing cuts; thin full line; trace skeleton paths
+6: Split paths at cuts; assign crossbars; recover untraced dots
+7: Normalise glyph coordinates; record advance, lead and boundary crossings
+8: Append glyphs toGand line measurements toS
+9:end for
+10: Cache raw extraction; reject low-confidence lines relative to this writer
+11:for eachcharacter’s glyph poolG c do
+12: Apply size, height-class, path-length and cell-consistency gates
+13: Refine size range; apply cross-writer prior and within-writer consensus
+14: Rank and smooth retained variants; construct medoid and eligible prototype
+15:end for
+16:returnpersistent profile containingGand robust summaries ofS
+Two additional representatives support stable generation: a medoid that is an actual extracted
+example, and a denoised prototype formed from compatible variants. Prototype strokes are
+aligned and resampled before taking robust summaries; different stroke counts are not averaged
+indiscriminately. A prototype is admitted as an additional candidate only when the implemented
+shape-prior test improves sufficiently. The accepted and rejected variants in Figure 16 illustrate
+the distinction between retaining handwriting variation and retaining extraction errors.
+Synthesis preferentially samples well-formed variants and can favour a compatible entry height
+when joining. Where the requested character is unavailable, the code can use a case-related
+shape, a similar form, an anchor glyph or a simple fallback. These options preserve the ability
+36
+
+D.R. Braune Design and implementation
+Figure requested:One real writer’s character variants, identifying retained forms,
+neighbour-contaminated or fragmented cuts, the medoid and any accepted denoised prototype.
+Include the rejection criterion.
+design-glyph-quality.pdf
+Figure 16. Example of glyph-library filtering and representative selection.
+to generate text, but they do not establish that the missing character was reproduced in the
+writer’s own style. The trajectory records glyph-source information so that fallback use can be
+distinguished from genuine extracted forms.
+The final stored profiles supply the glyph geometry used during the demonstration. Figure 17
+shows actual variants from Dylan’s final library alongside its representative forms. These paths
+can be inspected independently of a photograph or a generated sentence, making it possible to
+distinguish the stored shape from later slant, jitter and connector operations.
+Dylan: stored character 'a'
+Final profile: 9 variants. Four examples and two representatives, all at the same scale.
+Final variant 0
+0
+1 xh
+prior distance 0.114; 1 strokes
+Final variant 1
+0
+1 xh
+prior distance 0.184; 1 strokes
+Final variant 2
+0
+1 xh
+prior distance 0.186; 1 strokes
+Final variant 3
+0
+1 xh
+prior distance 0.208; 1 strokes
+Final real medoid
+0
+1 xh
+prior distance 0.099; 1 strokes
+Final median prototype
+0
+1 xh
+prior distance 0.164; 1 strokes
+The medoid selects an actual example; the prototype combines compatible paths.
+Figure 17. Actual glyph variants and representative forms in the final writer profile.
+This final a pool contains nine variants. The four displayed examples retain recognisable loop
+geometry while differing in closure and curvature. The medoid and median prototype remain
+distinct: one selects a real variant, while the other combines compatible paths. A low prior
+distance expresses resemblance to the character reference, not proof of a better match to the
+writer.
+3.6.5 Writer style measurement and storage
+Letter shapes alone do not determine the appearance of a line. The profile also stores slant,
+x-height, ascender and descender extent, word spacing, per-character advance and connectedness.
+37
+
+D.R. Braune Design and implementation
+Measurements use medians where a few unusual cuts could otherwise dominate the result.
+Table 9 in Appendix A.7 gives the stored quantities, their units and their use in synthesis.
+Slant is estimated by shearing the ink through candidate angles and measuring concentration of
+the resulting column profile. The stored angle is the one that most nearly aligns the dominant
+strokes. This treats slant as a property measured over a line, so it is less dependent on one
+unusual letter. It remains an estimate affected by letter content; it is not a direct observation of
+the writer’s hand motion.
+For this profile representation, connectedness is defined as the fraction of eligible adjacent
+non-space glyph boundaries crossed by a source skeleton, as shown in Equation 26.
+c= Ncross
+max(1,N adj) .(26)
+For the single extracted Owen line used above, 39 eligible adjacent non-space glyph pairs
+were counted and three boundaries were crossed by a recovered skeleton. Equation 26 gives
+c=3/39=0.076923 . This line-level extraction trace illustrates what is counted; the final stored
+writer profile summarises its own complete source collection.
+Here Nadj counts eligible adjacent non-space glyph pairs and Ncross counts boundaries actually
+crossed by a traced centreline. Equation 26 measures connections in the source writing; counting
+pen lifts in a generated file would instead measure the extractor and synthesiser’s decisions. The
+difference is important when assessing how faithfully the library represents cursive writing.
+Profiles are stored as structured files containing the writer identifier, measurements and glyph
+paths. The permanent representation supports the proposal’s multiple-writer requirement without
+re-extracting the source pages for each request. Cached raw extraction also permits a change
+to filtering without repeating all tracing. The extraction cache and final profile have different
+purposes: the former preserves intermediate work, while the latter is the version selected for
+reproduction.
+3.6.6 Text layout and connected handwriting synthesis
+The synthesiser receives digital text, a profile, a physical x-height and a line-width limit. It
+selects a variant for each character, applies controlled shape variation and places the resulting
+paths into words and lines. Character advance and word spacing are taken from the profile rather
+than placing every letter at a fixed cell width. A word is moved to the next line when its predicted
+width exceeds the remaining space.
+Equation 27 is the project’s inverse placement transform: it reapplies slant and physical scale to
+the stored glyph coordinates before machine-coordinate conversion.
+x=p x+h mm
+x (l+u+sv),y=p y+h mm
+x (v+d).(27)
+In the generated Owen sentence “Writing with style.”, the first placement call, after calib-
+ration and jitter, uses (u,v)=(−0.01134565,1.47270173) , lead l=0.25117988 , zero shear
+and drift, and hmmx =4 . With the initial placement origin (0,0) , Equation 27 gives x=
+4(0.25117988−0.01134565)=0.9593369 mm and y=4(1.47270173)=5.8908069 mm. This is
+the actual assembly point before later path processing and machine placement, not a replay of
+the earlierVcrop.
+38
+
+D.R. Braune Design and implementation
+Here (u,v) is a stored glyph point, l is its lead-in offset, s is the applied slant shear, d is local
+baseline drift, and (p x,p y) is the placement origin. The physical x-height hmmx converts the
+normalised path to millimetres. Equation 27 keeps the source shape, line layout and physical
+scale as separate quantities.
+Small random translations, rotations and scale changes avoid using identical paths for every oc-
+currence of a letter. A correlated drift term changes the baseline gradually instead of introducing
+unrelated vertical jumps. The implemented drift update uses a persistence factor of 0.85 and
+bounds displacement to±0.25x-heights. Such variation is controlled rather than unrestricted:
+too much jitter degrades letter identity and can cause neighbouring glyphs to collide. A collision
+guard maintains a nominal 0.05 x-height clearance where appropriate.
+Variant choice is weighted rather than uniform: the best-ranked forms receive greater probability,
+and a compatible entry height is preferred when joining. The legibility anchoring strength is also
+profile-dependent. In the automatic setting, Equation 28 maps the median stored prior distance ̃d
+into a valueλ.
+λ=clip(
+̃d−0.24
+0.32−0.24,0,1).(28)
+The final Owen profile’s stored glyph distances have median ̃d=0.18355 . Equation 28 gives
+λ=clip[(0.18355−0.24)/0.08,0,1]=0 . With no stored override, this is the anchoring value
+selected by the automatic rule for the generated job.
+A clean library therefore retains more sampled personal variants; a library with poor descriptor
+agreement uses stronger anchors. The anchor first prefers an acceptable representative from the
+writer’s own profile, then uses a generic form when necessary. Equation 28 is a heuristic for
+allocation of trust, not a learned probability that a glyph is correct. Source tags identify own,
+case-related, similar, core, fallback or blank output. In particular, “core” can represent either a
+personal representative or a generic anchor; that tag alone cannot quantify how much personal
+geometry was preserved.
+For connected writing, the profile’s connection fraction is used as a probability for eligible
+neighbouring letters. The code suppresses joining for profiles below a 0.45 connection threshold.
+A proposed join also requires a compatible glyph source and a gap no greater than 0.80 x-heights.
+This prevents a generic print fallback from being treated as a natural cursive attachment and
+prevents a long flat connector across an unusually large space. The body stroke is distinguished
+from a dot or crossbar so that the next letter does not connect to a detached mark.
+The default connector uses a shallow curved path between the exit and entry points, with sag
+limited relative to x-height and separation. A tangent-based alternative exists, but its flag is
+disabled in the current configuration. When a join is accepted, the connector and both bodies
+form one continuous pen-down path. Figure 18 relates endpoint selection to the resulting paths,
+including a pair for which a connector is unsuitable.
+Figure requested:Enlarged real glyph pair with body, dot/crossbar, entry and exit labelled;
+show accepted connector and one rejected large-gap or incompatible-source case.
+design-glyph-joining.pdf
+Figure 18. Assembly of eligible glyph bodies into connected pen paths.
+Line-level style calibration compensates for differences between measurements of individual
+stored glyphs and measurements of the assembled line. A probe is rendered without jitter,
+39
+
+D.R. Braune Design and implementation
+measured using the same style functions, and compared with the reference slant and vertical
+proportions. Limited shear and extent corrections are applied over three iterations. This improves
+internal consistency of the representation, but it remains calibration against the project’s own
+measurements; independent evaluation is needed to establish physical stylistic fidelity.
+3.6.7 Candidate selection for legibility and writer identity
+One set of random variant choices can be more readable than another without being more
+characteristic of the writer. Candidate selection therefore evaluates both quantities. Each
+candidate trajectory is rendered at constant ink width, read by the text recogniser, and judged
+by the stroke-normalised writer classifier introduced in Section 3.5.4. Uniform rendering keeps
+candidate selection focused on reproducible geometry, while the shape classifier applies the
+selected stroke-normalisation convention.
+The project-defined score in Equation 29 combines text recovery and the requested writer’s
+probability. It uses the insertion, deletion and substitution error convention of Graves et al. [19,
+PDF p. 2, Sec. 2.1], then combines the resulting character score with the writer posterior using a
+harmonic mean.
+A=max(0,1− dedit(̂t,t)
+∣t∣ ),J=
+⎧⎪⎪⎨⎪⎪⎩
+2AP/(A+P),A+P>0,
+0,otherwise. (29)
+For the recorded Owen candidate 1, the 19-character target “Writing with style.” differs from its
+reader output by one substitution, giving A=18/19=0.9473684 . The selected-writer posterior
+is P=0.5786133 , so Equation 29 gives J=0.7184359 . This is the actual score used to select
+the candidate in Figure 19; it evaluates the software rendering rather than physical stylistic
+agreement.
+Here t is intended text,̂t is recognised text, dedit is the minimum number of insertions, deletions
+and substitutions, using the reader error convention [19, PDF p. 2, Sec. 2.1], and P is the model
+probability of the selected writer. The harmonic mean J in Equation 29 makes a weak component
+limit the combined score. The actual candidate comparison below holds text and writer fixed,
+showing how the writer posterior affects selection.
+Algorithm 5 gives the bounded search and repair procedure. The server default is fourteen
+candidates, with the number configurable. Because an entire candidate is rerendered and rescored,
+a repair is judged in its assembled context rather than by an isolated character score.
+A repair is retained only when the complete trial improves the joint score. This bounds the search
+and protects the best candidate already found. A separate reader-only helper uses a different
+escalation policy; it is not part of this joint selection procedure.
+More trials increase the opportunities to find a useful combination, but also add recogniser
+and writer-model calls. Search quality therefore has a computational cost for fixed text and
+profiles. The repaired or fallback glyph proportion also matters: legibility gained by replacing
+distinctive forms has a stylistic cost. Figure 19 relates the individual candidate scores to the
+selected trajectory.
+In the worked Owen example, three pre-repair trials use the fixed text “Writing with style.”,
+seeds 2026, 3003 and 3980, and the selected eleven-writer shape model with an explicit width
+fraction of 0.17. Candidate 1 has(A,P,J)=(0.947,0.579,0.718) , while candidate 3 has the same
+40
+
+D.R. Braune Design and implementation
+Algorithm 5Joint candidate search and bounded legibility repair
+Require:Text, writer profile, reader, shape classifier, seedsand trial budgetK.
+1:J ∗←−1;R←∅; determine anchoring strength
+2:fork←0tomax(1,K)−1do
+3:T←SynthesizeText(text,profile,s+977k)
+4:I←RenderUniformInk(T);(A,P,J)←Score(I)
+5:ifJ>J ∗then(T ∗,I∗,J∗)←(T,I,J)
+6:ifJ ∗≥0.99then break
+7:end for
+8:forat most three configured repair roundsdo
+9:ifJ ∗≥0.995then break
+10:W←up to two weak aligned positions not already inR
+11:ifW=∅then break
+12:R ′←R∪W; regenerate with stronger anchors atR′and seeds
+13: Render and rescore the complete trial trajectory
+14:ifJ>J ∗thencommitR ′and the new best trajectory
+15:end for
+16:returnT ∗with selection and accepted-repair metadata
+Candidate 1
+A = 0.947
+P = 0.579
+J = 0.718
+Candidate 2
+A = 0.789
+P = 0.073
+J = 0.134
+Candidate 3
+A = 0.947
+P = 0.464
+J = 0.623
+Owen; fixed text; selected candidate 1 from these three trials
+Pre-repair diagnostic trials; shape width 0.17. Selection scores are not independent physical results.
+Figure 19. Example of joint candidate selection for a fixed writer, input text and search
+configuration.
+41
+
+D.R. Braune Design and implementation
+character score but (P,J)=(0.464,0.623) . The combined criterion therefore selects candidate 1.
+Its reader output begins with a lower-case “w”, which accounts for one edit rather than perfect
+text recovery. This is an inspectable scoring example before repair, not a claim that the full
+default search or the physical system attained those scores.
+The same models guide selection, so their scores cannot independently prove the output’s quality.
+A classifier can prefer an image for model-specific reasons, and its posterior is not an 85%
+stylistic correlation measurement. The search is a design mechanism; final physical handwriting
+must be qualified separately. Increasing the search budget also does not recover a letterform that
+is absent or incorrectly extracted from the source library.
+3.6.8 Machine coordinate mapping and G-code generation
+The selected trajectory is mapped into the calibrated workspace. Normalised glyph size, line
+spacing and machine margins are handled separately: fitting the height of a tall descender should
+not silently change the meaning of the ruling or move a line outside the available area. Robust
+extent measurements limit the effect of a single unusually tall glyph on the scale of the complete
+passage.
+The physical x-height is first chosen from the page ruling and a stored x-height-to-pitch ratio
+where available. If that ratio is absent, the configured fallback gives 8.4(0.46)=3.864 mm at
+the default 8.4 mm ruling. This is the fallback sizing rule, rather than the value passed to every
+job: the traced Owen job explicitly requests 4 mm. A probe of the requested text can reduce
+the selected value if robust line extent exceeds 1.25 rulings. The extent uses the 98th-percentile
+stroke tops and second-percentile bottoms, with exact extremes for fewer than eight strokes. It
+limits outliers but does not guarantee every extreme lies inside the nominal band.
+Two placement modes are supported. Ruled placement adjusts each line’s measured centre to the
+configured ruling independently of the character scale. Free placement preserves the synthesised
+pitch after scaling, which can avoid forcing large ascenders and descenders from neighbouring
+lines into contact. A line offset selects a later starting position and reduces the remaining page
+height. Algorithm 8 summarises the conversion before file generation. The full conversion
+procedure is retained as Algorithm 8 in Appendix A.9.
+For the basic mapping, Equation 30 places a trajectory with bounds (x0,y 0,x 1,y 1) within the
+page margins.
+xm=o x+m x+a(x−x0),y m=o y−my−dy−a(y1−y)+∆y.(30)
+The generated Owen trajectory has x0 =0.9593369 mm and y1 =6.6340616 mm. A
+point (2.9829210,5.3303251) mm is placed using the configured origin (0,251.3) mm,
+margins (15,10) mm, unit fit scale and zero line shift. Equation 30 gives (xm,y m)=
+(17.0235840,239.9962635) mm. Three-decimal file emission writes this point as X17.024
+Y239.996, connecting the trajectory calculation to the motion segment examined in Sec-
+tion 3.3.2.
+Here (ox,o y) is the configured machine origin, mx,m y are margins, a is a fit scale, dy selects
+the line offset and ∆y is any line-spacing adjustment. Both stored trajectories and machine
+coordinates use upward-increasing y; Equation 30 positions later lines lower on the page rather
+than introducing another arbitrary image flip. Requested points are restricted to the usable travel,
+42
+
+D.R. Braune Design and implementation
+but clamping is a last boundary protection: it can distort a letter and must not be treated as
+successful layout.
+Strokes are ordered within text rows so that path shortening does not scramble reading order.
+Short path segments can be decimated, and nearby consecutive strokes may be joined without
+a lift. The current default distance is 0.6 mm for such joins and for closing a near-complete
+ring. These operations save travel and pen changes, but can also introduce unintended ink if
+set too aggressively; their scale relative to the chosen writing size matters. The code retains
+clipped-point and stroke information to make these effects inspectable.
+The generated file selects millimetres and absolute positioning. A travel move reaches the start
+of a stroke with the pen raised, the pen is lowered, drawing moves follow, and the pen is raised
+before the next travel. Figure 20 reproduces the beginning of the actual generated Owen file used
+for these calculations. The interpreter assignsM3andM5to pen down and pen up respectively.
+G21
+G90
+G0 F2400
+G0 F2400 X15.000 Y240.557
+M3
+G4 P0.350
+G1 F900
+G1 X15.001 Y240.207
+G1 X15.002 Y239.857
+G1 X15.003 Y239.506
+G1 X15.005 Y239.156
+G1 X15.006 Y238.806
+G1 X15.007 Y238.456
+Figure 20. Opening commands of the generated Owen sentence, including its actual
+travel/drawing feeds and first drawing coordinates. The file was inspected offline and not
+executed on the gantry.
+Feed is modal, so the travel feed is restated after drawing rather than assuming that the first G0
+F remains active. Pen dwell defaults to 350 ms in each direction and is configurable separately
+for raising and lowering. This dwell is additional to the switch-confirmed actuation performed by
+the interpreter. A timing estimate that counted only geometric travel would omit those repeated
+state-change costs. Conversely, a trapezoidal acceleration parameter in a configuration object
+does not establish that the actual GPIO loop executes acceleration ramps.
+Equation 31 is a dimensional calculation of the nominal job budget: distance divided by feed
+gives travel time, and pen-state changes add their configured dwells.
+tnom= 60Dd
+Fd
++ 60Du
+Fu
++ Np(tup+t down)
+2 .(31)
+For this same generated file, the unrounded distance accumulators are Dd =139.0263729 mm
+and Du=158.1555743 mm. At Fd =900 and Fu=2400 mm/min, with 56 pen transitions and
+two 0.35 s dwell settings, Equation 31 givestnom=9.2684249+3.9538894+19.6=32.8223142 s.
+The job metadata reports 32.8 s after rounding. This is the converter’s actual geometric budget,
+not a physical completion-time measurement.
+43
+
+D.R. Braune Design and implementation
+Here Dd,D u are drawing and pen-up distances in millimetres, Fd,Fu their feeds in mm/min, Np
+is the number of pen transitions and the dwell times are in seconds. The last term assumes
+alternating up/down events. Equation 31 separates settings that affect ink quality from settings
+that mainly affect non-writing time. It excludes the unknown initial approach to the first stroke,
+synthesis, switch-confirmed motor actuation, GPIO overhead and the directional pulse-delay
+effect in Equation 5; the saved estimate is therefore not the measured R3 completion time.
+3.6.9 Reproduction verification and design limitations
+The reproduction checks follow the representations established above: aligned source ink, stored
+glyph paths, assembled trajectories and emitted machine commands. Re-rendering the emitted
+G-code can reveal a coordinate inversion, scale change, missing stroke or additional joining
+segment before drawing. Comparing that render with the selected trajectory checks conversion;
+comparing the physical drawing with the render checks execution. These comparisons localise
+errors without substituting for end-to-end qualification.
+Appendix B shows the same sentence generated from four stored profiles alongside paths
+independently parsed from their emitted G-code. Nine controlled conversion fixtures addition-
+ally preserved path vertex counts with no clipping and a maximum coordinate discrepancy of
+0.0004 mm, consistent with writing coordinates to three decimal places. Joins and ring closure
+were disabled only for those correspondence fixtures so that the vertices could be paired; the
+four profile illustrations used the normal configuration. Neither check measures the mechanism’s
+positional accuracy.
+The representation’s main advantage is that its geometry is explicit and inspectable. A defective
+glyph can be traced to a source crop, stored paths can be viewed independently of the machine,
+and physical size follows from a defined transformation. The main limitation is the loss of
+context when a connected word is divided into reusable characters. Real letterforms change
+with their neighbours, whereas a finite glyph pool and join rules approximate that dependence.
+Skeletons also omit pressure and true temporal order. These losses explain why a plausible letter
+library need not reproduce every connected style equally well.
+Possible extensions include context-dependent multi-character units, better alignment, trajectory
+acquisition and a verified alternative junction tracer. Each addresses a different loss: multi-
+character units preserve local letter interactions, trajectory acquisition restores temporal in-
+formation, and improved tracing changes how an existing skeleton becomes strokes. Their
+implementation would require corresponding changes to extraction, storage or the source data,
+rather than a larger candidate search alone. The retained design therefore prioritises extraction
+from the available offline pages and explicit control of the plotted geometry. Recovering natural
+pen dynamics would require new trajectory data, while replacing the library with a learned
+generator would add a separate training and validation problem. The alternative tracer remains
+an implementation option; its presence alone does not establish an improvement over the default.
+3.7 System integration and embedded operation
+The server connects the numerical processing, models, profiles and motion interpreter. The
+browser supplies images or writing requests and displays their outputs; the engineering operations
+remain in the processing modules.
+44
+
+D.R. Braune Design and implementation
+3.7.1 Classification and reproduction workflows
+Captured and uploaded pages follow the same conditioning and recognition path. Writer predic-
+tions are combined across the retained line crops using Equation 32, rather than choosing one
+line to represent the page.
+pk= ∑i wi pi,k
+∑i wi
+, ̂k=argmax
+k
+pk.(32)
+Applying this vote to the first two archived Owen01 crops gives ink weights 20204 and 21750,
+with Owen probabilities 0.9996674 and 0.9999279 from the selected 0.17-width model. Equa-
+tion 32 gives pOwen=(20204×0.9996674+21750×0.9999279)/41954≃0.9998024. This is a
+two-crop calculation trace, not the full-page evaluation reported in Results.
+Here wi counts crop pixels below grey value 128; all-zero weights fall back to equal weighting.
+More ink therefore gives a line greater influence, including a possible dark artefact. Crop rejection
+precedes aggregation for this reason. The pooled probability and the fraction of individual lines
+agreeing with the selected writer are reported separately; neither establishes accuracy without a
+reference.
+A reproduction request selects text, profile and drawing settings, then stores the trajectory,
+preview, G-code and metadata as one generated job. Characters absent from the profile use the
+fallbacks in Section 3.6.6. Drawing is a separate action requiring connection and calibration,
+allowing inspection before execution. Table 10 in Appendix A.7 records each representation’s
+inputs, outputs and coordinate conventions.
+3.7.2 Embedded execution, interfaces and job control
+The ODROID N2+ runs NumPy inference and motion control from stored arrays, without the
+training framework. Canvas size, line count and candidate count still determine its processing
+load. NumPy supplies array arithmetic; Flask handles requests; image libraries handle file I/O;
+OpenCV serves the camera interface; andgpiod exposes GPIO. Framework network operations
+belong to the separate training route. The complete source code is supplied separately from this
+report for the AMS submission.
+During motion, the pulse loop checks an abort event and confirmed end stops. A separate request
+thread permits a stop while drawing is active. End-stop trips latch a fault; the recovery routines
+attempt switch retraction, pen raising and parking under their required preconditions. The stop
+request is a software path, not an independent motor-power disconnect. A pen-state timeout
+remains consequential because subsequent travel may mark the sheet.
+The resulting job states distinguish generation, refused execution, completed execution and
+interruption/failure. Calibration establishes the coordinate reference in software, but missed steps
+can invalidate its correspondence with physical position. Neither a saved preview nor emitted
+pulse counts prove that the nib followed the intended path.
+45
+
+D.R. Braune Design and implementation
+3.7.3 Integration verification and remaining constraints
+Interface checks should confirm consistent upload/camera processing, checkpoint-to-profile
+writer mapping, bounded G-code and truthful interrupted-job status. Formal classification
+accuracy, drawing accuracy and timing against the proposal remain in Results.
+The diagnostic retracing route provides a useful bypass: page conditioning and line separation are
+followed by thinning, tracing and ordinary machine conversion, omitting the reader, glyph library
+and synthesis. Comparing its G-code render with a drawing helps distinguish execution from
+synthesis errors. Comparing the drawing directly with the photograph still includes conditioning,
+skeletonisation, filtering and coordinate errors; it does not isolate mechanics alone.
+Per-stage records separate acquisition, segmentation, inference, generation and execution time.
+Generation metadata is carried into the writing record so that a complete reproduction interval
+can be reconstructed. R3/R4 qualification must specify its start/end events and use the intended
+platform; Windows development timings cannot establish an ODROID requirement.
+46
+
+D.R. Braune Design and implementation
+4. References
+[1] O. Teikari, “Reproducing handwriting with position-controlled robots,” Master’s thesis,
+Tampere University of Technology, Tampere, Finland, 2016.
+[2] Allegro MicroSystems, “A4988 DMOS microstepping driver with translator and overcurrent
+protection,” Datasheet, rev. 8, 2022, [Online]. Available: https://www.allegromicro.com/-
+/media/files/datasheets/a4988-datasheet.pdf.
+[3] P. P. Acarnley,Stepping Motors: A Guide to Theory and Practice, 4th ed. London, U.K.:
+Institution of Electrical Engineers, 2002.
+[4] J. E. Bresenham, “Algorithm for computer control of a digital plotter,”IBM
+Systems Journal, vol. 4, no. 1, pp. 25–30, 1965. [Online]. Available: https:
+//janmr.com/files/papers/bresenham65.pdf
+[5] ROHM Semiconductor, “NPN transistor: Low-side switch fundamentals,” TechWeb,
+Transistors Basic, 2026, 27 February 2026; accessed 1 November 2026. Unpaginated;
+section headings used as locators. [Online]. Available: https://techweb.rohm.com/product/
+transistors-diodes/transistors/27354/
+[6] ON Semiconductor, “BC337/BC337-40 NPN general-purpose amplifier transistor,” Data-
+sheet, [Online]. Available: https://www.onsemi.com/download/data-sheet/pdf/bc337-fsc-
+d.pdf.
+[7] Hardkernel, “ODROID-N2+ single-board computer,” Hardware technical reference, [On-
+line]. Available: https://www.hardkernel.com/shop/odroid-n2-with-4gbyte-ram-2/ [Ac-
+cessed: Oct. 31, 2026].
+[8] D. Bradley and G. Roth, “Adaptive thresholding using the integral image,”Journal
+of Graphics Tools, vol. 12, no. 2, pp. 13–21, 2007. [Online]. Available:
+https://people.scs.carleton.ca/~roth/iit-publications-iti/docs/gerh-50002.pdf
+[9] N. Otsu, “A threshold selection method from gray-level histograms,”IEEE Transactions on
+Systems, Man, and Cybernetics, vol. 9, no. 1, pp. 62–66, 1979.
+[10] W. Postl, “Detection of linear oblique structures and skew scan in digitized documents,” in
+Proc. 8th Int. Conf. Pattern Recognition (ICPR), 1986.
+[11] S. Avidan and A. Shamir, “Seam carving for content-aware image resizing,”ACM
+Transactions on Graphics, vol. 26, no. 3, pp. 10:1–10:9, 2007. [Online]. Available:
+https://www.cs.jhu.edu/~misha/ReadingSeminar/Papers/Avidan07.pdf
+[12] R. M. Haralick, S. R. Sternberg, and X. Zhuang, “Image analysis using mathematical
+morphology,”IEEE Transactions on Pattern Analysis and Machine Intelligence, vol. 9, no. 4,
+pp. 532–550, 1987. [Online]. Available: https://www.haralick.org/journals/04767941.pdf
+[13] A. Rosenfeld and J. L. Pfaltz, “Sequential operations in digital picture processing,”
+Journal of the ACM, vol. 13, no. 4, pp. 471–494, 1966. [Online]. Available:
+https://www.cs.virginia.edu/~jlp/66.sequential.op.pdf
+47
+
+D.R. Braune Design and implementation
+[14] F. Kizilirmak and B. Yanikoglu, “CNN-BiLSTM model for English handwriting recognition:
+comprehensive evaluation on the IAM dataset,” arXiv preprint arXiv:2307.00664, 2023.
+[Online]. Available: https://arxiv.org/pdf/2307.00664
+[15] U.-V . Marti and H. Bunke, “The IAM-database: an English sentence database for offline
+handwriting recognition,”Int. J. Document Analysis and Recognition, vol. 5, no. 1, pp.
+39–46, 2002.
+[16] K. Chellapilla, S. Puri, and P. Simard, “High performance convolutional neural networks
+for document processing,” inProc. 10th Int. Workshop on Frontiers in Handwriting
+Recognition (ICFHR), 2006.
+[17] S. Ioffe and C. Szegedy, “Batch normalization: accelerating deep network training by
+reducing internal covariate shift,” inProc. 32nd Int. Conf. Machine Learning (ICML),
+2015, pp. 448–456. [Online]. Available: https://proceedings.mlr.press/v37/ioffe15.pdf
+[18] A. Graves, “Generating sequences with recurrent neural networks,” arXiv preprint
+arXiv:1308.0850, 2013. [Online]. Available: https://arxiv.org/pdf/1308.0850
+[19] A. Graves, S. Fernández, F. Gomez, and J. Schmidhuber, “Connectionist temporal
+classification: labelling unsegmented sequence data with recurrent neural networks,” in
+Proc. 23rd Int. Conf. Machine Learning (ICML), 2006, pp. 369–376. [Online]. Available:
+https://www.cs.toronto.edu/~graves/icml_2006.pdf
+[20] N. Srivastava, G. Hinton, A. Krizhevsky, I. Sutskever, and R. Salakhutdinov, “Dropout:
+a simple way to prevent neural networks from overfitting,”Journal of Machine
+Learning Research, vol. 15, no. 56, pp. 1929–1958, 2014. [Online]. Available:
+https://jmlr.org/papers/volume15/srivastava14a/srivastava14a.pdf
+[21] A. A. Brink, J. Smit, M. L. Bulacu, and L. R. B. Schomaker, “Writer identification using
+directional ink-trace width measurements,”Pattern Recognition, vol. 45, no. 1, pp. 162–171,
+2012. [Online]. Available: https://www.ai.rug.nl/~mbulacu/brink-quill-pr2012.pdf
+[22] T. Y . Zhang and C. Y . Suen, “A fast parallel algorithm for thinning digital patterns,”
+Communications of the ACM, vol. 27, no. 3, pp. 236–239, 1984. [Online]. Available:
+https://agcggs680.pbworks.com/f/Zhan-Suen_algorithm.pdf
+[23] PyTorch contributors, “CTCLoss: reduction and alignment-loss conventions,” PyTorch
+documentation, accessed 1 November 2026. [Online]. Available: https://docs.pytorch.org/
+docs/2.15/generated/torch.nn.CTCLoss.html
+[24] T. S. F. Haines, O. Mac Aodha, and G. J. Brostow, “My text in your handwriting,”ACM
+Transactions on Graphics, vol. 35, no. 3, pp. 26:1–26:18, 2016. [Online]. Available:
+https://reality.cs.ucl.ac.uk/projects/haines/haines16handwriting.pdf
+[25] G. Dai, Y . Zhang, Q. Ke, Q. Guo, and S. Huang, “One-DM: one-shot diffusion
+mimicker for handwritten text generation,” inComputer Vision – ECCV 2024,
+ser. Lecture Notes in Computer Science. Springer, 2024. [Online]. Available:
+https://www.ecva.net/papers/eccv_2024/papers_ECCV/papers/07598.pdf
+[26] D. H. Douglas and T. K. Peucker, “Algorithms for the reduction of the number of points
+required to represent a digitized line or its caricature,”Cartographica, vol. 10, no. 2, pp.
+112–122, 1973.
+48
+
+D.R. Braune Design and implementation
+[27] T. Tieleman and G. Hinton, “Lecture 6.5—RMSprop: divide the gradient by a running
+average of its recent magnitude,” COURSERA: Neural Networks for Machine Learning,
+2012. [Online]. Available: https://www.cs.toronto.edu/~tijmen/csc321/slides/lecture_
+slides_lec6.pdf
+[28] D. P. Kingma and J. Ba, “Adam: a method for stochastic optimization,” in
+Proc. 3rd Int. Conf. Learning Representations (ICLR), 2015. [Online]. Available:
+https://arxiv.org/pdf/1412.6980
+[29] I. Loshchilov and F. Hutter, “Decoupled weight decay regularization,” inProc.
+7th Int. Conf. Learning Representations (ICLR), 2019. [Online]. Available:
+https://arxiv.org/pdf/1711.05101
+49
+
+D.R. Braune Design and implementation
+A. Supporting implementation calculations
+The main Design section explains the engineering decisions and representative operations. This
+appendix records the derivative conventions, image operations and parameter meanings needed to
+inspect the numerical implementation in more detail. Algorithms in the main text are explanatory
+pseudocode; the separately submitted source remains the executable implementation.
+A.1 Numerical network derivatives
+For a linear layer Y=XW T+b with incoming derivative G, the implemented derivatives are
+∂L/∂X=GW , ∂L/∂W=G T X and the sum of G over samples for the bias. Convolution applies
+the corresponding matrix calculation to overlapping image patches as described in Equation 39.
+Contributions to the same input pixel are summed.
+For each batch-normalisation channel, N=BHW values contribute to the batch statistics. The
+training forward pass uses population variance, while the running variance update uses its
+N/(N−1)corrected estimate. The running update momentum is 0.1. With ̂x=(x−µ)/
+√
+σ 2+ε
+and g=∂L/∂y , Equation 33 gives the input derivative, obtained by simplifying the batch-
+normalisation chain-rule expressions [17, PDF p. 4].
+∂L
+∂x i
+= γ
+N
+√
+σ 2+ε
+⎡⎢⎢⎢⎢⎣
+Ngi−∑
+j
+g j−̂xi ∑
+j
+g ĵx j
+⎤⎥⎥⎥⎥⎦
+.(33)
+The parameter derivatives accompanying Equation 33 are ∑i gîxi for γ and ∑i gi for β. Inference
+uses stored statistics and requires no batch-dependent update.
+ReLU passes an incoming derivative only where its cached input was positive. Spatial max
+pooling scatters it to the selected maximum in each window. Height-max pooling does the same
+along height; width averaging distributes the derivative equally over the pooled columns. The
+implementation uses inverted dropout: it multiplies by the cached Bernoulli mask divided by
+1−pduring training and is the identity at inference. This moves the expected-output scaling
+from test time to training time relative to the original presentation [20, pp. 1931, 1934]. Reusing
+the same mask in the backward calculation is essential.
+The LSTM backward pass differentiates the implemented recurrence in Equation 19; full back-
+propagation through time for this cell form is described by Graves [18, pp. 4–5]. It carries both
+the hidden derivative from the next step and a separate cell derivative. Writing the combined
+hidden derivative as dht, Equation 34 shows the dependencies before gate-activation derivatives
+are applied.
+dct =dc next
+t +dh t⊙ot⊙[1−tanh2(ct)],
+dot =dh t⊙tanh(ct),d f t =dc t⊙ct−1,
+dit =dc t⊙gt,dg t =dc t⊙it,
+dct−1=dc t⊙ft.
+(34)
+Sigmoid gates multiply these derivatives by a(1−a); the candidate multiplies by 1−g2t . The
+concatenated gate derivatives accumulate outer products with xt and ht−1into the two weight
+matrices. Multiplication by Wh provides the next reverse-time hidden derivative in Equation 34.
+50
+
+D.R. Braune Design and implementation
+Each bidirectional layer reverses the appropriate sequence and sums the two input derivatives;
+stacked layers are differentiated in reverse layer order.
+The numerical CTC forward score uses the recurrence in Equation 35, written in log space from
+the CTC path recursion [19, PDF p. 4, Sec. 4.1].
+αt,s =logp t(ℓ′
+s)+LSE r∈P(s)αt−1,r.(35)
+For frame 11 and the V state in the real Owen line, the predecessor log-forward scores are
+−12.8882643,−8.9807719and−0.1088294, and the log emission is−0.01988985. Equation 35
+gives α=−0.01988985+log(e−12.8882643+e−8.9807719+e−0.1088294)≃−0.12857619. This sums
+the admissible predecessor mass, whereas the main-text forced alignment selects one predecessor.
+The predecessor set in Equation 35 contains the current state, the preceding state and an admiss-
+ible two-state skip. A skip is excluded when its destination is blank or repeats the label two states
+earlier. With log scores a,b, the stable pairwise reduction is m+log(exp(a−m)+exp(b−m)),
+where m=max(a,b) ; the all-unreachable case remains −∞. The backward recurrence uses
+successor emissions att+1, yielding the occupancy convention in Equation 21.
+A.2 Optimisers and gradient scaling
+The reader uses an uncentred RMSprop accumulator, following the moving-square-gradient
+principle [27, PDF p. 29]. The code selects its own averaging coefficient and adds the stated
+decay term. For parameter θ, raw gradient g, learning rate η and weight-decay coefficient λw,
+the implemented update is Equation 36.
+g′=g+λ wθ,v t =0.99v t−1+0.01(g′)2,θ t =θ t−1−η g′
+√vt+10−8.(36)
+Decay in Equation 36 enters the gradient before accumulation. The writer’s AdamW instead
+uses separate parameter decay, as shown in Equation 37 [28, p. 2, Alg. 1][29, p. 3, Alg. 2].
+mt =0.9m t−1+0.1g,v t =0.999v t−1+0.001g 2,
+̂mt =m t/(1−0.9t), ̂vt =v t/(1−0.999t),
+θt =θ t−1−η( ̂mt√̂vt+10−8+λ wθt−1).
+(37)
+Before the writer update, all gradient tensors are scaled together by min(1,5/∥g∥2), with a
+numerical denominator guard. Clipping individual tensor norms independently would be a
+different operation. The numerical reader loop does not apply that clipping. Equations 36
+and 37 describe code operations, not a claim that their default learning rates were used in every
+completed run.
+A.3 Morphology, thinning and path simplification
+For binary mask M and neighbourhood K, dilation is the maximum of translated mask values
+and erosion is their minimum. Closing applies dilation followed by erosion with the same
+footprint [12, pp. 533, 541, Defs. 1, 36]. For a binary mask and symmetric flat footprint, the set
+operations correspond to neighbourhood maximum and minimum. The implementation obtains
+rectangular neighbourhood counts through prefix sums; binary comparisons then implement
+51
+
+D.R. Braune Design and implementation
+these operations. Connectivity analysis uses horizontal runs and union operations with diagonal
+overlap admitted, rather than a library component-labelling call.
+The thinning conditions follow Zhang and Suen [ 22, p. 237]. The method inspects the eight
+neighbours P2, . . . ,P9 clockwise from north. A removable foreground pixel has two to six
+foreground neighbours and exactly one background-to-foreground transition around that ring.
+The two alternating subpasses additionally require, respectively,
+P2P4P6=0,P 4P6P8=0 (first subpass),
+P2P4P8=0,P 2P6P8=0 (second subpass). (38)
+During thinning of the actual Owen crop, the first recorded deletion in subpass one was pixel
+(y,x)=(12,190) with neighbours (P2, . . . ,P9)=(0,0,1,1,1,1,0,0) . Its neighbour count is four
+and its circular transition count is one. Both first-subpass products are zero because P2=0 and
+P8=0 , so the pixel is deleted when the subpass mask is applied. The deletion is applied with the
+other eligible pixels in that subpass.
+Candidates in Equation 38 are deleted together in each subpass, and the pair of subpasses repeats
+until unchanged. This reduces thickness while limiting topology changes; it cannot restore ink
+already lost during thresholding. The same thinning primitive supports stroke normalisation,
+glyph tracing and the diagnostic retracing route.
+The default tracer begins at graph nodes whose degree differs from two, follows unused pixel
+edges, and then recovers remaining closed loops. Short dangling spurs are pruned, and nearby
+chain ends are greedily rejoined when their continuation angle is below 75○. This remains
+a geometric estimate rather than a verified natural handwriting order. Polyline simplification
+compares interior points with the line through the endpoints, retaining a point and splitting
+recursively when the deviation exceeds tolerance. The code adapts the polyline reduction
+method [26, page to verify] [verify source/page: douglas1973]. Near-closed paths are first
+split at a distant point so that a zero-length endpoint chord does not collapse the loop. The
+extraction tolerance is 0.6 source pixels before normalisation; final path smoothing and machine
+decimation occur in their own coordinate units.
+A.4 Profile and trajectory quantities
+Table 7 records the fields most likely to be confused during inspection. Full arrays and every
+tuning constant remain in the source rather than expanding the main text into a variable dictionary.
+Raw alignment confidence is a path score used for relative filtering, not a calibrated probability of
+a correct cut. The cross-writer prior uses a median occupancy descriptor, then unit normalisation;
+its minimum pooled sample count is twelve. Writer consensus retains approximately 75% of
+a sufficiently populated pool, with at least three variants. Compatible prototypes group equal
+stroke counts, resample strokes to 44 points, align them and take robust pointwise summaries.
+Admission to the variant pool requires prior distance below 0.32 and improvement of more than
+0.02 over the median raw distance. These gates reduce malformed geometry but do not prove
+that a distinctive form is incorrect.
+Machine conversion maintains image, glyph, trajectory and machine coordinate frames separately.
+The line-centre shifts in Equation 30 are zero when no respacing is requested. Workspace fitting
+and clipping are distinct: fitting scales the whole trajectory uniformly, while clipping changes
+individual points and can deform letters. Final file parsing provides a useful conversion check
+52
+
+D.R. Braune Design and implementation
+Quantity Meaning and unit
+xHeightPx Reference source x-height in pixels; not a physical pen height
+strokes Ordered point lists in glyph x-height units;yincreases upwards
+width,lead,advance Ink width, lead-in and cell/placement extent; distinct x-height quantities
+top,bot Vertical extrema relative to the baseline, in x-heights
+connL,connR Observed boundary crossings during source extraction
+priorD Descriptor distance from the pooled character reference; not writer
+confidence
+idealMedoid,
+idealGlyphs
+Actual representative variant and compatible median-stroke prototype
+letterAdvance Per-character median source advance; sampled variants retain their own
+placement geometry
+lineStepMm Synthesised baseline spacing before optional machine respacing
+jointScore Internal harmonic selection score; not independent stylistic correlation
+clipped Count of points clamped by the motion-file conversion; not an accept-
+able layout target
+Table 7. Selected implementation fields and their interpretation.
+because it reconstructs movements from emitted commands instead of directly displaying the
+input trajectory again.
+53
+
+D.R. Braune Design and implementation
+A.5 Detailed training procedures
+The main chapter retains the model, loss, design choices and representative checks. The following
+pseudocode records the detailed recurrences and update sequence. Algorithm 6 adapts the CTC
+forward–backward method [19, PDF pp. 4–6]; Algorithm 7 assembles the project’s training
+operations.
+Algorithm 6Numerical CTC loss and logit gradient
+Require:Logitsz∈R T×B×Cand encoded targets.
+1: logp←LogSoftmax(z);L←0;g←0
+2:for eachbatch itembdo
+3:ℓ ′←target interleaved with blanks
+4: Initialiseα,βto−∞; admit first blank and first label
+5:fort←1toT−1do
+6:for eachstatesdo
+7:α t,s ←logp t(ℓ′
+s)+LSE r∈P(s)αt−1,r
+8:end for
+9:end for
+10: logZ←LSE of the admissible final states
+11: Initialise finalβto zero; recurse backward with next-frame emissions
+12:q t,k ← ∑s∶ℓ′s=k exp(αt,s+β t,s−logZ)
+13:L←L−logZ;g t,b,k ←(p t(k)−qt,k)/B
+14:end for
+15:returnL/B,g
+A.6 Expanded numerical calculation checks
+For one image, let Xc contain flattened input patches, so the matrix formulation of convolution
+gives Y=W X c+b [16, page to verify] [verify source/page: chellapilla2006]. Apply-
+ing the chain rule to Yo j= ∑k Wok(Xc)k j+b o gives ∂L/∂W ok= ∑j Go j(Xc)k j and ∂L/∂(X c)k j=
+∑oWokGo j. Equation 39 collects these derived sums in matrix form.
+∂L
+∂W =GX T
+c , ∂L
+∂X c
+=W T G.(39)
+Weight and bias derivatives are summed over the batch and output positions. Overlapping patch
+derivatives in Equation 39 are added back into the padded input, not overwritten. Max-pool
+derivatives return to the recorded maxima, width-average derivatives are distributed uniformly,
+and the LSTM backward pass accumulates both hidden-state and cell-state contributions through
+time. Appendix A records the remaining derivative conventions and optimiser calculations
+without repeating the architecture here.
+For the traced Owen crop, the first convolution uses one 64×640input and a 3×3kernel.
+Its patch matrix contains (1)(1)(3)(3)(64)(640)=368640 values, requiring 368640×4/220=
+1.40625 MiB in float32. This determines one intermediate array’s storage, not peak process
+memory. Later-layer arrays and any training gradients add storage; training and forward-only
+inference footprints must be assessed separately.
+54
+
+D.R. Braune Design and implementation
+Algorithm 7One numerical training batch and validation checkpoint decision
+Require:Training batch, task, parametersθand optimiser state.
+1:(X,y)←task-specific preparation and training augmentation
+2:(F,K)←BackboneForward(X,θ); retain caches
+3:iftask is readerthen
+4:(z,K h)←BiLSTMHead(F);(L,g)←CTC(z,y)
+5:else
+6:(z,K h)←WriterHead(MeanWidth(F))
+7:(L,g)←CrossEntropy(z,y)
+8:end if
+9:g F ←HeadBackward(g,K h)
+10:∇θ←BackboneBackward(g F ,K)
+11:iftask is writerthenclip total gradient norm to 5
+12:(θ,state)←OptimiserStep(θ,∇θ,state)
+13:ifepoch is completethen
+14: Validate with fixed preparation, stored normalisation and dropout disabled
+15: Update schedule; save progress; replace best only if its criterion improves
+16:end if
+17:returnL,θ,state
+The finite-difference reference is derived by subtracting the two Taylor expansionsL(θ±εei)=
+L(θ)±ε∂iL+ 1
+2 ε2∂iiL+O(ε 3). Division by 2ε cancels the constant and even terms, giving
+Equation 40 with truncation error O(ε 2) where the loss is sufficiently smooth. One logit or
+parameter is perturbed at a time.
+gnum
+i = L(θ+εe i)−L(θ−εei)
+2ε .(40)
+For the real Owen line’s V logit at frame 11, the two losses with ε=10 −4 are
+L+ =0.4703364611173033 and L−=0.4703403997759956 . Equation 40 gives gnum =
+−0.0196932934615, compared with the analytic CTC derivative −0.0196932934309; the ab-
+solute difference is 3.06×10−11. This verifies that logit derivative on a real input without
+claiming a complete network-gradient or training-run test.
+Here θ is a parameter vector, ei selects one component and ε is a small perturbation. Equation 40
+requires care at ReLU or max-pool boundaries and with stochastic dropout. The input or mask
+must be controlled so that the two loss evaluations test the same local operation.
+A.7 Implementation and interface reference tables
+These tables preserve supporting implementation distinctions and representation contracts. The
+main chapter explains the corresponding choices and transitions.
+55
+
+D.R. Braune Design and implementation
+Aspect First principles route Framework route
+Layer calculations Explicit forward and backward oper-
+ations
+Framework modules and automatic
+differentiation
+Architecture Project’s reader and writer defini-
+tions
+Corresponding layer pattern and
+parameter names
+Data preparation Project crop, label and split func-
+tions
+Uses the same preparation functions
+Weights for inference Named array archive Export to the same named array lay-
+out
+Verification role Implementation being checked Reference for matched numerical
+comparisons
+Table 8. Roles of the numerical and framework implementations.
+Quantity Source Use in synthesis
+Slant Projection concentration under trial
+shears
+Reapplied to stored upright glyphs
+X-height Height of the estimated line body
+band
+Normalises stored paths; physical x-
+height sets drawing size
+Ascender/descender ex-
+tent
+Relative glyph heights Vertical proportions and line spacing
+Letter advance Character-cell and ink geometry Placement of following characters
+Word spacing Measured gaps in real line ink Separation of words
+Connectedness Observed skeleton crossings between
+adjacent characters
+Probability of eligible in-word joins
+Glyph variants Filtered normalised trajectories Writer-specific letterforms and vari-
+ation
+Table 9. Principal stored style quantities and their roles.
+Stage Required input Output and governing convention
+Segmentation Photographed or saved page Ordered raw crops and full-page
+boxes; imageypoints down
+Recognition Line crops and model arrays Text plus writer probabilities inter-
+preted by the checkpoint mapping
+Profile construction Original lines, known transcripts and
+reader
+Writer-keyed glyph paths in x-height
+units, baseline origin andyup
+Synthesis Text, stored profile, scale and search
+settings
+Millimetre trajectory, source tags and
+internal selection scores
+File conversion Trajectory and workspace configura-
+tion
+Absolute millimetre G-code, pen
+events, placement and timing budget
+Physical execution G-code, connected GPIO and com-
+pleted calibration
+Step-counter updates and job outcome;
+physical accuracy requires observation
+Table 10. Representation boundaries that connect the three main processing stages to the
+gantry.
+56
+
+D.R. Braune Design and implementation
+A.8 Submission completion record
+To complete:Confirm the completion entries against the final submitted deliverables, and identify the
+computer used for training and profile construction. The proposal’s embedded-processing requirement
+must remain distinguishable from the actual training arrangement.
+A.9 Motion-file conversion procedure
+Algorithm 8Trajectory placement and motion-file preparation
+Require:Selected trajectoryTand calibrated workspace configuration.
+1: Measure bounds; determine available width and height after margins and offset
+2:a←uniform fit scale; apply robust height cap when ruled fitting is enabled
+3: Group paths by text row; determine ruled or free baseline shifts
+4:P←machine coordinates from Equation 30
+5: Decimate short segments; optimise path order within rows
+6: Clamp remaining out-of-bounds points; record their count
+7: Emit absolute millimetre mode and initial pen state
+8:for eachpathp∈Pdo
+9: Close eligible near-ring; join previous path if configured gap permits
+10:ifa new pen-down path is neededthen
+11: Raise pen; travel to start; lower pen; emit configured dwells
+12:end if
+13: Emit drawing moves with modal drawing feed; accumulate ink and travel budgets
+14:end for
+15: Raise pen; save file, placement and separate timing budgets
+16:returnfile path and job metadata
+57
+
+D.R. Braune Design and implementation
+B. Subsystem visual evidence and independent software checks
+This appendix records newly run offline checks and illustrations made from existing pro-
+ject data. It supplements the Design explanations; the integrated qualification tests against
+the proposal remain in Results. The evidence scripts use the current processing mod-
+ules, record source and input SHA-256 hashes, and write their outputs into this revision’s
+Evidence directory. No training or physical motion was performed. Diagnostic set-
+tings are stated explicitly rather than inherited silently from server defaults. The res-
+ults in this appendix are project experiments. Their inputs, settings and numerical out-
+puts are recorded in Evidence/bench.json, Evidence/camera_bench.json and
+Evidence/coefficient_sensitivity.json; these manifests and the evidence
+scripts accompany the report source.
+B.1 Actual capture variation and input resolution
+The three camera-roll inputs in Figure 12 are WIN_20261028_23_23_30_Pro.jpg,
+WIN_20261028_23_28_34_Pro.jpg and WIN_20261028_23_32_40_Pro.jpg.
+Each stored image is 3264×2448pixels. The page visibly contains three handwritten text
+rows. Automatic axis decisions were retained, including the failure in the third capture. The
+observed crop counts were 4, 3 and 28, respectively. Shadows are visually different, but neither
+lux levels nor physical angles were measured. These observations therefore explain a design
+limitation rather than qualifying operation across a specified lighting range.
+The native Owen01 page ( 2448×3264) produced 20 crops for 20 labelled lines. A separate
+exploratory bench first fitted each of three original pages inside1600×1600pixels. From each
+reduced page it produced an unchanged view, a synthetic left-to-right multiplier from 0.42 to
+1.00, a synthetic+3○rotation using bicubic interpolation on an expanded white canvas, and a
+quarter turn. Each was passed through the same automatic axis and segmentation functions.
+Table 11 retains every case, including unsuccessful ones.
+Page Label lines Reduced Gradient+3 ○ 90○
+Owen 20 19 20 11 19
+Dylan 24 24 24 25 24
+Yeukita 26 26 26 26 26
+Table 11. Exploratory crop counts after extra input reduction and digital perturbation.
+Equal counts do not establish correct ink ownership.
+The reduced Owen case produced 19 crops and lost the usable first-line crop, whereas the native
+page produced 20. Its rotated reduced image produced only 11. The gradient image happened
+to restore the count to 20, which is not evidence that adding a shadow improves segmentation:
+thresholds, interpolation and component geometry changed together. These cases show why
+nominally scale-relative thresholds do not guarantee resolution invariance. A suitable follow-
+up would compare matched stroke ownership at controlled resolutions and improve capture
+guidance; the present bench does not supply pixel-level annotations or attribute every error to
+one operation.
+58
+
+D.R. Braune Design and implementation
+B.2 Independent component and seam references
+Algorithm 9 states the two independent reference comparisons. The run-based eight-connected
+component labeller was compared with an independently written flood-fill reference on 100
+binary masks of size 9×11, using NumPy seed 2026 and foreground probabilities spanning
+0.1–0.8. The test compared the full same-component relation between foreground pixel pairs,
+not arbitrary numerical label values. All 100 partitions agreed. Small random masks exercise
+diagonal contact and label equivalences, but do not demonstrate large-image speed or prove every
+possible topology.
+For the seam solver, 20 random 4×6cost arrays (seed 83) were checked against exhaustive
+enumeration of all row sequences with adjacent row changes of at most one. Both objectives
+included the implementation’s 0.02∣∆y∣penalty. The maximum objective discrepancy was 0.
+The exhaustive reference tests optimal cost on those arrays; it does not establish that the chosen
+image-derived cost always follows the correct handwritten line boundary.
+Algorithm 9Independent partition and seam verification
+Require:Fixed random seeds, mask cases and small seam-cost arrays.
+1:for eachbinary maskMdo
+2:A←LabelComponents(M);B←FloodFill8(M)
+3:assert[A p=A q]=[B p=B q]for every foreground pair(p,q)
+4:end for
+5:for eachsmall cost arrayCdo
+6:p ∗←LeastCostSeam(C,1)
+7:P←all paths with adjacent row differences at most one
+8:E(p)← ∑xC(p x,x)+0.02 ∑x∣px−px−1∣
+9: Record∣E(p ∗)−minp∈PE(p)∣
+10:end for
+11:returnpartition agreements and seam-cost discrepancies
+B.3 CTC probability and derivative check
+Algorithm 10 gives the exhaustive probability and derivative procedure. The loss check used
+float64 logits of shape 5×1×4, blank index 0 and target [1,1]. All 1024 frame paths were
+enumerated. Consecutive repeats were collapsed before blanks were removed, and only paths
+yielding the target contributed to its probability. This independently exercises the repeated-label
+restriction that a single uninterrupted run of label 1 cannot encode two labels. The path sum gave
+negative log likelihood 3.875974036731708; the dynamic programme gave 3.875974036731709.
+The absolute difference was 4.44×10−16.
+All 20 logits were perturbed individually with central-difference step 10−5. The maximum
+absolute discrepancy from train.py::CtcLoss was 3.63×10−11. Logits were drawn after
+the fixed-seed component-mask draws in the bench; the script preserves that order. These
+checks concern the implemented CTC loss and derivative on a finite feasible target. They do
+not test impossible alignments, every transcript length, trained recognition accuracy or the full
+CNN–LSTM backward pass.
+59
+
+D.R. Braune Design and implementation
+Algorithm 10Exhaustive CTC likelihood and finite-difference check
+Require:Small logitsz, targetℓ, blank index and stepε.
+1:(L,g)←CtcLoss(z, ℓ);p←Softmax(z);Z←0
+2:for eachframe pathπ∈{0, . . . ,C−1}T do
+3:ifB(π)=ℓthenZ←Z+ ∏t pt(πt)
+4:end for
+5: Record∣L+logZ∣
+6:for eachlogit indexido
+7:g ref
+i ←[L(z+εe i)−L(z−εei)]/(2ε)
+8: Record∣g i−gref
+i ∣
+9:end for
+10:returnloss discrepancy and maximum derivative discrepancy
+B.4 Stored profiles, emitted files and physical page
+Figure 21 uses the final Owen, Dylan, Yeukita and IAM 150 profiles with the same text, seed
+2026, requested x-height 4 mm and jitter 0.15. The left column shows generated pen paths. The
+right column reconstructs pen-down paths from each emitted G-code file with the independent
+parser; each panel is fitted separately for legibility. The normal converter was used, including its
+path ordering, joins and near-ring closure. All four generated jobs had coordinates within the
+configured bed bounds. The figures illustrate profile-dependent geometry and file conversion,
+rather than measuring similarity to a human writer.
+Owen
+Dylan
+Yeukita
+150
+Stored profile -> synthesised trajectory
+Emitted G-code -> parsed pen paths
+Same text and seed; independently fitted panels. These are software renders, not physical drawings.
+Figure 21. Same text generated from four final profiles and reconstructed from emitted
+G-code. These are software path drawings.
+60
+
+D.R. Braune Design and implementation
+Algorithm 11 describes the serialization check. Nine controlled fixtures combined scale factors
+1, 3 and 30 with line offsets 0, 8.4 and 25.2 mm. Ring closure and joining were disabled,
+minimum-segment filtering was set to zero, and the independently parsed paths were paired with
+ToMachine’s output. Each fixture retained path and vertex counts, with no clamped points.
+Maximum coordinate error was 0.0004 mm, within the 0.0005 mm per-coordinate rounding
+bound from three-decimal emission. This comparison checks serialization after placement; it
+does not independently prove that the placement equation itself is correct or that a motor reached
+a coordinate.
+Algorithm 11Controlled G-code serialization correspondence
+Require:Known multi-path trajectory and configurations with joins and closure disabled.
+1:for eachfixture configurationcdo
+2:P←ToMachine(T,c)
+3:f←WriteGcode(T,c);Q←ParseGcode(f)
+4: Compare path counts and corresponding vertex counts
+5: Record max i∥Pi−Qi∥∞and clamped-point count
+6:end for
+7:returncount agreements, rounding discrepancies and clipping records
+Figure 22 is separately identified as a photograph of actual robot output, from the existing Owen
+reproduction sheet. The line crops are newly obtained from that stored photograph. This closes
+the visual explanation from a physical page to the segmentation interface, without presenting the
+earlier drawing as a newly executed hardware experiment. No exact same-job correspondence
+with Figure 21 is claimed.
+Photographed Owen-style robot output
+Recovered line 1
+Recovered line 2
+Recovered line 3
+Recovered line 4
+Figure 22. Existing photographed robot output and newly recovered line crops. The
+photograph is distinct from the software renders above.
+61
+
+D.R. Braune Design and implementation
+B.5 Candidate-scoring configuration and scope
+The Owen trials use the joint reader and eleven-writer pw170 checkpoint, with explicit 0.17
+normalisation and uniform-ink rendering. They score character accuracy and requested-writer
+posterior before repair, independently of inherited server defaults. Exact inputs, readings and
+full-precision scores are retained inEvidence/bench.json.
+B.6 Post-design seam-coefficient sensitivity
+A new one-at-a-time check examines the existing seam weights. Owen01 and Yeukita01 are
+reduced to a maximum dimension of 1600 pixels, then passed through orientation, conditioning
+and line-centre estimation. The first, middle and last gaps on each page are selected by index
+before inspecting outputs. Eight settings share these six gaps, step limit seven and ink weight
+four: midpoint weight varies at step penalty 0.02, then step penalty varies at midpoint weight
+0.012. This is post-design sensitivity, not a joint search or recovered historical tuning.
+The parameterised reference matches all six unmodified default paths. Table 12 reports raw-ink
+intersections, total row movement and mean midpoint distance in working pixels; the midpoint
+is a preference, not a labelled correct boundary.
+Midpoint weight Step penalty Ink intersections Row movement Mean offset / px
+0.000 0.020 2 35 4.0553
+0.006 0.020 2 38 0.5517
+0.012 0.020 2 42 0.3625
+0.024 0.020 2 44 0.3261
+0.048 0.020 2 47 0.2622
+0.012 0.000 2 48 0.2622
+0.012 0.010 2 44 0.3261
+0.012 0.040 2 38 0.5517
+Table 12. New coefficient-sensitivity check across six fixed real-page gaps; the implemented
+setting is 0.012/0.020.
+Increasing midpoint weight from zero to 0.012 reduces mean offset from 4.055 to 0.363 pixels,
+while row movement rises from 35 to 42 pixels. Doubling the weight gives 0.326 pixels offset.
+Increasing step penalty has the opposite trade-off. Every setting retains two raw-mask and three
+closed-mask intersections. These cases therefore show competing effects without establishing a
+unique optimum, eliminating intersections or measuring recognition accuracy. Input/code hashes
+and all 48 runs are supplied; no pipeline coefficient was changed.
+B.7 Real-input calculation traces
+The numerical substitutions in Design were captured from offline processing of existing pro-
+ject inputs. They are execution traces of the stated calculations, not reconstructed historical
+training decisions or measurements of the mechanism. The complete settings, input/model
+hashes and full-precision values are stored in Evidence/real_calculations.json;
+62
+
+D.R. Braune Design and implementation
+trace_real_calculations.py reproduces them without changing model weights or
+final profiles.
+The page-conditioning trace uses Owen01 reduced to 1600 rows by 1200 columns, giving an 800-
+row by 600-column working image before deskew. The network and extraction trace instead uses
+the separately identified archived first original Owen01 crop (156×2170), its known transcript
+and the joint reader. The latter produces 160×1×75log probabilities: the checkpoint head has
+75 rows, consistent with 74 alphabet symbols and blank. The selected eleven-writer model uses
+explicit 0.17-width preparation for the two-crop vote. These inputs must not be mistaken for one
+continuous new whole-system test.
+For the first convolution calculation, the actual input patch and learned kernel, listed in the same
+row-major order, are
+X=
+⎡⎢⎢⎢⎢⎢⎣
+−1−1−1
+−0.552941−0.380392−0.568627
+0.866667 0.960784 0.866667
+⎤⎥⎥⎥⎥⎥⎦
+,W=
+⎡⎢⎢⎢⎢⎢⎣
+0.213027−0.215063 0.234474
+0.068398 0.083297 0.187499
+−0.312354−0.291350−0.221197
+⎤⎥⎥⎥⎥⎥⎦
+.
+Using the full-precision values with bias−0.000435125gives−1.15133214at output channel 0,
+row 34, column 462. Rounded values above explain the sum; the manifest retains the precise
+arrays needed to reproduce it. The subsequent batch-normalisation and LSTM substitutions
+follow this same crop through the reader.
+The path and timing trace generates “Writing with style.” using the final Owen pro-
+file, seed 2026, requested x-height 4 mm and jitter 0.15. The generated file is
+Evidence/real_trace_owen.gcode. Its default configuration supplies drawing/travel
+feeds 900/2400 mm/min, nominal conversion 80 microsteps/mm and the 190.6 by 251.3 mm
+workspace. No physical command was sent. The pulse-delay calculation uses one emitted
+segment at that nominal scale; actual homing counts remain a separate hardware measurement.
+The trace also records the pre-file coordinate mapping, distance accumulators, 56 pen transitions
+and the resulting 32.8 s nominal budget.
+The existing random-mask, exhaustive seam and small-lattice checks remain independent nu-
+merical tests. Their synthetic inputs are intentional test fixtures. They are separate from these
+real-input traces and from the qualification results.
+63

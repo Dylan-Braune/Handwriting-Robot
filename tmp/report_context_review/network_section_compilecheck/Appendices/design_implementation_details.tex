@@ -1,0 +1,292 @@
+
+\section{Supporting implementation calculations}
+\label{app:des-implementation}
+The main Design section explains the engineering decisions and representative operations. This appendix records the derivative conventions, image operations and parameter meanings needed to inspect the numerical implementation in more detail. Algorithms in the main text are explanatory pseudocode; the separately submitted source remains the executable implementation.
+
+\subsection{Numerical network derivatives}
+\label{app:des-derivatives}
+Applying the backpropagation chain rule~\cite[pp.~3--4]{lecun1998} to a linear layer $Y=XW^T+b$ with incoming derivative $G$, the implemented derivatives are $\partial\mathcal L/\partial X=GW$, $\partial\mathcal L/\partial W=G^TX$ and the sum of $G$ over samples for the bias. Convolution applies the corresponding matrix calculation to overlapping image patches as described in Equation~\ref{eq:des-convback}. Contributions to the same input pixel are summed.
+
+For each batch-normalisation channel, $N=BHW$ values contribute to the batch statistics. The training forward pass uses population variance, while the running variance update uses its $N/(N-1)$ corrected estimate. The running update momentum is 0.1. With $\widehat x=(x-\mu)/\sqrt{\sigma^2+\epsilon}$ and $g=\partial\mathcal L/\partial y$, Equation~\ref{eq:app-bnback} gives the input derivative, obtained by simplifying the batch-normalisation chain-rule expressions~\cite[p.~4]{ioffe2015}.
+\begin{equation}
+\frac{\partial\mathcal L}{\partial x_i}=
+\frac{\gamma}{N\sqrt{\sigma^2+\epsilon}}
+\left[Ng_i-\sum_jg_j-\widehat x_i\sum_jg_j\widehat x_j\right].
+\label{eq:app-bnback}
+\end{equation}
+
+The parameter derivatives accompanying Equation~\ref{eq:app-bnback} are $\sum_i g_i\widehat x_i$ for $\gamma$ and $\sum_i g_i$ for $\beta$. Inference uses stored statistics and requires no batch-dependent update.
+
+ReLU passes an incoming derivative only where its cached input was positive. Spatial max pooling scatters it to the selected maximum in each window. Height-max pooling does the same along height; width averaging distributes the derivative equally over the pooled columns. The implementation uses inverted dropout: it multiplies by the cached Bernoulli mask divided by $1-p$ during training and is the identity at inference. This moves the expected-output scaling from test time to training time relative to the original presentation~\cite[pp.~1931, 1934]{srivastava2014}. Reusing the same mask in the backward calculation is essential.
+
+The LSTM backward pass differentiates the implemented recurrence in Equation~\ref{eq:des-lstm}; full backpropagation through time for this cell form is described by Graves~\cite[pp.~4--5]{graves2013}. It carries both the hidden derivative from the next step and a separate cell derivative. Writing the combined hidden derivative as $d h_t$, Equation~\ref{eq:app-lstmback} shows the dependencies before gate-activation derivatives are applied.
+\begin{equation}
+\begin{aligned}
+d c_t&=d c_t^{\mathrm{next}}+d h_t\odot o_t\odot[1-\tanh^2(c_t)],\\
+d o_t&=d h_t\odot\tanh(c_t),& d f_t&=d c_t\odot c_{t-1},\\
+d i_t&=d c_t\odot g_t,&d g_t&=d c_t\odot i_t,\\
+d c_{t-1}&=d c_t\odot f_t.
+\end{aligned}
+\label{eq:app-lstmback}
+\end{equation}
+
+Sigmoid gates multiply these derivatives by $a(1-a)$; the candidate multiplies by $1-g_t^2$. The concatenated gate derivatives accumulate outer products with $x_t$ and $h_{t-1}$ into the two weight matrices. Multiplication by $W_h$ provides the next reverse-time hidden derivative in Equation~\ref{eq:app-lstmback}. Each bidirectional layer reverses the appropriate sequence and sums the two input derivatives; stacked layers are differentiated in reverse layer order.
+
+The numerical CTC forward score uses the recurrence in Equation~\ref{eq:app-ctcforward}, written in log space from the CTC path recursion~\cite[p.~4]{graves2006}.
+\begin{equation}
+\alpha_{t,s}=\log p_t(\ell'_s)+
+\operatorname{LSE}_{r\in\mathcal P(s)}\alpha_{t-1,r}.
+\label{eq:app-ctcforward}
+\end{equation}
+For frame 11 and the \texttt{V} state in the real Owen line, the predecessor log-forward scores are $-12.8882643$, $-8.9807719$ and $-0.1088294$, and the log emission is $-0.01988985$. Equation~\ref{eq:app-ctcforward} gives $\alpha=-0.01988985+\log(e^{-12.8882643}+e^{-8.9807719}+e^{-0.1088294})\simeq-0.12857619$. This sums the admissible predecessor mass, whereas the main-text forced alignment selects one predecessor.
+
+The predecessor set in Equation~\ref{eq:app-ctcforward} contains the current state, the preceding state and an admissible two-state skip. A skip is excluded when its destination is blank or repeats the label two states earlier. With log scores $a,b$, the stable pairwise reduction is $m+\log(\exp(a-m)+\exp(b-m))$, where $m=\max(a,b)$; the all-unreachable case remains $-\infty$. The backward recurrence uses successor emissions at $t+1$, yielding the occupancy convention in Equation~\ref{eq:des-ctcgrad}.
+
+\subsection{Optimisers and gradient scaling}
+The reader uses an uncentred RMSprop accumulator, following the moving-square-gradient principle~\cite[p.~29]{tieleman2012}. The code selects its own averaging coefficient and adds the stated decay term. For parameter $\theta$, raw gradient $g$, learning rate $\eta$ and weight-decay coefficient $\lambda_w$, the implemented update is Equation~\ref{eq:app-rmsprop}.
+\begin{equation}
+g' =g+\lambda_w\theta,\quad
+v_t=0.99v_{t-1}+0.01(g')^2,\quad
+\theta_t=\theta_{t-1}-\eta\frac{g'}{\sqrt{v_t}+10^{-8}}.
+\label{eq:app-rmsprop}
+\end{equation}
+
+Decay in Equation~\ref{eq:app-rmsprop} enters the gradient before accumulation. The writer's AdamW instead uses separate parameter decay, as shown in Equation~\ref{eq:app-adamw}~\cite[p.~2]{kingma2015},~\cite[p.~3]{loshchilov2019}.
+\begin{equation}
+\begin{aligned}
+m_t&=0.9m_{t-1}+0.1g,& v_t&=0.999v_{t-1}+0.001g^2,\\
+\widehat m_t&=m_t/(1-0.9^t),&\widehat v_t&=v_t/(1-0.999^t),\\
+\theta_t&=\theta_{t-1}-\eta\left(\frac{\widehat m_t}{\sqrt{\widehat v_t}+10^{-8}}+\lambda_w\theta_{t-1}\right).
+\end{aligned}
+\label{eq:app-adamw}
+\end{equation}
+
+Following global gradient-norm clipping~\cite{pascanu2013}, before the writer update all gradient tensors are scaled together by $\min(1,5/\|g\|_2)$, with a numerical denominator guard. Clipping individual tensor norms independently would be a different operation. The numerical reader loop does not apply that clipping. Equations~\ref{eq:app-rmsprop} and~\ref{eq:app-adamw} describe code operations, not a claim that their default learning rates were used in every completed run.
+
+\subsection{Morphology, thinning and path simplification}
+For binary mask $M$ and neighbourhood $K$, dilation is the maximum of translated mask values and erosion is their minimum. Closing applies dilation followed by erosion with the same footprint~\cite[pp.~533, 541]{haralick1987}. For a binary mask and symmetric flat footprint, the set operations correspond to neighbourhood maximum and minimum. The implementation obtains rectangular neighbourhood counts through prefix sums; binary comparisons then implement these operations. Connectivity analysis uses horizontal runs and union operations with diagonal overlap admitted, rather than a library component-labelling call.
+
+The thinning conditions follow Zhang and Suen~\cite[p.~237]{zhang1984}. The method inspects the eight neighbours $P_2,\ldots,P_9$ clockwise from north. A removable foreground pixel has two to six foreground neighbours and exactly one background-to-foreground transition around that ring. The two alternating subpasses additionally require, respectively,
+\begin{equation}
+\begin{array}{ll}
+P_2P_4P_6=0,\ P_4P_6P_8=0 &\text{(first subpass)},\\
+P_2P_4P_8=0,\ P_2P_6P_8=0 &\text{(second subpass)}.
+\end{array}
+\label{eq:app-thinning}
+\end{equation}
+During thinning of the actual Owen crop, the first recorded deletion in subpass one was pixel $(y,x)=(12,190)$ with neighbours $(P_2,\ldots,P_9)=(0,0,1,1,1,1,0,0)$. Its neighbour count is four and its circular transition count is one. Both first-subpass products are zero because $P_2=0$ and $P_8=0$, so the pixel is deleted when the subpass mask is applied. The deletion is applied with the other eligible pixels in that subpass.
+
+Candidates in Equation~\ref{eq:app-thinning} are deleted together in each subpass, and the pair of subpasses repeats until unchanged. This reduces thickness while limiting topology changes; it cannot restore ink already lost during thresholding. The same thinning primitive supports stroke normalisation, glyph tracing and the diagnostic retracing route.
+
+The default tracer begins at graph nodes whose degree differs from two, follows unused pixel edges, and then recovers remaining closed loops. Short dangling spurs are pruned, and nearby chain ends are greedily rejoined when their continuation angle is below $75^\circ$. This remains a geometric estimate rather than a verified natural handwriting order. Polyline simplification compares interior points with the line through the endpoints, retaining a point and splitting recursively when the deviation exceeds tolerance. The code adapts the polyline reduction method~\cite{douglas1973}. Near-closed paths are first split at a distant point so that a zero-length endpoint chord does not collapse the loop. The extraction tolerance is 0.6 source pixels before normalisation; final path smoothing and machine decimation occur in their own coordinate units.
+
+\subsection{Profile and trajectory quantities}
+Table~\ref{tab:app-fields} records the fields most likely to be confused during inspection. Full arrays and every tuning constant remain in the source rather than expanding the main text into a variable dictionary.
+
+\begin{table}[!htbp]\centering\small
+\begin{tabularx}{\linewidth}{|p{0.27\linewidth}|X|}
+\hline\textbf{Quantity}&\textbf{Meaning and unit}\\\hline
+\texttt{xHeightPx}&Reference source x-height in pixels; not a physical pen height\\\hline
+\texttt{strokes}&Ordered point lists in glyph x-height units; $y$ increases upwards\\\hline
+\texttt{width}, \texttt{lead}, \texttt{advance}&Ink width, lead-in and cell/placement extent; distinct x-height quantities\\\hline
+\texttt{top}, \texttt{bot}&Vertical extrema relative to the baseline, in x-heights\\\hline
+\texttt{connL}, \texttt{connR}&Observed boundary crossings during source extraction\\\hline
+\texttt{priorD}&Descriptor distance from the pooled character reference; not writer confidence\\\hline
+\texttt{idealMedoid}, \texttt{idealGlyphs}&Actual representative variant and compatible median-stroke prototype\\\hline
+\texttt{letterAdvance}&Per-character median source advance; sampled variants retain their own placement geometry\\\hline
+\texttt{lineStepMm}&Synthesised baseline spacing before optional machine respacing\\\hline
+\texttt{jointScore}&Internal harmonic selection score; not independent stylistic correlation\\\hline
+\texttt{clipped}&Count of points clamped by the motion-file conversion; not an acceptable layout target\\\hline
+\end{tabularx}
+\caption{Selected implementation fields and their interpretation.}
+\label{tab:app-fields}
+\end{table}
+
+Raw alignment confidence is a path score used for relative filtering, not a calibrated probability of a correct cut. The cross-writer prior uses a median occupancy descriptor, then unit normalisation; its minimum pooled sample count is twelve. Writer consensus retains approximately 75\% of a sufficiently populated pool, with at least three variants. Compatible prototypes group equal stroke counts, resample strokes to 44 points, align them and take robust pointwise summaries. Admission to the variant pool requires prior distance below 0.32 and improvement of more than 0.02 over the median raw distance. These gates reduce malformed geometry but do not prove that a distinctive form is incorrect.
+
+Machine conversion maintains image, glyph, trajectory and machine coordinate frames separately. The line-centre shifts in Equation~\ref{eq:des-machinecoords} are zero when no respacing is requested. Workspace fitting and clipping are distinct: fitting scales the whole trajectory uniformly, while clipping changes individual points and can deform letters. Final file parsing provides a useful conversion check because it reconstructs movements from emitted commands instead of directly displaying the input trajectory again.
+\FloatBarrier
+
+\subsection{Detailed training procedures}\label{app:des-training-procedures}
+The main chapter retains the model, loss, design choices and representative checks. The following pseudocode records the detailed recurrences and update sequence. Algorithm~\ref{alg:des-ctc} adapts the CTC forward--backward method~\cite[pp.~4--6]{graves2006}; Algorithm~\ref{alg:des-train} assembles the project's training operations.
+
+\begin{designalgorithm}
+\caption{Numerical CTC loss and logit gradient}
+\label{alg:des-ctc}
+\prequire{Logits $z\in\mathbb R^{T\times B\times C}$ and encoded targets.}
+\begin{designpseudo}
+\pstate{0}{$\log p\leftarrow\operatorname{LogSoftmax}(z)$; $L\leftarrow0$; $g\leftarrow0$}
+\pstate{0}{\textbf{for each} batch item $b$ \textbf{do}}
+\pstate{1}{$\ell'\leftarrow$ target interleaved with blanks}
+\pstate{1}{Initialise $\alpha,\beta$ to $-\infty$; admit first blank and first label}
+\pstate{1}{\textbf{for} $t\leftarrow1$ \textbf{to} $T-1$ \textbf{do}}
+\pstate{2}{\textbf{for each} state $s$ \textbf{do}}
+\pstate{3}{$\alpha_{t,s}\leftarrow\log p_t(\ell'_s)+\operatorname{LSE}_{r\in\mathcal P(s)}\alpha_{t-1,r}$}
+\pstate{2}{\textbf{end for}}
+\pstate{1}{\textbf{end for}}
+\pstate{1}{$\log Z\leftarrow\operatorname{LSE}$ of the admissible final states}
+\pstate{1}{Initialise final $\beta$ to zero; recurse backward with next-frame emissions}
+\pstate{1}{$q_{t,k}\leftarrow\sum_{s:\ell'_s=k}\exp(\alpha_{t,s}+\beta_{t,s}-\log Z)$}
+\pstate{1}{$L\leftarrow L-\log Z$; $g_{t,b,k}\leftarrow(p_t(k)-q_{t,k})/B$}
+\pstate{0}{\textbf{end for}}
+\pstate{0}{\textbf{return} $L/B,g$}
+\end{designpseudo}
+\end{designalgorithm}
+
+\begin{designalgorithm}
+\caption{One numerical training batch and validation checkpoint decision}
+\label{alg:des-train}
+\prequire{Training batch, task, parameters $\theta$ and optimiser state.}
+\begin{designpseudo}
+\pstate{0}{$(X,y)\leftarrow$ task-specific preparation and training augmentation}
+\pstate{0}{$(F,\mathcal K)\leftarrow\operatorname{BackboneForward}(X,\theta)$; retain caches}
+\pstate{0}{\textbf{if} task is reader \textbf{then}}
+\pstate{1}{$(z,\mathcal K_h)\leftarrow\operatorname{BiLSTMHead}(F)$; $(L,g)\leftarrow\operatorname{CTC}(z,y)$}
+\pstate{0}{\textbf{else}}
+\pstate{1}{$(z,\mathcal K_h)\leftarrow\operatorname{WriterHead}(\operatorname{MeanWidth}(F))$}
+\pstate{1}{$(L,g)\leftarrow\operatorname{CrossEntropy}(z,y)$}
+\pstate{0}{\textbf{end if}}
+\pstate{0}{$g_F\leftarrow\operatorname{HeadBackward}(g,\mathcal K_h)$}
+\pstate{0}{$\nabla\theta\leftarrow\operatorname{BackboneBackward}(g_F,\mathcal K)$}
+\pstate{0}{\textbf{if} task is writer \textbf{then} clip total gradient norm to $5$}
+\pstate{0}{$(\theta,\text{state})\leftarrow\operatorname{OptimiserStep}(\theta,\nabla\theta,\text{state})$}
+\pstate{0}{\textbf{if} epoch is complete \textbf{then}}
+\pstate{1}{Validate with fixed preparation, stored normalisation and dropout disabled}
+\pstate{1}{Update schedule; save progress; replace best only if its criterion improves}
+\pstate{0}{\textbf{end if}}
+\pstate{0}{\textbf{return} $L,\theta,\text{state}$}
+\end{designpseudo}
+\end{designalgorithm}
+
+\subsection{Expanded numerical calculation checks}\label{app:des-expanded-checks}
+
+For one image, let $X_c$ contain flattened input patches, so the matrix formulation of convolution gives $Y=WX_c+b$~\cite{chellapilla2006}. Applying the chain rule to $Y_{oj}=\sum_k W_{ok}(X_c)_{kj}+b_o$ gives $\partial\mathcal L/\partial W_{ok}=\sum_j G_{oj}(X_c)_{kj}$ and $\partial\mathcal L/\partial(X_c)_{kj}=\sum_o W_{ok}G_{oj}$. Equation~\ref{eq:des-convback} collects these derived sums in matrix form.
+\begin{equation}
+\frac{\partial\mathcal L}{\partial W}=GX_c^T,\qquad
+\frac{\partial\mathcal L}{\partial X_c}=W^TG.
+\label{eq:des-convback}
+\end{equation}
+
+Weight and bias derivatives are summed over the batch and output positions. Overlapping patch derivatives in Equation~\ref{eq:des-convback} are added back into the padded input, not overwritten. Max-pool derivatives return to the recorded maxima, width-average derivatives are distributed uniformly, and the LSTM backward pass accumulates both hidden-state and cell-state contributions through time. Appendix~\ref{app:des-implementation} records the remaining derivative conventions and optimiser calculations without repeating the architecture here.
+
+For the traced Owen crop, the first convolution uses one $64\times640$ input and a $3\times3$ kernel. Its patch matrix contains $(1)(1)(3)(3)(64)(640)=368640$ values, requiring $368640\times4/2^{20}=1.40625$\,MiB in float32. This determines one intermediate array's storage, not peak process memory. Later-layer arrays and any training gradients add storage; training and forward-only inference footprints must be assessed separately.
+
+Numerical perturbation provides a finite-difference sensitivity check~\cite[pp.~18--19]{jcgm2008}. For the loss function here, the central-difference expression is derived by subtracting the two Taylor expansions $\mathcal L(\theta\pm\varepsilon e_i)=\mathcal L(\theta)\pm\varepsilon\partial_i\mathcal L+\tfrac12\varepsilon^2\partial_{ii}\mathcal L+O(\varepsilon^3)$. Division by $2\varepsilon$ cancels the constant and even terms, giving Equation~\ref{eq:des-gradcheck} with truncation error $O(\varepsilon^2)$ where the loss is sufficiently smooth. One logit or parameter is perturbed at a time.
+\begin{equation}
+g_i^{\mathrm{num}}=\frac{\mathcal L(\theta+\varepsilon e_i)
+-\mathcal L(\theta-\varepsilon e_i)}{2\varepsilon}.
+\label{eq:des-gradcheck}
+\end{equation}
+For the real Owen line's \texttt{V} logit at frame 11, the two losses with $\varepsilon=10^{-4}$ are $\mathcal L_+=0.4703364611173033$ and $\mathcal L_-=0.4703403997759956$. Equation~\ref{eq:des-gradcheck} gives $g^{\rm num}=-0.0196932934615$, compared with the analytic CTC derivative $-0.0196932934309$; the absolute difference is $3.06\times10^{-11}$. This verifies that logit derivative on a real input without claiming a complete network-gradient or training-run test.
+
+Here $\theta$ is a parameter vector, $e_i$ selects one component and $\varepsilon$ is a small perturbation. Equation~\ref{eq:des-gradcheck} requires care at ReLU or max-pool boundaries and with stochastic dropout. The input or mask must be controlled so that the two loss evaluations test the same local operation.
+
+\subsection{Implementation and interface reference tables}\label{app:des-reference-tables}
+These tables preserve supporting implementation distinctions and representation contracts. The main chapter explains the corresponding choices and transitions.
+
+\begin{table}[!htbp]\centering\small
+\begin{tabularx}{\linewidth}{|p{0.23\linewidth}|X|X|}
+\hline\textbf{Aspect}&\textbf{First principles route}&\textbf{Framework route}\\\hline
+Layer calculations&Explicit forward and backward operations&Framework modules and automatic differentiation\\\hline
+Architecture&Project's reader and writer definitions&Corresponding layer pattern and parameter names\\\hline
+Data preparation&Project crop, label and split functions&Uses the same preparation functions\\\hline
+Weights for inference&Named array archive&Export to the same named array layout\\\hline
+Verification role&Implementation being checked&Reference for matched numerical comparisons\\\hline
+\end{tabularx}
+\caption{Roles of the numerical and framework implementations.}
+\label{tab:des-implementations}
+\end{table}
+
+\begin{table}[!htbp]\centering\small
+\begin{tabularx}{\linewidth}{|p{0.22\linewidth}|X|X|}
+\hline\textbf{Quantity}&\textbf{Source}&\textbf{Use in synthesis}\\\hline
+Slant&Projection concentration under trial shears&Reapplied to stored upright glyphs\\\hline
+X-height&Height of the estimated line body band&Normalises stored paths; physical x-height sets drawing size\\\hline
+Ascender/descender extent&Relative glyph heights&Vertical proportions and line spacing\\\hline
+Letter advance&Character-cell and ink geometry&Placement of following characters\\\hline
+Word spacing&Measured gaps in real line ink&Separation of words\\\hline
+Connectedness&Observed skeleton crossings between adjacent characters&Probability of eligible in-word joins\\\hline
+Glyph variants&Filtered normalised trajectories&Writer-specific letterforms and variation\\\hline
+\end{tabularx}
+\caption{Principal stored style quantities and their roles.}
+\label{tab:des-styleparameters}
+\end{table}
+
+\begin{table}[!htbp]\centering\small
+\begin{tabularx}{\linewidth}{|p{0.19\linewidth}|X|X|}
+\hline\textbf{Stage}&\textbf{Required input}&\textbf{Output and governing convention}\\\hline
+Segmentation&Photographed or saved page&Ordered raw crops and full-page boxes; image $y$ points down\\\hline
+Recognition&Line crops and model arrays&Text plus writer probabilities interpreted by the checkpoint mapping\\\hline
+Profile construction&Original lines, known transcripts and reader&Writer-keyed glyph paths in x-height units, baseline origin and $y$ up\\\hline
+Synthesis&Text, stored profile, scale and search settings&Millimetre trajectory, source tags and internal selection scores\\\hline
+File conversion&Trajectory and workspace configuration&Absolute millimetre G-code, pen events, placement and timing budget\\\hline
+Physical execution&G-code, connected GPIO and completed calibration&Step-counter updates and job outcome; physical accuracy requires observation\\\hline
+\end{tabularx}
+\caption{Representation boundaries that connect the three main processing stages to the gantry.}
+\label{tab:des-contracts}
+\end{table}
+
+\FloatBarrier
+\subsection{Motion-file conversion procedure}\label{app:des-machine-procedure}
+
+\begin{designalgorithm}
+\caption{Trajectory placement and motion-file preparation}
+\label{alg:des-machine}
+\prequire{Selected trajectory $T$ and calibrated workspace configuration.}
+\begin{designpseudo}
+\pstate{0}{Measure bounds; determine available width and height after margins and offset}
+\pstate{0}{$a\leftarrow$ uniform fit scale; apply robust height cap when ruled fitting is enabled}
+\pstate{0}{Group paths by text row; determine ruled or free baseline shifts}
+\pstate{0}{$\mathcal P\leftarrow$ machine coordinates from Equation~\ref{eq:des-machinecoords}}
+\pstate{0}{Decimate short segments; optimise path order within rows}
+\pstate{0}{Clamp remaining out-of-bounds points; record their count}
+\pstate{0}{Emit absolute millimetre mode and initial pen state}
+\pstate{0}{\textbf{for each} path $p\in\mathcal P$ \textbf{do}}
+\pstate{1}{Close eligible near-ring; join previous path if configured gap permits}
+\pstate{1}{\textbf{if} a new pen-down path is needed \textbf{then}}
+\pstate{2}{Raise pen; travel to start; lower pen; emit configured dwells}
+\pstate{1}{\textbf{end if}}
+\pstate{1}{Emit drawing moves with modal drawing feed; accumulate ink and travel budgets}
+\pstate{0}{\textbf{end for}}
+\pstate{0}{Raise pen; save file, placement and separate timing budgets}
+\pstate{0}{\textbf{return} file path and job metadata}
+\end{designpseudo}
+\end{designalgorithm}
+
+\FloatBarrier
+
+\subsection{Controller pin and supply planning}
+
+\begin{table}[!htbp]\centering\small
+\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.03}
+\begin{tabular}{p{0.18\linewidth}p{0.22\linewidth}p{0.23\linewidth}p{0.29\linewidth}}\toprule
+\textbf{Header pin / GPIO line} & \textbf{Connection} & \textbf{Direction and nominal level} & \textbf{Notes / verification}\\\midrule
+USB host & ODROID USB host $\rightarrow$ IMX179 camera & USB data and bus power & Camera current draw and captured resolution are not established by the sensor's advertised maximum.\\
+Ethernet / network & ODROID RJ45 or Wi-Fi $\leftrightarrow$ laptop/browser & Network data; no GPIO voltage & Operator request and response path.\\
+ODROID DC jack & Supplied adapter $\rightarrow$ board power input & Actual adapter output unknown & The manufacturer's 12\,V/2\,A recommendation is not confirmation of the adapter in use~\cite{odroidn2ds}.\\
+External supply $+$ & 24\,V supply $\rightarrow$ VMOT on both A4988 carriers & 24\,V DC; supply limit set to 2.11\,A & A separate 0.35\,A supply indication was recorded under one operating condition; neither value is the motor phase-current setting.\\
+3.3\,V header rail & ODROID dedicated 3.3\,V output $\rightarrow$ both A4988 VDD inputs and pen-motor positive rail & 3.3\,V supply & Physical header pin and total rail loading are not recorded.\\
+Ground return & ODROID GND, driver logic/motor returns, switch returns and BC337 emitter & 0\,V reference & A common signal reference is required; exact return routing and physical GND pin are not documented.\\
+\bottomrule\end{tabular}
+\caption{Controller pin, signal-level and supply map for the installed system.}\label{tab:des-pin-map}
+\end{table}
+
+\begin{table}[!htbp]\ContinuedFloat\centering\small
+\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.03}
+\begin{tabular}{p{0.18\linewidth}p{0.22\linewidth}p{0.23\linewidth}p{0.29\linewidth}}\toprule
+\textbf{Header pin / GPIO line} & \textbf{Connection} & \textbf{Direction and nominal level} & \textbf{Notes / verification}\\\midrule
+7 / 64 & \texttt{DIR1\_PIN} $\rightarrow$ X-driver DIR & Output, nominal 0/3.3\,V & Direction state; software inversion is configured for X.\\
+11 / 68 & \texttt{STEP1\_PIN} $\rightarrow$ X-driver STEP & Output pulses, nominal 0/3.3\,V & A4988 advances on STEP pulses; this is a logic input, not the motor supply.\\
+12 / 81 & \texttt{DIR2\_PIN} $\rightarrow$ Y-driver DIR & Output, nominal 0/3.3\,V & Direction state; software inversion is configured for Y.\\
+13 / 69 & \texttt{STEP2\_PIN} $\rightarrow$ Y-driver STEP & Output pulses, nominal 0/3.3\,V & A4988 advances on STEP pulses; this is a logic input, not the motor supply.\\
+15 / 72 & X-min switch $\rightarrow$ \texttt{X\_MIN\_PIN} & Input, active high, nominal 0/3.3\,V & Reported 10\,k$\Omega$ pull-down.\\
+16 / 65 & X-max switch $\rightarrow$ \texttt{X\_MAX\_PIN} & Input, active high, nominal 0/3.3\,V & Reported 10\,k$\Omega$ pull-down.\\
+18 / 66 & Y-min switch $\rightarrow$ \texttt{Y\_MIN\_PIN} & Input, active high, nominal 0/3.3\,V & Reported 10\,k$\Omega$ pull-down.\\
+22 / 67 & Y-max switch $\rightarrow$ \texttt{Y\_MAX\_PIN} & Input, active high, nominal 0/3.3\,V & Reported 10\,k$\Omega$ pull-down.\\
+33 / 70 & Pen-up switch $\rightarrow$ \texttt{PEN\_SWITCH\_PIN} & Input, active high, nominal 0/3.3\,V & High indicates the raised state. Switch model and pull-down location are not recorded.\\
+35 / 71 & \texttt{PEN\_MOTOR\_PIN} $\rightarrow$ 1\,k$\Omega$ base resistor $\rightarrow$ BC337 & Output, nominal 0/3.3\,V & GPIO controls the transistor only; motor current is supplied by the dedicated 3.3\,V rail. A 10\,k$\Omega$ base pull-down was reported; its connection is not documented. No flyback diode is fitted.\\
+A4988 outputs & X/Y carrier 1A/1B and 2A/2B $\rightarrow$ motor coil pairs & Switched/chopped winding drive from VMOT & The coil voltage is not a fixed 24\,V STEP signal. Phase-current limit depends on VREF and sense resistance; actual VREF remains unmeasured~\cite[pp.~4--5, 9]{a4988ds}.\\
+\bottomrule\end{tabular}
+\caption{Controller pin, signal-level and supply map (continued).}
+\end{table}
+\FloatBarrier

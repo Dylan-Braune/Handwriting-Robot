@@ -1,5 +1,20 @@
 # Block B — The no-framework neural core: training and inference
 
+> **Written against `Software/CleanPipeline` (v1); the live system is
+> `Software/CleanPipeline3`.** This block transferred almost intact:
+> `Classify.py` → **`recognise.py`** (25 of 25 definitions),
+> `TrainScratch.py` → **`train.py`** (36 of 36), `NumpyNN.py` →
+> **`train.py`** (30 of 31), `Charset.py` → **`recognise.py`**,
+> `AuthorsConfig.py` → **`paths.py`**. The maths and the explanations are
+> current; only the file names changed.
+>
+> Two things to know. `GradCheckNumpyNN.py` was **not carried into v3**, so the
+> gradient-check result below describes the v1 implementation of the same
+> backward passes. And `trainlibrary.py` is new: it builds the identical two
+> networks in torch for when a run has to be quick, and writes the same `.npz`
+> layout, so a checkpoint from either trainer loads into `recognise.py`.
+> Checked 2026-10-31.
+
 Every layer, every gradient and both optimisers are written out in NumPy. There is no machine-learning framework anywhere in this block.
 
 | File | Lines | Role |

@@ -1,0 +1,37 @@
+\begin{figure}[!htbp]
+\centering
+\begin{tikzpicture}[x=1cm,y=1cm,font=\footnotesize]
+
+\draw[step=0.26,gray!50,thin] (0,0) grid (1.56,1.56);
+\draw[thick] (0,0) rectangle (1.56,1.56);
+\fill[gray!40,opacity=0.75] (0.26,0.78) rectangle (1.04,1.56);
+\draw[very thick] (0.26,0.78) rectangle (1.04,1.56);
+\node[litlab,below] at (0.78,-0.10) {input, $N\times N$};
+\node[litlab,above] at (0.78,1.62) {$f\times f$ kernel slides};
+
+\draw[litarr] (1.75,0.78) -- (2.60,0.78);
+\node[litlab,above] at (2.17,0.86) {multiply,};
+\node[litlab,below] at (2.17,0.72) {add bias};
+
+\draw[step=0.26,gray!50,thin] (2.80,0.26) grid (3.84,1.30);
+\draw[thick] (2.80,0.26) rectangle (3.84,1.30);
+\fill[gray!40,opacity=0.75] (2.80,1.04) rectangle (3.06,1.30);
+\node[litlab,below] at (3.32,0.03) {feature map,};
+\node[litlab,below] at (3.32,-0.22) {$(N-f+1)\times(N-f+1)$};
+\node[litlab,above] at (3.32,1.49) {activation applied};
+
+\draw[litarr] (4.03,0.78) -- (4.88,0.78);
+\node[litlab,above] at (4.45,0.86) {max-pool};
+\node[litlab,below] at (4.45,0.72) {$2\times2$};
+
+\draw[step=0.26,gray!50,thin] (5.08,0.52) grid (5.60,1.04);
+\draw[thick] (5.08,0.52) rectangle (5.60,1.04);
+\node[litlab,below] at (5.34,0.29) {downsampled};
+\node[litlab,below] at (5.34,0.04) {feature map};
+
+\draw[litarr,dashed] (5.79,0.78) -- (6.55,0.78);
+\node[litlab,right,align=left] at (6.60,0.78) {repeated, each stage\\ holding more feature\\ maps than the last};
+\end{tikzpicture}
+\caption{One convolutional layer and one max-pooling layer. The kernel slides over every position of the input, so an $N\times N$ input gives an $(N-f+1)\times(N-f+1)$ feature map, which pooling then downsamples~\cite[pp.~6--8]{lecun1998}. This size expression assumes unit stride and no padding.}
+\label{fig:lit-conv}
+\end{figure}

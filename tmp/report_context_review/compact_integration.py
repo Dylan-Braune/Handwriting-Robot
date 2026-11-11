@@ -1,0 +1,42 @@
+from pathlib import Path
+import re
+ROOT=Path(__file__).resolve().parents[2];B=ROOT/'Report/DesignPolished_2026-11-01'
+p=B/'3_Main_Report/design/3_6_reproduction.tex';t=p.read_text(encoding='utf-8')
+m=next(m for m in re.finditer(r'\\begin\{designalgorithm\}.*?\\end\{designalgorithm\}',t,re.S) if '\\label{alg:des-machine}' in m[0])
+block=m[0];t=t[:m.start()]+r'The full conversion procedure is retained as Algorithm~\ref{alg:des-machine} in Appendix~\ref{app:des-machine-procedure}.'+t[m.end():]
+p.write_text(t,encoding='utf-8')
+p=B/'Appendices/design_implementation_details.tex';t=p.read_text(encoding='utf-8')+'\n'+r'\subsection{Motion-file conversion procedure}\label{app:des-machine-procedure}'+'\n'+block+'\n\\FloatBarrier\n';p.write_text(t,encoding='utf-8')
+p=B/'3_Main_Report/design/3_7_integration.tex'
+t=r'''\subsection{System integration and embedded operation}
+\label{sec:des-integration}
+The server connects the numerical processing, models, profiles and motion interpreter. The browser supplies images or writing requests and displays their outputs; the engineering operations remain in the processing modules~\cite[web/server.py]{braunepipeline2026}.
+
+\subsubsection{Classification and reproduction workflows}
+Captured and uploaded pages follow the same conditioning and recognition path. Writer predictions are combined across the retained line crops using Equation~\ref{eq:des-pagevote}, rather than choosing one line to represent the page~\cite[web/server.py, NameWriter]{braunepipeline2026}.
+\begin{equation}
+\overline p_k=\frac{\sum_i w_i p_{i,k}}{\sum_i w_i},\qquad
+\widehat k=\arg\max_k\overline p_k.
+\label{eq:des-pagevote}
+\end{equation}
+Calculated example: two line weights 100 and 300 with writer probabilities 0.90 and 0.60 give $\overline p_k=[100(0.90)+300(0.60)]/400=0.675$~\cite[web/server.py, NameWriter]{braunepipeline2026}.
+
+Here $w_i$ counts crop pixels below grey value 128; all-zero weights fall back to equal weighting. More ink therefore gives a line greater influence, including a possible dark artefact. Crop rejection precedes aggregation for this reason. The pooled probability and the fraction of individual lines agreeing with the selected writer are reported separately; neither establishes accuracy without a reference~\cite[web/server.py, NameWriter]{braunepipeline2026}.
+
+A reproduction request selects text, profile and drawing settings, then stores the trajectory, preview, G-code and metadata as one generated job. Characters absent from the profile use the fallbacks in Section~\ref{sec:des-layout}. Drawing is a separate action requiring connection and calibration, allowing inspection before execution. Table~\ref{tab:des-contracts} in Appendix~\ref{app:des-reference-tables} records each representation's inputs, outputs and coordinate conventions~\cite[web/server.py; reproduce.py, WriteGcode]{braunepipeline2026}.
+
+\subsubsection{Embedded execution, interfaces and job control}
+The ODROID N2+ runs NumPy inference and motion control from stored arrays, without the training framework. Canvas size, line count and candidate count still determine its processing load. NumPy supplies array arithmetic; Flask handles requests; image libraries handle file I/O; OpenCV serves the camera interface; and \texttt{gpiod} exposes GPIO. Framework network operations belong to the separate training route. The complete source code is supplied separately from this report for the AMS submission~\cite[recognise.py; trainlibrary.py; web/server.py; web/camera.py; reproduce.py]{braunepipeline2026}.
+
+During motion, the pulse loop checks an abort event and confirmed end stops. A separate request thread permits a stop while drawing is active. End-stop trips latch a fault; the recovery routines attempt switch retraction, pen raising and parking under their required preconditions. The stop request is a software path, not an independent motor-power disconnect. A pen-state timeout remains consequential because subsequent travel may mark the sheet~\cite[reproduce.py; web/server.py]{braunepipeline2026}.
+
+The resulting job states distinguish generation, refused execution, completed execution and interruption/failure. Calibration establishes the coordinate reference in software, but missed steps can invalidate its correspondence with physical position. Neither a saved preview nor emitted pulse counts prove that the nib followed the intended path~\cite[web/server.py; reproduce.py]{braunepipeline2026}.
+
+\subsubsection{Integration verification and remaining constraints}
+Interface checks should confirm consistent upload/camera processing, checkpoint-to-profile writer mapping, bounded G-code and truthful interrupted-job status. Formal classification accuracy, drawing accuracy and timing against the proposal remain in Results~\cite[web/server.py; paths.py; reproduce.py]{braunepipeline2026}.
+
+The diagnostic retracing route provides a useful bypass: page conditioning and line separation are followed by thinning, tracing and ordinary machine conversion, omitting the reader, glyph library and synthesis. Comparing its G-code render with a drawing helps distinguish execution from synthesis errors. Comparing the drawing directly with the photograph still includes conditioning, skeletonisation, filtering and coordinate errors; it does not isolate mechanics alone~\cite[retrace.py, RetracePage]{braunepipeline2026}.
+
+Per-stage records separate acquisition, segmentation, inference, generation and execution time. Generation metadata is carried into the writing record so that a complete reproduction interval can be reconstructed. R3/R4 qualification must specify its start/end events and use the intended platform; Windows development timings cannot establish an ODROID requirement~\cite[timing.py; web/server.py]{braunepipeline2026}.
+\FloatBarrier
+'''
+p.write_text(t,encoding='utf-8')

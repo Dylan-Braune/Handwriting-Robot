@@ -1,0 +1,93 @@
+\label{sec:discussion}
+\subsection{Critical evaluation of the design}
+\label{sec:dis-critical}
+The evaluation relates the measured performance to the Design choices. The main trade-offs concern variation between writing styles and the time needed for embedded classification.
+
+\subsubsection{Interpretation of results}
+\label{sec:dis-interpretation}
+\paragraph{Useful reproduction is demonstrated, with a clear operating range.}
+Seven writers exceed the 85\% character target, with four above 93\%. The pooled 84.41\% score shows that the main challenge is consistency across styles. Figure~\ref{fig:res-physical} makes the difference visible in actual output. The association between separated original characters and better reproduction ($\rho=0.845$) supports investigating connected handwriting, but does not isolate joining from input quality or glyph coverage.
+
+Writer identity survives on 86.41\% of physical lines and all fourteen page pools. Geometric shape correlation is lower, at 0.697. Slant is strongly retained ($r=0.991$), while word spacing is weaker ($r=0.486$). These results favour improving context and layout while preserving the useful glyph geometry. The writer classifier also helps select candidates, so its score alone is not an independent judgement of style. The geometric comparison adds a separate measure, while human reading and style assessment would extend both automated tests.
+
+\paragraph{The classifier results support the chosen architecture.}
+The joint reader's 94.06\% character accuracy is 0.94 percentage points below target. Its public and personal subsets score 94.12\% and 93.33\%. This supports line recognition across both inputs, although the experiment does not isolate errors introduced by segmentation.
+
+Writer identification reaches 98.08\%, with every writer group correct after pooling. Stroke normalisation makes the test less dependent on original pen thickness. However, an error at 83.8\% confidence shows that confidence is not a reliable identity guarantee. The personal line split also shares capture conditions with training. A new-session evaluation would test deployment more strongly.
+
+\paragraph{The physical timing result is a practical success.}
+All 25 completed ODROID jobs meet 4 s per character, including generation and drawing. This is stronger evidence than nominal feed calculations because it includes pen changes and execution overhead. The worst short request leaves 5.39 s of margin. The measured range starts at 43 characters, so shorter requests need their own test. Repeated 378-character jobs also vary substantially, consistent with different path lengths and pen transitions.
+
+\paragraph{The classification-time gap is measurable and actionable.}
+The two classification requests exceed their allowances by 31.76 and 28.94 s. Networks contribute about two thirds of the combined time. The host comparison demonstrates a 2.76-fold network improvement with unchanged reader text, but transferring that factor still leaves both projected totals above target. Network acceleration and image-stage optimisation therefore need to be addressed together. Halving image resolution is unsuitable because it changes the detected lines and decoded text. A useful optimisation must retain the reference output as well as reduce runtime.
+
+\paragraph{Mechanical accuracy is promising, with a precise distinction in what was measured.}
+All seven measured lengths are within 0.5 mm of nominal, supporting the calibrated belt drive. The unequal triangle slopes suggest a possible alignment effect. The apparent $0.706^\circ$ diagnostic in Appendix~\ref{app:res-geometry-calculation} is conditional on the assumed height and does not independently measure rail squareness.
+
+A translated drawing can retain correct side lengths. Repeated bed-coordinate points and word overlays would therefore extend the present dimensional check to absolute placement and repeatability. This builds on the functioning motion system rather than requiring an unsupported redesign.
+
+\paragraph{Relationship to published approaches.}
+The reader follows the CNN, BiLSTM and CTC approach discussed by K{\i}z{\i}l{\i}rmak and Yan{\i}ko{\u g}lu~\cite[pp.~4--5]{kizilirmak2023}. Its 5.94\% character error supports the architecture, but different partitions and decoding prevent a controlled ranking against published scores.
+
+Haines et al. support example-based synthesis from a small collection of pages~\cite[p.~4]{haines2016}. Graves's sequence generator instead requires ordered pen coordinates~\cite[p.~18]{graves2013}, which are absent from the project's photographs. One-DM uses a single reference at generation time, but still requires a separate training corpus~\cite[p.~9]{dai2024}. The glyph approach suits the available offline data and makes geometry directly controllable, with limited contextual variation as its main compromise.
+
+\subsubsection{Critical evaluation}
+\label{sec:dis-choices}
+\paragraph{Separating the implementation contribution from checkpoint selection.}
+The first-principles implementation covers the forward passes, derivatives, CTC and optimiser updates. Table~\ref{tab:dis-training} compares its trained models with the reference route on common validation data. The first-principles writer reaches 95.51\% and the reader reaches 94.39\%, supporting the numerical implementation independently of the selected system configuration.
+
+The supplied logs in Appendix~\ref{app:training-records} record approximately 19 to 23 minutes per writer epoch and 111 to 122 minutes per reader epoch. Float32 was chosen to limit training cost, but no controlled experiment attributes the model-score differences to precision. The 155-line training validation and 156-line re-extraction are also kept separate.
+
+\paragraph{Line recognition addresses a real weakness in character isolation.}
+The proposal described classifying separated characters or connected groups. The final reader recognises whole lines, then uses known-transcript CTC alignment to recover character boundaries for profiles. This avoids making uncertain character cuts a prerequisite for reading~\cite[pp.~2--3]{graves2006}. The compromise is a larger sequence model and continued dependence on correct line ownership.
+
+\paragraph{The glyph library fits the data and exposes its own limitations.}
+Stored glyphs allow size, slant, spacing and machine coordinates to be inspected and changed directly. Eleven profiles demonstrate the approach on real output. A finite library, however, cannot reproduce every change caused by neighbouring characters. Multi-character units or context-specific variants would address this more directly than simply increasing candidate count. Their extraction would need enough reliable examples.
+
+Off-device training and embedded inference keep model preparation separate from operation. Batched numerical kernels or compiled hot loops are plausible speed improvements compatible with the numerical contribution. Their benefit and full timing compliance still require embedded measurements.
+
+\paragraph{Economic feasibility.}
+The current build estimate is approximately R4\,000. The ODROID was borrowed at no purchase cost and will be returned. A repeat build must include its replacement cost. Later purchases and estimated training electricity total R750, but may overlap the approximate estimate, so they are not added as an exact revised total. The software speed experiment gives a measured improvement opportunity before committing to a more expensive computer.
+
+\subsubsection{Unsolved problems}
+\label{sec:dis-unsolved}
+The main reproduction problem is variation between writers. A controlled comparison of current glyphs and multi-character units, using fixed texts and models, would test the context explanation. Matching original and reproduced sentences would also strengthen the style comparison.
+
+The timing priority is to preserve the reference output while profiling and optimising ODROID hot loops. Mechanical work should concentrate on repeated coordinates, frame alignment and pen-holder stiffness. A shared pulse scheduler and controlled acceleration are reasonable extensions, with their value assessed on completed drawings.
+
+\subsubsection{Strong points of the design}
+\label{sec:dis-strengths}
+The complete chain captures handwriting, reads text, identifies writers, stores paths and produces physical writing. Eleven styles are exercised, seven exceed the reproduction character target and every validation writer group is identified correctly.
+
+A path can be followed from source crop through glyph extraction, placement and G-code. This makes faults easier to locate and allows individual stages to be improved. Numerical operation checks and the trained-model comparison support the first-principles contribution alongside the physical prototype.
+
+\subsubsection{Expected failure conditions}
+\label{sec:dis-failures}
+Strong cursive connections, missing character variants and text beyond the available alphabet can weaken reproduction. Large layouts can exceed the bed, making preview inspection important before drawing.
+
+Touching lines, page curvature and perspective can defeat preparation even when the reader works on clean crops. The writer classifier always selects a known identity, so an unfamiliar writer can receive a confident label. Page pooling adds evidence but cannot recover information missing from every line.
+
+The gantry tracks open-loop steps. A missed step changes the real position without changing its counter. Limit switches and abort handling reduce operational risk, but depend on working electronics and software. The missing pen-motor flyback diode remains a circuit limitation described in Design. Requests outside the tested lengths have no demonstrated timing envelope.
+
+\subsection{Considerations in the design}
+\label{sec:dis-considerations}
+\subsubsection{Ergonomics}
+The browser combines capture review, text entry, writer selection and preview. The operator positions the paper and pen, then checks restraint, calibration and clearance. Separate generation and execution states make job progress clear.
+
+\subsubsection{Health and safety}
+Belts, pulleys and the carriage create pinch points, so the working area must remain clear. End stops and aborts assist operation. Independent motor-power removal would protect against an unresponsive controller. Driver temperature and restrained wiring also require attention.
+
+The 24 V motor and 3.3 V logic rails are separated from the purchased supplies' mains inputs. A reverse-biased diode across the pen motor would provide an inductive-current path when switching off~\cite{rohmlowside2026}. It is a recommended improvement, not a fitted component.
+
+\subsubsection{Environmental impact}
+The borrowed ODROID will be returned. Motors, rails and drivers can be reused, and printed parts replaced individually. Digital previews reduce wasted paper, while physical tests remain necessary. The printed material and training energy were not measured, so no specific recycling or environmental-saving figure is claimed.
+
+\subsubsection{Social and legal impact}
+Personalised writing could assist someone who has difficulty writing, although user benefit is not evaluated here. Style reproduction also permits impersonation. Permission and clear identification of machine-produced material are therefore important.
+
+Signed forms are retained securely for all five contributors. Handwriting and profiles require collection, retention and access controls under the Protection of Personal Information Act~\cite[pp.~8--9, 11]{popia2013}. IAM data must also be used under its applicable terms. The prototype is intended for a controlled local network.
+
+\subsubsection{Ethics clearance}
+Participant consent is retained. Institutional clearance or exemption remains to be confirmed.
+
+\FloatBarrier

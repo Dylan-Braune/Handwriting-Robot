@@ -1,0 +1,282 @@
+\section{Expanded reasoning: mechanics, electronics and motion algorithms}
+\label{sec:expand-hardware}
+\subsection{Pulley travel, speed and torque: assumptions before arithmetic}
+For belt pitch $p=2$ mm and $N_t=20$ teeth, travel per revolution is
+$L_{\rm rev}=N_tp=40$ mm, and pitch radius
+$r=L_{\rm rev}/(2\pi)=6.3662$ mm. This is the belt pitch radius, not
+necessarily the measured outer pulley radius. At 4000 mm/min, motor speed
+is $4000/40=100$ rev/min. The report rounded a cited 3600 mm/min handwriting
+speed up to 4000, an increase of about 11.1\%; this is a design allowance,
+not an experimentally recovered maximum gantry speed~\cite{finalreport2026}.
+
+Torque is the moment of force; for tangential belt force $F$, $T=rF$.
+The general vector definition is $\boldsymbol\tau=\mathbf r\times\mathbf F$
+and magnitude $rF\sin\theta$~\cite{openstaxrotation}. Assuming steady
+horizontal motion and a Coulomb-style equivalent friction $F_f=\mu mg$,
+the report uses $\mu=0.004,m=0.950$ kg and $g=9.81$ m/s$^2$:
+\[
+F_f=0.037278\ {\rm N},\qquad
+T_f=0.0063662(0.037278)=0.0002373\ {\rm N\,m}
+       =0.02373\ {\rm N\,cm}.
+\]
+The conversion multiplies N\,m by 100 to obtain N\,cm. The small answer
+follows from a small assumed friction coefficient and short radius. It does
+not establish the actual rolling resistance of this assembly.
+
+A fuller horizontal acceleration model is
+\[
+T_{\rm req}\simeq {r\over\eta}(ma+F_f+F_{\rm pen}+F_{\rm other})
+              +J_{\rm rot}{a\over r},
+\]
+where $\eta$ is transmission efficiency, $F_{\rm pen}$ effective drag,
+$F_{\rm other}$ other opposing forces and $J_{\rm rot}$ rotary inertia.
+Terms must be referred to the same shaft. Constructed example: at
+$a=0.4$ m/s$^2$, translational acceleration adds
+$rma=0.002419$ N\,m $=0.2419$ N\,cm before other terms, over ten times
+the report's steady-friction estimate. This illustrates an omitted load,
+not a newly measured torque or a motor redesign.
+
+The report interpolates curve points $(60,7)$ and $(120,21)$ in RPM and
+N\,cm: $T(100)=7+(100-60)(21-7)/(120-60)=16.33$ N\,cm.
+Linear interpolation assumes the correct curve and operating conditions.
+The report literally leaves the curve citation as ``SOURCE''. The unusual
+increasing pair cannot be independently authenticated here. Do not turn
+16.33 into an established available torque or use its ratio to 0.02373 as
+a validated safety factor. Pull-out torque at speed, holding torque at rest
+and pull-in/start capability are different. Supply voltage, phase current,
+driver mode and acceleration affect the comparison.
+
+\subsection{Resolution, quantisation and why they are not accuracy}
+For $N_s=200$ full steps/rev and microstep factor $m_s=16$,
+$K=N_sm_s/L_{\rm rev}=80$ commanded steps/mm, spacing
+$\Delta=1/K=0.0125$ mm. Full-step angle is $360/200=1.8$ degrees.
+Nearest-grid rounding has per-axis error at most $\Delta/2=0.00625$ mm.
+With equal axes, endpoint Euclidean rounding error is at most
+$\sqrt2\Delta/2=0.00884$ mm. If two independently rounded endpoints define
+a length, their relative position can differ by up to twice the endpoint
+bound. Truncation instead of nearest rounding has a different bound.
+
+These are ideal coordinate quantisation bounds. Microstep current ratios do
+not ensure exactly equal loaded rotor angle increments. Belt compliance,
+backlash, missed steps, pen flex and calibration error are separate. An
+open-loop counter records requested position; it does not observe actual
+position. Consequently the 0.5 mm physical length requirement requires
+measurement even though the command lattice is much finer.
+
+\subsection{A4988 current, reference voltage and every driver signal}
+The manufacturer gives $I_{\rm trip,max}=V_{\rm REF}/(8R_S)$.
+With confirmed $R_S=0.1\,\Omega$ and desired peak limit 1.68 A,
+$V_{\rm REF}=8(0.1)(1.68)=1.344$ V~\cite{a4988datasheet}.
+The factor 8 belongs to the driver's internal current-sense scale. It is
+not the microstep factor, number of coils or supply voltage. For a different
+carrier with $R_S=0.068\,\Omega$, the same limit would require 0.914 V.
+Pololu explicitly warns that carrier sense resistance varies~\cite{pololu4988}.
+Thus ``R10 means 0.1 ohm'' is a component-identification assumption requiring
+the actual board marking, not a universal carrier value.
+
+This equation sets an electrical current limit; it does not by itself prove
+a thermally safe operating point. The final report's main text claims an
+adjustment, whereas its connection table says actual $V_{\rm REF}$ remains
+unmeasured. This edition retains that as unresolved provenance. The external
+supply's displayed current is not coil current: chopping and energy storage
+make input and winding currents different quantities. Full-step two-coil
+current also differs from the peak microstep limit.
+
+\begin{description}[style=nextline]
+\item[STEP and DIR.] STEP's active edge advances the translator; DIR chooses
+sequence direction. Logical inversion maps positive software travel to the
+installed motor orientation. The datasheet lists minimum STEP high and low
+times of 1 microsecond, and DIR setup/hold of 200 ns. These are electrical
+minimums, not guarantees of Linux scheduling precision.
+\item[MS1, MS2, MS3.] Select microstep mode; all high selects 1/16 in the
+manufacturer's truth table. The source assumes this setting; it does not
+read back physical straps.
+\item[ENABLE, RESET, SLEEP.] Enable controls bridge output state, reset returns
+the translator to a defined home state, and sleep reduces activity. Their
+installed wiring is not fully documented in the final report. Do not infer
+GPIO assignments merely from the driver's pin list.
+\item[VDD and GND.] Logic supply and common signal reference, distinct from
+motor supply. A shared reference is required for meaningful logic levels.
+\item[VMOT / VBB and winding outputs.] Motor supply feeds the bridge;
+1A/1B and 2A/2B connect to winding pairs. They carry switched winding
+current, not GPIO STEP waveforms. Reversing a winding pair changes orientation.
+\item[VREF and SENSE.] Reference and current-sense network establish the
+regulated limit. They are analog/current-control nodes, not ordinary
+logic commands. Carrier capacitors and charge-pump components have support
+roles described in the datasheet; no undocumented installed values are assumed.
+\end{description}
+
+\subsection{BC337 low-side switch, base resistor and switch pull-down}
+In a low-side NPN arrangement, motor positive goes to its supply, motor
+negative to collector, emitter to common ground, and GPIO through a base
+resistor. GPIO supplies base current, not motor current. The approximate
+base relation is $I_B=(V_{\rm GPIO}-V_{BE})/R_B$~\cite{rohmnpn}.
+Assuming 3.3 V, $V_{BE}=0.7$ V and the report's stated 4 mA limit,
+$R_{B,\min}=(3.3-0.7)/0.004=650\,\Omega$.
+The limit is a \emph{minimum resistance}; lowering it raises GPIO current.
+At $R_B=1$ k$\Omega$, nominal $I_B=2.6$ mA and resistor dissipation is
+$I_B^2R_B=6.76$ mW. Output-high droop and actual saturation $V_{BE}$
+change that estimate.
+
+The transistor's active-region DC gain is not a guaranteed saturation gain.
+At a forced gain of ten, 2.6 mA base current corresponds to a 26 mA load
+check. The report lists motor rated current 30 mA and stall current 230 mA;
+these require forced gains 11.5 and 88.5 respectively at that nominal base
+current. This arithmetic alone therefore does not establish saturation at
+either load. The onsemi saturation-test conditions should be consulted
+directly; automated retrieval was blocked~\cite{bc337data}. No circuit
+change or pressure fix is performed here.
+
+An inductive motor stores $E=\tfrac12LI^2$. Interrupting current produces
+$v=L\,di/dt$, explaining why turn-off behaviour differs from a resistor.
+The report records no fitted flyback diode; this manual does not invent one.
+The physical transient and transistor dissipation cannot be quantified without
+motor inductance, current and switching measurements.
+
+For an active-high switch with 10 k$\Omega$ pull-down, an open input is
+held near ground; closure connects it to the high rail. At 3.3 V, closed
+pull-down current is 0.33 mA and resistor power 1.089 mW.
+For input leakage $I_{\rm leak}$, open-node error is approximately
+$I_{\rm leak}R$; cable/input capacitance gives time constant $RC$.
+A weaker pull-down saves current but increases susceptibility to leakage
+and coupled noise. Ten kilohms is a common engineering scale, not a value
+proved optimal by these equations. A base-emitter pull-down has a different
+purpose from a switch-input pull-down; the report does not fully establish
+the placement of its stated base pull-down.
+
+\subsection{All documented controller pins and supply connections}
+Header number means physical connector position; line offset means a GPIO
+line within the requested chip. They are not interchangeable~\cite{kernelgpio}.
+The local source uses \texttt{/dev/gpiochip0}. The following mapping agrees
+with report Table 17 and inspected source, not a new electrical pin test.
+The manufacturer expansion reference was inaccessible to the automated
+reader~\cite{odroidgpio}.
+
+\begin{center}\small
+\begin{tabular}{rrll}
+\toprule Header & Line & Signal & Role \\\midrule
+7&64& DIR1 & X direction output\\
+11&68& STEP1 & X step output\\
+12&81& DIR2 & Y direction output\\
+13&69& STEP2 & Y step output\\
+15&72& X minimum & Active-high switch input\\
+16&65& X maximum & Active-high switch input\\
+18&66& Y minimum & Active-high switch input\\
+22&67& Y maximum & Active-high switch input\\
+33&70& Pen switch & Raised-state feedback input\\
+35&71& Pen motor & Transistor-base control output\\
+\bottomrule
+\end{tabular}
+\end{center}
+The report separately lists USB camera data/power, network communication,
+ODROID DC input, external 24 V to driver motor supply, a dedicated 3.3 V
+rail for logic/pen supply, and common grounds. It does not record exact
+physical power/ground pins, complete return routing, actual adapter output
+or total 3.3 V rail load. USB and Ethernet are interfaces, not spare GPIO
+numbers. The quoted 4 mA GPIO capability is conditional because the report
+leaves its specific source unresolved; it must not be inferred from the
+stepper driver or BC337 datasheet.
+
+\subsection{Pen state machine, dwell, overrun and debounce}
+The pen motor turns one way and the cam alternates states. The conceptual
+state machine is: check interlocks; read current state; if already at target,
+do nothing; otherwise energise; poll until target or timeout; optionally
+continue the pen-up seating overrun; de-energise; report success/failure.
+The inspected \texttt{SetPen} compares feedback with the requested target,
+not always ``up'' as one report pseudocode line suggests. A switch reporting
+not-up does not measure nib contact force. The mechanism can satisfy a
+binary switch while pen pressure remains unsuitable.
+
+The 40 ms up-overrun, 2 ms polling sleep, 3 s timeout and 350 ms G-code
+settling dwell serve different roles. The report attributes dwell to visual
+tuning; it supplies no formal optimum for each. At an illustrative unloaded
+150 RPM, a quarter-turn takes 0.1 s, but gearing load, cam contact and
+switch position make this unsuitable as a measured timing prediction.
+The same 350 ms dwell need not represent the same physical settling process
+for raising and lowering.
+
+Endstop confirmation requires three high reads, two gaps of 6 ms, hence
+12 ms from first to last sample. Under an unrealistic independent spurious
+high probability $q$, three samples would give $q^3$. Real contact bounce
+is time-correlated, so this is not a reliability estimate. Debounce rejects
+short chatter at a cost of latency; it cannot ensure switches are ``never''
+triggered by noise. The pen feedback routine is distinct from the debounced
+endstop routine. At nominal 7.8125 mm/s, 12 ms corresponds to 0.09375 mm
+of travel \emph{if motion continued}; the inspected polling can pause pulses
+during confirmation, so that multiplication is not a measured stopping distance.
+
+\subsection{Calibration and G-code motion mapping}
+For each axis, move to a switch, reverse, count $N$ pulses to the other
+switch, use measured travel $L$ to obtain $K=N/L$ steps/mm, establish which
+end is minimum/maximum, then retract 5 mm. With $L=200.6$ mm, the two 5 mm
+end clearances give 190.6 mm usable span; the recorded Y travel 261.3 gives
+251.3 mm. The 5 mm is a clearance choice, not an inferred switch precision.
+Homing at 1.6 ms per nominal step gives
+$1/(0.0016\cdot80)=7.8125$ mm/s before overhead.
+The 200000-step bound is a failure guard, not measured travel.
+
+Calibration estimates scale from an external length and reference contacts.
+It does not calibrate squareness, backlash or flex. In $K=N/L$, errors in
+$L$ propagate approximately as $\delta K/K\simeq-\delta L/L$ for fixed $N$.
+Calibrating against the same length later used for acceptance can conceal
+systematic error, so provenance of independent checks matters.
+
+G21 selects millimetres; G90 absolute positions; G0/G1 specify linear targets
+with feed handling; F is mm/min, so 900 becomes 15 mm/s and 2400 becomes
+40 mm/s. G4 P is a dwell with this project's P convention in seconds.
+M3/M5 are repurposed here to lower/raise the pen; in other controllers they
+often refer to spindle control. M2 terminates. Modal settings persist until
+changed. Parsing a command and updating a commanded counter does not verify
+that the carriage reached its target.
+
+\subsection{Bresenham movement and how to read its staircase}
+For integer pulse displacements $(d_x,d_y)$, set
+$a_x=|d_x|,a_y=|d_y|$ and direction signs. If $a_x\ge a_y$, initialise
+$e=\lfloor a_x/2\rfloor$. At each X pulse subtract $a_y$; if $e<0$,
+also pulse Y and add $a_x$. Swap axes for a steep line. This distributes
+minor pulses along major pulses with integer arithmetic~\cite{bresenham1965}.
+
+For $(5,2)$, errors after each complete iteration are $0,3,1,4,2$ and
+the endpoint sequence is
+\[
+(1,0),\ (2,1),\ (3,1),\ (4,2),\ (5,2).
+\]
+The ideal Y coordinates are $0.4,0.8,1.2,1.6,2.0$; discrepancies are
+$-0.4,0.2,-0.2,0.4,0$ steps. Signs reflect axes; the absolute deviations
+are at most half a minor step in this example. The plot's staircase shows
+the command lattice, not measured carriage vibration. An equal-axis move
+pulses both axes per iteration. A zero-length move needs no pulses.
+
+Geometry and timing are distinct. The inspected routine pulses major and
+minor axes sequentially, sleeping for each high pulse. Approximately
+$a_x+a_y$ pulse sleeps are therefore incurred. For nominal path length
+$L$ and feed $v$, a naive $N_{\rm major}$-based delay can make diagonal
+motion slower unless this sequential cost is accounted for. GPIO calls,
+debounce and OS scheduling add overhead. Bresenham alone supplies neither
+acceleration control nor hard-real-time timing.
+
+\subsection{Bounds, joins and nominal timing budget}
+For polyline vertices $p_i=(x_i,y_i)$, bounds are the coordinate minima and
+maxima. Straight segments lie within their endpoint box, so all vertices
+inside a rectangular workspace imply the interpolated straight segments do
+too. This does not cover pen radius, calibration uncertainty, cam geometry
+or curved interpolation extrema. The empty-trajectory zero box is a
+convention, not a drawn dot at the origin.
+
+Pen-down length is $L_d=\sum\|p_{i+1}-p_i\|$ within strokes; pen-up travel
+is the distance between successive stroke endpoints. At feeds $F_d,F_u$
+in mm/min, a nominal time is
+$t_0=60L_d/F_d+60L_u/F_u+N_{\rm toggle}\tau$ plus any explicitly counted
+dwells. For $L_d=300$ mm, $L_u=120$ mm, feeds 900/2400 and twenty 0.35 s
+dwells, $t_0=20+3+7=30$ s. This is constructed ideal accounting, not an
+ODROID prediction. Avoid double-counting a dwell already included in a
+toggle term. Acceleration, sequential pulses, software overhead and
+generation time explain why measured full-request timing differs.
+
+The 0.6 mm endpoint-join threshold avoids a lift/drop pair by drawing a
+short connector. It trades fewer toggles for a possible extra mark; at
+$H=4$ mm it is 0.15 x-heights. It is not a Douglas--Peucker error bound.
+Ring closure, decimation and stroke-order optimisation likewise change
+different aspects of a trajectory. Their combined output must be considered
+when interpreting physical lengths or geometric fidelity; none is tuned or
+tested by this document-only expansion.

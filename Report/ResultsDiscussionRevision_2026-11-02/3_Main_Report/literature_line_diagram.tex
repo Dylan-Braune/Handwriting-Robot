@@ -1,0 +1,21 @@
+\begin{figure}[!htbp]
+\centering
+\begin{tikzpicture}[x=1cm,y=1cm,font=\footnotesize,node distance=4.5mm]
+\node[litio,text width=1.5cm] (img) {line image};
+\node[litbox,right=of img,text width=1.7cm] (cnn) {convolutional\\layers};
+\node[litbox,right=of cnn,text width=1.6cm] (cols) {$T$ feature\\columns};
+\node[litbox,right=of cols,text width=1.9cm] (rnn) {recurrent layer,\\both directions};
+\node[litbox,right=of rnn,text width=1.6cm] (pc) {symbol per\\column};
+\node[litio,right=of pc,text width=1.1cm] (out) {\texttt{the}};
+\foreach \a/\b in {img/cnn,cnn/cols,cols/rnn,rnn/pc,pc/out}{\draw[litarr] (\a) -- (\b);}
+
+\draw[litarr] ([yshift=3.2mm]rnn.north west) -- ([yshift=3.2mm]rnn.north east);
+\draw[litarr] ([yshift=6.0mm]rnn.north east) -- ([yshift=6.0mm]rnn.north west);
+
+\node[litlab,below=2.0mm of pc,font=\ttfamily\scriptsize] (sym) {-tt-h-ee};
+\node[litlab,below=1.6mm of sym] {collapse repeats,\\drop the blanks};
+\node[litlab,below=2.0mm of cols,text width=2.5cm] {$T$ far exceeds the\\number of characters,\\so the alignment is\\not known};
+\end{tikzpicture}
+\caption{Reading a whole text line without cutting out characters, after the arrangement of Kizilirmak and Yanikoglu~\cite[pp.~4--5]{kizilirmak2023}. The convolutional layers produce $T$ feature columns, a recurrent layer reads them in both directions, and a symbol including a blank is emitted per column; collapsing repeats and removing the blanks gives the transcription.}
+\label{fig:lit-line}
+\end{figure}

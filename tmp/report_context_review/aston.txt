@@ -1,0 +1,2102 @@
+
+=== PDF PAGE 1 ===
+Multi-robot capture the flag
+Final Report
+A.W. Du Toit
+23541832
+Submitted as partial fulfilment of the requirements of Project EPR400
+in the Department of Electrical, Electronic and Computer Engineering
+University of Pretoria
+November 2026
+Study leader: Prof. H.C. Myburgh
+
+=== PDF PAGE 2 ===
+A.W. Du Toit Part 1. Preamble
+Part 1. Preamble
+This report describes the work I did in designing an RF communication system using discrete
+electronic components.
+1. Project proposal and technical documentation
+This main report contains an unaltered copy of the approved Project Proposal (as Part 2 of the
+report).
+All the code that I developed appears as a separate submission on the AMS.
+2. Project history
+This project builds on a previous project which was completed by Picard (2023). Simulation
+software was provided by Cemkron. The PCB manufacturing was done by Corsec Design
+Solutions on my behalf. Some of the algorithms I used was adapted from Robben (2021) and
+Olingo (2022). The rest of the work reported on here, is entirely my own.
+3. Language editing
+This document has been language edited by a knowledgeable person. By submitting this
+document in its present form, I declare that this is the written material that I wish to be examined
+on.
+My language editor was .
+Language editor signature Date
+4. Plagiarism declaration
+I, A.W. Du Toit understand what plagiarism is and have carefully studied the plagiarism policy
+of the University. I hereby declare that all the work described in this report is my own, except
+where explicitly indicated otherwise. Although I may have discussed the design and investigation
+with my study leader, fellow students or consulted various books, articles or the internet, the
+design/investigative work is my own. I have mastered the design and I have made all the required
+calculations in my lab book (and/or they are reflected in this report) to authenticate this. I am not
+presenting a complete solution of someone else or that I found somewhere.
+Wherever I have used information from other sources, I have given credit by proper and complete
+referencing of the source material so that it can be clearly discerned what is my own work and
+what was quoted from other sources. I acknowledge that failure to comply with the instructions
+regarding referencing will regarded as plagiarism. If there is any doubt about the authenticity of
+my work, I understand that I may have to attend an oral ancillary examination/evaluation about
+the work.5. AI usage declaration
+The author confirms that no artificial intelligence tools, including language models or code-
+generation tools, were used in the preparation and writing, or any analysis that appears in this
+report. All content, design, explanations, data analysis, and code were developed solely by the
+i
+
+=== PDF PAGE 3 ===
+A.W. Du Toit Part 1. Preamble
+author.
+6. Software library usage declaration
+Unless explicitly stated otherwise in the next paragraph, the author confirms that no software
+library functions, packages, or toolboxes were used in the design, implementation, or analysis
+presented in this report. All code and computations were developed entirely by the author
+7. Unaltered Project Proposal
+I certify that the Project Proposal appearing as the Introduction section of the report is an
+unaltered copy of the approved Project Proposal.
+Signature
+With my signature below, I hereby certify that all statements, declarations, and information
+presented above are complete.
+A.W. Du Toit Date
+ii
+
+=== PDF PAGE 4 ===
+A.W. Du Toit Part 1. Preamble
+TABLE OF CONTENTS
+Part 2. Project definition: approved Project Proposal
+1. Project description
+2. Technical challenges in this project
+3. Functional analysis
+4. System requirements and specifications
+5. Field conditions
+6. Student tasks
+Part 3. Main Report
+1. Literature study 1
+1.1. Problem statement: general perspective 1
+1.2. Problem statement: specific perspective 1
+1.3. Overhead vision as the sole sensor 2
+1.4. Colour markers and pose estimation 2
+1.5. Graph representation and optimal path planning 3
+1.6. Coordination and adversarial detection 4
+1.7. Application of the literature to this project 5
+2. Approach 6
+2.1. System concept 6
+2.2. Translating the functional analysis into a design 6
+2.3. Design alternatives and trade-offs considered 7
+2.4. Verification strategy 8
+3. Design and implementation 9
+3.1. Design summary 9
+3.2. System block diagram 11
+3.3. The physical platform 12
+3.4. Image capture 13
+3.5. Colour segmentation and robot classification 14
+3.5.1. Intensity and chroma 14
+3.5.2. Locating the board 15
+3.5.3. Segmenting the marker dots 17
+3.5.4. Connected-component labelling 18
+3.5.5. Accepting a marker and classifying the robot 19
+3.6. Heading extraction 20
+3.7. The maze graph 21
+3.7.1. Wall detection 21
+3.7.2. Scanning with the robots present 22
+3.7.3. From walls to a navigable graph 23
+3.7.4. The distance field 24
+3.8. Path planning 25
+3.8.1. The search 25
+iii
+
+=== PDF PAGE 5 ===
+A.W. Du Toit Part 1. Preamble
+3.8.2. Clearance as a cost 27
+3.8.3. Smoothing 28
+3.9. The position correction policy 30
+3.9.1. Derivation from the differential-drive kinematics 30
+3.9.2. Separating turning from tracking 32
+3.9.3. Following the route rather than chasing the waypoint 32
+3.10. Proximity detection and the capture condition 33
+3.10.1. The capture condition 33
+3.10.2. The ordering of the radii 34
+3.10.3. Oracle lens 35
+3.10.4. When to replan 37
+3.11. Two-attacker coordination 37
+3.11.1. Distinct goal assignment 38
+3.11.2. Route separation by cost 38
+3.11.3. Vacating the goal 39
+3.11.4. The deadlock-free condition 40
+3.12. Summary of design parameters 41
+3.13. Integration into a single pipeline 42
+4. Results 45
+4.1. Summary of results achieved 45
+4.2. Qualification tests 45
+Qualification test 1: Student Qualification Test
+Objectives of the test or experiment45
+Equipment used45
+Test setup and experimental parameters45
+Steps followed in the test or experiment46
+Results or measurements46
+Observations46
+Statistical Analysis46
+Qualification test 2: Student Qualification Test
+Objectives of the test or experiment46
+Equipment used46
+Test setup and experimental parameters46
+Steps followed in the test or experiment46
+Results or measurements46
+Observations46
+Statistical Analysis46
+5. Discussion 47
+5.1. Critical evaluation of the design 47
+5.1.1. Interpretation of results 47
+5.1.2. Critical evaluation 47
+5.1.3. Unsolved problems 47
+5.1.4. Strong points of the design 47
+5.1.5. Expected failure conditions 47
+5.2. Considerations in the design 47
+5.2.1. Design ergonomics 47
+5.2.2. Health and safety 47
+iv
+
+=== PDF PAGE 6 ===
+A.W. Du Toit Part 1. Preamble
+5.2.3. Environmental impact 47
+5.2.4. Social and legal impact 47
+5.2.5. Ethics clearance 47
+6. Conclusion 48
+6.1. Summary of the work completed 48
+6.2. Summary of observations and findings 48
+6.3. Contribution 48
+6.4. Suggestions for future work 48
+7. References 49
+Appendix
+v
+
+=== PDF PAGE 7 ===
+A.W. Du Toit Part 1. Preamble
+LIST OF ABBREVIATIONS
+DOFDegrees of Freedom
+FOVField of View
+FUFunctional Unit
+ICASAIndependent Communications Authority of South Africa
+ISMIndustrial, Scientific and Medical (radio band)
+MAPFMulti-Agent Path Finding
+MJPEGMotion JPEG
+RGBRed, Green, Blue (colour model)
+UVCUSB Video Class
+vi
+
+=== PDF PAGE 8 ===
+A.W. Du Toit Part 2. Project definition: approved Project Proposal
+Part 2. Project definition: approved
+Project Proposal
+This section contains the problem identification in the form of the complete approved Project
+Proposal, unaltered from the final approved version that appears on the AMS.
+vii
+
+=== PDF PAGE 9 ===
+For use by the Project lecturer Approved Revision required FeedbackTo be completed by the student Language editor details Language editor signature PROJECT PROPOSAL 2026Project no Revision no Title Surname Initials Student no Study leader (title, initials, surname) Student declaration I understand what plagiarism is and that I have to complete my project on my own. Study leader declaration This is a clear and unambiguous description of what is required in this project.Approvedforsubmission (Yes/No)Project title(thisisthetitleontheprojectconceptnote) Student signature Study leader signature and date 1. Project description.Whatistheproblemtobesolvedwithyourproject?Describeinnon-technicallanguagewhatyour project isabout. What does your system have to do?ReferexplictlytoFigure1thatyouinsertedontheright.
+ForusebytheProjectmodulelectureronly
+Figure1.Insertanimagebelowthatcapturestheideawithyourproject.Explaininthetextontheleft.
+HCM91Charet SavirmuthuMRDu Toit AW23541832 Prof HC MyburghMulti-robot capture the flagMulti-robot systems are a cornerstone of modern automation, offering advantages in efficiency and safety for  applications like search and rescue. This project implements a a centralised multi-agent capture the flag framework to investigate the challenges of real-time coordination and dynamic path planning in a constrained place. The system consists of four robots( 2 attackers and 2 defenders) operating in a maze . As shown in Figure 1 the architecture uses an overhead camera and a centralised processing board. This vision system performs real-time localisation of all agents, providing information needed for high-level decision making without requiring on board sensors. The primary objective is for the attackers to reach the opposing base by employing dynamic pathfinding algorithms that treat the maze walls and patrolling defenders as obstacles. The defenders follow deterministic, pre-set patrol routes to create dynamic obstacles. A custom machine learning algorithm on the central processor computes navigation and control signals, which are transmitted wirelessly to the robot fleet. This project demonstrates a scalable approach to multi-robot coordination where centralised intelligence manages complex group behaviors in real-time. 
+
+
+=== PDF PAGE 10 ===
+2. Technical challenges in this projectDescribe the technical challenges that are beyond those encountered up to the end of third year and in other final year modules.2.1 Primary designchallenges 2.2 Primary implementation challenges3. Functional analysis3.1 Functional description Describe the design in terms of system functions as shown on the functional block diagram in section 3.2. This description should be in narrativeformat.DONOTuseabulletlist. Whatistheintendedcoretechnicalchallengeintheproject?Whichaspectoraspectsofthedesignofthesystemdoyouexpecttobethemostchallenging?Whichaspectoraspectsoftheimplementationdoyouexpecttobethemostchallenging?Allprocessingwillbedoneonanembeddedplatform,andnotonaPCplatform.Confirmedbyhavingtickedthisbox.Libraryfunctionswillbeusedforhardwareinterfacingonly.Confirmedbyhavingtickedthisbox.The primary design challenge is deriving a closed loop position correction policy using the overhead camera as the sole feedback source. The robots operate at a fixed speed with no encoders, the correction rule  must be derived analytically from the robots two-wheeled motion equations, the correction threshold is that of the camera latency. A further challenge is designing the maze graph representation such that it supports low latency incremental updates as defenders move without full reconstruction each cycle. Finally, the two-attacker coordination architecture must be designed from first principles, as independent path finding causes both robots to select the same shortest path and cause deadlock. A coordination strategy must therefore be derived analytically.Real-time localisation and classification of four robots simultaneously via the overhead camera under varying lighting conditions presents a primary implementation challenge. Achieving precise rotations using only camera feedback without encoders, low-latency wireless command transmission to four robots concurrently, and hardware inconsistencies across robots in motor tolerances and battery variation must all be managed during implementation.The system consists of an overhead camera, a central processor, and four robots operating on a 1.5m x 1.5m board with scattered obstacles. The camera (FU1) continuously captures frames of the board, which are passed to the colour segmentation unit (FU2) that extracts the coloured dot regions from the raw image. The heading angle extraction unit (FU3) computes the x, y position and orientation of each robot by calculating the vector between the two isolated dot centroids, whilst the robot classification unit (FU4) identifies each robot by its unique colour, distinguishing the attackers and the defenders. The maze graph unit (FU5) stores the static board structure as a navigable graph and supplies it to the path planning unit (FU6), which computes a full collision free route for each attacker toward the opposing base. Simultaneously, the patrol route manager (FU7) issues pre-set movement commands to both defenders each cycle, whilst the position correction unit (FU8) continuously compares each attacker's reported position against its planned path and issues corrective turn commands when lateral drift is detected. A proximity detection unit, referred to as the oracle lens (FU9), acts as a radar around each attacker. When a defender enters a defined detection radius, it checks whether the defender's path will intersect the attacker's route or whether the defender is facing toward the attacker. If either condition is met, the replanning module (FU10) computes a new route and feeds it back to FU6. The game state manager (FU11) monitors both end conditions( both attackers reaching the opposing base, or a defender catching an attacker via line of sight) and stops all robots when either is triggered, prompting a manual reset. All movement commands generated by FU6, FU7, FU8, and FU10 are transmitted to the robots through the wireless communications unit (FU12) which passes them to the robot command execution unit (FU13) onboard each robot, where the received signals are unpacked and converted into motor drive commands.
+The oracle lens unit (FU9) monitors the position and heading of all defenders relative to each attacker and, when a defender enters a certain radius it checks whether the defender's path will intersect the attacker's route or whether the 
+
+=== PDF PAGE 11 ===
+3.2 Functional block diagram(thisshouldnotbeaflowdiagram)
+Removed Power From the functional block diagram
+
+=== PDF PAGE 12 ===
+4. System requirements and specificationsThese are the core requirements of the system or product (the mission-critical requirements) in table format INORDEROFIMPORTANCE.Requirement1isthemostfundamentalrequirement.Requirement 1: thefundamental functional and performance requirement ofyourprojectRequirement 2(Secondinorderofimportance) Requirement 3(Thirdinorderofimportance) 1. Core mission requirementsofthe system or product.Focusonrequirementsthatarecoretosolvingtheengineeringproblem.Thesewillreflectthesolutiontotheproblem.2.Whatisthetargetspecification (thismustbeinmeasurableterms)tobemetinordertoachievetherequirementin1.above?3.Explainwherethisspecificationoriginated:i.e.,explainthevaluethatyouselected.I.e.,howwillmeetingthespecificationgiveninpoint2abovesolvetheproblem?4. How will you demonstrate atthe examinationthatthisrequirementandspecification(points1and2above)havebeenmet?Beexplicitabouthowyouwillprovetheseweremet.6. Whataretheaspectstobetakenofftheshelftomeetthisrequirement?Ifnone,indicate"none".Clearlyspecifyforwhattaskslibraryfunctionswillbeused(ifrelevanttotheproject).5. Yourowndesigncontribution:whataretheaspectsthatyouwilldesignandimplementyourselftomeettherequirementinpoint2?Ifnone,removethisrequirement.
+The system must successfully navigate both attackers to the opposing base whilst avoiding capture by the two defenders. All four robots are centrally controlled by the central processor.The system must accurately determine the position of all four robots from the overhead camera feed to enable reliable navigation and obstacle avoidance on the board.The robots must maintain a minimum forward speed sufficient to traverse the entire 1.5m x 1.5m board within a reasonable game duration.Both attackers must successfully reach the opposing base whilst avoiding capture (i.e. being observed by the defenders) in more than 90% of complete game runs conducted at examination.Position error smaller than 25mm for each robot during live operation on the board.Minimum forward speed of 20mm per second for all four robots under full load conditions during live operation.A 90% success rate ensures the system reliably solves the capture the flag problem. A lower rate would indicate the pathfinding and avoidance logic does not consistently beat the defenders, meaning the problem remains unsolved.With a 100mm wide robot navigating a minimum 150mm gap between obstacles. Overhead cameras achieve 17mm[1]. A 25mm mean error target ensures the correction policy responds before the robot exceeds safe clearance limits.The longest possible route across the 1.5m x 1.5m board is approximately 2121mm. At 20mm/sec the robot traverses this in 106 seconds.The full game will be run live at the examination with all four robots moving simultaneously. Runs where both attackers reach the opposing base without being observed will be recorded and the success rate reported.During a live game run, robot positions will be compared against a reference grid on the board. The average position error will be reported and compared for each robot simultaneously in the same image.Robots will be driven across a known distance during a live run. Time will be recorded and speed calculated using the distance/time equation. Minimum speed will be confirmed and reported for all four robots independently.Dynamic pathfinding and avoidance logic will be designed from first principles. A proximity detection zone per attacker, the oracle lens,grants access to a defender's path within a defined radius and triggers recomputation if threatened.Colour segmentation and robot classification logic will be designed and implemented from first principles without vision libraries on the central processor.The process of determining the correct motor input values to achieve a consistent 20mm/sec forward speed across all four robots will be designed and implemented from first principles by the student.Wireless communication hardware and protocol drivers used for hardware interfacing only. Robot motor hardware and chassis sourced off the shelf with full mechanical assembly completed by the student.Overhead camera hardware. Camera drivers used for hardware interfacing only. No vision or image processing libraries used for detection or classification.Robot motor hardware and chassis components will be sourced off the shelf. Full mechanical assembly, wiring, and integration of all four robots will be completed by the student.
+Changed the ordering of the requirements.
+whilst naive setups report 99 mm [2]. A 50 mm target accounts for imperfections whilst 
+A minimum speed of 20mm/sec ensures the robots can traverse 
+Motor command calibration and speed characterisation 
+Made my previous requirement 4, my requirement 1 , with completely new wording. The system must successfully navigate attackers through the board whilst avoiding capture by defenders.Attackers must avoid capture (i.e. being observed by the defenders) more than 80% of the time.
+ 80% is selected to account for hardware inconsistencies and lighting variation whilst demonstrating reliable oracle lens and replanning logic Number of runs where both attackers avoid capture recorded and success rate calculated. Oracle lens detection logic, line of sight catch condition, and replanning trigger policy Wireless communication hardware and protocol drivers for hardware interfacing only.
+
+=== PDF PAGE 13 ===
+System requirements and specificationspage2Requirement 4(Fourthinorderofimportance)Requirement 5 Requirement 6 2.Whatisthetargetspecification(thismustbeinmeasurableterms)tobemetinordertoachievetherequirementin1.above?3.Explainwherethisspecificationoriginated:i.e.,explainthevaluethatyouselected.I.e.,howwillmeetingthespecificationgiveninpoint2abovesolvetheproblem?4.Howwillyoudemonstrateattheexaminationthatthisrequirementandspecification(points1and2above)havebeenmet?Beexplicitabouthowyouwillprovetheseweremet.6. Whataretheaspectstobetakenofftheshelftomeetthisrequirement?Ifnone,indicate"none".Clearlyspecifyforwhattaskslibraryfunctionswillbeused(ifrelevanttotheproject).5. Yourowndesigncontribution:whataretheaspectsthatyouwilldesignandimplementyourselftomeettherequirementinpoint2?Ifnone,removethisrequirement.
+1. Coremissionrequirementsofthesystemorproduct.Focusonrequirementsthatarecoretosolvingtheengineeringproblem.Thesewillreflectthesolutiontotheproblem.The system must transmit movement commands to all four robots within a latency that prevents excessive positional drift between corrections.The system must calculate a near-optimal path for each attacker from its current position to the opposing base, minimising travel distance whilst treating maze walls and defenders as obstacles.The system must accurately determine the heading angle of all four robots to enable the correction policy to issue accurate turn commands during live operation.End-to-end command latency should be less than 2s from camera frame capture to robot receiving command. The calculated path length must be less than 8% longer than the true shortest path, verified across multiple board configurations to ensure the system is truly finding the optimal path.The heading angle error must be no more than 5° for each robot during live operation.At maximum robot speed of 20mm/sec, drift per cycle must remain within the 25mm localisation tolerance. A 1.2s bound ensures accumulated drift stays within this budget regardless of minor speed variations. A* with an admissible heuristic is guaranteed to find the optimal path on a static graph [3]. The 8% tolerance accounts for necessary replanning detours caused by moving defenders.At 15-20mm dot separation on the robot and 1mm centroid detection error, angular error is arctan(1/15) ≈ 4°.A 5° target provides conservative margin whilst keeping lateral drift within the position tolerance of Requirement 2.Latency will be logged from frame capture timestamp to command transmission confirmation during a live game run. Mean and maximum latency will be recorded and reported across multiple cycles.During a live game run the attacker paths will be displayed and compared against the true shortest path across multiple board configurations. Path length deviation will be calculated and reported dynamically.During a live game run, the heading angle reported by the system will be compared against the true robot orientation on the board. The angular error will be calculated and reported for all four robots.Communication pipeline timing design and command formatting logic will be designed and implemented from first principles by the student on the central processor.The maze graph representation and A* pathfinding algorithm will be designed and implemented from first principles without pathfinding libraries on the central processor.A heading extraction algorithm computing the orientation vector from the two marker dots will be designed and implemented from first principles by the student without vision libraries.Wireless communication hardware and protocol drivers used for hardware interfacing only.None. All pathfinding and graph representation logic is own design.Overhead camera hardware. Camera drivers for hardware interfacing only.
+two-dot colour marker system.
+Two-dot
+At maximum robot speed, drift per cycle must remain within the 50 mm localisation tolerance. A 2s bound ensures accumulated drift stays within this budget regardless of minor speed variations.
+True shortest path manually calculated for each board configuration. System path length compared across test runs and percentage deviation reported.
+
+
+=== PDF PAGE 14 ===
+System requirements and specifications  Requirement 7 Requirement 8 Requirement 9 
+
+=== PDF PAGE 15 ===
+5. conditioncondition 1 ield condition 2 eld condition 3 Field condition requirement.  6. Student tasks6.1 Design and implementation tasks List your primary design and implementation tasks in bullet list format (5-10 bullets). These are  product requirements, but  tasks. 6.2 New knowledge to be acquired Describe what the theoretical foundation to the project is, and which  knowledge you will acquire ( that covered in any other undergraduate modules). 
+
+=== PDF PAGE 16 ===
+. References
+
+=== PDF PAGE 17 ===
+Figure 2: Typical maze setup 
+
+=== PDF PAGE 18 ===
+A.W. Du Toit Part 3. Main Report
+Part 3. Main Report
+xvii
+
+=== PDF PAGE 19 ===
+A.W. Du Toit Part 3. Main Report
+1. Literature study
+1.1 Problem statement: general perspective
+Mobile autonomous robots require state estimates before they can execute control commands.
+A common approach equips each robot with on-board sensors: wheel encoders measure wheel
+rotation, inertial measurement units (IMUs) measure acceleration and angular velocity, and
+optical distance sensors measure range to nearby surfaces. These measurements can be combined
+to estimate the robot’s motion and surroundings. Although this approach can work well for
+individual robots, fitting every vehicle with sensors adds cost, mass and wiring complexity as the
+fleet grows.
+An alternative is to use sensors installed in the environment to estimate the states of multiple
+robots. This reduces the need for on-board sensing, but makes the fleet dependent on the external
+sensing and processing infrastructure. A failure in that infrastructure can affect state estimates
+for every robot. Accuracy also depends on factors beyond image resolution and calibration,
+including camera placement, visibility and detection performance.
+This project investigates centralised state estimation using four sensorless mobile robots on a
+1.5×1.5mboard in a competitive capture-the-flag game. An overhead camera is the only source
+of spatial measurements used by the control loop. The central processor estimates each robot’s
+two-dimensional position (x,y)and heading angle θ from camera images, and separately scans
+the board to map static obstacles. No other sensors provide spatial measurements to the controller.
+Control decisions are calculated centrally and transmitted to the fleet over a wireless link.
+Centralised processing was selected because the overhead camera provides a common view of
+the board and the fleet is small and fixed at four robots (N=4 ). The central processor performs
+perception, pose estimation, goal assignment and route planning, allowing it to coordinate the
+attackers’ goals and routes in one place. A common camera view does not mean perfect state
+knowledge: occlusion, image resolution and detection errors can still affect the measurements.
+1.2 Problem statement: specific perspective
+The approved Project Proposal explicitly prohibits external vision and image-processing libraries
+for object detection or classification, and excludes pathfinding libraries entirely. Published
+methodologies that rely on proprietary library routines for image rectification, fiducial decoding,
+or automated graph generation cannot be imported directly. The literature was therefore analysed
+for its underlying principles and mathematical formulations, not its software implementations.
+Two key system performance metrics were derived from published theoretical bounds rather than
+empirical intuition; these sources therefore underpin the specification:
+1. Path-Length Optimality (Requirement 5):The 8% path-length tolerance is derived from
+worst-case discretisation bounds on eight-connected grids.
+2. Localisation Accuracy (Requirement 2):The 25mm spatial positioning budget was
+established relative to reported infrastructure-camera accuracy bounds.
+1
+
+=== PDF PAGE 20 ===
+A.W. Du Toit Part 3. Main Report
+If either theoretical argument is flawed, the corresponding system requirement is invalidated.
+1.3 Overhead vision as the sole sensor
+Shim and Cho [ 1] demonstrated full mobile robot localisation using fixed ceiling-mounted
+cameras, arguing that replacing expensive onboard sensing with static infrastructure scales
+economically across multi-robot fleets. Their vehicle carried no onboard localisation sensors,
+receiving state estimates wirelessly from a central server—matching the architectural constraints
+of this project. Their physical setup utilised obliquely mounted cameras, requiring homography
+matrices fitted from chessboard calibration targets to rectify individual views onto a common
+ground plane. Post-rectification, their system achieved a mean spatial position error of 26mm
+and a worst-case error of 71mm.
+While a 71mm error bound would violate the 25mm threshold mandated by Requirement 2, this
+discrepancy stems from optical geometry rather than algorithmic limitations. Shim and Cho
+merged wide oblique perspectives over a large floor area, causing individual pixels to subtend
+large, non-uniform ground areas where residual homography projection errors dominated.
+In contrast, this project positions a single top-down camera 1530mm directly above a compact
+1.5×1.5mboard. The optical axis remains perpendicular to the ground plane, rendering scale
+approximately uniform across the field of view and reducing perspective correction from a
+primary error source to a minor secondary refinement. The resulting ground sampling distance
+(derived in Section 3.3) is approximately 0.63mm/pixel. Under this resolution, the 25mm
+requirement spans roughly 40 pixels, confirming that the hardware resolution is sufficient. The
+millimetric positioning target is thus physically achievable because the geometric degradation
+present in ceiling-camera literature was eliminated at the structural design stage.
+1.4 Colour markers and pose estimation
+Fiducial marker systems represent the standard approach for recovering planar pose from over-
+head imagery. Ulrichet al.[ 2] detailed a real-time fiducial pipeline capable of full six-degree-of-
+freedom pose estimation, offering robust performance under variable lighting. However, fiducial
+pipelines operate by detecting quadrilateral borders, rectifying interior bitgrids via homography,
+and decoding binary matrices, a sequence that relies heavily on standard computer-vision librar-
+ies, which are prohibited by Section 4 of the Project Proposal. The performance guarantees of
+standard fiducial frameworks were therefore unavailable, which reflects a software-specification
+constraint rather than a hardware limitation.
+To comply with the first-principles mandate, a custom two-dot asymmetric colour marker was
+adopted. Gevers and Smeulders [ 3] evaluated colour-space invariance under changing view
+direction, surface orientation, and illumination intensity. They demonstrated that raw RGB and
+intensity channels are highly sensitive to illumination variations, whereas normalised chromaticity
+measures remain invariant to light intensity and matte surface shading. Importantly, chromaticity
+metrics remain sensitive to shifts in the spectral composition (colour temperature) of ambient
+light.
+Two critical design choices were derived from these insights:
+2
+
+=== PDF PAGE 21 ===
+A.W. Du Toit Part 3. Main Report
+1. Chrominance Segmentation:Thresholding is performed on normalised chromaticity
+rather than raw RGB values to withstand the strong intensity gradient produced by overhead
+laboratory lighting across the board.
+2. Intensity Floor Gating:Low-intensity pixels are filtered out prior to colour classification,
+as dark regions lack stable hue estimates.
+Extending this analysis to a fleet of four distinct marker colours revealed a further constraint:
+Gevers and Smeulders evaluated colourinvariancerather thanseparability. Under uniform light-
+ing, markers with different levels of colour saturation cannot share a single global chromaticity
+threshold. A strict threshold tuned to reject neutral grey background noise misses low-saturation
+markers, whereas a relaxed threshold introduces false-positive detections from the environment.
+Consequently, the colour segmentation pipeline in Section 3.5 employs adaptive, per-colour
+chromaticity bands rather than a single global filter.
+The geometric relationship for pose estimation using a two-dot marker is straightforward. For
+two dot centroids separated by distance s, each with a position error bound e, the maximum
+heading errorθ e is bounded by:
+θe=arctan( e
+s )(1)
+Equation (1) shows that heading accuracy depends directly on the marker dimensions. Angular
+error can be reduced by maximising the distance s between marker dots. This relationship
+provided the mathematical basis for establishing that the 5○heading specification (Requirement
+6) was theoretically achievable prior to software development.
+1.5 Graph representation and optimal path planning
+Because the maze layout remains static between board scans and features a uniform wall grid
+pitch, the environment is discretised into a planar occupancy grid, transforming route generation
+into a graph-based shortest-path problem. Hart, Nilsson, and Raphael [ 4] formulated the A∗
+search algorithm and proved the mathematical condition required for heuristic search optimality:
+the heuristic function h(n)must beadmissible, meaning it must never overestimate the true
+remaining cost to the goal node. Under an admissible heuristic, the route to the first goal node
+expanded by A∗is guaranteed to be optimal and of minimum cost. Requirement 5 specifies that
+generated paths must not exceed the true shortest path length by more than 8%. To assert this
+claim, the underlying search algorithm must be strictly optimal on its representation; hence, the
+admissibility of the selected octile distance heuristic is formally proven in Section 3.8.
+However, graph optimality does not imply continuous spatial optimality. A path constrained to
+an eight-connected grid is restricted to heading increments of 45○, making it longer than a true
+continuous planar path. Nash and Koenig [5] analysed this discretisation penalty, proving that
+for two-dimensional eight-neighbour square grids with vertex-centred transitions and binary cell
+occupancy, an optimal grid path is at most≈1.08times longer than the true continuous Euclidean
+shortest path. This worst-case bound (≈8%excess) is asymptotically tight. They further noted
+that applying post-search path smoothing (string-pulling) cannot increase path length due to the
+triangle inequality, though it preserves original path topology.
+Grid discretisation introduces a secondary geometric artefact not captured by the distance bound:
+diagonal transitions between grid cells pass directly through the single vertex shared by adjacent
+3
+
+=== PDF PAGE 22 ===
+A.W. Du Toit Part 3. Main Report
+orthogonal cells. On a pure graph, an agent can traverse diagonally between two corner-touching
+obstacles through an infinitely narrow gap. While valid in matrix index arithmetic, this motion
+causes physical collisions for finite-sized robots. This edge case is explicitly resolved by enforcing
+corner-clearing motion constraints during neighbour expansion (Section 3.8).
+Nash and Koenig’s theoretical bound directly informed Requirement 5. It confirms that the8%
+excess length allowance is an intrinsic worst-case bound of eight-connected grid representations
+rather than an arbitrary engineering margin. An optimal A∗search paired with post-smoothing
+satisfies Requirement 5 by construction, framing the qualification test in Section 4 as a verification
+of algorithmic correctness against established theory.
+1.6 Coordination and adversarial detection
+When multiple autonomous agents plan routes independently within a shared workspace, mutual
+spatial interference can lead to system-wide deadlock. ˇCápet al.[ 6] analysed failure modes in
+prioritised multi-agent path finding (MAPF), where agents plan sequentially in priority order.
+They identified two fundamental conflict structures:
+• Type A Conflict:A higher-priority agent reaches its target node and stops, permanently
+obstructing the only viable path of a lower-priority agent.
+• Type B Conflict:A higher-priority agent traverses through the designated starting position
+of a lower-priority agent before that agent has departed.
+To resolve these failures, ˇCápet al.proved that requiring each agent to avoid both the space-time
+trajectories of higher-priority agents and the static initial positions of lower-priority agents guar-
+antees deadlock-free execution, provided the environment satisfies awell-formed infrastructure
+condition, which requires that target and start locations do not permanently cap flow capacity.
+This formulation yielded two conclusions for this project. First, Type A conflicts represent
+a practical risk: during initial system testing, an uncoordinated run resulted in the primary
+attacking agent reaching the base at t=109s and stopping, blocking the secondary attacker for
+the remaining 190s. The goal-vacating strategy implemented in Section 3.11 directly resolves this
+issue by instructing an arrived agent to vacate the target node to an adjacent non-obstructive cell.
+Second, the theoretical guarantees in MAPF literature rely strictly on well-formed environments;
+a 1.5m maze board containing single-width corridors narrower than two robot diameters violates
+well-formedness. Therefore, deadlock-freedom cannot be claimed globally, and corridor head-on
+encounters are explicitly defined as unresolvable operational boundaries.
+Adversarial defender detection is modelled using visibility geometry. A defender detects an
+attacker when the attacker enters a directional field-of-view cone with an unobstructed line-
+of-sight. This model is rooted in visibility-based pursuit-evasion theory. Gerkey, Thrun, and
+Gordon [7] introduced the φ-searcher model to address non-omnidirectional sensing, defining an
+agent equipped with a limited angular field of viewφ and unable to see through opaque obstacles.
+This project adapts theφ-searcher model in three ways:
+1. Relaxed Pursuer Strategy:Defenders follow deterministic patrol paths rather than com-
+puting complete pursuit-evasion strategies; detection is opportunistic.
+4
+
+=== PDF PAGE 23 ===
+A.W. Du Toit Part 3. Main Report
+2. Complete State Observation:Because the overhead camera provides global visibility of
+all agents, the complex state-uncertainty formulations driving pursuit-evasion complexity
+bounds do not apply.
+3. Finite Detection Range:A maximum sensing distance Rsense was incorporated into the
+unbounded φ-searcher model (Section 3.10) to align sensor coverage with proximity-based
+capture rules.
+1.7 Application of the literature to this project
+The practical application of the reviewed literature to the system design is summarised below:
+• Fiducial Pose Estimation vs. Custom Markers:Standard fiducial systems [ 2] were
+bypassed because the Project Proposal prohibits the use of computer-vision libraries. Pose
+estimation was implemented via a custom two-dot colour marker, using the normalised
+chromaticity invariance principles of Gevers and Smeulders [ 3] to construct adaptive
+colour-banded segmentation masks resilient to illumination gradients.
+• Optimal Path Planning:Path generation uses A∗search [4] with an admissible octile
+heuristic. Any-angle path planners (e.g., Theta ∗) were evaluated but omitted; the 8%
+worst-case analytical bound for eight-connected grids established by Nash and Koenig [5]
+satisfies Requirement 5 directly when combined with string-pulling post-smoothing.
+• Multi-Agent Coordination:The Type A conflict identified by ˇCápet al.[ 6] explained
+early physical deadlock observations, directly motivating the goal-vacating coordination
+policy in Section 3.11.
+• Adversarial Sensing Model:The limited-aperture φ-searcher model [7] was combined
+with line-of-sight ray casting and a finite range limit to establish the defender detection
+zones evaluated by the central processor.
+• Experimental Standards and Evidence Metrics:The literature established the validation
+methodologies applied in Section 4. Analytical planning guarantees [4, 5, 6] are proved
+mathematically, justifying the specification targets set prior to software construction.
+Physical state estimation methods [1] are evaluated empirically against ground-truth spatial
+measurements, establishing the protocol used to validate Requirement 2.
+5
+
+=== PDF PAGE 24 ===
+A.W. Du Toit Part 3. Main Report
+2. Approach
+This section sets out the high-level methodology and architectural strategy behind the engineering
+solution. The detailed implementation choices follow in Section 3.1.
+2.1 System concept
+The core problem is adversarial navigation under complete agent blindness. Two attacking robots
+cross a 1.5×1.5mmaze towards an opposing base without being detected by two patrolling
+defenders. No vehicle carries onboard sensors, so a single overhead camera is the only source of
+spatial information. Control is fully centralised: an off-board processor computes every decision
+and transmits it wirelessly to the fleet, which executes open-loop motion between updates.
+The architecture was conceived as one unified feedback loop, not a collection of independent
+modules. Each incoming camera frame initiates a sequential processing pipeline:
+1. Perception:Localises and classifies all four agents, extracting position (x,y)and heading
+θ.
+2. Planning & Threat Assessment:Computes or revalidates obstacle-free routes for the
+attackers while updating defender threat regions.
+3. Control & Communication:Generates corrective steering commands and broadcasts
+drive signals via a wireless link.
+4.State Evaluation:Checks win, capture, and timeout game-ending conditions.
+Nothing persists between loop iterations except the static wall map and high-level game state.
+A dropped frame costs a single cycle; it cannot desynchronise the state catastrophically. A
+deterministic, single-threaded processing loop was chosen over a multi-process or event-driven
+model. The 2s latency budget (Requirement 4) makes concurrency unnecessary, and a single
+loop guarantees strict reproducibility: identical visual inputs and game states yield identical
+control actions.
+2.2 Translating the functional analysis into a design
+The thirteen Functional Units (FUs) defined in the approved Project Proposal map onto a software
+architecture grouped by update frequency rather than subject matter:
+• Static Execution Rate (Once per board configuration):The physical maze walls stay
+stationary during game runs. The maze graph generation unit (FU5) scans the board once at
+setup and caches the navigable occupancy grid, which avoids redundant image processing
+during live control.
+• Dynamic Execution Rate (Every camera frame):Robot state estimation (FU2, FU3,
+FU4), path planning (FU6), defender patrol management (FU7), closed-loop position
+correction (FU8), proximity/threat evaluation (FU9, FU10), and game-state monitoring
+(FU11) execute on every frame.
+6
+
+=== PDF PAGE 25 ===
+A.W. Du Toit Part 3. Main Report
+• System Interfaces (Loop brackets):Frame capture (FU1) and wireless transmission
+(FU12, FU13) bracket the pipeline. Image acquisition (FU1) is the sole pipeline stage that
+uses an external driver library, strictly restricted to opening the USB device and grabbing
+raw image buffers.
+Decoupling static map building from dynamic tracking lets the pipeline run at the full camera
+frame rate. Expensive full-resolution image processing is reserved for board setup; lightweight
+tracking routines run on live frames.
+2.3 Design alternatives and trade-offs considered
+Engineered trade-offs were evaluated across several key subsystems:
+• Marker Design (Fiducial vs. Custom Two-Dot Marker):Standard fiducial systems
+(e.g. ArUco) offer built-in 6-DOF pose estimation [2]. They were rejected because their
+detection algorithms rely on external image-processing libraries prohibited by the Project
+Proposal. A custom two-dot asymmetric colour marker was selected instead: unique hue
+combinations enable agent classification without complex decoding, while two dots of
+unequal surface area resolve heading and eliminate 180○orientation ambiguities. The cost
+is increased sensitivity to ambient lighting variations.
+• Localisation Architecture (Onboard Encoders vs. Overhead Vision):Wheel encoders
+on each vehicle would simplify motion control between vision frames. They were inten-
+tionally omitted to comply with the sensorless problem definition, accepting the challenge
+of purely vision-guided feedback control.
+• Path Planning Algorithm (A∗vs. alternatives):The maze has a regular wall spacing
+of 150 mm, so a grid is a natural choice. We chose A∗with an admissible octile heuristic
+because it finds the shortest path on this grid [4], supporting Requirement 5. Standard RRT
+was not chosen because it does not guarantee the shortest path. Potential-field methods
+can get stuck in local minima, especially in dead-end corridors.
+• Replanning Strategy (Full A∗Replanning vs. Incremental Planners):Incremental
+algorithms such as D∗Lite reuse previous search trees to cut re-computation time. They
+assume a fixed search start node while updating obstacle locations. Here the measured
+starting position of the robot updates dynamically every frame under sensor noise and drift.
+Re-anchoring an incremental search tree to a moving start position introduces significant
+overhead. Full per-frame A∗replanning was adopted instead, exploiting the embedded
+platform’s processing capacity.
+• Constraint Formulation (Hard Constraints vs. Soft Penalty Costs):Treating obstacles,
+defender threat zones, and partner routes as hard constraints frequently rendered tight maze
+scenarios mathematically unsolvable. Soft penalty costs were implemented instead: hard
+constraints are reserved exclusively for static maze walls, while clearance preferences,
+defender proximity, and route separation enter as additive step costs. The planner can then
+degrade gracefully—preferring open space where available, traversing narrow or risky
+gaps when no alternative exists.
+7
+
+=== PDF PAGE 26 ===
+A.W. Du Toit Part 3. Main Report
+• Multi-Agent Coordination (Fixed Priority vs. Minimum Travel Assignment):Fixed
+priority ordering, where Agent 1 always plans first and Agent 2 avoids Agent 1’s route, was
+evaluated and rejected. Fixed ordering makes agent paths cross when the agents start on
+opposing sides, raising collision risk. Goal assignment instead minimises total combined
+path length, which yields optimal, non-crossing route selection.
+2.4 Verification strategy
+The qualification testing strategy (Section 4) reflects the prioritised system requirements (Section
+4 of the Project Proposal):
+1. Integrated System Evaluation:Mission-level requirements such as game win rate are
+evaluated on the fully integrated physical platform through automated live trial logging,
+not by aggregating isolated subsystem tests.
+2. Independent Ground-Truth Baselines:System performance measurements are validated
+against independent physical baselines. Path optimality is checked against an exhaust-
+ive brute-force grid search; camera position estimates are verified against manual grid
+measurements on the physical board.
+3. Unit Testing vs. System Qualification:An offline software unit-test suite (≈700checks)
+ran throughout development to verify geometric, logical, and mathematical routines. These
+tests stay strictly distinct from qualification tests: unit testing confirms that code executes as
+designed, whereas qualification testing proves that the system meets external engineering
+requirements.
+8
+
+=== PDF PAGE 27 ===
+A.W. Du Toit Part 3. Main Report
+3. Design and implementation
+3.1 Design summary
+This section summarises the project design tasks and how they were implemented (see Table 1).
+The tasks listed are those given in Section 6.1 of the approved Project Proposal, together with
+the deliverables implied by the requirements of Section 4 of that document.
+9
+
+=== PDF PAGE 28 ===
+A.W. Du Toit Part 3. Main Report
+Deliverable or task Implementation Completion of deliverable or task,
+and section in the report
+A colour segmentation and two-dot
+heading extraction algorithm, de-
+signed and implemented from first
+principles.
+Per-band chroma segmentation,
+connected-component labelling and
+centroid extraction were written
+from first principles. Heading is
+the vector between the two dot
+centroids. No vision or image-
+processing library functions were
+used. Camera drivers were used for
+hardware interfacing only.
+Completed
+Section 3.5
+Section 3.6
+The maze graph representation and
+A* pathfinding algorithm, designed
+and implemented from first prin-
+ciples.
+The board is scanned into an oc-
+cupancy grid at 10 mm resolu-
+tion with walls grown by the ro-
+bot half-diagonal. A * with an
+octile heuristic and no corner cut-
+ting was implemented, followed by
+string-pulling path smoothing. No
+pathfinding libraries were used.
+Completed
+Section 3.7
+Section 3.8
+A closed-loop position correction
+policy, derived from the robot’s two-
+wheel kinematic equations and im-
+plemented on the central processor.
+A proportional steering law was de-
+rived from the differential-drive kin-
+ematics and implemented as a live
+motor differential. The gain was
+confirmed against measured cross-
+track error.
+Completed
+Section 3.9
+The oracle lens detection logic and
+line-of-sight catch condition, de-
+signed and implemented from first
+principles.
+Proximity, field-of-view and line-
+of-sight tests were implemented.
+Capture requires all three condi-
+tions simultaneously. Detection is
+restricted to defenders the attacker
+can itself perceive.
+Completed
+Section 3.10
+A coordination strategy for the two
+attackers, to prevent both robots
+from selecting the same path and
+blocking each other, with a formally
+justified deadlock-free condition.
+Distinct goal assignment by min-
+imum total travel, an additive route-
+proximity cost separating the two
+routes, and vacation of the goal re-
+gion by an attacker that has arrived.
+Completed
+Section 3.11
+Integration of all functional units
+into a single processing pipeline on
+the central processor.
+All units run in one real-time loop
+on the embedded platform at the
+camera frame rate, producing local-
+isation, planning, control and game-
+state decisions.
+Completed
+Section 3.13
+Quantitative validation experiments
+measuring localisation accuracy,
+heading accuracy, path optimality
+and command latency against the
+specified targets.
+Path optimality and processing
+latency were measured. Localisa-
+tion accuracy was measured for a
+single robot only. Heading accur-
+acy, simultaneous four-robot loc-
+alisation and end-to-end command
+latency were not completed at the
+time of writing.
+Incomplete
+Section??
+Construction of the physical board
+with obstacles, and mounting of
+the overhead camera at the required
+height.
+The 1.5 m × 1.5 m board and its
+movable wall sections were con-
+structed, and the camera was moun-
+ted on an overhead rig 1530 mm
+above the board surface.
+Completed
+Section 3.3
+Table 1. Design summary.
+10
+
+=== PDF PAGE 29 ===
+A.W. Du Toit Part 3. Main Report
+3.2 System block diagram
+The system block diagram is given in Figure 1. The architecture is centralised, meaning that
+the robots carry no sensing of any kind and execute only the motor commands they receive.
+However, this also means that every measurement, decision and command has to originate on the
+central processor. The overhead camera is the only source of information the system has about
+the state of the world.
+The loop runs once per camera frame. A frame is captured (FU1) and segmented into coloured
+marker regions (FU2), from which the position and heading of each robot are extracted (FU3)
+and each robot is identified by its colour (FU4). The static board structure is held as a navigable
+graph (FU5), which the path planner (FU6) searches to produce a route for each attacker, while
+the patrol route manager (FU7) issues the defenders’ waypoints from a fixed cycle. The position
+correction unit (FU8) compares each robot’s measured pose against its planned path and issues
+a steering correction. The proximity detection unit (FU9) determines which defenders each
+attacker is able to perceive and whether any of them threatens its route, triggering the replanning
+module (FU10) when they do, and the game state manager (FU11) evaluates the end conditions.
+All commands are transmitted over the wireless link (FU12) to the command execution unit on
+each robot (FU13).
+Camera
+Embedded platform
+Robots
+Every block inside the dashed boundary executes on the central processor, one iteration per camera frame.
+FU1
+Image capture
+FU2
+Colour
+segmentation
+FU3
+Heading
+extraction
+FU4
+Robot
+classification
+FU5
+Maze graph
+FU6
+Path planning
+FU7
+Patrol route
+manager
+FU10
+Replanning
+module
+FU9
+Proximity
+detection
+FU8
+Position
+correction
+FU11
+Game state
+manager
+FU12
+Wireless communication
+FU13
+Robot command
+execution
+Figure 1. System block diagram, showing the thirteen functional units of Section 3 of the
+Project Proposal and the flow of information between them.
+11
+
+=== PDF PAGE 30 ===
+A.W. Du Toit Part 3. Main Report
+3.3 The physical platform
+The playing surface is a matte black board of 1500×1500mm. Obstacles are rectangular poly-
+styrene wall sections of nominal length 160 mm, thickness 17 mm and height 25 mm, arranged
+on a 150 mm pitch so that the board corresponds to the 10×10. The wall sections are not fixed
+in place, which means the maze layout is able to vary between runs and this is the first field
+condition of Section 5 of the Project Proposal.
+add a pciture of setup to appendix
+Each robot is a two-wheeled differential-drive vehicle with a square top plate of 80×80mm,
+carrying a marker of two coloured dots of unequal size larger size of . The plate stands 75 mm
+above the board surface.The four robots are differiented by colour where red and orange represent
+the defenders and blue and green represent the attackers.
+The camera is an 8 megapixel UVC colour camera delivering3264×2448pixel frames in MJPEG,
+mounted 1530 mm above the board surface and looking vertically down. At that height the board
+subtends approximately 1.6 pixels per millimetre which would translate one pixel to about
+0.63 mm on the board.
+The complete processing pipeline runs on a Radxa ROCK 5B single-board computer with 8 GB
+of RAM and an eight-core, 64 bit Rockchip RK3588 SoC. Commands are sent over a serial link
+to an ESP32 base station, which relays them to the robots using ESP-NOW over the 2.4 GHz
+band.
+Figure 2 shows the what the camera sees for every frame, the bases are annotated as dotted circles.
+Three properties of the arrangement are visible in it and matter later: the walls stand proud of
+a matte black surface, which is what makes the intensity threshold of Section 3.5 separable
+at all, the two base pairs sit in opposite corners which is what makes the goal assignment of
+Section 3.11 a choice between two pairings rather than one and that the robots are small against
+the board.
+12
+
+=== PDF PAGE 31 ===
+A.W. Du Toit Part 3. Main Report
+500 mm
+Figure 2. The board as the overhead camera sees it, with the two base pairs marked and all
+four robots in place.
+3.4 Image capture
+Frames are captured at full camera resolution in MJPEG. Camera exposure and gain are
+manuelly set instead of automatic, because automatic exposure changes the relationship between
+a measured pixel value and a physical surface, which would invalidate every threshold in the
+segmentation stage. The values used are an exposure index of 400 and a gain of 64.
+add a pciture of different exposures and gains to appendix
+These two values were selected by measurement. At a lower exposurewhat number ??? is lower
+the green marker had carried too few chromatic pixels to be segmented reliably, while at a higher
+exposure what number ??? is higher the blue marker had saturated and lost its hue. Both failures
+were observed on the physical system, and both are failures of the classification stage rather than
+of the camera.
+Fixing those values is not the same as setting them, and the difference is the reason the capture
+stage is written as a layer of its own instead of as direct calls to the capture library. The library
+passes a property through to the driver without normalising it or checking it, and the V4L2
+semantics behind two of these controls are not what the property names suggest.
+Automatic exposure is a menu and not a flag. Its entries are 1 for manual and 3 for aperture
+priority, and the value 0, which the enumeration reserves for fully automatic operation, is not
+implemented by cameras of this class at all. Writing 0 to turn automatic exposure off therefore
+writes a value the camera does not support, and the camera is left in whatever mode it was already
+in. Exposure itself is quantised in units of 100 µs, so a request expressed in seconds has no
+13
+
+=== PDF PAGE 32 ===
+A.W. Du Toit Part 3. Main Report
+meaning to the driver until it is converted.
+The capture stage therefore declares the encoding of each control in one place, converts between
+physical units and driver units at that boundary, and reads every value back after writing it.
+The readback is compared against what was requested, and a driver returning the library’s not-
+implemented sentinel is reported instead of being taken as agreement. The alternative, which
+is to set the properties directly where they are needed, was rejected because its failure mode is
+silent: the camera continues to deliver frames, the thresholds continue to be applied, and only
+the segmentation results reveal that the exposure was never fixed.
+The capture layer therefore declares the encoding for each control once per driver, converts
+between physical units and driver units at that boundary, and reads every value back after writing
+it. The readback is checked against what was asked for, and a driver that returns the library’s
+not-implemented sentinel is reported rather than treated as agreement. The alternative, which
+is to set the properties directly where they are needed, was rejected because its failure mode is
+silent: the camera continues to deliver frames, the thresholds continue to be applied, and only
+the segmentation results reveal that the exposure was never fixed at all.
+A frame is also checked for being current rather than assumed to be. One grab cannot establish
+that a camera is live, and a bench run on 24 August returned a burst in which every consecutive
+pair of frames was byte-identical, any one of which would have looked entirely normal when
+opened. Frames are therefore captured in bursts whose intervals are timed and whose consecutive
+frames are compared, so that a stalled camera presents as a stalled camera rather than as a
+stationary fleet. .
+3.5 Colour segmentation and robot classification
+3.5.1 Intensity and chroma
+Two scalar fields are computed per pixel from the three colour channels. Intensity is the un-
+weighted mean of the channels,
+I= R+G+B
+3 ,(2)
+where I is the intensity at a pixel and R, G and B are the three channel values of that pixel. The
+mean is unweighted deliberately. A luminance weighting such as Rec. 601 would encode an
+assumption about the camera’s colour response that has not been characterised here, and separat-
+ing a matte black board from white polystyrene does not require one in any case. Everything
+downstream that distinguishes structure from floor reads this field and no other: the board edges
+of Section 3.5 are found by thresholding it, and the wall acceptance tests are stated in terms of its
+median and its percentiles.
+Chroma is defined as the range of the three channels,
+C=max(R,G,B)−min(R,G,B),(3)
+where C is the chroma at a pixel and R, G and B are as above. The measure is zero for any grey,
+white or black surface and increases with colour saturation, which makes (3) the discriminator
+14
+
+=== PDF PAGE 33 ===
+A.W. Du Toit Part 3. Main Report
+between the achromatic parts of the scene, namely the board and the polystyrene walls, and the
+coloured marker dots. Each channel is widened to a signed 32-bit integer before any arithmetic
+is performed, because an early implementation had computed the sum in 8-bit arithmetic, which
+wrapped around and silently detected nothing at all.
+The two fields are shown for a single frame in Figure 3, where the board and walls are separated
+by intensity and the marker dots by chroma.
+intensity I (Equation 1)
+ chroma C (Equation 2)
+Figure 3. The intensity and chroma fields of (2) and (3), computed from a single frame.
+3.5.2 Locating the board
+The board must be located before any measurement can be expressed in millimetres. The board
+is the darkest large region in the frame, so an intensity threshold separating board from table is
+obtained by Otsu’s method applied to the intensity field. Each of the four board edges is then
+fitted as a straight line in image coordinates, and the pixel-to-millimetre mapping follows from
+those four lines by linear interpolation across the board.
+The mapping is not a single scale factor, however. The scale varies across the image because
+the lens is not perfectly rectilinear and the board is not perfectly square to the sensor, so the
+horizontal scale is evaluated at the image row of the point being converted. Expressing every
+geometric parameter in millimetres and converting to pixels at runtime, rather than storing any
+quantity in pixels, is a rule applied across the whole project, since a tolerance expressed in pixels
+cannot be compared against a requirement expressed in millimetres.
+If the board runs off the top and bottom of the frame simultaneously the vertical datum is
+undefined and the vertical coordinate cannot be recovered. This condition is detected and
+reported rather than allowed to produce a map containing nothing but the board border.
+The separation the method exploits is visible in the histogram of Figure 4.
+15
+
+=== PDF PAGE 34 ===
+A.W. Du Toit Part 3. Main Report
+0 50 100 150 200 250
+intensity I, 0 to 255
+100
+101
+102
+103
+104
+105
+106
+pixels
+Otsu threshold = 78
+Figure 4. Intensity histogram of one frame with the threshold selected by Otsu’s method
+marked, showing the two populations it separates.
+Figure 5 shows the fit on one frame, and it is included for the case it fails rather than the case
+it succeeds. Three edges were recovered and the top edge was not, because the wall sections
+standing against it presented a bright transition at the wrong place and no run of samples agreed
+on a line. The consequence is specific: the x scale survives a missing top edge because it is set
+by the left and right fits, whereas the y datum is then carried entirely by the bottom edge, and
+a bottom edge fitted one millimetre low moves every reported y by a millimetre. That is the
+mechanism behind the common-mode+yoffset reported in Section??.
+16
+
+=== PDF PAGE 35 ===
+A.W. Du Toit Part 3. Main Report
+top edge not fitted
+500 mm
+Figure 5. Three of the four board edges fitted over the frame from which they were
+recovered. The top edge was not fitted in this frame.
+3.5.3 Segmenting the marker dots
+Candidate marker pixels are those whose chroma exceeds a floor. A single global floor was
+used initially and it failed, because the four marker colours are not equally saturated: the printed
+green marker measured a median chroma of 34 against a global gate of 35. The green dot had
+therefore shattered into fragments too small to accept, and a robot plainly visible in the frame
+was discarded.
+The segmentation is therefore performed per colour band. A pixel qualifies if its chroma exceeds
+the global floor,orif its hue lies within a particular colour’s band and its chroma exceeds that
+colour’s own floor. The per-colour floors are 45 for red, 50 for orange, 30 for green and 60 for
+blue. Only bands whose floor lies below the global gate are able to widen the candidate set, so
+the colours that were already segmenting correctly are left unaffected.
+The underlying fault is worth stating in general terms, because it recurred three times in this
+project in different modules:the gate that forms a connected region was stricter than the gate
+that accepts it. A colour required to reach a chroma of 30 to be accepted could not form a region
+below 35, so it could never be accepted at all.
+Figure 6 shows one marker at full resolution, and makes the size rule concrete. The two dots
+differ in area by more than the 1.3 ratio the pairing test requires, which is what resolves the
+front-to-back ambiguity without a third feature: the smaller dot is the nose. The chroma mask is
+also visibly larger than the painted dot, because the lens blurs the edge over several pixels and
+those pixels retain enough hue to pass the gate. That is why the dot area is tested against a range
+rather than a value, and why the centroid rather than the extent is used for position.
+17
+
+=== PDF PAGE 36 ===
+A.W. Du Toit Part 3. Main Report
+red robot
+ chroma, with the two dots found
+large, 530 mm2
+small, 201 mm2
+Figure 6. A single robot marker at full resolution, showing the chroma mask, the two
+labelled dots, their centroids and the heading vector between them.
+3.5.4 Connected-component labelling
+Candidate pixels are grouped into connected regions by four-connected labelling, written from
+first principles. Four-connectivity rather than eight is used because two regions meeting at a
+single diagonal pixel are more likely to be two objects than one.
+The labelling was first implemented as a breadth-first flood fill, which is the clearer formulation
+however it visits every candidate pixel from an interpreted loop. On the embedded platform
+this had cost 947 ms of a 1380 ms full-resolution wall detection. It was replaced by a run-based
+algorithm, in which horizontal runs of candidate pixels are extracted by array operations and
+only the runs, of which there are a few thousand rather than a few hundred thousand, are walked.
+Two runs on adjacent rows belong to the same component when their column spans overlap,
+which is exactly four-connectivity, and a union-find structure merges them.
+The procedure is set out in Algorithm 1. The two passes are separated deliberately: the first
+assigns provisional labels and records equivalences, and the second resolves each provisional
+label to the representative of its set, so that a component discovered to be a single region only on
+its last row is still labelled consistently on its first.
+The rewrite reduced labelling from 947 ms to 193 ms on a real frame and the full wall detection
+from 1380 ms to 320 ms. The flood fill was retained as a reference implementation, and the
+two were verified to agree on 120 random masks, on ten shapes chosen specifically to break a
+run-based labeller, and on a real full-resolution frame, where both produced 528 components
+with bit-identical label images.
+18
+
+=== PDF PAGE 37 ===
+A.W. Du Toit Part 3. Main Report
+Algorithm 1Run-based four-connected labelling.
+Require:binary candidate mask of heightH
+1:U←empty union-find structure
+2:R←∅
+3:fory=0 toH−1do
+4:R y ←maximal horizontal runs of set pixels in rowy
+5:foreach runr∈R y do
+6:ℓ(r)←NewLabel(U)
+7:foreach runq∈R y−1whose column span overlaps that ofrdo
+8:Union(U, ℓ(r), ℓ(q))
+9:end for
+10:end for
+11:R←R∪R y
+12:end for
+13:foreach runr∈Rdo
+14:ℓ(r)←Find(U, ℓ(r))
+15:end for
+16:returnthe runs ofRgrouped by resolved label
+3.5.5 Accepting a marker and classifying the robot
+A robot marker is a pair of dots of the same hue and unequal area on a dark plate. A region is
+accepted as a dot if its area in square millimetres falls within the expected range for a large or a
+small dot, and a pair is accepted if the two dots are of similar hue and lie within the expected
+separation. Classification then follows directly from hue, since each robot carries a unique colour,
+so the colour that accepts the pair is what identifies the robot, which satisfies FU4 without any
+further step being required.
+Because the dots sit 75 mm above the board while the camera is 1530 mm above it, a marker
+away from the optical axis is displaced outward in the image relative to the point on the floor
+beneath it. The displacement is proportional to the radial distance from the principal point,
+d=r⋅h
+H ,(4)
+where d is the displacement on the board, r the radial distance of the marker from the principal
+pointas it appears in the imagerather than its true distance across the ground, h=75 mm the
+marker height and H=1530 mm the camera height. With h/H=0.049 , a robot 700 mm from the
+centre of the board appears displaced by approximately 34 mm, which is larger than the 25 mm
+position requirement, so the correction is not optional. The reported position of every robot is
+therefore the floor position obtained by applying (4), and not the centroid of its marker.
+Figure 7 shows why the error is radial. The marker, the principal point and the true floor position
+are collinear in the drawing, so the apparent displacement grows with distance from the principal
+point and vanishes at it. Two consequences follow that the equation alone does not make obvious.
+A robot at the centre of the board needs no correction at all, so a calibration performed only at
+the centre cannot detect this error. A robot in a corner needs the largest correction, which is why
+the 34 mm figure above is quoted at 700 mm from the centre rather than as an average.
+19
+
+=== PDF PAGE 38 ===
+A.W. Du Toit Part 3. Main Report
+board plane
+camera
+optical axis
+marker
+r
+d
+H
+h
+true floor
+position
+where the marker
+appears
+angles exaggerated; H = 1530 mm, h = 75 mm, h/H = 0.049
+Figure 7. The parallax geometry of (4), showing why a marker of finite height away from
+the optical axis is imaged outside the point it stands on.
+3.6 Heading extraction
+The marker carries one large and one small dot, and the heading is the direction of the vector
+from the large dot to the small dot, so that the small dot marks the front of the robot. Using
+two dots of unequal size removes the front-to-back ambiguity that a symmetric marker would
+otherwise leave.
+The angular resolution follows from the geometry. If the two dot centroids are separated by s
+and each centroid is located with an errore, the worst-case angular error is
+θe=arctan( e
+s ).(5)
+The separation s was measured rather than assumed, over sixteen dot pairs across the four robots,
+giving 26.41 mm on the board plane and 25.11 mm once corrected to the marker’s own height,
+the dots being imaged slightly larger than life because they sit 75 mm nearer the camera than the
+plane the board frame is calibrated on. The individual markers range from 24.40 mm on orange
+to 25.38 mm on red, so the fleet is not quite interchangeable and orange has approximately 4%
+worse angular resolution than the rest.
+With the measured separation of 25.11 mm and a centroid error of 1 mm, (5) gives
+arctan(1/25.11)≈2.28○, which leaves a comfortable margin against the 5○target of requirement
+6. An earlier estimate of this bound had used a separation of 15 mm and had given 3.8○; that
+figure was taken from the minimum separation the dot-pair splitter will accept, which is a detec-
+tion gate rather than the geometry of the marker, and it was therefore 70% too generous. The
+centroid error itself has not been measured, so the bound is properly a function of it rather than a
+single number, and it is reported that way here.
+The heading is reported as an angle in the board frame, measured counter-clockwise from the
+20
+
+=== PDF PAGE 39 ===
+A.W. Du Toit Part 3. Main Report
+positive x axis. Where only one dot of a pair can be found the heading is undefined and is
+reported as such rather than guessed, and a robot with an unknown heading is still localised but
+is not steered.
+Figure 8 shows where the bound comes from. The centroid error e is drawn perpendicular to the
+line joining the dots, because that is the direction in which it turns the heading; an error along
+that line changes the apparent separation and not the angle. The bound is therefore the worst
+case over the direction of the centroid error, not the typical case, and the figure also shows why
+increasingsis the only lever available:eis set by the optics and the segmentation, whereassis
+set by where the dots are painted.
+large dot small dot
+s
+e
+θe = arctan(e/s)
+Figure 8. The construction behind (5), relating the dot separation and the centroid error to
+the worst-case heading error.
+3.7 The maze graph
+3.7.1 Wall detection
+Wall sections are white polystyrene on a black board, so they are both bright and achromatic. A
+pixel is a wall candidate if its intensity is at least 70 and its chroma at most 25. Measured on the
+board under the operating lighting, the board surface occupies the intensity range 7 to 21 while
+the wall tops occupy 205 to 214, so the intensity gate sits in an empty valley between the two
+populations, with 89% of the board’s own pixels falling below 40.
+Candidate regions are then accepted as walls on four tests, which are a median intensity of at
+least 118ora 90th-percentile intensity of at least 170; a median chroma of at most 20; a stroke
+width between 5 and 40 mm; and a length of at least 40 mm.
+The disjunction in the first test exists because a wall lying at an angle presents much of its dimly
+21
+
+=== PDF PAGE 40 ===
+A.W. Du Toit Part 3. Main Report
+lit side face to the camera rather than its brightly lit top. Such a wall had been measured with a
+median intensity of 117 against a gate of 118 and was rejected. However, its 90th percentile was
+184 and its 99th was 197. A wall seen at an angle still has a bright top face, so a high percentile
+identifies it where the median does not.
+Figure 9 draws each accepted component in a distinct colour over the frame it was found in,
+which is the only practical way to check the four tests above against a real board. Two things are
+checked by looking at it. Every wall on the board carries a colour, so nothing was missed; and
+no colour extends across two walls that meet at a corner, which confirms that the four-connected
+labelling of Algorithm 1 separated them rather than merging them into one component. A merge
+at a corner would not show as a missing wall and would not fail any of the four tests, so this is
+the check that catches it.
+500 mm
+Figure 9. Detected wall sections drawn over the frame they were found in, each accepted
+component shown in a distinct colour.
+3.7.2 Scanning with the robots present
+A scan must not record a robot as a wall, so the region each robot occupies is excluded before
+labelling. That exclusion creates a second problem. The wall mask is then empty where the
+robots are, and a mask that is empty is indistinguishable from floor. Rasterised naively this
+produces a map asserting free space exactly where it has no information, which is the dangerous
+direction in which to be wrong: a phantom gap routes a robot into a wall, whereas a phantom
+wall only costs drivable area.
+The occluded region is therefore retained, and the map carries three states rather than two, these
+being wall, free and unknown. Several looks at the board are combined and each look votes only
+on the cells it could actually see, so a cell hidden by a robot in one look is settled by a look in
+22
+
+=== PDF PAGE 41 ===
+A.W. Du Toit Part 3. Main Report
+which that robot has moved. Cells that no look has seen take the previous map’s verdict if one
+exists and are otherwise treated as wall.
+Across looks the walls are combined by union rather than by majority, since looks legitimately
+disagree. A robot standing against a wall is able to split that wall’s connected region in two, so
+an entire wall can be absent from one look while the robot covers only part of it. A detection
+is evidence whereas a non-detection is not, and the walls are static, which is already assumed
+everywhere else in the planner, so any cell seen as wall by any look is taken to be a wall. Noise
+is rejected at the level below instead, by a majority vote over the several frames within a single
+look.
+Scanning was measured to be repeatable, in that three independent scans of an unchanged board
+produced 2993, 2992 and 2984 wall cells, a spread of 0.3%.
+Figure 10 places the raw wall mask beside the grid derived from it, and the comparison answers
+the question discretisation always raises, which is what was lost. The grid is visibly coarser at
+the wall ends, where a wall that stops part-way through a cell claims the whole cell, and this is
+the direction in which to be wrong: a wall is reported slightly longer than it is, never shorter. A
+cell claimed in error costs drivable area, whereas a cell missed in error would route a robot into a
+wall.
+0 750 1500
+board x (mm)
+0
+750
+1500board y (mm)
+wall cells, 2300 of them
+0 750 1500
+board x (mm)
+0
+750
+1500
+occupancy grid at 10 mm cells, 36.8 % drivable
+Figure 10. The raw wall mask and the occupancy grid derived from it, showing the effect
+of discretising to 10 mm cells.
+3.7.3 From walls to a navigable graph
+The accepted wall pixels are rasterised onto a square grid of 10 mm cells covering the board,
+giving 150×150cells, and a cell is marked as wall if any wall pixel falls within it. At approxim-
+ately 1.6 pixels per millimetre roughly 260 pixels fall in each cell, so a 17 mm wall cannot slip
+between cells.
+The robot is then treated as a point and the obstacles are grown instead. The growth radius must
+cover the robot’s extent in any orientation, and for a square robot of side a rotating about its
+23
+
+=== PDF PAGE 42 ===
+A.W. Du Toit Part 3. Main Report
+centre that extent is the half-diagonal,
+ρ= a
+√
+2
+2 ,(6)
+which for a=80 mm gives ρ=56.6 mm. The inflation used is 59 mm, which is the half-diagonal
+plus a margin of approximately 2 mm. Because (6) is the half-diagonal and not the half-width,
+a robot turning on the spot inside a corridor it is able to occupy is already accounted for, and
+no separate allowance for the turning circle is required. The board edge is inflated identically,
+because a robot cannot drive off the board and an uninflated rim would allow a route along it.
+The value of 59 mm was selected against measurement. An earlier value of 62 mm, which had
+been chosen as the larger of the half-width and the turning radius, blocked 28% of the board
+against 35% at 58 mm; with a wall quantised to 30 mm,2×62+30=154 mm exceeds the 150 mm
+corridor pitch and every corridor closes arithmetically. The final value trades approximately 1.1
+percentage points of drivable area for an additional millimetre of margin.
+Figure 11 is drawn to scale, and the scale is the point. The inflated obstacle and the corridor
+are shown together, so the arithmetic above can be read off rather than taken on trust: at 59 mm
+the two inflated walls plus the quantised wall leave a gap, and at 62 mm they do not. The
+circumscribed circle is drawn around the robot to show why the half-diagonal and not the half-
+width is the right radius, since a robot that merely fits a corridor cannot necessarily turn in
+it.
+square to the corridor
+half-diagonal
+56.6 mmhalf-width
+40 mm
+turned 45 degrees
+Figure 11. The half-diagonal construction of (6), showing why a robot that can occupy a
+corridor can also turn within it.
+3.7.4 The distance field
+A binary occupancy grid is not sufficient for the control layer, which must judge whether a
+candidate move brings a robot closer to an obstacle. On a binary grid every point inside the
+margin has a clearance of zero and nothing can be worse than zero, so every move appears
+equally safe, including driving off the board. A signed distance field is therefore computed over
+the grid by chamfer relaxation, giving for every cell the distance to the nearest blocked cell,
+24
+
+=== PDF PAGE 43 ===
+A.W. Du Toit Part 3. Main Report
+positive in free space and negative inside an obstacle. Off the board the distance is measured
+from the board dimension, so that it dominates any other term.
+The field computed for one board configuration is shown in Figure 12, in which the tightest
+points of the board are the darkest.
+0 500 1000 1500
+board x (mm)
+0
+500
+1000
+1500board y (mm)
+0
+10
+20
+30
+40
+50
+60
+70
+80
+clearance from the inflated walls (mm)
+Figure 12. The clearance distance field over one board configuration, in millimetres.
+3.8 Path planning
+3.8.1 The search
+Routes are computed by A* on the eight-connected grid, where a straight step costs one cell and
+a diagonal step
+√
+2 cells. The heuristic is the octile distance,
+h=(∆r+∆c)+(
+√
+2−2)min(∆r,∆c),(7)
+where ∆r and ∆c are the absolute differences in row and column between a cell and the goal.
+The octile distance (7) is the exact cost of the cheapest obstacle-free path on an eight-connected
+grid, consisting of min(∆r,∆c)diagonal steps with the remainder straight, and it is therefore
+admissible in that it never overestimates. Admissibility is what guarantees that A* returns a least-
+cost path [4], and that guarantee is the basis of requirement 5. Straight-line Euclidean distance
+would also find a path however it would underestimate the true cost on an eight-connected grid
+and would therefore forfeit the optimality guarantee.
+Diagonal moves are not permitted to cut corners, so a diagonal step is allowed only if both of the
+25
+
+=== PDF PAGE 44 ===
+A.W. Du Toit Part 3. Main Report
+orthogonally adjacent cells it passes between are free. Without this rule a path may pass through
+the single point at which two obstacles touch, which no physical robot is able to do.
+Figure 13 draws both rules on one grid. The eight moves are labelled with their costs, and beside
+them the construction that makes the octile distance exact: a run of diagonals followed by a run
+of straight steps, which is the cheapest route when nothing is in the way and therefore the largest
+value the heuristic may take without overestimating. The corner case the rule excludes is drawn
+on the same grid, where two obstacles touch at a point and the diagonal through that point is
+marked as refused. Drawing them together makes the relationship visible: the move set is what
+the heuristic must be admissible against, so a change to either invalidates the other.
+The search itself is stated in Algorithm 2, in which the corner rule appears as the admissibility
+test on line 11 and the clearance term of (8) enters through the step cost on line 14.
+Algorithm 2A * search on the eight-connected grid.
+Require:start celln 0, goal celln g, occupancy grid
+1:g(n 0)←0,π(n 0)←nil
+2:O←priority queue holdingn 0 with keyh(n0)
+3:C←∅
+4:whileO≠∅do
+5:n←element ofOof least key, removed fromO
+6:ifn=n g then
+7:returnthe path recovered by followingπfromn g ton 0
+8:end if
+9:C←C∪{n}
+10:foreach of the eight neighboursn ′ofndo
+11:ifn ′∈Corn′is occupiedorthe stepn→n ′cuts a cornerthen
+12:skipn ′
+13:end if
+14:g ′←g(n)+s(n,n′)(1+wσ(n ′))+τ(n′)
+15:ifn ′∉Oorg′<g(n′)then
+16:g(n ′)←g ′,π(n ′)←n
+17:insert or updaten ′inOwith keyg ′+h(n′)
+18:end if
+19:end for
+20:end while
+21:returnno route
+26
+
+=== PDF PAGE 45 ===
+A.W. Du Toit Part 3. Main Report
+1
+√ 2
+start
+goal
+min(Δr, Δc) diagonal steps
+then the remainder straight
+Figure 13. The eight permitted moves and their costs, and the construction that makes the
+octile heuristic of (7) exact on an obstacle-free grid.
+3.8.2 Clearance as a cost
+A route that is merely feasible is not necessarily one a physical robot can follow, because the
+robot does not track its route exactly. Clearance is therefore included in the step cost rather than
+imposed as a constraint, and the cost of entering a cell is
+g′=g+s(1+w⋅σ)+τ,(8)
+where s is the step cost, w=1.0 is the clearance weight, τ is an added threat cost described in
+Section 3.10, andσis the normalised squeeze,
+σ=max(0, p−m
+p ),(9)
+with m the clearance at the cell and p=25 mm the preferred clearance. A cell with ample room
+costs its bare step cost, whereas a cell hard against a wall costs 1+w times as much, which is
+twice at the delivered weight.
+Expressing clearance as a cost rather than as a limit is a deliberate choice that is repeated
+throughout the design. A hard limit would make the only corridor on the board unusable
+whenever it happened to be narrow, converting a solvable problem into no route at all, whereas a
+cost makes the planner prefer the middle of a corridor where there is a choice and accept a tight
+one where there is not. Introducing this cost reduced the proportion of route length run hard
+against a wall from 57% to 18%.
+Figure 14 plans the same start and goal with and without the term, and the comparison shows
+what the 57% to 18% figure above looks like on one route. The unweighted route runs along the
+inside of each bend, which is the shortest path and also the one that puts a robot against a wall
+whenever it drifts; the weighted route stands off those walls and is slightly longer. The figure
+also shows the limit of the device, since both routes take the same corridor where there is only
+27
+
+=== PDF PAGE 46 ===
+A.W. Du Toit Part 3. Main Report
+one, which is the behaviour a hard clearance limit would have made impossible.
+0 500 1000 1500
+board x (mm)
+0
+500
+1000
+1500board y (mm)
+clearance term off: 2131 mm, tightest 10 mm
+weight 1.0, as delivered: 2224 mm, tightest 20 mm
+Figure 14. The same route planned with and without the clearance term of (8).
+3.8.3 Smoothing
+The grid path is a sequence of cell centres and contains many short collinear or near-collinear
+segments, so it is shortened by string pulling. The smoother is greedy rather than pairwise: from
+the current waypoint it looks as far ahead as the route runs and keeps the furthest waypoint that
+can still be reached directly, then continues from there. A pairwise rule that deletes a waypoint
+whenever its two neighbours are mutually visible removes one corner at a time and leaves the
+staircase largely intact, whereas taking the furthest admissible waypoint collapses a whole run of
+cells into a single leg in one pass.
+A shortcut is admissible on three tests. It must be free of obstacles; its minimum clearance must
+be no worse than that of the stretch it replaces; and the worst threat cost along it must be no worse
+either. The second test is measured along the path rather than against a fixed floor, so a route
+through a genuinely tight gap may still be straightened. However, it may not be made tighter than
+it already had to be. Without that test the smoother undoes the centring the search has just paid
+for, because pulling a path straight is precisely what moves it back against the inside of a bend.
+The third test exists for the same reason applied to the oracle lens of Section 3.10: a shortcut that
+saves twenty millimetres by cutting across a defender’s line of sight is not an improvement.
+The smoother is stated in Algorithm 3. The clearance test in the admissibility condition is what
+distinguishes it from a plain string-pulling pass: the shortcut is compared against the stretch it
+would replace rather than against a fixed floor, so the smoother can never make a route tighter
+than it already had to be.
+28
+
+=== PDF PAGE 47 ===
+A.W. Du Toit Part 3. Main Report
+Algorithm 3String-pulling smoother with a clearance guard.
+Require:waypoint sequenceP=⟨p 0, . . . ,pN⟩
+1:Q←⟨p 0⟩,i←0
+2:whilei<Ndo
+3:j←N
+4:whilej>i+1and notAdmissible(p i,p j,Pi...j )do
+5:j←j−1
+6:end while
+7:appendp j toQ,i←j
+8:end while
+9:returnQ
+10:Admissible(a,b,R) is true when all three hold:
+11:the segmenta→bis free of obstacles;
+12:minclearance(a,b)≥min (minclearance(R),p );
+13:maxthreat(a,b)≤maxthreat(R).
+Figure 15 draws one route before and after smoothing with both lengths stated, and the length
+difference is the part of requirement 5 that the smoother is responsible for. The grid path visibly
+turns in 45○steps and the smoothed path does not, which is the discretisation cost of Section 1.5
+being removed rather than any improvement in the search. The figure also shows the clearance
+guard working: where the route passes a tight gap the smoothed path still bends around it rather
+than cutting the corner, because a straighter line there would have been tighter than the stretch it
+replaced.
+0 500 1000 1500
+board x (mm)
+0
+500
+1000
+1500board y (mm)
+grid path, 202 cells, 2296 mm
+smoothed, 8 waypoints, 2224 mm
+Figure 15. A route before and after smoothing, with both lengths stated.
+29
+
+=== PDF PAGE 48 ===
+A.W. Du Toit Part 3. Main Report
+3.9 The position correction policy
+3.9.1 Derivation from the differential-drive kinematics
+Each robot is a differential-drive vehicle. The kinematic model below rests on four assumptions,
+each of which is reasonable for this platform however each of which is also a limitation of the
+resulting policy. The wheels are assumed to roll without slipping, so that wheel speed maps
+directly to ground speed; the chassis is assumed rigid and its motion planar, so that the pose is
+fully described by (x,y,θ); both wheels are assumed to remain in contact with the board; and
+the commanded wheel speeds are assumed to be achieved instantaneously, so that no motor
+dynamics appear in the model. The first and the last are the substantive ones. Slip on a polished
+board appears as an unmodelled disturbance rather than as an error the policy is able to correct,
+and the neglected motor dynamics mean the policy is only valid for corrections that are slow
+compared with the motor time constant.
+With left and right wheel speeds vL and vR and a wheel separation L, the forward speed and yaw
+rate of the body are
+v= vR+v L
+2 ,ω= vR−vL
+L .(10)
+The pair (10) states that forward motion is governed by the mean of the wheel speeds and rotation
+by their difference. The two are independent, which means a correction can be applied to the
+heading without altering the forward speed, and that is what allows the robot to be steered while
+it is still travelling.
+The robots accept a base speed b and a differential δ, expressed as a percentage, from which the
+commanded wheel speeds are
+vR=b(1+ δ
+2 ),v L=b(1−δ
+2 ).(11)
+Substituting (11) into (10) givesv=band
+ω= bδ
+L .(12)
+The control objective is to drive the heading error to zero, where the heading error eθ is the
+angle between the robot’s measured heading and the direction from the robot to the point it is
+aiming at. Choosing a proportional law, ω=k e θ , and substituting into (12) gives the differential
+to command,
+δ= k L
+b eθ =k s eθ ,(13)
+where ks absorbs the wheel separation and the base speed. The steering law (13) is the correction
+policy, in that the commanded differential is proportional to the heading error. The implemented
+gain is ks=3 percentage points of differential per degree of heading error, with the differential
+clamped at 25 percentage points so that a large error produces a bounded turn rather than a spin.
+30
+
+=== PDF PAGE 49 ===
+A.W. Du Toit Part 3. Main Report
+The sign ofkis fixed by the requirement that the error decay rather than grow, and establishing
+that also establishes that the policy converges. Takingeθ =θ aim−θand holding the aim direction
+fixed, the error evolves as ˙eθ =−ω, since the aim direction is constant and ˙θ=ω . Substituting
+the proportional law gives
+˙eθ =−k eθ ,soe θ (t)=eθ (0)e−kt,(14)
+which decays monotonically to zero for anyk>0 and grows without bound fork<0 . The heading
+error therefore falls exponentially with a time constant of 1/k, and the sign convention is not a
+matter of observation but a condition for the policy to work at all. It was additionally confirmed
+empirically, in that a robot driving a planned route converged onto its line and held it, which the
+wrong sign could not have produced.
+Two qualifications follow from (14). The first is that the aim direction is not in fact constant,
+since it is recomputed against a moving robot every frame, so the exponential decay describes
+the behaviour between updates rather than the trajectory as a whole. The second is that the policy
+is implemented in discrete time. The correction is recomputed once per camera frame, at an
+interval T , and the forward Euler form of (14) is en+1=(1−kT)en, which decays only while
+0<kT<2 . A sufficiently slow loop will therefore oscillate or diverge at a gain that is perfectly
+stable in continuous time. The numerical margin against that bound was not evaluated, because
+evaluating it requires k in physical units and the wheel separation L was never measured, so the
+implemented gain is quoted above in the commanded units instead. Given the spread of loop
+intervals reported in Section ??, this is the assumption in the derivation most worth testing, and
+it has not been tested.
+Figure 16 shows where each symbol in (10) comes from. The two wheel velocities are drawn at
+the ends of the wheel separation L, and the forward velocity and yaw rate are drawn as their sum
+and their difference, which is the whole content of the model. It also shows why L matters only
+as a scale factor on the yaw rate: the gain ks of (13) absorbs it, which is why the controller works
+with L unmeasured and why the stability margin discussed above cannot be evaluated without it.
+vR
+v
+vL
+instantaneous
+centre of rotation
+R = v/ω
+L
+ω
+Figure 16. The differential-drive kinematics from which (10) to (13) are derived.
+31
+
+=== PDF PAGE 50 ===
+A.W. Du Toit Part 3. Main Report
+3.9.2 Separating turning from tracking
+The steering law (13) is a small-angle correction and is not appropriate for acquiring a waypoint
+that lies behind the robot, so a hysteresis band is applied. A robot whose heading error exceeds
+35○turns on the spot until the error falls below 20○, after which it drives forward under (13). The
+two thresholds differ so that a robot oscillating about the boundary does not alternate between
+turning and driving on successive frames.
+3.9.3 Following the route rather than chasing the waypoint
+A* guarantees that the route is free of obstacles and the smoother guarantees that each segment of
+it is. However, neither guarantees anything about a straight line drawn from wherever the robot
+has actually drifted to. This distinction was the cause of several collisions, in which a robot that
+had drifted laterally aimed directly at its next waypoint and the straight line from its displaced
+position to that waypoint cut across a wall. In two recorded instances the robot was following its
+commanded line to within 0.7 mm and 2.5 mm while that line passed 10 mm and 20 mm inside a
+wall.
+The correction layer therefore evaluates the line it is about to drive. If the minimum clearance
+along that line is worse than the clearance the robot currently has, the robot aims instead at a
+point on the planned segment, one robot length ahead of its own projection onto that segment.
+The planned segment is already known to be clear, so only the short lateral hop back onto it is
+unverified.
+The comparison is made against the robot’s present clearance rather than against zero. A robot
+whose own position lies inside the inflated margin, which is normal at a base cell whose centre is
+only 16 mm from the inflated board edge, has no line out of that position with positive clearance,
+so comparing against zero would refuse every such line and the robot could never leave. The
+rule implemented is instead that a move may not make clearance worse than it already is, which
+permits escape while still forbidding further intrusion.
+Figure 17 draws a robot that is pointing exactly at its next waypoint while standing to one side of
+the line it should be on. The heading error in that drawing is zero and the cross-track error is not,
+which is the whole argument for why a heading controller does not remove a lateral offset: the
+quantity being regulated is already at its target. The offset is removed only as a by-product of the
+waypoint moving, which is why the measured cross-track error in Section ?? has a median near
+zero but a tail, and why regulating cross-track directly is listed in Section 6 as future work.
+32
+
+=== PDF PAGE 51 ===
+A.W. Du Toit Part 3. Main Report
+planned segment
+heading error zero
+cross-track
+error eθ
+cross-track error zero
+Figure 17. Heading error and cross-track error, showing why regulating heading alone
+leaves a lateral offset uncorrected.
+3.10 Proximity detection and the capture condition
+3.10.1 The capture condition
+An attacker is captured when a defender is simultaneously close enough, pointed at it, and able
+to see it. All three conditions are required:
+• the separation is at most the capture radius of 165 mm;
+• the attacker lies within the defender’s field of view of 60○, that is within 30○either side of
+its heading;
+• the straight line between them is unobstructed by a wall.
+Proximity alone would make passing behind a defender fatal, which is not the stated game, while
+omitting the line-of-sight test would let a defender see through walls. The line-of-sight test uses
+the uninflated wall map, because the planner’s inflation is approximately the width of a robot
+and a robot’s width does not stop light; using the inflated map would make defenders blind along
+corridors that are optically open.
+Figure 18 draws the three radii to scale with the field of view, and the scale is what makes the
+ordering of (15) legible. The avoidance radius sits inside the capture radius, which sits inside
+the sense radius, so the gaps between the three circles are the margins the design depends on.
+The figure also shows the cone clipped by a wall, which is the condition that distinguishes this
+detection model from a simple proximity test: a robot inside both the radius and the cone but
+behind a wall is drawn as not captured.
+33
+
+=== PDF PAGE 52 ===
+A.W. Du Toit Part 3. Main Report
+Ravoid = 130 mm
+Rcapture = 165 mm Rsense = 200 mm
+defender
+60 ∘
+caughtwall
+not caught:
+no line of sight
+Figure 18. The capture geometry, showing the three radii of (15) to scale together with the
+field-of-view cone and the line-of-sight test.
+3.10.2 The ordering of the radii
+Three radii govern the game, and their ordering is a design constraint rather than a matter of
+taste:
+Ravoid<R capture<R sense,(15)
+with the values 130 mm, 165 mm and 200 mm respectively.
+The lower bound is necessary for the game to be playable at all. The planner treats every robot
+as an obstacle within Ravoid, so if Rcapture≤Ravoid the attackers’ own obstacle avoidance holds
+them permanently outside capture range and capture becomes geometrically impossible. This
+condition had been violated in an earlier version of the design, with a capture radius of 100 mm
+against an avoidance radius of 130 mm. Over 13014 frames of a recorded run the closest a
+defender came to an attacker was 151 mm, and the capture test was never once presented with a
+case that could return true, which left requirement 1 unfalsifiable because there was nothing to
+avoid.
+The upper bound is necessary for evasion to be a decision rather than luck. If Rcapture≥Rsense
+there exists a band in which an attacker is catchable but cannot detect the defender responsible,
+and no amount of planning is able to help.
+The two bounds fix an open interval however they do not fix a value. Writing the two margins
+as m1=R capture−Ravoid and m2=R sense−Rcapture, the design is robust to whichever margin is the
+smaller, so the quantity to maximise is min(m1,m 2). As Rcapture increases, m1 increases and m2
+34
+
+=== PDF PAGE 53 ===
+A.W. Du Toit Part 3. Main Report
+decreases by the same amount, so their minimum is greatest where the two are equal, which
+gives
+Rcapture= Ravoid+R sense
+2 ,min(m 1,m 2)= Rsense−Ravoid
+2 .(16)
+With Ravoid=130 mm and Rsense=200 mm, (16) gives a capture radius of 165 mm and a margin
+of 35 mm on each side, which are the values used.
+One qualification should be stated. The avoidance radius is a constraint on theplannerand not
+a physical guarantee, so a robot carried off its route by tracking error is able to pass closer to
+another thanR avoid without the planner having permitted it. The closest approach observed in a
+recorded run was 151 mm, which is 21 mm inside the capture radius but still 21 mm outside the
+avoidance radius, so the ordering was not violated in practice. However, the margin protecting it
+is of the same order as the tracking error reported in Section??and is not large.
+3.10.3 Oracle lens
+The detection radius belongs to the attacker and not to the system. An attacker may plan around
+a defender only if that defender lies within Rsense=200 mmandis in line of sight. An earlier
+implementation had built the threat field from every defender on the board, which granted the
+attacker omniscience, and a route that avoids a defender the attacker cannot possibly perceive is
+not evasion.
+The same restriction applies to the obstacle list and not only to the threat field, and the distinction
+is worth stating because the two are separate paths into the planner. An attacker plans around
+its partner and around those defenders it perceives, and it does not plan around a defender it
+has no means of detecting, in either the obstacle list or the threat field. The navigator, which
+is responsible for not colliding with anything, retains the full list of robots, because collision
+avoidance is a question of where a body is and not of what the attacker knows. This separation
+is safe precisely because of (15), since a defender close enough to matter as an obstacle, at
+Ravoid=130 mm, is already inside both the capture radius and the sense radius and is therefore
+necessarily perceived unless the line of sight is blocked.
+Perceived defenders contribute an additive cost τ to the planner’s step cost in (8), over a neigh-
+bourhood of radius 300 mm. The cost is 8 for a cell currently inside a defender’s capture cone,
+5 for a cell on the defender’s near-term patrol route, and 3 for a cell merely within the oracle
+radius. These accumulate rather than taking a maximum, because a cell that is both visible to
+a defender and on its path is genuinely worse than one that is only either. The neighbourhood
+extends beyond the capture radius because both robots move, and avoiding only where a defender
+is, rather than where it will be, is insufficient at the speeds involved.
+Figure 19 draws what an attacker can perceive against what a defender can capture, from one
+position, and the margin between the two is the answer to the obvious objection. If an attacker
+could be captured from further away than it can detect, it would be caught by defenders it had
+no means of avoiding and the evasion would be unimplementable rather than merely difficult.
+The figure shows that the sense region contains the capture region with room to spare, so every
+capture is in principle avoidable, which is what makes the danger field a meaningful input rather
+than decoration.
+35
+
+=== PDF PAGE 54 ===
+A.W. Du Toit Part 3. Main Report
+attacker perceives
+200 mm
+defender can capture
+165 mm attacker
+defender: seen, and
+not yet able to capture
+the 35 mm band the ordering exists for
+Figure 19. What an attacker is able to perceive against what a defender is able to capture,
+and the margin between the two.
+The capture test and the perception filter are stated together in Algorithm 4, because the second
+is defined in terms of the first and the two must not be allowed to diverge. The same geometry
+decides whether an attacker has been caught and which defenders it is permitted to plan around,
+so that the planner can never avoid a cone of a different shape from the one that catches it.
+Algorithm 4The capture condition and the perception filter that limits what an attacker may
+plan around.
+Require:defender pose(x d,y d,θ d), pointp, occupancy grid
+1:Sees(d,p) is true when all three hold:
+2:∥p−(x d,y d)∥≤Rcapture
+3:∣∠(p−(xd,y d))−θd∣≤φ/2
+4:the segment from(x d,y d)topcrosses no wall
+5:capture:attackerais caught when Sees(d,a) for any defenderd
+6:perception filter:D←∅
+7:foreach defenderdon the boarddo
+8:if∥d−a∥≤R sense andthe segmenta→dcrosses no wallthen
+9:D←D∪{d}
+10:end if
+11:end for
+12:returnD, the only defenders this attacker may plan around
+The filter is not an optimisation. An attacker handed every defender on the board routes around,
+and waits for, defenders it has no means of detecting, which is omniscience rather than evasion.
+The ordering Ravoid<R capture<R sense of (15) is what makes the narrower list safe: a defender
+close enough to be a physical obstacle is already inside both the capture radius and the sense
+radius, so either the attacker perceives it, or a wall stands between them and there is nothing to
+collide with.
+36
+
+=== PDF PAGE 55 ===
+A.W. Du Toit Part 3. Main Report
+3.10.4 When to replan
+Replanning is triggered only when a perceived defender actually threatens the attacker, which
+is a narrower condition than proximity. The three triggering conditions are that the defender
+can currently see the attacker, that it is facing the attacker within the detection radius, or that its
+near-term patrol route intersects the attacker’s remaining route within capture range.
+A defender passing behind the attacker, or alongside it facing away, or whose patrol runs parallel
+to the attacker’s route, is not a threat and does not trigger a replan. The narrower trigger was
+adopted after an attacker had replanned 39 times in a single 300 s run under a proximity-only
+trigger and had committed to no route at all.
+Figure 20 draws the cycle on the board outline, and two properties of the route are visible that
+the description does not convey. The corners are placed so that the two defenders are always on
+opposite sides of the loop, which is what the phase offset achieves and why a single corridor is
+rarely watched by both at once. The loop also crosses the natural line between the two bases,
+which is what makes the defenders an obstacle an attacker must plan around rather than one it
+can simply outrun.
+1
+2 3
+4
+patrol corners, in order:
+  1.  (75, 1425) mm
+  2.  (75, 825) mm
+  3.  (675, 825) mm
+  4.  (675, 1425) mm
+the two defenders enter the
+cycle half a lap apart, so the
+pair covers it at all times
+Figure 20. The defenders’ patrol cycle on the board outline.
+3.11 Two-attacker coordination
+Section 2.1 of the Project Proposal identifies the coordination of the two attackers as a primary
+design challenge, on the grounds that independent path finding causes both robots to select the
+same shortest path and deadlock. That failure was reproduced on the physical system, in that
+planning from recorded start positions with each attacker independently choosing its nearest goal
+cell sent both attackers to the same cell. Two mechanisms were implemented in response.
+37
+
+=== PDF PAGE 56 ===
+A.W. Du Toit Part 3. Main Report
+3.11.1 Distinct goal assignment
+The opposing base consists of two cells, and the two attackers are assigned one cell each by
+whichever of the two possible pairings minimises the total straight-line travel. With two agents
+and two goals there are exactly two pairings, so exhaustive comparison is not a heuristic but the
+optimum. Ties are broken by a fixed ordering on the robot names, so that the two robots cannot
+compute different assignments and set off for each other’s cell.
+Figure 21 draws both pairings from one recorded pair of start positions, with the total travel
+marked on each. The crossing pairing is the one a fixed priority produces whenever the robots
+happen to start on the wrong sides, and the figure shows what is wrong with it: the two routes
+intersect near the middle of the board, which is where the corridors are narrowest and where two
+robots meeting head-on have no room to pass. The chosen pairing has the shorter total and, more
+usefully, does not intersect at all.
+attacker 1
+attacker 2
+base A
+base B
+fixed priority: routes cross least total travel: routes do not
+Figure 21. Goal assignment by minimum total travel, against the crossing routes a fixed
+priority would produce.
+3.11.2 Route separation by cost
+Assignment alone does not prevent the two attackers from using the same corridor, so a partner’s
+committed route contributes an additive cost to the planner, falling linearly from 4 at the route to
+zero at 150 mm from it. This cost is added to the threat cost of (8) rather than replacing it, since
+a corridor that is both shared with a partner and watched by a defender is worse than one that is
+only either.
+The magnitude is deliberately smaller than the oracle costs of 8 and 5. Being captured ends the
+run whereas sharing a corridor merely risks it, so an attacker will accept a shared corridor in
+order to escape a defender but will not accept a defender in order to avoid sharing a corridor, and
+the ordering of these three constants is what encodes that priority.
+Measured on the current board map from recorded start positions and at the delivered clearance
+weight, the proportion of one attacker’s route lying within 150 mm of the other’s fell from 44% to
+8%, at a cost of 317 mm of additional route length. An earlier measurement of the same quantity,
+38
+
+=== PDF PAGE 57 ===
+A.W. Du Toit Part 3. Main Report
+taken on 8 October on the maze as it stood before it was rebuilt later that day and at the clearance
+weight then in use, gave 71% to 1% at a cost of 173 mm. The two figures describe different
+boards and different weights and are not comparable; the recomputed pair is the one quoted here.
+Figure 22 plans the same recorded configuration with and without the separation cost, and the
+pair of routes is what the 44% to 8% figure means in practice. Without the cost the two routes
+run along the same corridor for much of their length, so the leading robot is an obstacle to the
+trailing one for the whole of that stretch. With it they take different corridors and converge only
+near the bases, where they must. The figure also shows that the separated routes are longer,
+which is the price the cost is paying.
+0 500 1000 1500
+board x (mm)
+0
+500
+1000
+1500board y (mm)
+green
+blue, planned alone: 44 % shared
+blue, avoiding green: 8 % shared, +317 mm
+Figure 22. The two attackers’ routes planned independently and under the route
+separation cost.
+3.11.3 Vacating the goal
+An attacker that has reached the base has completed its objective and becomes an obstacle. In
+a recorded run the first attacker had arrived after 109 s and had stopped on the base cell, and
+together with one defender it left its partner with no route for the remaining 190 s. Planning from
+the recorded positions confirms the mechanism, in that either obstacle alone left a route whereas
+the two together left none.
+An attacker whose state isarrivedis therefore sent to the nearest position from which its partner
+is able to reach its goal. The test is the property itself, evaluated by planning the partner’s route
+with the arrived robot at each candidate position, rather than a proxy such as a fixed distance
+from the base. A proxy was implemented first and it did not work, because a position satisfying
+a 170 mm separation from every base cell still blocked the partner: being far from the base is not
+the same thing as being out of the way.
+Figure 23 replans the partner’s route from the recorded positions twice: once with the arrived
+attacker standing where it stopped, and once after it has vacated. In the first case there is no
+39
+
+=== PDF PAGE 58 ===
+A.W. Du Toit Part 3. Main Report
+route, which is the 190 s failure of 2026-10-08 reproduced from the log rather than described. In
+the second a route exists. That pair of outcomes is the evidence for the vacating rule, and it also
+shows why a distance proxy failed: the vacating position in the figure is not noticeably further
+from the base than the proxy’s would have been, it is simply out of the corridor.
+0 500 1000 1500
+board x (mm)
+1000
+1500board y (mm)
+313 mm
+walls only
+0 500 1000 1500
+board x (mm)
+1000
+1500
+with green and orange
+where they stood
+NO ROUTE
+Figure 23. The recorded deadlock, replanned with the arrived attacker in place and after it
+has vacated. The map of the day on which the deadlock occurred was not retained, so the
+replay uses the nearest surviving map, that of 2 October.
+The three mechanisms are collected in Algorithm 5, which is the procedure run for each attacker
+on every frame. Section 2.1 of the Project Proposal names this coordination as the primary
+design challenge and requires that it be derived analytically rather than tuned, so it is set out here
+in full.
+The assignment on lines 2 to 7 compares the only two pairings that exist for two attackers and two
+cells, so it returns the optimum by exhaustion rather than by heuristic. Both attackers compute it
+from the same inputs and break ties the same way, so neither needs priority over the other and
+the two can never disagree about which cell is whose.
+3.11.4 The deadlock-free condition
+The coordination strategy guarantees the following three properties.
+Goal contention cannot occur .The assignment is a bijection between attackers and base cells
+and both attackers compute it identically from the same inputs, so no two attackers ever hold the
+same goal.
+Coordination cannot remove a feasible route.Both the partner separation cost and the clearance
+cost are finite additive terms in the step cost of (8) and are not constraints on the search, so A*
+explores exactly the same set of feasible paths with or without them and returns no route only
+if no route exists in the underlying graph. Coordination is therefore able to lengthen a route
+however it cannot make a solvable instance unsolvable.
+The goal region does not remain occupied.An arrived attacker vacates to a position from which
+its partner’s route is feasible, if such a position exists within reach, and if none exists this is
+detected and reported rather than silently ignored.
+40
+
+=== PDF PAGE 59 ===
+A.W. Du Toit Part 3. Main Report
+Algorithm 5The two-attacker coordination procedure, run per attacker per frame.
+Require:attackeraatp a, partnerbatp b, base cells{c 1,c 2}, gridG
+1:{1. distinct goals, by minimum total travel}
+2:ifbis visible and still runningthen
+3:s←∥p a−c1∥+∥pb−c2∥
+4:x←∥p a−c2∥+∥pb−c1∥
+5:g a ←c 1 ifs<x, elsec 2 {ties broken by colour name}
+6:else
+7:g a ←the nearer ofc 1,c 2
+8:end if
+9:{2. the partner’s route is expensive, not forbidden}
+10:τ←DangerField(G, defenders perceived bya)
+11:ifbholds a committed routeR b then
+12:τ←τ+RouteField(G,R b)
+13:end if
+14:plan fromp a tog a with step cost (8) and threatτ
+15:{3. vacate the goal once reached}
+16:ifahas arrived atg a andbhas no feasible routethen
+17:v←a free position within reach from whichb’s route is feasible
+18:driveatov, or report that no such position exists
+19:end if
+3.12 Summary of design parameters
+The design is governed by a small set of numeric constants, and each of them is a design decision
+rather than a tuning artefact. They are collected in Table 2 with the reason for the value in each
+case, so that the justification for any one of them can be found without reading the subsection it
+belongs to. Where a value was fixed by something outside this project, or where no reason was
+recorded at the time it was chosen, the table says so rather than offering one after the fact.
+41
+
+=== PDF PAGE 60 ===
+A.W. Du Toit Part 3. Main Report
+Parameter Value Reason for the value
+Exposure index 400 Measured bracket. Below it the green marker carries too few chromatic
+pixels to segment; above it the blue marker saturates and loses its hue.
+Section 3.4.
+Gain 64 As above; fixed rather than automatic so that a measured pixel value keeps a
+fixed relationship to a physical surface.
+Chroma floors 45 / 50 / 30 / 60 Per colour band for red, orange, green and blue. A single global floor of 35
+rejected the printed green marker, which measures a median chroma of 34.
+Section 3.5.
+CELL_MM 10 mm Grid resolution. At 1.6 pixels per millimetre roughly 260 pixels fall in each
+cell, so a 17 mm wall cannot slip between cells. Section 3.7.
+INFLATE_MM 59 mm The robot half-diagonal of 56.6 mm from (6), plus approximately 2 mm
+of margin. An earlier 62 mm closed every corridor arithmetically, since
+2×62+30>150 mm. Section 3.7.
+Preferred clearancep 25 mm The clearance beyond which the squeeze term of (9) contributes nothing.
+CLEARANCE_WEIGHT 1.0 Selected by sweeping the weight over twelve routes. A weight of 2.0 pro-
+duced identical clearance by every measure while raising the worst-case path
+excess from 4.72% to 12.13%, which forfeited requirement 5 for nothing.
+Section??.
+CAR_BLOCK_MM 130 mm The radius within which the planner treats another robot as an obstacle, and
+the lower bound of the ordering of (15).
+CAPTURE_RADIUS_MM 165 mm The midpoint of the interval the ordering permits, which maximises the
+smaller of the two margins at 35 mm by (16).
+CAPTURE_FOV_DEG 60○ The defender’s field of view, being 30○ either side of its heading. A full
+360○ would make passing behind a defender fatal, which is not the stated
+game.
+SENSE_RADIUS_MM 200 mm Fixed externally at 20 cm by the study leader, and the upper bound of the
+ordering of (15). Not a free parameter of this design.
+ORACLE_RADIUS_MM 300 mm The neighbourhood over which the threat cost is applied. It extends beyond
+the capture radius because both robots move, so avoiding only where a
+defender currently is would be insufficient. Section 3.10.
+Threat costs 8 / 5 / 3 For a cell inside a defender’s capture cone, on its near-term patrol route,
+and merely within the oracle radius. They accumulate rather than taking a
+maximum.
+PARTNER_COST 4 Deliberately below the threat costs of 8 and 5, so that an attacker will accept
+a shared corridor to escape a defender but will not accept a defender to avoid
+sharing a corridor. Section 3.11.
+STEER_PER_DEG 3 The gain ks of (13), in percentage points of wheel differential per degree of
+heading error, with the differential clamped at 25 points.
+Turn-in and turn-out 35○ / 20○ The hysteresis band separating turning on the spot from driving forward. The
+two differ so that a robot oscillating about the boundary does not alternate
+on successive frames.
+ARRIVE_MM 75 mm The distance at which a waypoint counts as reached.No reason was recorded
+when this value was chosen, and none is offered here.
+TIMEOUT_S 300 s The run timeout, taken from the Project Proposal rather than chosen here.
+Decimation factor 5 Trades approximately 1.2 mm of position accuracy, which is acceptable
+against a 25 mm requirement, for a loop rate of 13.5 rather than 1.0 iterations
+per second, which is not. Section 3.13.
+Table 2. Design parameters, their delivered values and the reason for each.
+3.13 Integration into a single pipeline
+All functional units execute in a single loop on the central processor, at one iteration per
+camera frame. Each iteration captures a frame, locates the board, finds and classifies the robots,
+updates the game state, plans or revalidates a route for each attacker, issues the defenders’ patrol
+waypoints, and computes and transmits one motor command per robot.
+42
+
+=== PDF PAGE 61 ===
+A.W. Du Toit Part 3. Main Report
+Exactly one decision is taken per robot per frame. The base station expires a command after
+500 ms and a robot stops after 300 ms without one, so a control loop that dies, blocks, or loses
+sight of the board leaves the robots stopped without having to send anything at all. This is the
+reason commands are issued as a single transmission per frame rather than as a timed sequence,
+since safety is then obtained from the absence of commands rather than from the delivery of a
+stop.
+Commands are transmitted without waiting for an acknowledgement. Waiting for acknow-
+ledgements had been measured to reduce the loop from 19 to 8 iterations per second, and the
+acknowledgement carries no information that the next frame will not supply in any case.
+The loop processes a decimated frame for robot tracking and retains the full-resolution frame for
+wall scanning. At a decimation factor of five the loop achieves 13.5 iterations per second with
+a processing time of approximately 25 ms per frame, whereas at full resolution it achieves 1.0.
+The decimation costs approximately 1.2 mm of position accuracy, which is acceptable against
+the 25 mm requirement, whereas the frame rate is not negotiable: at 4 iterations per second a
+robot turning at 50○/s rotates 12.5○between decisions against a 12○tolerance.
+Two further stages are run at a reduced rate rather than every frame, and in both cases the reason
+is that their cost is comparable with the whole frame budget. The colour-blind fallback, which
+recovers a robot whose marker colour has been lost entirely, was measured at 79 ms against a
+frame of approximately 100 ms, so it is executed on every fifth iteration. Encoding and publishing
+the two operator images costs approximately 80 ms, so they are published on every third iteration.
+Neither stage contributes to the control decision, and running either on every frame would
+roughly halve the rate at which the robots are steered in order to improve something that is not
+steering them.
+A failed frame grab is counted rather than ignored. Five consecutive failures stop the fleet and
+the condition is reported, and the loop terminates rather than continuing to spin once the failures
+persist. The hazard being guarded against is the same one the watchdog below addresses, which
+is a fleet executing its last command against a position estimate that is no longer being refreshed.
+Rescanning the board is performed from within this loop without stopping the robots. The frames
+of a scan are collected one per iteration and the detection work is performed on a separate thread,
+so the control loop continues to steer throughout. A scan completes in approximately 3.7 s and
+the loop rate falls from 13.7 to 8.8 iterations per second while it runs.
+The camera is monitored by a watchdog. If no frame arrives for 3 s the fleet is stopped and the
+condition is reported, because the hazard of a failed camera is not the lost frames themselves but
+the robots continuing to execute their last command against a position estimate that has stopped
+being true.
+Figure 24 draws one iteration as a bar across the frame time, with the stages in the order they
+execute and in proportion to their measured cost. It is included to make the budget argument
+visible: detection dominates the iteration, planning is small beside it, and the two stages that are
+run at a reduced rate are drawn at their full cost so that the reason for staggering them can be
+seen rather than asserted. The 2 s command budget is marked on the same axis, which puts the
+whole iteration inside a small fraction of it and shows that the margin on requirement 4 comes
+from the budget being generous rather than from the loop being fast.
+43
+
+=== PDF PAGE 62 ===
+A.W. Du Toit Part 3. Main Report
+one iteration: median 75 ms, p95 184 ms over 6754 frames
+the ORDER is the design; the split between stages is not
+instrumented, so no stage is drawn wider than another
+command budget 2000 ms
+grab intensity
+and chroma
+label
+components
+markers and
+headings
+plan or
+follow
+command
+out
+Figure 24. The work performed in one loop iteration, against the measured frame time and
+the command budget.
+44
+
+=== PDF PAGE 63 ===
+A.W. Du Toit Part 3. Main Report
+4. Results
+4.1 Summary of results achieved
+Intended outcome Actual outcome Location in report
+Core mission requirements and specifications
+The motor should be able to ro-
+tate at a speed that can propel the
+vehicle at at least 10 km/h.
+The measured maximum speed was
+12.6 km/h.
+Section 4.2.6
+The system should switch between
+the sources that supply the vehicle
+depending on energy demand. The
+battery should supply the vehicle up
+to 75% of its current rating. When
+exceeding this rating, the SC should
+take over the supply.
+The switching does take place, and
+data gathered and stored on the
+vehicle’s on-board memory during
+a live drive test shows that switch-
+ing to the SC happened at a current
+of 2.3 A . The vehicle continued to
+drive on either source.
+Section 4.2.2
+The system must be able to determ-
+ine the placement of each runner
+in the race with an error of at most
+0.05 seconds.
+Runners could consistently be
+placed within 0.1 ms , as determ-
+ined from photographs.
+Section 4.2.7
+Bit error rate (BER) should be low.
+BER should be below 1E-6.
+The BER was measured as 10 bit
+errors in 1000 bits.
+Section 4.2.1
+Delivered power should be ad-
+equate for the load. 2 kW should be
+delivered to the load.
+The system could not deliver the
+required power into the load. The
+system could deliver 800 Watts into
+the load before overheating.
+Section 4.2.3
+Field condition requirements and specifications
+The system should supply power
+and actual environmental condi-
+tions (sunshine or rain; day or
+night)
+The system was never tested under
+rainy conditions. The system could
+not supply power under any condi-
+tions other than bright sunlight.
+Section 4.2.6
+The system should use actual real-
+time data, corrupted by noise, arriv-
+ing over a noisy wireless link.
+The system could work error free
+for at least one hour under these ac-
+tual field conditions.
+Section 4.2.1
+Table 3. Summary of results achieved.
+4.2 Qualification tests
+Qualification test 1: Student Qualification Test
+Objectives of the test or experiment
+Insert objectives.
+Equipment used
+Insert equipment.
+Test setup and experimental parameters
+45
+
+=== PDF PAGE 64 ===
+A.W. Du Toit Part 3. Main Report
+Insert test setup.
+Steps followed in the test or experiment
+Insert steps followed.
+Results or measurements
+Insert results.
+Observations
+Insert observations.
+Statistical Analysis
+Insert stats.
+Qualification test 2: Student Qualification Test
+Objectives of the test or experiment
+Insert objectives.
+Equipment used
+Insert equipment.
+Test setup and experimental parameters
+Insert test setup.
+Steps followed in the test or experiment
+Insert steps followed.
+Results or measurements
+Insert results.
+Observations
+Insert observations.
+Statistical Analysis
+Insert stats.
+46
+
+=== PDF PAGE 65 ===
+A.W. Du Toit Part 3. Main Report
+5. Discussion
+5.1 Critical evaluation of the design
+5.1.1 Interpretation of results
+5.1.2 Critical evaluation
+5.1.3 Unsolved problems
+5.1.4 Strong points of the design
+5.1.5 Expected failure conditions
+5.2 Considerations in the design
+5.2.1 Design ergonomics
+5.2.2 Health and safety
+5.2.3 Environmental impact
+5.2.4 Social and legal impact
+5.2.5 Ethics clearance
+47
+
+=== PDF PAGE 66 ===
+A.W. Du Toit Part 3. Main Report
+6. Conclusion
+6.1 Summary of the work completed
+This report describes work carried out on the design of a voice communication system, with
+the objective of using very low power to achieve reliable wireless communication over long
+distances.
+A literature survey was completed on modern communication system design. The hardware
+and software for a low power communication system was then designed from first principles.
+At the core of the system is an existing DSP board, and all additional hardware were designed
+and implemented. A Matlab program was developed to simulate the system, as well as C code
+for the DSP, and assembly language code for a PIC processor that resides on the hardware that
+was designed. The system was implemented and several field tests were carried out. A voice
+communications channel was set up between the University and my home in Midrand. The main
+result is shown in the BER graph in section 3.3 of the report.
+6.2 Summary of observations and findings
+6.3 Contribution
+6.4 Suggestions for future work
+48
+
+=== PDF PAGE 67 ===
+A.W. Du Toit Part 3. Main Report
+7. References
+[1] J. H. Shim and Y . I. Cho, “A mobile robot localization via indoor fixed remote surveillance
+cameras,”Sensors, vol. 16, no. 2, p. 195, 2016.
+[2] J. Ulrich, J. Blaha, A. Alsayed, T. Roucek, F. Arvin, and T. Krajník, “Real time fidu-
+cial marker localisation system with full 6 DOF pose estimation,”ACM SIGAPP Applied
+Computing Review, vol. 23, no. 1, pp. 20–35, 2023.
+[3] T. Gevers and A. W. M. Smeulders, “Color-based object recognition,”Pattern Recognition,
+vol. 32, no. 3, pp. 453–464, 1999.
+[4] P. E. Hart, N. J. Nilsson, and B. Raphael, “A formal basis for the heuristic determination of
+minimum cost paths,”IEEE Transactions on Systems Science and Cybernetics, vol. 4, no. 2,
+pp. 100–107, 1968.
+[5] A. Nash and S. Koenig, “Any-angle path planning,”AI Magazine, vol. 34, no. 4, pp. 85–107,
+2013.
+[6] M. ˇCáp, P. Novák, A. Kleiner, and M. Selecký, “Prioritized planning algorithms for trajectory
+coordination of multiple mobile robots,”IEEE Transactions on Automation Science and
+Engineering, vol. 12, no. 3, pp. 835–849, 2015.
+[7] B. P. Gerkey, S. Thrun, and G. Gordon, “Visibility-based pursuit-evasion with limited field
+of view,”The International Journal of Robotics Research, vol. 25, no. 4, pp. 299–315, 2006.
+49
+
+=== PDF PAGE 68 ===
+A.W. Du Toit Appendix
+Appendix
+50

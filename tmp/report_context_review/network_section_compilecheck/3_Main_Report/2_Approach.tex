@@ -1,0 +1,40 @@
+\label{sec:approach}
+The project was approached as two interacting systems: one interprets photographed handwriting and constructs writer-specific paths, while the other converts those paths into physical pen movement. The proposal's functional analysis provides their responsibilities; the G-code interface allows their implementation and verification to proceed separately.
+
+\subsection{From functional analysis to concept}
+\label{sec:app-concept}
+The first concept retained page acquisition (FU~1), processing on the single-board computer (FU~2), the gantry (FU~3) and the power supply (FU~4). The final arrangement is shown in Figures~\ref{fig:des-hardware-system} and~\ref{fig:des-processing-system}. A restrained page and fixed camera supply the image. Conditioning and line segmentation prepare it for two outputs: a transcript from the sequence reader and a writer identity from the author classifier. Known transcripts separately support glyph and style extraction, producing persistent profiles from which new text can be synthesised.
+
+The proposal's character-separation concept was developed into line-level recognition because joined handwriting does not supply a reliable boundary between every letter. Character boundaries are recovered during profile construction, where the known text constrains the problem. The writer network uses the same convolutional architecture as the reader with a different head and separate weights. Its input is stroke-normalised so the robot's pen appearance has less influence on writer identification.
+
+The chosen physical concept is a belt-driven Cartesian gantry with two stepper motors and a separate pen-lift mechanism. The Y-axis motor drives both side belts through a cross-shaft. The ODROID coordinates the axes, monitors the switches and operates the pen motor through a transistor. This keeps planar movement directly related to the requested coordinates, while calibration establishes the usable travel and step scale.
+
+\subsection{Development and verification sequence}
+\label{sec:app-order}
+The motion and processing subsystems meet at a file of G-code. This interface allows geometric commands to exercise the gantry independently of recognition and synthesis, and allows generated trajectories to be inspected before physical execution. Mechanical assembly, belt alignment, the pen mechanism and homing could therefore be developed and checked without requiring a trained handwriting model.
+
+The processing design is presented in dependency order: page conditioning and line separation; text and writer classification; then glyph extraction, layout and trajectory generation. The line reader is needed for transcript-guided glyph alignment, and the resulting stored geometry is needed before synthesis can assemble new text. Intermediate images, numerical layer checks and independently parsed G-code provide checks at these interfaces. Formal qualification is then organised by the proposal's six requirements in Section~\ref{sec:results}.
+
+The implementation includes a NumPy training and inference route and a corresponding library training route. Off-device training supplies the selected library-trained joint reader and eleven-writer model, while inference and motion control run on the ODROID. The numerical models are evaluated alongside the selected models. This preserves the first-principles implementation work while stating the actual training arrangement explicitly, rather than treating model preparation and embedded operation as the same task.
+
+\subsection{Design alternatives and trade-offs}
+\label{sec:app-alternatives}
+The alternatives were judged against recognition and reproduction quality, processing time, available writer data, inspectability and mechanical simplicity. Table~\ref{tab:app-tradeoffs} summarises the decisions that explain the order and content of the Design section.
+
+\begin{table}[!htbp]\centering\small
+\begin{tabularx}{\linewidth}{@{}p{0.20\linewidth}XX@{}}
+\toprule
+\textbf{Decision} & \textbf{Alternative and trade-off} & \textbf{Selected approach and reason}\\
+\midrule
+Motion mechanism & Articulated or parallel robots offer different workspaces and motion, with more involved coordinate transformations~\cite[pp.~5--8]{teikari2016}. & Cartesian axes suit a flat page and allow direct coordinate commands and separate axis calibration.\\[3pt]
+Recognition unit & Isolated-character classification is simpler but depends on character cuts; a sequence reader needs a larger model. & Whole-line CNN--BiLSTM--CTC recognition uses the available transcripts and handles connected text without pre-cut letters~\cite[pp.~4--5]{kizilirmak2023}.\\[3pt]
+Writer representation & Photographed ink retains pen-width cues; normalisation removes some information as well as nuisance variation. & Stroke-normalised classification emphasises geometry that can be reproduced with the gantry's own pen.\\[3pt]
+Synthesis method & Neural stroke generators need online data; learned image generators need training and subsequent path recovery~\cite[p.~18]{graves2013},~\cite[p.~9]{dai2024}. & A glyph library uses the available offline pages and exposes controllable trajectories, at the cost of weaker contextual joining~\cite[p.~4]{haines2016}.\\[3pt]
+Implementation & A framework provides practical training; explicit numerical operations expose layer calculations but have substantial training cost. & Both routes are retained. Selected weights are exported to arrays for NumPy inference, with numerical checks and trained-model comparisons reported separately.\\
+\bottomrule
+\end{tabularx}
+\caption{Principal concept choices and their engineering trade-offs.}
+\label{tab:app-tradeoffs}
+\end{table}
+
+The design also considers page loading, preview before movement, switch feedback, motor-power distribution, component reuse and contributor consent. These considerations shape the interfaces and construction; their practical consequences are evaluated in Discussion. Design consequently begins with the hardware and its constraints, then follows segmentation, classification, reproduction and integration. Detailed equations belong there, rather than in this conceptual overview.

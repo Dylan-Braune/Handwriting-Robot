@@ -1,0 +1,117 @@
+\label{sec:discussion}
+\subsection{Critical evaluation of the design}
+\label{sec:dis-critical}
+The results show a working connection between photographed handwriting, stored writer profiles and physical pen movement. The most useful outcome is that several styles remain both readable and identifiable after being reconstructed from stored glyphs. Performance depends on the writing style and the requested operation. The discussion below relates those differences to the decisions made in Design.
+
+\subsubsection{Interpretation of results}
+\label{sec:dis-interpretation}
+\paragraph{Reproduction preserves useful writer characteristics.}
+The reader recovers 84.41\% of the physical characters according to the edit-based score. Seven of the eleven writers exceed 85\%, with the strongest four above 93\%. This is close to the pooled character target, but the spread between writers matters more than the 0.59 percentage-point shortfall alone. A user selecting a separated style receives a more consistent result than one selecting a strongly connected style. The design therefore demonstrates the intended function, while its operating range is clearer than a single average would suggest.
+
+Writer identification remains correct on 86.41\% of the reproduced lines and all fourteen page pools. The normalised geometric result adds a different check. It compares actual stroke positions with original handwriting, while accounting for the fact that a writer does not produce the same word identically each time. The ordinary-reference result retains 86.68\% of measured natural agreement when writers are weighted equally. Choosing the nearest reference gives 87.89\%. Agreement between these two approaches is useful because the favourable relative result does not depend entirely on selecting one best-looking original.
+
+These percentages need their measurement definitions. They are relative geometric scores on 83 repeated words, not percentages of correctly written characters. The subset also contains shorter, more common words than the complete passage set. It supports a measured comparison with natural variation, without establishing that every sentence or writer meets the proposal's stylistic target. Direct shape measures and recognition outcomes are complementary, since recognition-based evaluation depends on the evaluating model~\cite[p.~2]{chen2022glyph}.
+
+The individual writers show why both checks are needed. Writer 150 has strong geometric agreement relative to the natural baseline, but its line identification is lower. Writer T is identified correctly on every physical line while its character recovery and geometric agreement are weaker. The classifier can therefore retain enough distinctive cues to recognise a writer even when individual forms or joins differ. It also helps select synthesis candidates, so a second evaluation using that classifier is partly tied to the selection criterion. The geometric test provides a separate view of the resulting strokes.
+
+\paragraph{The gap between isolated shapes and complete words is a design result.}
+The earlier character examples show that many stored letterforms can be reproduced closely. Whole-word comparison retains the spacing and joins between those forms. Small errors in advance width accumulate along a word, and a connector can change the shape around two otherwise reasonable glyphs. This explains why a convincing isolated character does not guarantee an equally close complete word.
+
+Word-height normalisation improves the whole-word comparison relative to line-height normalisation. Some disagreement therefore comes from the chosen size reference as well as the ink path. It would be misleading to interpret the larger score as an improvement to the machine, because the physical page is unchanged. The useful conclusion is that the assessment should show its normalisation and include the raw examples. The remaining differences in those examples still need engineering attention, particularly for cursive styles.
+
+\paragraph{Original-handwriting classification is close to the intended accuracy.}
+The reader's 94.06\% pooled character accuracy is 0.94 percentage points below the proposal's target. Its public and photographed subsets give similar aggregate scores, which supports using one line-based architecture for both inputs. However, the personal writers do not all give the same result. An overall average should therefore accompany the separate populations rather than replace them.
+
+Writer identification reaches 98.08\% on the 156 original validation lines, with all eleven writer groups correct after pooling. Stroke normalisation is important here because the physical pen cannot reproduce each contributor's original pen thickness. The classifier instead receives a more consistent stroke width. This reduces one avoidable difference between original and robot writing, but it does not remove differences in camera conditions, letter construction or the amount of evidence in a short line.
+
+The reader follows the CNN, BiLSTM and CTC approach discussed in the literature~\cite[pp.~4--5]{kizilirmak2023}. Its result supports that choice for this dataset. Different train/test partitions and decoding rules prevent a direct ranking against published accuracy figures. The current test also does not separate errors caused by the network from those caused by a poor line crop. A future comparison should retain a fixed set of manually checked crops to measure those contributions separately.
+
+\paragraph{Reproduction speed is achieved in the tested requests.}
+All 25 completed ODROID jobs meet the four-second-per-character limit. These are complete request timings, including generation and drawing, so they are more useful than a calculation from commanded feed alone. The slowest 43-character request leaves only 5.39 seconds of total margin. The short jobs therefore have less room for additional processing or pen movements.
+
+The nine 378-character requests vary from 507.57 to 1085.01 seconds. Equal text length does not imply an equal motion job. Different writer profiles produce different path lengths, numbers of pen changes and synthesis work. This variation is consistent with a system that reproduces writer geometry rather than drawing every character using one fixed font. The recorded success applies to the tested requests, starting at 43 characters. Very short requests would need their own timing evidence because fixed preparation costs are less diluted.
+
+\paragraph{Classification time is the main embedded performance limitation.}
+The two measured requests exceed their allowances by 31.76 and 28.94 seconds. Networks account for 67.6\% of the combined time, making numerical inference the first optimisation target. The stage records also show why network acceleration alone is insufficient. For the 500-character request, image stages already take 16.14 seconds against a 14.50-second total allowance. Even removing network time entirely would leave that request over its limit. For 982 characters, the image stages leave 9.74 seconds for networks that currently take 38.67 seconds.
+
+The supporting benchmark reduces network time by a factor of 2.76 while retaining the recorded reader text. It changes both batching and backend, so it identifies an implementation opportunity rather than a measured embedded improvement from batching alone. The resolution experiment is less suitable. Reducing image size changes the detected lines and decoded output, so its speed gain is not an equivalent replacement. A useful optimisation must preserve the crop ordering and predictions as well as reduce runtime.
+
+\paragraph{Repeated dimensions support the mechanical arrangement.}
+The ten new square-and-triangle samples provide a better check than one specimen. All 70 feature lengths are within 0.5 mm, with a mean absolute error of 0.297 mm and a largest error of 0.49 mm. These results support the calibrated belt transmission and the use of one motor to drive the two sides of the moving gantry through a shared shaft. The arrangement avoids having two independently commanded motors set the rail position, while bearing alignment and frame stiffness still affect motion.
+
+The signs and grouping of the errors are useful. Square lengths shift above and below nominal between samples, while the two triangle slopes often move in opposite directions. A fixed steps-per-millimetre correction alone would not explain every change of sign. Rail alignment, belt tension, pen restraint and the measurement contact convention are therefore reasonable items to check before changing scale constants. The readings do not isolate one of these causes, so they should not be used to claim a measured rail angle.
+
+The smallest margin to the dimensional limit is 0.01 mm. With the caliper least count and nib-edge convention unrecorded, there is little basis for adding an uncertainty guard band. The result is that all supplied dimensions pass the stated numerical comparison. It is not a guarantee of absolute pen position everywhere on the bed. A translated square can keep the same side lengths. Repeated coordinates and overlaid drawings would extend this check to placement and return accuracy.
+
+\subsubsection{Critical evaluation}
+\label{sec:dis-choices}
+\paragraph{Line recognition was the appropriate alternative to early character cuts.}
+The proposal allowed separated characters or connected groups. Reading complete lines avoids requiring every letter boundary to be correct before recognising the text. CTC supports this by combining possible alignments during training~\cite[pp.~2--3]{graves2006}. Known-transcript alignment is then used for profile extraction. This separates the reading problem from the more demanding problem of obtaining reusable character shapes.
+
+The trade-off is that the network processes a long sequence and remains dependent on correct line ownership. Touching lines or a clipped ascender can affect the complete sequence. The intermediate masks, seams and crop figures in Design are therefore important practical tools. They make it possible to identify which stage lost a stroke, rather than treating every incorrect word as a network failure.
+
+\paragraph{The glyph library suits the available offline samples.}
+The inputs are page images, without recorded pen positions over time. An example-based approach can use those images directly and retain inspected letter shapes from a small collection of pages, as demonstrated by Haines et al.~\cite[p.~4]{haines2016}. A sequence generator such as Graves's instead uses ordered pen coordinates~\cite[p.~18]{graves2013}. Learning that missing chronology would add another problem to the project.
+
+Stored paths also make size, slant and machine coordinates controllable. Their finite context is the main limitation. A writer changes a letter depending on its neighbours and often makes the connection as part of that letter. Joining two separately stored shapes cannot reproduce every such change. Increasing the number of random trials may find a better existing combination, but cannot create a missing contextual form. Multi-character units and position-dependent variants are therefore more directly connected to the observed cursive errors than simply increasing candidate count.
+
+The current system is still useful because it reaches eleven styles with explicit, inspectable geometry. A larger learned generator could offer more contextual variation, but would require a different preparation and training effort. A single reference at generation time does not remove the need for that wider training corpus~\cite[p.~9]{dai2024}. The choice made here is appropriate to the available samples and hardware, with its limits visible in the connected writers.
+
+\paragraph{First-principles operation makes the implementation inspectable.}
+The numerical implementation exposes forward passes, derivatives, CTC and parameter updates. The operation checks in Design test these calculations using matched inputs, while the training records show that the implementation can learn the required tasks. Close validation scores between implementations are useful supporting evidence, but do not by themselves establish that every training operation is equivalent.
+
+Training and inference place different demands on memory and execution time. The supplied records show approximately 19 to 23 minutes per writer epoch and 111 to 122 minutes per reader epoch. Float32 limits memory and computation cost, but the retained experiments do not isolate precision as the cause of accuracy differences. Keeping the numerical definitions while batching repeated work or compiling hot loops is a reasonable next step. Its effect should be checked with the same inputs and saved outputs before using it in a timed ODROID qualification.
+
+\paragraph{Mechanical simplicity has clear benefits and limits.}
+Orthogonal axes give a direct relationship between a Cartesian target and motor displacement. The shared drive shaft keeps the two sides of the moving rail mechanically linked. These choices make fabrication, calibration and fault finding manageable within the prototype budget. The repeated feature measurements support the resulting dimensional performance.
+
+Open-loop stepping still assumes that commanded pulses become real motion. A missed step is not visible in the position counter. Calibration establishes the origin and travel scale, but cannot detect a later loss of position. Controlled acceleration and a shared pulse schedule would address starting load and direction-dependent timing. A stiffer holder and more consistent paper restraint would reduce motion that is not represented in the step counts. These changes should be judged using repeated physical drawings, since finer nominal microsteps alone do not establish better pen accuracy~\cite{acarnley2002}.
+
+The pen mechanism uses a geared motor, cam and a switch rather than a continuously positioned third axis. It provides the two states needed for drawing and travel with simple control. The springs accommodate page contact, but there is no measured pen-force loop. Changes in paper support or pen friction can therefore alter the physical stroke even when the same trajectory is commanded.
+
+\paragraph{Economic feasibility.}
+The author's current prototype estimate is approximately R4\,000. The borrowed ODROID has no purchase cost for this build and will be returned. A repeat build would need to include its replacement value. Reusable motors, rails and drivers keep the prototype practical, while replaceable printed parts allow local changes without rebuilding the frame. Preparation and training time also matter. Improving an existing numerical implementation may be a more proportionate first step than replacing the complete computer or adopting a new generator.
+
+\subsubsection{Unsolved problems}
+\label{sec:dis-unsolved}
+The first priority is classification speed with unchanged output. The measured stage times give a clear order of work, beginning with network execution and then the image stages that already exceed the short-request budget. Each optimisation should retain a fixed page set, crop count and reference outputs, followed by a complete ODROID timing run.
+
+The next reproduction priority is connected context. A controlled comparison should use the same text, profiles, reader and physical setup, changing only the use of multi-character units or contextual variants. This would test whether the proposed change improves the weaker writers rather than only producing a more favourable example.
+
+Mechanical qualification should add repeated bed coordinates and word overlays. The ten supplied samples establish feature-length behaviour, but do not yet map placement across the writing area. Those tests would also help separate frame geometry from pen-holder and page-restraint effects.
+
+\subsubsection{Strong points of the design}
+\label{sec:dis-strengths}
+The complete chain produces physical output in eleven stored styles, with every recorded page pool identified correctly. The repeated dimensions remain within 0.5 mm and every completion-confirmed drawing request meets its timing allowance. These are integrated outcomes rather than isolated software demonstrations.
+
+The system is also inspectable. A source crop can be followed through alignment, glyph paths, layout and G-code to the machine. Numerical checks support the implemented calculations, while the new geometric baseline checks physical shape without relying solely on a classifier. Keeping these different forms of evidence separate makes the evaluation more useful when one style or stage needs improvement.
+
+\subsubsection{Expected failure conditions}
+\label{sec:dis-failures}
+Strong cursive connections and missing contextual variants are the main reproduction limits. Text outside the stored alphabet can also lack a suitable form. A preview is important when a requested layout approaches the bed limits, since clamping an out-of-range path changes its geometry.
+
+Touching lines, page curvature and strong perspective can defeat preparation. A single global deskew angle cannot remove local warping. Sparse writing also gives less evidence for estimating orientation and writer identity. The writer classifier chooses among known classes, so an unfamiliar writer can still receive a confident known label.
+
+On the machine, changing belt tension, slipping couplers, increased carriage resistance or a disturbed sheet can break the relationship between commanded and actual movement. End stops and software abort handling assist recovery, but do not replace independent power isolation. The stated dimensional and timing performance applies to the tested setup and requests, rather than every load or environmental condition.
+
+\subsection{Considerations in the design}
+\label{sec:dis-considerations}
+\subsubsection{Ergonomics}
+The browser groups capture, text entry, writer selection and preview. Keeping generation separate from physical execution lets the operator inspect a job before the gantry moves. The paper clamps and camera support reduce repeated manual positioning. The operator must still fit the pen, secure the sheet, calibrate the axes and check clearance. Clear feedback on calibration, job completion and interruption is therefore as important as an attractive display.
+
+\subsubsection{Health and safety}
+The moving carriage, belts and pulleys create pinch points. The working area should remain clear during drawing, with a reachable means of removing motor power. Limit switches and abort checks reduce the chance of continued travel after a fault, but software can become unresponsive and is not an independent isolator. Wiring restraint and access to the motor-driver area also matter because the drivers dissipate heat.
+
+The logic and motor circuits use separate low-voltage rails supplied by purchased adapters. The pen transistor separates motor current from the GPIO signal. The installed circuit still lacks an inductive-current recirculation diode, so adding the reverse-biased diode described in Design is an appropriate protection improvement~\cite{rohmlowside2026}. It should be fitted and checked before repeated unattended operation.
+
+\subsubsection{Environmental impact}
+The borrowed computer will be returned and the main motion components can be reused. The printed supports can be replaced individually, which reduces the need to discard an entire frame after a design change. Digital previews reduce unnecessary trial drawings, although physical paper and pen tests remain necessary for qualification. Motor holding current and long training runs consume energy even when the visible output is small. The project has not metered those contributions, so no numerical environmental-saving claim is made.
+
+\subsubsection{Social and legal impact}
+Reproducing a chosen writing style could help with personalised correspondence or with tasks that are difficult for a person to write manually. These possible uses have not been evaluated with users. The same capability can imitate another person's writing, so authorised use and clear identification of machine-produced material are important. The system should not be presented as a means of validating signatures or authorship.
+
+The five personal contributors supplied signed consent. Their samples and derived profiles should remain under controlled access, with a stated purpose and retention period. These concerns follow the personal-information considerations addressed in the Protection of Personal Information Act~\cite[pp.~8--9, 11]{popia2013}. IAM material must also remain subject to its dataset terms. The prototype's local network arrangement limits the intended access scope, but is not evidence of a security qualification.
+
+\subsubsection{Ethics clearance}
+Signed participant consent is held for the five personal contributors. An institutional clearance or exemption reference is not established by the supplied records. Participant consent and institutional approval are therefore treated as separate matters.
+\FloatBarrier

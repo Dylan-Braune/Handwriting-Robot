@@ -1,0 +1,239 @@
+\subsection{Hardware design}
+\label{sec:des-hardware}
+The hardware must hold the paper and pen securely, reach the required writing area, and convert a stored trajectory into repeatable motion. The design therefore combines a Cartesian belt drive with a separately actuated pen mechanism. The electrical interface is kept simple enough for direct control from the ODROID, while calibration relates software coordinates to the travel of the assembled machine.~\cite[hardware clarifications]{brauneevidence2026}\cite[reproduce.py]{braunepipeline2026}
+
+
+\subsubsection{Plotter mechanics and mechanical construction}
+The chosen method of text plotting is a Cartesian gantry system with two independent axes of movement and a pen up/down mechanism, consistent with the Cartesian arrangement illustrated by Teikari~\cite[p.~6, Fig.~4]{teikari2016}. Complex kinematic equations and joint-dependent position errors are avoided by using separate $x$ and $y$ movements for reproduction. Linear GT2 timing belts and pulleys are used to convert rotary motion from stepper motors and axles to the desired Cartesian movements. Timing belts were chosen for their cost effectiveness and ability to provide relatively fast travel without a lead-screw transmission.
+
+A Cartesian gantry consists of stationary rails that guide movement in one axis, and a movable rail that guides the other axis of movement. For this system and the explanations that follow, the stationary rails guide $y$-axis movement, while the $x$-axis rail moves along the $y$-axis. Figure~\ref{fig:des-gantry-axes} shows the axes of the gantry.~\cite[hardware clarifications]{brauneevidence2026}
+
+
+\begin{figure}[!htbp]\centering
+\includegraphics[width=0.67\linewidth]{Figures/gantry-axis-diagram.png}
+\caption{Cartesian gantry axes and pen up/down mechanism.~\cite{brauneevidence2026,braunepipeline2026}}
+\label{fig:des-gantry-axes}
+\end{figure}
+
+The $x$-axis rail needs to move with stability and consistency, which is why it is supported at both ends by the two $y$-axis rails. A single stepper motor was chosen to drive the pulleys on both sides to ensure synchronised motion and save costs. Two independent stepper motors driving one axis introduce a synchronisation concern because differences in missed steps or loading could offset one side relative to the other. The challenge with using one motor to drive two timing pulleys is extending its shaft to both pulleys without excessive load or twist in the new axle. A rigid coupler was used to extend the stepper motor shaft with a chromed steel rod.~\cite[hardware clarifications; reproduce.py]{brauneevidence2026,braunepipeline2026}
+
+To reduce strain on the motors and allow smoother movement, linear bearings were fitted around the chromed rod rails so that the moving parts slide with low resistance. Bearing alignment is important as well as bearing diameter: an incorrectly aligned bearing can constrain the same rod in a different direction from the neighbouring bearing, increasing resistance instead of reducing it. During assembly, bearing fit and printed-part alignment were checked by sliding the parts along the rods before connecting the belts. The fit was adjusted where the assembled bearings restricted movement.~\cite[hardware clarifications; reproduce.py]{brauneevidence2026,braunepipeline2026}
+
+The shared shaft couples the two sides mechanically, but does not remove all sources of error. Unequal belt tension, shaft torsion and a frame that is not square can still change the pen position. Belt tension must therefore be sufficient to maintain engagement without adding unnecessary bearing load. The pen holder also needs enough stiffness to prevent lateral deflection as the direction of travel changes. These effects concern physical accuracy and cannot be inferred from the nominal step resolution alone.~\cite[hardware clarifications; reproduce.py]{brauneevidence2026,braunepipeline2026}
+
+The printed components locate bearings, support the motors and pulleys, fasten the belts, and guide the pen mechanism. Their relationship within the completed assembly is identified in Figure~\ref{fig:des-assembly}. The arrangement fixes the relative positions of the rail, belt and pen, so manufacturing fit and bracket stiffness affect the same position budget as the drive. The available travel is established in Section~\ref{sec:des-calibration}.~\cite[hardware clarifications]{brauneevidence2026}
+
+
+\begin{figure}[!htbp]\centering
+\designasset{design-gantry-assembly.jpg}{0.85}{Photograph or assembled CAD view with the custom brackets, cross-shaft, belt tensioning, rail bearings and paper restraint labelled.}
+\caption{Mechanical assembly and the components locating the pen relative to the page.~\cite{brauneevidence2026,braunepipeline2026}}
+\label{fig:des-assembly}
+\end{figure}
+
+\subsubsection{Stepper motor selection and drive resolution}
+\label{sec:des-drive}
+A stepper motor turns through fixed angular increments as the winding-current pattern changes. The windings are the motor's coils, and each current pattern establishes a magnetic field that pulls the rotor towards a corresponding position. The A4988 regulates these winding currents by chopping: it switches the drive to maintain the requested current level. Chopping continues even while a position is held; advancing the requested current pattern, rather than chopping itself, produces the next step~\cite[p.~9]{a4988ds}.
+
+Two stepper motors are used in the gantry plotter, one for the $x$ and one for the $y$ direction. The selected motor is the 42BYGH40-01 NEMA 17 bipolar stepper, with a 40\,mm body length, a $1.8^\circ$ full-step angle and a rated current of 1.68\,A per phase. Stepper control suits the required position commands because displacement follows from the number of commanded steps, without requiring an encoder for normal operation. The corresponding limitation is that the controller cannot determine whether every commanded step was physically completed.~\cite[hardware clarifications; reproduce.py]{brauneevidence2026,braunepipeline2026}
+
+For the 20-tooth GT2 pulleys and 2\,mm belt pitch, the travel per revolution and pitch radius follow from Equation~\ref{eq:des-pulley}. The radius is determined by tooth pitch, rather than by measuring the shaft or outside pulley diameter.
+\cite[hardware clarifications]{brauneevidence2026}
+\begin{equation}
+\ell_{\mathrm{rev}}=N_t p=20(2)=40\ \mathrm{mm/rev},\qquad
+r_p=\frac{N_t p}{2\pi}=6.37\ \mathrm{mm}.
+\label{eq:des-pulley}
+\end{equation}
+
+Here $N_t$ is the tooth count and $p$ is belt pitch. With 200 full steps per revolution and a microstep subdivision $\mu_s=16$, the nominal commanded displacement is given by Equation~\ref{eq:des-stepres}.
+\cite[hardware clarifications]{brauneevidence2026}
+\begin{equation}
+\kappa_0=\frac{200\mu_s}{\ell_{\mathrm{rev}}}=80\ \mathrm{microsteps/mm},\qquad
+\Delta x_0=\frac{1}{\kappa_0}=0.0125\ \mathrm{mm}.
+\label{eq:des-stepres}
+\end{equation}
+
+The A4988 supports this subdivision through its microstep-selection inputs~\cite[p.~6, Table~1]{a4988ds}. The value in Equation~\ref{eq:des-stepres} is substantially smaller than the proposal's 0.5\,mm positional-error limit. It establishes adequate command granularity, but is not a measurement of accuracy: belt compliance, frame geometry, switch behaviour and pen deflection remain between the step count and the mark on paper. Microstepping also does not guarantee that every intermediate mechanical position is equally accurate under load.~\cite[hardware clarifications; reproduce.py]{brauneevidence2026,braunepipeline2026}
+
+Motor torque must be assessed at operating speed, rather than from holding torque alone. With feed $F$ in mm/min, Equation~\ref{eq:des-rpm} gives the motor speed. A travel feed of 4000\,mm/min corresponds to 100\,rev/min.
+\cite[reproduce.py, GantryConfig]{braunepipeline2026}
+\begin{equation}
+n=\frac{F}{\ell_{\mathrm{rev}}}=\frac{4000}{40}=100\ \mathrm{rev/min}.
+\label{eq:des-rpm}
+\end{equation}
+
+The load model in Equation~\ref{eq:des-torque} separates translation and rotation. It applies to the belt-driven axis, with all lengths expressed in metres.
+\cite[hardware clarifications]{brauneevidence2026}
+\begin{equation}
+T_{\mathrm{req}}=r_p(F_f+ma)+J_{\mathrm{rot}}\frac{a}{r_p}.
+\label{eq:des-torque}
+\end{equation}
+Calculated example: For a chosen acceleration case, $r_p=0.006366$ m, $m=0.950$ kg, $a=0.5$ m/s$^2$, $F_f=0.0373$ N and $J_{\rm rot}=10^{-5}$ kg\,m$^2$ give $T_{\rm req}=0.006366(0.0373+0.475)+10^{-5}(0.5/0.006366)=0.00405$ N\,m. The resistance and inertia are assumed; this is not the installed motor's verified torque margin. \cite[hardware clarifications]{brauneevidence2026}
+
+Here $F_f$ is the resisting linear force, $m$ is the translating mass, $a$ is linear acceleration, and $J_{\mathrm{rot}}$ is the combined inertia of rotating parts referred to the motor shaft. The second axis carries the first-axis assembly, so its load must include that assembly. The rotational term must not also be included in $m$, which would count the same inertia twice. Equation~\ref{eq:des-torque} follows from $T=r_pF$ and angular acceleration $a/r_p$; it is a load calculation, not a substitute for the motor's measured torque--speed characteristic~\cite[page to verify]{acarnley2002}\designsourceflag{acarnley2002}.~\cite[hardware clarifications; reproduce.py]{brauneevidence2026,braunepipeline2026}
+
+At constant speed, only the resistance term remains. For the recorded moving mass of 0.950\,kg, assuming $F_f=\mu_fmg$ with $\mu_f=0.004$ gives approximately $0.000237$\,N\,m. This illustrative value indicates a small resistance load, but the coefficient is unmeasured and the calculation excludes acceleration. The driver starts each segment without a controlled acceleration ramp, so allowable starting rate also depends on motor current and reflected inertia. Establishing a dynamic margin requires those quantities and a matching motor characteristic, rather than the steady-state estimate alone.~\cite[hardware clarifications; reproduce.py]{brauneevidence2026,braunepipeline2026}
+\designgap{Confirm the 0.950\,kg mass and which axis it represents; measure carriage resistance and obtain the torque--speed or starting-rate data for the installed 42BYGH40-01 at the actual driver setting. A curve for a different motor cannot establish its torque margin.}
+
+The ODROID coordinates the two axes using an integer error accumulator. For a move of $a_x$ and $a_y$ microsteps with $a_x\geq a_y$, the $x$ axis is stepped on each iteration. The accumulator is reduced by $a_y$ and a $y$ step is inserted whenever it crosses zero, before adding $a_x$ back. This is the Bresenham interpolation principle~\cite[p.~28]{bresenham1965}; it preserves the commanded endpoint and distributes the minor-axis steps along the line instead of completing one axis first.~\cite[hardware clarifications; reproduce.py]{brauneevidence2026,braunepipeline2026}
+
+Algorithm~\ref{alg:des-stepping} gives the major-axis form of the implemented loop. For a short illustrative command of eight $x$ steps and three $y$ steps, the initial error is four; $y$ pulses occur on iterations 2, 5 and 7. The commanded endpoint is therefore $(8,3)$, with the minor-axis movement spread along the segment. Reversing a direction changes its sign, not the interpolation rule.~\cite[hardware clarifications]{brauneevidence2026}
+
+
+\begin{designalgorithm}
+\caption{Coordinated axis stepping with interruption checks~\cite{brauneevidence2026,braunepipeline2026}}
+\label{alg:des-stepping}
+\prequire{Signed axis counts; pulse delay; connected GPIO interface.}
+\begin{designpseudo}
+\pstate{0}{$(N_M,N_m)\leftarrow$ major and minor absolute counts; set directions}
+\pstate{0}{$e\leftarrow\lfloor N_M/2\rfloor$}
+\pstate{0}{\textbf{for} $i\leftarrow1$ \textbf{to} $N_M$ \textbf{do}}
+\pstate{1}{\textbf{if} abort requested or end stop confirmed \textbf{then}}
+\pstate{2}{\textbf{return} interrupted, current position counters}
+\pstate{1}{\textbf{end if}}
+\pstate{1}{Pulse major axis; update its signed counter}
+\pstate{1}{$e\leftarrow e-N_m$}
+\pstate{1}{\textbf{if} $e<0$ \textbf{then}}
+\pstate{2}{Pulse minor axis; update its signed counter; $e\leftarrow e+N_M$}
+\pstate{1}{\textbf{end if}}
+\pstate{0}{\textbf{end for}}
+\pstate{0}{\textbf{return} completed, current position counters}
+\end{designpseudo}
+\end{designalgorithm}
+
+The geometry and timing of this loop must be considered separately. The current implementation sleeps inside each axis-pulse call, so an iteration containing two pulses takes longer than one containing a single pulse. For major- and minor-axis counts $N_M$ and $N_m$, Equation~\ref{eq:des-pulsetime} gives the delay contribution, excluding GPIO and interpreter overhead.
+\begin{equation}
+t_{\mathrm{delay}}=(N_M+N_m)\tau,\qquad
+\tau=\max\left(\frac{d}{vN_M},2\times10^{-6}\right),\quad v=F/60.
+\label{eq:des-pulsetime}
+\end{equation}
+Calculated example: For an illustrative 10 mm move at $F=800$ mm/min with $N_M=800$, $N_m=0$, $\tau=10/[(800/60)800]=0.0009375$ s and $t_{\rm delay}=0.750$ s. A 10 mm diagonal with $N_M=N_m=566$ instead gives approximately 1.50 s of pulse delay. \cite[reproduce.py, BresenhamMove]{braunepipeline2026}
+
+Here $d$ is move length in millimetres and $v$ is the requested speed in mm/s. Equation~\ref{eq:des-pulsetime} means that a $45^\circ$ move has approximately twice the intended delay contribution, whereas an axis-parallel move does not. A shared pulse scheduler could reduce this directional speed variation. The present arrangement maintains simple coordinated positioning, but its feed value must not be treated as a measured trajectory speed.~\cite[hardware clarifications; reproduce.py]{brauneevidence2026,braunepipeline2026}
+
+\subsubsection{Pen lift mechanism and drive circuit}
+\label{sec:des-pen}
+The pen has two required states: in contact with the page for a stroke, and clear of the page for travel. A compact geared motor and cam provide these states without adding a third positioning axis. The motor turns in one direction and the cam alternates the pen height as it rotates. A switch indicates the raised state. Compared with a servo, this arrangement uses a simple switched output and position indication, but it gives no commanded intermediate pen height or force.~\cite[hardware clarifications]{brauneevidence2026}\cite[reproduce.py]{braunepipeline2026}
+
+
+Figure~\ref{fig:des-penmechanism} shows the two pen positions. The holder and page support are part of the same design decision: repeatable motor movement is of little value if a flexible holder changes the nib position or if a stack of paper changes contact pressure. A single restrained sheet on a rigid support reduces this variation. The mechanism was adjusted experimentally to achieve clearance during travel without excessive pressure during drawing.~\cite[hardware clarifications]{brauneevidence2026}
+
+
+\begin{figure}[!htbp]\centering
+\includegraphics[width=0.66\linewidth]{Figures/pen-up-down-mechanism.png}
+\caption{Cam-operated mechanism with the pen lowered and raised.~\cite{brauneevidence2026,braunepipeline2026}}
+\label{fig:des-penmechanism}
+\end{figure}
+
+The software checks the switch before energising the motor. If the desired state is already present, no pulse is required; an unnecessary rotation could move the pen away from the requested state. Otherwise the motor runs until the switch indicates the target or the timeout expires. The current control routine allows a 40\,ms overrun after confirmation of the raised state to seat the cam. This feedback operation differs from the G-code generator's settling dwell, which is described in Section~\ref{sec:des-gcode}.~\cite[hardware clarifications; reproduce.py]{brauneevidence2026,braunepipeline2026}
+
+The low-side BC337 circuit in Figure~\ref{fig:des-pencircuit} keeps the motor current out of the GPIO signal path. With a 1\,k$\Omega$ base resistor and the assumed $V_{BE}=0.7$\,V, Equation~\ref{eq:des-basecurrent} gives the approximate base current using the standard low-side resistor relation~\cite[section ``Why NPN Devices Are Used in Low-Side Switches'' ]{rohmlowside2026}.
+\begin{equation}
+I_B=\frac{V_{\mathrm{GPIO}}-V_{BE}}{R_B}
+=\frac{3.3-0.7}{1000}=2.6\ \mathrm{mA}.
+\label{eq:des-basecurrent}
+\end{equation}
+
+The calculation in Equation~\ref{eq:des-basecurrent} establishes the nominal signal current only. It does not prove transistor saturation at motor startup or stall. The installed motor current, GPIO capability and transistor saturation conditions must be considered together~\cite[page to verify]{bc337ds}\designsourceflag{bc337ds}. Increasing base current without checking the GPIO rating would transfer the problem to the computer interface.
+
+\begin{figure}[!htbp]\centering
+\includegraphics[width=0.60\linewidth]{Figures/pen-clicker-bc337-circuit.png}
+\caption{Prototype pen-motor switching circuit supplied with the draft. Supply and protection details require confirmation against the installed circuit.~\cite{brauneevidence2026,braunepipeline2026}}
+\label{fig:des-pencircuit}
+\end{figure}
+
+The installed pen motor is powered from the ODROID's dedicated 3.3\,V supply pin, while the GPIO controls the transistor base through its resistor. The power pin and signal pin have different roles; moving the supply connection away from GPIO does not by itself establish that the rail can supply motor startup current. No flyback diode is fitted. Interrupting an inductive motor current can therefore impose a voltage transient on the switching stage~\cite[section ``Protection and Wiring Techniques'' ]{rohmlowside2026}. A diode across the motor, reverse-biased during normal operation, would provide a recirculation path; its current and voltage ratings must be selected from the motor and supply conditions. This is a limitation of the installed circuit, not a protection feature already implemented.
+\designgap{Measure pen-motor running/startup current and confirm the 3.3 V rail's available capacity. The user reports 10 kOhm pull-downs; confirm whether one is fitted at the transistor base as well as at switch inputs. Replace the prototype image with correct DC notation and actual installed components. Record the reason the motor-suppression diode was omitted before final submission.}
+
+\subsubsection{End stops, homing and dimensional calibration}
+\label{sec:des-calibration}
+Four switches define the minimum and maximum travel of the two axes. Each is connected as an active-high input with a 10\,k$\Omega$ pull-down, as shown in Figure~\ref{fig:des-switch}. The pull-down defines the input while the contact is open. With the contact closed, its current is $3.3/10000=0.33$\,mA and dissipation is approximately 1.1\,mW. The resistor is between input and ground, so it does not limit fault current if the GPIO is incorrectly configured as an output driven low.
+
+\begin{figure}[!htbp]\centering
+\includegraphics[width=0.62\linewidth]{Figures/endstop-switch-pulldown-circuit.png}
+\caption{Active-high switch input with a 10\,k$\Omega$ pull-down.~\cite{brauneevidence2026,braunepipeline2026}}
+\label{fig:des-switch}
+\end{figure}
+
+The control routine confirms a high reading with two further samples separated by 6\,ms. Requiring three consistent readings rejects brief transients, at the cost of waiting approximately 12\,ms when a potential trip is checked. Axis pulses are not continuously generated during this blocking check, so multiplying the full confirmation interval by the commanded feed would not correctly describe the software's movement during debounce. Physical stopping distance also depends on the mechanics; it requires a measurement rather than a software-delay calculation alone.~\cite[hardware clarifications; reproduce.py]{brauneevidence2026,braunepipeline2026}
+
+After startup, the step counters do not establish a known physical origin. Calibration therefore drives one axis towards either switch, reverses towards the other, and counts the switch-to-switch steps. Equation~\ref{eq:des-calibration} converts this count to the scale used for motion.
+\cite[reproduce.py, calibration geometry]{braunepipeline2026}
+\begin{equation}
+\kappa_x=\frac{N_x}{L_x},\qquad \kappa_y=\frac{N_y}{L_y},\qquad
+n_x=\operatorname{round}[(x+e)\kappa_x].
+\label{eq:des-calibration}
+\end{equation}
+Calculated example: Using the configured $L_x=200.6$ mm and an illustrative counted $N_x=16048$ gives $\kappa_x=80$ microsteps/mm. A target $x=20$ mm with $e=5$ mm becomes $n_x=\operatorname{round}(25\times80)=2000$. The step count is a chosen example, not a recovered calibration measurement. \cite[reproduce.py, Calibrate]{braunepipeline2026}
+
+Here $N_x,N_y$ are measured step counts, $L_x,L_y$ are the independently measured switch-to-switch travels, and $e=5$\,mm is the edge clearance. The corresponding expression applies to $y$. An axis retracts from the switch after calibration, and the origin lies inside the physical boundary. Absolute target counts are rounded and differenced against the tracked count, so rounding of one segment is not repeatedly accumulated as a new relative position error.~\cite[hardware clarifications; reproduce.py]{brauneevidence2026,braunepipeline2026}
+
+The recorded travel constants in the current code are $L_x=200.6$\,mm and $L_y=261.3$\,mm. With 5\,mm clearance on both ends, the software travel limits are 190.6 by 251.3\,mm before the writing margins are applied. These are configuration values describing the available travel; a separate calibration record is needed to state the measured microsteps per millimetre. The result of calibration is not retained as a valid position across a restart.~\cite[hardware clarifications; reproduce.py]{brauneevidence2026,braunepipeline2026}
+
+Calibration compensates for scale error, but it cannot correct an imprecise reference measurement. If the travel measurement has error $\delta L$, its first-order contribution to position error at commanded distance $x$ is given by Equation~\ref{eq:des-scaleerror}.
+\begin{equation}
+|\delta x|\simeq |x|\frac{|\delta L|}{L}.
+\label{eq:des-scaleerror}
+\end{equation}
+
+For example, allocating 0.25\,mm to scale error over 190.6\,mm of $x$ travel requires the 200.6\,mm reference travel to be known to approximately 0.263\,mm. This allocation in Equation~\ref{eq:des-scaleerror} is a design budget, not a measured uncertainty. Switch repeatability, backlash, pen compliance and squareness require the remaining error allowance.~\cite[hardware clarifications; reproduce.py]{brauneevidence2026,braunepipeline2026}
+
+\subsubsection{Electrical integration and power distribution}
+\label{sec:des-power}
+The motor-driver supply is operated at 24\,V. The recorded supply-current indication is 0.35\,A, with the supply current limit set to 2.11\,A. These quantities have different meanings: the first is a reading at an operating condition, the second limits the available supply current, and neither specifies the winding-current regulation of an A4988. At the recorded operating condition, that supply delivers approximately $24(0.35)=8.4$\,W. This reading does not include a verified peak-load test or establish total consumption from both supplies.~\cite[hardware clarifications]{brauneevidence2026}\cite[reproduce.py]{braunepipeline2026}
+
+
+The A4988 current-trip setting follows Equation~\ref{eq:des-current}~\cite[p.~9]{a4988ds}.
+\begin{equation}
+I_{\mathrm{trip,max}}=\frac{V_{\mathrm{ref}}}{8R_S}.
+\label{eq:des-current}
+\end{equation}
+
+Here $R_S$ is the carrier's sense resistance and $V_{\mathrm{ref}}$ is the measured reference voltage. For illustration only, $R_S=0.10\,\Omega$ and a 1.00\,A trip setting would require $V_{\mathrm{ref}}=0.80$\,V. The actual setting depends on the installed resistor and reference voltage. Available torque and driver heating depend on that setting; the motor's 1.68\,A phase rating does not mean the driver is operating at 1.68\,A.~\cite[hardware clarifications; reproduce.py]{brauneevidence2026,braunepipeline2026}
+
+The reported resistor marking is tentatively R10, corresponding to 0.10\,$\Omega$ if confirmed. This supports the illustrative resistance in Equation~\ref{eq:des-current}, but does not supply the missing measured reference voltage. The ODROID uses its supplied mains adapter; its DC output rating remains to be confirmed separately from the 24\,V stepper supply. The dedicated ODROID 3.3\,V rail supplies the installed 3.3\,V loads, including the pen motor. The GPIO connections carry the associated control and feedback signals.~\cite[hardware clarifications; reproduce.py]{brauneevidence2026,braunepipeline2026}
+
+The complete wiring needs a defined common logic reference between the ODROID, drivers and pen circuit. Motor-current returns should not be confused with signal paths, and driver supply decoupling must be located at the driver rather than relying on long supply leads. Figure~\ref{fig:des-complete-circuit} shows the complete supply and signal connections, with component values and the common reference identified.~\cite[hardware clarifications]{brauneevidence2026}
+
+
+\begin{figure}[!htbp]\centering
+\designasset{design-complete-circuit.pdf}{0.98}{Complete circuit with GPIO offsets/physical pins, 24 V motor rail, ODROID supply, pen supply, driver logic rails, switch resistors and protection components.}
+\caption{Complete electrical circuit and power distribution.~\cite{brauneevidence2026,braunepipeline2026}}
+\label{fig:des-complete-circuit}
+\end{figure}
+
+\designgap{Confirm each driver's sense-resistor marking, measured Vref and cooling arrangement; record the ODROID adapter's DC output rating, the operating state during the 0.35 A reading, and fitted decoupling.}
+
+\subsubsection{Image capture arrangement}
+\label{sec:des-camera}
+The image-processing input depends on the camera arrangement as well as the algorithms. A camera looking approximately normal to a flat page reduces perspective distortion, and a restrained page reduces local curvature that a single deskew angle cannot remove. The capture area must include the full writing region while keeping the relevant strokes large enough to survive the line crop and network resize. The proposal specifies well-lit operation; software illumination normalisation is intended to accommodate residual variation within that arrangement.~\cite[hardware clarifications]{brauneevidence2026}\cite[reproduce.py]{braunepipeline2026}
+
+
+The USB capture path returns a saved image to the same classification routine used for uploads. This gives both inputs a common orientation and segmentation procedure. The installed camera position, page restraint and illumination arrangement are identified in Figure~\ref{fig:des-capture}.~\cite[hardware clarifications; reproduce.py]{brauneevidence2026,braunepipeline2026}
+
+The camera is specified as an 8\,MP USB autofocus unit with an IMX179 CMOS sensor and a $78^\circ$ field of view. Its supplied resolution specification is 3264 by 2488 pixels. The capture module opens the UVC device through OpenCV, reuses an active preview handle when available, and otherwise discards an initial sequence of five frames before saving the last readable frame. This gives the camera time to settle, but does not verify sharpness or autofocus convergence. The current routine does not explicitly request that advertised resolution, so the saved frame dimensions must be checked rather than equating sensor specification with operating resolution.~\cite[hardware clarifications]{brauneevidence2026}
+
+
+\begin{figure}[!htbp]\centering
+\designasset{design-camera-arrangement.jpg}{0.70}{Photograph of the actual camera and page mount, labelled with working distance, page area and illumination direction.}
+\caption{Page capture arrangement used to supply images to the processing pipeline.~\cite{brauneevidence2026,braunepipeline2026}}
+\label{fig:des-capture}
+\end{figure}
+
+\designgap{Verify the supplied camera specification against its label and saved frame dimensions; add working distance and mounting dimensions. Describe only the lighting arrangement actually used; do not claim a measured lux range without a measurement.}
+
+\subsubsection{Hardware verification and practical limitations}
+The purpose of hardware verification is to establish that a coordinate command produces the intended type of movement before handwriting is introduced. Axis-aligned lines expose scale and direction errors; diagonal lines expose coordinated stepping and frame geometry; repeated pen changes expose clearance and pressure problems. The square-and-triangle comparison already included in the draft is useful for this purpose (Figure~\ref{fig:des-shapetest}). Its visual agreement supports correct interpretation of the commanded shape, but does not by itself establish the proposal's absolute accuracy or repeatability specification.
+
+\begin{figure}[!htbp]\centering
+\begin{minipage}{0.47\linewidth}\centering
+\includegraphics[width=\linewidth,height=0.23\textheight,keepaspectratio]{Figures/square-triangle-gcode-preview.png}\par(a) Commanded trajectory
+\end{minipage}\hfill
+\begin{minipage}{0.47\linewidth}\centering
+\includegraphics[width=\linewidth,height=0.23\textheight,keepaspectratio]{Figures/square-triangle-reproduced.jpg}\par(b) Physical drawing
+\end{minipage}
+\caption{Geometric commissioning example comparing the commanded path with the physical drawing. Formal positional qualification is reported in Results.~\cite{brauneevidence2026,braunepipeline2026}}
+\label{fig:des-shapetest}
+\end{figure}
+
+The design's principal strength is the direct relationship between orthogonal coordinates and motor displacement, combined with a mechanically shared drive on the two sides of the moving rail. Its principal uncertainties lie in physical compliance and open-loop execution. A missed step changes the actual position without changing the tracked count, and calibration cannot retrospectively recover where that happened. Controlled acceleration, a more consistent pulse scheduler and improved mechanical constraint are possible remedies, but their expected benefit must be separated from the performance of the implemented machine. The formal dimensional and repeated-drawing measurements in Results assess the resulting mechanical accuracy.~\cite[hardware clarifications; reproduce.py]{brauneevidence2026,braunepipeline2026}
+\FloatBarrier

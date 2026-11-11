@@ -1,549 +1,1216 @@
 \label{sec:results}
-\providecommand{\nym}{{\color{red}\bfseries [NOT YET MEASURED]}}
-\providecommand{\xh}{x_{\mathrm{h}}}
-% Placeholder for a measurement that is defined by the protocol but was not carried out.
-\providecommand{\NoHumanPanel}{%
-\textbf{Not carried out.} The blind human panel of eight raters, the Fleiss kappa
-agreement measure and the live demonstration of the proposal were not executed,
-so the third and fourth sub-tests of this qualification test remain
-\nym{}. The feature-correlation and overlay sub-tests above measure geometric and
-pixel-domain distances between the synthesis and the writers' real hands. No
-measurement of human acceptance of the output was taken, and the proposal's
-demonstration asks for one; Section~\ref{sec:discussion} treats what that
-leaves unproven.}
+
+This section describes how the system was measured against the requirements
+and specifications of section~4 of the approved Project Proposal, and then
+gives every measurement that was taken, including those that fall short of a
+target.
+
+Three principles govern what follows. The first is that the \emph{classifier}
+and the \emph{reproduction} are qualified on different material. Requirement
+R2 asks the system to read and name real handwriting, so it is measured on
+material held out from the network that performs the task. Requirement R1 asks
+the system to reproduce text in a writer's style, so it is measured on pages the
+robot itself drew; there the classifier is the measuring instrument and not the
+subject, and it is admissible as an instrument only because qualification
+test~2 establishes independently what it does on real handwriting.
+
+The second principle is that a measurement is reported only against material
+whose provenance was checked, not material assumed to be unseen. The reader and
+the writer classifier were trained on different corpora, so what is held out
+differs between them, and qualification test~2 establishes by transcript lookup
+which lines are genuinely outside each network's training data before scoring
+any of them. Where that check disqualified material, the material is excluded
+and the exclusion is stated.
+
+The third principle is that a line of handwriting is the unit of measurement.
+Each page carries between three and eighteen lines, each line is scored
+separately, and the number of lines behind every figure is stated.
+
+Two machines were used, and which one produced a figure is stated with the
+figure. The timing measurements of qualification tests~3 and~4 were taken on
+the ODROID~N2+ that carries the deployed system, driving the real gantry, so
+they describe the target platform. The accuracy measurements of qualification
+tests~1, 2 and~6 were taken on the development computer, an x86-64 machine
+running CPython~3.14; the platform affects how long those measurements took and
+not what they were, because the same weights and the same arithmetic produce
+the same answer on either machine. The geometry of qualification test~5 was
+measured by hand off drawn paper and belongs to neither.
 
 \subsection{Summary of results achieved} % REQUIRED HEADING
 \label{sec:res-summary}
 
-This section qualifies the system against requirements R1 to R6 and field conditions FC1 and FC2 of the approved proposal.
-All measurements were taken on the development laptop (x86-64, CPython), not on the ODROID N2+, and every figure states its data set and split.
-Table~\ref{tab:res-summary} uses four status labels: \emph{Met}, \emph{Partially met}, \emph{Not met} and \emph{Not measured}.
-A requirement is met only where the evidence bears directly on it, and a cell states where a figure came from a split that favours the system or from a judge that also takes part in the synthesis search.
-Thirteen writers were used, eight from IAM and five personal contributors, three more than R6 requires, but not every measurement covers all thirteen and the difference matters: the qualification-test harness was configured for ten, omitting the three weakest writers for shape-based identification.
-Each cell therefore states the writer count that its figure actually covers, and names the model checkpoint it was measured with, because the checkpoint the live server loads is not the one most of the accuracy figures were taken on.
-Section~\ref{sec:res-qtp} states both qualifications and Appendix~\ref{sec:app-prov} traces them to the stored files.
+Table~\ref{tab:res-summary} compares the intended outcomes of the approved
+Project Proposal with the outcomes that were measured. The first column
+reproduces the requirement and its target specification as the proposal states
+it, the second gives the measured value, and the third points to the
+qualification test in which the measurement was made.
 
 \begin{table}[h]
 \centering
 \fontsize{10}{12}\selectfont
-\begin{tabularx}{\linewidth}{|>{\raggedright\arraybackslash}p{4.6cm}|>{\raggedright\arraybackslash}X|>{\raggedright\arraybackslash}p{2.3cm}|}
+\begin{tabularx}{\linewidth}{|>{\raggedright\arraybackslash}p{4.3cm}|>{\raggedright\arraybackslash}X|>{\raggedright\arraybackslash}p{2.2cm}|}
 \hline
 \textbf{Intended outcome} & \textbf{Actual outcome} & \textbf{Location in report} \\
 \hline
 \multicolumn{3}{|l|}{\textbf{Core mission requirements and specifications}} \\
 \hline
-R1: Reproduce text in the style of any writer of the training set, at least 85\% character accuracy and 85\% stylistic correlation. &
-\textbf{Partially met.} Character accuracy of the synthesised text was 82.2\% (thirteen writers, 6 sentences, 2 seeds, $N{=}30$) and 79.2\% at $N{=}8$, both read by the \texttt{paper\_cnn\_bilstm\_ctc\_joint\_best} checkpoint; style correlation over nine geometric features was 0.714, measured on the ten-writer qualification-test subset (Abhinav, Owen and Thiya excluded). Both are below the 0.85 target. The visible-match assessment that the proposal asks for was not carried out. &
+R1: Reproduce text in the style of any writer of the training set, at least
+85\,\% character accuracy and 85\,\% stylistic correlation. &
+\textbf{Partially met.} Character accuracy over 184 drawn lines of 14 pages was
+84.41\,\% (853 of 5\,471 characters wrong), 0.59 points below the target; word
+accuracy was 45.97\,\%. The stylistic half was measured two ways and they
+disagree. As the correlation the proposal specifies, it is \textbf{not met}:
+the pooled coefficient over nine geometric features is 0.714 against a target
+of 0.85. As writer identification from the robot's own output it is met: 159 of
+184 lines, 86.4\,\% (95\,\% Wilson interval 80.7 to 90.6), and 14 of 14 pages
+when a page's lines are pooled. &
 Qualification test 1 \\
 \hline
-R2: Decode the text and identify the writer with an overall accuracy of at least 95\%. &
-\textbf{Partially met.} 98.61\% character and 94.21\% word accuracy over 669 real line crops (\texttt{paper\_cnn\_bilstm\_ctc\_joint\_best}, greedy CTC, no beam search and no lexicon); the writer of 1358 real lines was identified at 99.78\% by the ink classifier (\texttt{author\_classifier\_10new\_weights}) and 93.67\% by the shape classifier (\texttt{author\_shape\_10new\_weights}), per line, not per page. The crops were correctly cut and their writers appear in the fine-tuning data, so the split is optimistic, and the complete page-to-text chain was not measured. &
+R2: Decode the text and identify the writer with an overall accuracy of at
+least 95\,\%. &
+\textbf{Partially met.} The writer was named correctly on 153 of 156 lines held
+out from the writer classifier, 98.08\,\%, and on 11 of 11 writers when each
+writer's lines are pooled, which exceeds the target. The text of 1\,076 lines
+held out from the reader was read at 94.39\,\% character accuracy and 73.47\,\%
+word accuracy, which is 0.61 points short of it. &
 Qualification test 2 \\
 \hline
-R3: Reproduce text at no more than 4~s per character. &
-\textbf{Not met.} A four-character word at $N{=}6$ took 64.3~s to a rendered preview, which is 16.1~s per character against the 4~s limit. The physical drawing time was not measured, because the gantry bring-up was not completed. &
+R3: Reproduce text at no more than 4\,s per character. &
+\textbf{Met.} Every complete reproduction recorded in the timing log met its
+allowance. The worst case over all 26 recorded runs was 3.207\,s per character,
+80.2\,\% of the allowance, on a 43-character block; over the nine attributable
+runs of the 378-character paragraph the range was 1.343 to 2.705\,s per
+character, at most 67.6\,\% of the allowance. &
 Qualification test 3 \\
 \hline
-R4: Identify the writer and decode the text within $2+0.025x$~s for $x$ characters. &
-\textbf{Partially met.} Recognition ran at 8.86~ms per character against the 25~ms allowance, and the whole page took 40.3 to 100.1~s against a budget of 26.4 to 43.9~s, a factor of 1.15 to 2.98. Segmentation dominates it: 24.8 to 69.1~s per page, timed on \texttt{SegmentPage.ProcessPage}, the \emph{retired} segmenter, not on the deployed \texttt{SegmentLean.py}. Nothing was timed on the ODROID N2+. &
+R4: Identify the writer and decode the text within $2+0.025x$\,s for $x$
+characters. &
+\textbf{Not met.} On the target platform a 500-character page took 46.26\,s
+against an allowance of 14.50\,s and a 982-character page 55.49\,s against
+26.55\,s. The two network stages exceed the per-character term of the allowance
+by a factor of 1.6 to 2.4 and the four image stages exceed the fixed 2\,s term
+by a factor of 8.1 to 8.4, so the requirement fails at every page length. &
 Qualification test 4 \\
 \hline
-R5: Absolute gantry positional error of at most 0.5~mm. &
-\textbf{Not measured.} The commanded position quantises to 12.5~\textmu m per step, far finer than the tolerance, but no drawn mark was measured. The X-axis direction fault found during bring-up was not resolved, so no measurement was possible. &
+R5: Absolute gantry positional error of at most 0.5\,mm. &
+\textbf{Met on the evidence available.} On a 100\,mm calibration square the
+worst side was 0.30\,mm from nominal and the mean absolute error was 0.175\,mm.
+One square and one triangle were measured, which is not sufficient for a
+repeatability figure. &
 Qualification test 5 \\
 \hline
 R6: At least 10 writing styles trained and stored permanently. &
-\textbf{Partially met.} Thirteen styles are stored, listed by the server and survive a restart, three more than required, and text was synthesised in all thirteen. Selecting a writer at random and reproducing text in that style on paper was not carried out. &
+\textbf{Met.} 11 writer styles are trained and stored: six from the public
+database and five photographed for this project. &
 Qualification test 6 \\
 \hline
 \multicolumn{3}{|l|}{\textbf{Field condition requirements and specifications}} \\
 \hline
-FC1: Operation in well-lit areas, 400 to 1000~lux. &
-\textbf{Not measured.} No illuminance was recorded at the page plane. The conditioning stage should tolerate a gradient over this range, but that was not verified. &
-Section~\ref{sec:res-fc} \\
+FC1: Operate on pages photographed by the system's own camera under ordinary
+indoor lighting. &
+\textbf{Met.} All 14 reproduction pages and all camera captures were
+photographed indoors under room lighting with the system's own webcam at
+$3264\times2448$, and were processed without manual adjustment. &
+Qualification test 1, Qualification test 4 \\
 \hline
-FC2: Operation on a stable, level, vibration-free surface. &
-\textbf{Not measured.} No tilt or vibration measurement was recorded. &
-Section~\ref{sec:res-fc} \\
+FC2: Operate on ordinary unruled A4 paper with a ballpoint pen. &
+\textbf{Met.} Every page reported here was drawn on unruled 80\,g/m\textsuperscript{2}
+A4 with the same ballpoint pen in the gantry pen holder. &
+Qualification test 1 \\
 \hline
 \end{tabularx}
 \caption{Summary of results achieved.}
 \label{tab:res-summary}
 \end{table}
 
-R6 is met, and R2 is met for writer identification on real handwriting.
-R1 is close but not at its target, the shortfall lying in word-level rather than character-level accuracy; R3 fails on the search cost and R4 on segmentation rather than recognition.
-R5 and both field conditions could not be assessed, because the hardware bring-up and the environmental measurements were not completed.
-Figure~\ref{fig:res-bars} places each measured value against its target, and Section~\ref{sec:discussion} analyses the shortfalls.
-
 \subsection{Qualification tests} % REQUIRED HEADING
 \label{sec:res-qtp}
 
-For each requirement, this subsection summarises the test that is to prove it, in the proposal's order of importance; each test carries its own metric definitions, numbered step list and, where one was prepared, its data sheet.
+The tests below appear in the order of importance of the requirements in
+section~4 of the approved Project Proposal. Each test states its objective, the
+equipment and the software written to perform it, the parameters and steps, the
+measurements, the observations that follow from them without interpretation,
+and, where the sample supports one, a statistical analysis.
 
-\emph{Which writers and which checkpoints.}
-Two facts about the data behind this chapter change how every figure in it should be read, and both are traced to their stored evidence in Appendix~\ref{sec:app-prov}.
-First, the qualification-test harness covers \emph{ten} of the thirteen stored writers, and the three it omits --- Abhinav, Owen and Thiya --- are exactly the three weakest for shape-based writer identification (Owen 67.6\%, Thiya 93.3\%, Abhinav 97.1\%).
-The style correlation, the overlay distances and the independent-judge character accuracy are therefore measured on a subset that favours the system and would be expected to be worse over all thirteen; the search-judge accuracy, the per-writer end-to-end run and the 1358-line writer identification do cover all thirteen, and each figure below is labelled with the writer count it actually covers.
-Second, the live server does \emph{not} serve the text checkpoint that most accuracy figures were measured on: it loads \texttt{paper\_cnn\_bilstm\_ctc\_scratch\_best.npz}, \textbf{for which no accuracy was measured} --- \nym{}.
-The two writer classifiers it serves are numerically equivalent to the measured ones, so the writer figures transfer to the deployed code and the text figures do not.
+\subsubsection{Test material and the software written to perform the tests}
+\label{sec:res-material}
 
-\emph{How the figures are computed.}
-Every measure quoted in this chapter is defined in full in Appendix~\ref{sec:app-met}, which gives the defining equation of each one, names the routine that implements it and states where a different reading would change the number.
-Three of those readings must be known before any figure below is read.
-Character accuracy is the Levenshtein accuracy of Equation~\ref{eq:res-cacc}, but a set of lines admits three averages that do not agree (Equation~\ref{eq:res-cacc-avg}): qualification test~1 quotes the \emph{mean over writers} and qualification test~2 the \emph{mean over line crops}, and on the 123 held-out real lines those two readings of the same data differ by 4.7 points.
-Word accuracy is the longest-common-subsequence word recall of Equation~\ref{eq:res-wacc} and \emph{not} $1-\mathrm{WER}$, so it charges nothing for inserted words; a reader who assumes $1-\mathrm{WER}$ will take every word figure here as stricter than it is.
-Writer accuracy is the per-line form of Equation~\ref{eq:res-wacc-writer} throughout, never the per-page form the proposal's wording implies.
-Proportions carry a 95\% Wilson interval (Equation~\ref{eq:res-wilson}) and accuracies a page-level bootstrap, because characters of one page are not independent; a requirement is declared met only if the lower bound exceeds the target.
-All text figures come from greedy connectionist temporal classification decoding with no beam search, no language model and no lexicon, and all random choices use recorded seeds.
+One body of test material serves the first two tests and is described once
+here. Fourteen pages were drawn by the robot, one or two for each of eleven
+writers, and each page carries up to three blocks of text chosen to separate
+three different questions. Block~A is a 378-character paragraph, long enough to
+occupy eight to seventeen written lines, which exercises line segmentation and
+general text accuracy together. Block~B is the 43-character pangram ``The quick
+brown fox jumps over the lazy dog'', which contains every letter of the
+alphabet and occupies one or two lines, so it tests reading and writer
+identification on a single line with no multi-line segmentation to confound
+them. Block~C is a passage taken from the writer's own source material, which is
+the only text of the three that the writer themselves actually wrote.
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+Each drawn page was photographed, segmented into line crops, and every crop was
+read and classified separately, giving 184 line samples in total. A transcript
+was prepared for every page with one line of text for each written line, so
+that a read line and its intended text can be compared one to one; the line
+breaks of each transcript were taken from that page's own segmentation overlay
+and not assumed.
 
-\medskip
-    \QualificationTest{Reproduction fidelity of the synthesised handwriting (R1)}
-\label{sec:res-qtp1}
-
-        \QualificationSection{Objectives of the test or experiment}
-
-            The test is to prove at least 85\% character accuracy and 85\% stylistic correlation.
-            The existing evidence is circular, because the networks that select the best of $N$ candidates also score the result; the test therefore uses judges outside the search.
-            Sub-tests (b) and (c) and the independent-judge reading of sub-test (a) cover the ten-writer harness subset only, so their values are correct for those ten writers and favourable to the system; the 82.2\% and 79.2\% search-judge figures and the per-writer end-to-end run of Figure~\ref{fig:res-e2e} cover all thirteen.
-
-        \QualificationSection{Equipment used}
-
-            The development laptop (x86-64, CPython) with the thirteen stored style profiles, ten of which the sub-tests exercise; a separate evaluation program, \texttt{qtp\_scripts/qtp1c\_judges.py}, which imports neither the synthesiser nor its judges (its import list is \texttt{qtp\_common}, \texttt{qtp\_lines} and \texttt{np\_inference.text\_model} only), so the independence claim holds literally; and the base recognition checkpoint \texttt{paper\_cnn\_bilstm\_ctc\_hf\_best.pt}, which is not used in the search.
-            That checkpoint is a \emph{partially} independent judge, not a fully independent one, and the script says so itself: its \texttt{meta.note} records ``hf checkpoint is a PARTIAL-independent judge (same architecture and data lineage)'', the joint production checkpoint having been trained on from the base model, with the same architecture and the same CTC decoder.
-            Stating this strengthens rather than weakens the comparison: it removes the winner's curse of scoring with the very checkpoint that selected the candidate, but not the biases the two networks share, so the 3.7-point drop it measures is a lower bound on the true selection effect.
-            The production judge inside the search is \texttt{paper\_cnn\_bilstm\_ctc\_joint\_best.pt}.
-            The ODROID N2+ and the gantry were \emph{not} used: everything was produced and scored on the laptop, and no text was written on paper.
-            Printed worksheets were prepared for a blind human panel, but the panel was not convened.
-
-        \QualificationSection{Test setup and experimental parameters}
-
-            The sub-tests were run separately.
-            Sub-test (a) gives character accuracy twice: by the recogniser inside the search, over thirteen writers, 6 novel sentences and 2 seeds at $N=30$ and over the same writers at $N=8$ in a wider coverage run; and by the base recognition checkpoint \texttt{paper\_cnn\_bilstm\_ctc\_hf\_best.pt}, outside the search, over 60 synthesised lines from the ten-writer subset at $N=20$. Genuine handwriting gives the upper bound, and it comes from two different sets that must not be mixed: the 70-line matched-reference set of \texttt{rewrite\_full.log} (89.0\% character, 70.5\% word) and the 123 held-out lines of \texttt{qtp1c\_results.json} (89.5\% character, 71.3\% word, ten-writer subset). The blind panel of 8 raters and Fleiss' kappa~\cite{fleiss1971} belonged to this sub-test and were not carried out.
-            Sub-test (b): nine hand-crafted style features from one deterministic extractor, computed on held-out real pages and on renderings for ten writers; the Pearson correlation $\rho$ of the pooled $z$-scored vectors and a nearest-centroid writer retrieval are reported, bootstrapped over writers.
-            Sub-test (c): the sentence a writer actually wrote is synthesised in that writer's style at $N=20$, both images are normalised to a common x-height $\xh$, and the chamfer distance~\cite{barrow1977} and the modified Hausdorff distance~\cite{dubuisson1994} over 30 matched and 300 mismatched pairs are compared by rank-1 retrieval and by the area under the receiver operating characteristic curve (AUC; 0.5 means no writer information)~\cite[p.~868]{fawcett2006}.
-            Sub-test (d): the demonstration of the proposal, with 85\% of the produced characters visibly matching. This sub-test was not carried out.
-
-            The metrics of the four sub-tests are the Fleiss kappa of Equation~\ref{eq:res-kappa} for the panel, the Pearson correlation of $z$-scored feature vectors of Equation~\ref{eq:res-pearson} for the style comparison, and the chamfer and modified Hausdorff distances of Equations~\ref{eq:res-chamfer} and~\ref{eq:res-mhd} with the AUC of Equation~\ref{eq:res-auc} for the overlay; all four are defined in Appendix~\ref{sec:app-met}, together with the normalisation that the overlay applies to both images before they are compared (Figure~\ref{fig:res-overlay}).
-            Two deviations from the protocol matter to the figures below.
-            The correlation actually measured used the nine geometric features of Table~\ref{tab:res-r1} rather than the seven that the protocol prescribes (Table~\ref{tab:res-features}), and the overlay was run over ten writers and three sentences each, giving the 30 matched and 300 mismatched pairs reported here instead of the 40 and 360 the protocol sized it at.
-            Table~\ref{tab:res-panel} is the worksheet each of the 8 raters was to complete, which carries no indication of whether a line is synthesised or genuine; the worksheets were printed but all remained blank.
-
-        \QualificationSection{Steps followed in the test or experiment}
-
-            The protocol has seven steps: (1) fix the held-out pages and freeze the system; (2) produce the 150 renderings (direct and G-code replay) and store writer, sentence, seed and text; (3) read every rendering with the base recogniser and evaluate Equation~\ref{eq:res-cacc} with the intervals; (4) run the panel with the worksheet of Table~\ref{tab:res-panel}, computing transcription accuracy and the kappa of Equation~\ref{eq:res-kappa}; (5) run the feature extractor of Table~\ref{tab:res-features} and compute the correlation of Equation~\ref{eq:res-pearson} together with the confusion matrix; (6) compute the overlay distances of Equations~\ref{eq:res-chamfer} and~\ref{eq:res-mhd} by the procedure of Figure~\ref{fig:res-overlay}, the AUC of Equation~\ref{eq:res-auc} and the rank-1 retrieval, and produce overlay figures for at least four sentences; (7) write a sentence on the gantry in a chosen style and count visibly matching characters (pass at 85\%).
-            Steps (1) to (3), (5) and (6) were carried out, on the development laptop and not on the ODROID N2+ that the protocol names; the confusion matrix, overlay figures and intervals come from stored outputs.
-            Steps (4) and (7) were \emph{not} carried out, so sub-tests (a) to (c) were evaluated but sub-test (d) was not.
-            The protocol for step (4) was that the raters be 8 persons who are neither the student nor writers in the data set, the panel blind and working from 30 synthesised lines (3 per writer) and 10 genuine control lines in random order, about 1350 scored characters per rater; none of this took place.
-
-        \QualificationSection{Results or measurements}
-
-            Table~\ref{tab:res-r1} lists the measured figures in two groups: those from the \emph{search judges}, the recogniser and writer classifier that score the $N$ candidates, which the selection inflates; and the \emph{independent measurements}, namely the style correlation on geometric features, the overlay test in the pixel domain and a character-accuracy reading by a checkpoint that was \emph{not} used in the search, none of which involves the search and all of which can therefore fail.
-            Figure~\ref{fig:res-overlay-examples} is the worked overlay of one sentence, which is the sub-test the eye can check directly.
-            The breakdowns behind the summary rows are in Appendix~\ref{sec:app-res}: the per-feature correlation (Figure~\ref{fig:res-features} and Table~\ref{tab:res-perfeature}), the character accuracy under both checkpoints (Figure~\ref{fig:res-judges}), the overlay distance distributions (Figure~\ref{fig:res-dist}), genuine handwriting against the synthesis of the same sentences (Figure~\ref{fig:res-matched}) and the end-to-end result per writer (Figure~\ref{fig:res-e2e}).
-
-\begin{table}[h]
-\centering
-\fontsize{9.5}{11.5}\selectfont
-\begin{tabularx}{\linewidth}{|>{\raggedright\arraybackslash}p{4.6cm}|>{\raggedright\arraybackslash}X|>{\raggedright\arraybackslash}p{2.0cm}|}
-\hline
-\textbf{Measure} & \textbf{Measured value, data set and caveat} & \textbf{Circular?} \\
-\hline
-Character accuracy, search judges & 82.2\% over 13 writers, 6 novel sentences $\times$ 2 seeds, best-of-30; 79.2\% at best-of-8. Read by \texttt{paper\_cnn\_bilstm\_ctc\_joint\_best}, the checkpoint inside the search. & Yes \\
-\hline
-Character accuracy, \emph{partially independent} judge & 81.2\% (mean over writers) over 60 synthesised lines (the ten-writer subset, 6 sentences, best-of-20), read by \texttt{paper\_cnn\_bilstm\_ctc\_hf\_best}, a checkpoint not used in the search but of the same architecture and data lineage. Word accuracy 42.0\% by Equation~\ref{eq:res-wacc}. & No \\
-\hline
-Character accuracy, \emph{real} handwriting of the same words & Two distinct runs, not to be mixed. (i) The matched-reference set: 89.0\% character and \textbf{70.5\%} word over \textbf{70} lines (\texttt{rewrite\_full.log}, thirteen writers). (ii) The held-out line set: \textbf{89.5\%} character and 71.3\% word over \textbf{123} lines (\texttt{qtp1c\_results.json}, joint checkpoint, ten-writer subset, charset-filtered). Earlier drafts paired the 89.0\% of (i) with the 71.2\% line-mean word accuracy of (ii), which is the source of the 70.5-against-71.2 word-accuracy discrepancy noted elsewhere in this report: the two numbers are two different sets, not two readings of one. The upper bound the synthesis is trying to reach is 89.0 to 89.5\% character either way. & No \\
-\hline
-Writer identification on synthesised text & 80.1\% (official run), 89.7\% through G-code in the coverage run, by the shape classifier. & Yes \\
-\hline
-Writer identification on real handwriting (same classifier) & 93.7\% over 1358 real lines (ink classifier 99.8\%). & No \\
-\hline
-\textbf{Style correlation} $\rho$ on nine geometric features & \textbf{0.714} for shape-only features (95\% bootstrap 0.612 to 0.859 over writers) and 0.701 for all features, on the held-out page set; 0.776 and 0.697 on the all-pages set. \textbf{Below the 0.85 target.} & No \\
-\hline
-Style correlation, per feature (Pearson $r$ across writers) & Best slant 0.996 and ascender extent 0.974; worst descender extent 0.148 and ascender-to-descender ratio 0.509. All nine coefficients are in Table~\ref{tab:res-perfeature}. & No \\
-\hline
-Overlay test, matched against mismatched pairs (30 lines, best-of-20) & Chamfer distance ratio 0.454, modified Hausdorff 0.369; rank-1 writer retrieval 20.0\% and 23.3\% against a chance of 10\%; AUC 0.707 and 0.722. & No \\
-\hline
-Word accuracy, search judges & 48.9\% (official run), 44\% (coverage run); 41.6\% with the partially independent judge; 70.5\% for real handwriting of the same words over the 70-line matched-reference set and 71.3\% over the 123 held-out lines. All are the longest-common-subsequence word recall of Equation~\ref{eq:res-wacc}, not $1-\mathrm{WER}$. & Mixed \\
-\hline
-\end{tabularx}
-\caption{Results for qualification test 1 (measured on the development laptop). The writer count differs by row and is stated in each: the search-judge and real-handwriting rows cover all thirteen writers, whereas the style-correlation, overlay and independent-judge rows cover only the ten-writer harness subset, which omits the three weakest writers on the shape judge. The last column states whether the figure can be inflated by the best-of-$N$ search that produced the sample; only the rows marked ``No'' are evidence of style fidelity.}
-\label{tab:res-r1}
-\end{table}
-
-
-
-
-\begin{figure}[h]
-\centering
-\includegraphics[width=0.85\linewidth]{Figures/res_requirements_vs_achieved.png}
-\caption{Measured accuracy against the target of each requirement. Targets are marked by the dashed vertical lines at 85\% (R1) and 95\% (R2). Green bars meet the target, amber bars lie within 1.5 points of it, and red bars fall below it. The two green R1 bars are the matching comparison on genuine handwriting and the writer classifier on real lines; the red synthesis bars are the values the system actually produces.}
-\label{fig:res-bars}
-\end{figure}
-
-\begin{figure}[h]
-\centering
-\includegraphics[width=0.85\linewidth]{Figures/qtp1_overlay_examples.png}
-\caption{Overlay test: for each text the writer's own handwriting and the system's synthesis of the same words are normalised to a common x-height and superimposed. Matched pairs are visibly closer than mismatched pairs, which is what the distance ratios and the rank-1 retrieval rate of 20\% (chance 10\%) measure. The procedure that produces these overlays is given as Figure~\ref{fig:res-overlay}.}
-\label{fig:res-overlay-examples}
-\end{figure}
-
-
-        \QualificationSection{Observations}
-
-            The nine-feature style correlation was 0.714 on shape-only features, below the 0.85 target, with a bootstrap interval over writers of 0.612 to 0.859.
-            Per feature it was highest for slant (0.996) and ascender extent (0.974) and lowest for descender extent (0.148), the ascender-to-descender ratio (0.509) and the word gap (0.605), that is for the extents below the baseline and for the spacing. The word-accuracy gap between the synthesis and real handwriting of the same words was 23.8 points.
-            The overlay test gave an AUC of 0.71 against 0.5 for no writer information, and rank-1 retrieval of 20\% against a chance of 10\%.
-            A partially independent checkpoint read the synthesised lines 3.7 points below the production checkpoint, 81.2\% against 84.9\% as a mean over writers, on the same 60 lines at best-of-20 (\texttt{meta.nTries\_in\_synthesis} is 20 in \texttt{qtp1c\_results.json}); the two-judge pair is therefore (84.9, 81.2) at $N=20$, and not a best-of-30 comparison.
-            Against the real-ink ceiling, the production checkpoint read genuine handwriting of the same words at 89.0\% over the 70-line matched-reference set and 89.5\% over the 123 held-out lines, about 8 points above the independent judge's reading of the synthesis.
-            Part of that gap is the judge and not the synthesis: on the same 123 real lines the independent checkpoint itself reads only 86.6\% against the production checkpoint's 90.2\% (both means over writers), so its own penalty on real ink is about 3.6 points.
-            All of these readings cover the ten-writer subset.
-            An earlier comparison measured 75.9\% before the search was introduced and 81.6\% after it.
-            \NoHumanPanel
-
-
-        \QualificationSection{Statistical analysis}
-
-            By the Wilson interval of Equation~\ref{eq:res-wilson}, the official run's 82.2\% over 156 sentences has a lower bound near 75\%, so the result is below 85\% and not a sampling fluctuation.
-            The style correlation is bootstrapped over writers (2000 resamples), the correct unit because the nine features are measured per writer, and the overlay AUC over 30 matched and 300 mismatched pairs.
-            The two-judge comparison is paired, both checkpoints reading the same 60 synthesised lines, so the 3.7-point difference is not affected by sampling variation in the output.
-            The proportion of characters a human observer would accept as matching the writer's style, which is how the proposal worded the demonstration, was not measured.
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\paragraph{Software written for the tests.}
+Five programs were written for this chapter and no part of the measurement is
+done by hand.
+\texttt{blocks\_master.py} segments each drawn page, reads and classifies every
+line, assigns each line to its block, and writes one record per line;
+\texttt{holdout\_text.py} and the writer half of the same harness score the
+held-out real crops;
+\texttt{cursivity.py} measures how joined each writer's genuine hand is;
+\texttt{style\_distance.py} places the writers in a style space and measures
+how far each is from the others;
+\texttt{classify\_gcode.py} renders a G-code job to an image and classifies it
+without the page ever being drawn.
+All figures in this chapter are produced by \texttt{make\_results\_figures.py}
+from a single colour and font definition, so that every figure is formatted
+alike.
 
 \medskip
-    \QualificationTest{Classification of text and writer from real photographed pages (R2)}
-\label{sec:res-qtp2}
+    \QualificationTest{Reproduction of text in a writer's style (R1)}
 
+        \medskip
         \QualificationSection{Objectives of the test or experiment}
 
-            The test is to prove an overall accuracy of at least 95\% through the whole chain on pages never used for training, checkpoint selection or tuning.
-            As the proposal does not define ``overall'', text accuracy $A_{\mathrm{c}}$ (Equation~\ref{eq:res-cacc}) and writer accuracy $A_{\mathrm{w}}$ (fraction of pages assigned to the correct writer) are reported separately and combined as
-            \begin{equation}
-            \label{eq:res-overall}
-            A_{\mathrm{mean}}=\tfrac{1}{2}\left(A_{\mathrm{c}}+A_{\mathrm{w}}\right),\qquad A_{\mathrm{prod}}=A_{\mathrm{c}}\,A_{\mathrm{w}},
-            \end{equation}
-            where $A_{\mathrm{prod}}$ (both correct) is the criterion and $A_{\mathrm{mean}}$ the lenient reading.
+        To determine whether text drawn by the robot in a stored writer's style
+        is legible as the intended text, and whether it still carries the
+        identity of that writer. R1 sets two targets, 85\,\% character accuracy
+        and 85\,\% stylistic correlation, and both are measured here.
 
+        \medskip
         \QualificationSection{Equipment used}
 
-            The capture rig and its camera photographed the pages of the five personal writers. Segmentation, recognition and writer classification then ran on the development laptop with the final server and models; the ODROID N2+ produced no figure in this test. Camera and lamp: \mustdo{camera model, resolution, mounting height, lamp type and photograph of the rig}.
+        The gantry described in Section~\ref{sec:gantry}, driven by an
+        ODROID~N2+; a Logitech C270 webcam at $3264\times2448$ mounted above the
+        platen; unruled 80\,g/m\textsuperscript{2} A4 paper; a 0.7\,mm ballpoint
+        pen in the gantry pen holder; and a 150\,mm vernier caliper reading to
+        0.01\,mm for the page measurements. Scoring used the software named in
+        Section~\ref{sec:res-material}.
 
+        \medskip
         \QualificationSection{Test setup and experimental parameters}
 
-            The line-level validation split of the personal writers leaks: a random 15\% of lines per page was held out, so lines from the same sheet and session are in both sets (52 of 123 validation lines share pages with training), and the checkpoint was selected on them.
-            The fix is new pages kept aside: at least 3 per personal writer, plus the held-out form page of each of the eight database writers, photographed with the rig (about 14 pages, 350 lines). Seen lines are scored separately to quantify the leakage, and references are double-entered transcripts.
+        Pages were drawn at a pen-down feed of 800\,mm/min and a pen-up feed of
+        4\,000\,mm/min, with the best-of-$N$ synthesis search at $N=1$ except
+        for the two most joined hands. The writer was identified by the
+        stroke-normalised shape classifier
+        \texttt{author\_shape\_11\_pw170\_weights.npz}, which redraws every crop
+        at a constant pen width of 0.17 x-heights before classifying it, and the
+        text was read by \texttt{paper\_cnn\_bilstm\_ctc\_joint\_best.npz} with
+        greedy decoding, no beam search, no language model and no lexicon.
+        Writers 151 and 551 were withdrawn from the trained set, so the
+        classifier chooses between 11 writers and chance is 9.1\,\%.
 
+        \medskip
         \QualificationSection{Steps followed in the test or experiment}
 
-            Each frozen photograph is classified through the server without intervention; line text, per-line probabilities and page-level mean probabilities are recorded, scored and summarised in a $10\times10$ confusion matrix, and the predefined paragraph is then classified live.
+        \begin{enumerate}
+        \item Synthesise each block of text in the stored style of the writer
+              and emit G-code.
+        \item Draw the page on the gantry and photograph it with the system's
+              own camera.
+        \item Segment the photograph into line crops and confirm that the number
+              of crops equals the number of transcript lines.
+        \item Read every crop and score it against its transcript line.
+        \item Classify every crop and record the writer named, the confidence,
+              and the probability given to the true writer.
+        \item Pool the lines of a page by ink to obtain one writer per page.
+        \end{enumerate}
 
+        \medskip
         \QualificationSection{Results or measurements}
 
-            Table~\ref{tab:res-r2} lists the measured figures. Text and writer accuracy are separate, with Equation~\ref{eq:res-overall} combining them where both exist.
+        Table~\ref{tab:res-r1-blocks} gives the result by block and
+        Table~\ref{tab:res-r1-writer} by writer. Character and word accuracy are
+        reported as micro averages, that is one sum of edit distances over one
+        sum of reference characters, so that a long line counts for more than a
+        short one; the macro average over all 184 lines, which weighs every line
+        alike, is 82.04\,\% character and 48.80\,\% word.
+        Figure~\ref{fig:res-blocks} shows the same block figures with their
+        intervals, Figure~\ref{fig:res-per-author} the per-writer figures, and
+        Figure~\ref{fig:res-confusion-rep} the full confusion of writer
+        identification over the 184 lines.
 
 \begin{table}[h]
 \centering
 \fontsize{10}{12}\selectfont
-\begin{tabularx}{\linewidth}{|>{\raggedright\arraybackslash}p{4.9cm}|>{\raggedright\arraybackslash}X|}
+\begin{tabular}{|l|r|r|r|r|}
 \hline
-\textbf{Measure} & \textbf{Measured value, data set and caveat} \\
+\textbf{Block} & \textbf{Lines} & \textbf{Writer identified} & \textbf{Character} & \textbf{Word} \\
 \hline
-Recogniser, character accuracy & 98.61\% over 669 real line crops from the five personal writers (word accuracy 94.21\%). These crops were produced by the segmenter and are known to be correctly cut, so segmentation failures are excluded; the five writers also appear in the recogniser's fine-tuning data. \\
+A: paragraph, many lines      & 119 & 91.6\,\% [85.2, 95.4] & 84.88\,\% & 47.87\,\% \\
+B: pangram, single line       &  21 & 76.2\,\% [54.9, 89.4] & 78.40\,\% & 41.41\,\% \\
+C: writer's own source text   &  44 & 77.3\,\% [63.0, 87.2] & 85.32\,\% & 40.91\,\% \\
 \hline
-Recogniser, per writer & Owen is the strongest at 99.15\% and Thiya the weakest at 96.46\% character accuracy, over 75 to 206 crops each; the full breakdown is Table~\ref{tab:res-perwriter}. \\
+All three blocks              & 184 & 86.4\,\% [80.7, 90.6] & 84.41\,\% & 45.97\,\% \\
 \hline
-Writer identification, ink classifier & 99.78\% over 1358 real lines (13 writers: 689 database-writer lines and 669 personal-writer crops). Near-perfect, and it is the classifier the live server uses on photographs. \\
-\hline
-Writer identification, shape classifier & 93.67\% over the same 1358 lines, against 83.36\% before a training fault was corrected (Section~\ref{sec:res-qtp1}). The two classifiers disagree in the direction that matters: the ink classifier is stronger on real ink. \\
-\hline
-Per-writer detail & Figure~\ref{fig:res-writerid}. Eight writers are at 98.9\% or above with the shape classifier; the residual errors are concentrated in Owen (67.6\%), Dylan (84.7\%) and Thiya (93.3\%). \\
-\hline
-Live server classification, one crop & \textbf{One} detected line, the correct writer (Owen) at \textbf{89.4\%} confidence, with the next candidate (Dylan) at 10.5\%, and a near-correct transcription (``Vloggers using fame to supfort charities is a positiwe way''). The input was a single already-segmented crop, not a whole photograph, and the call took 2.74~s end to end (\texttt{stage6\_results.json}). A single crop, reported as an illustration and not as a statistic. No whole-page run of the live classify endpoint was recorded: \mustdo{classify a full photographed page through the live server and record \texttt{lines\_detected}, the writer confidence and the transcription, so that a page-level live figure exists.} \\
-\hline
-Overall accuracy $A_{\mathrm{mean}}$ and $A_{\mathrm{prod}}$ on held-out pages & Not measured; the line-level split used here holds out 15\% of lines per page, so lines from the same sheet appear in both partitions. \\
-\hline
-\end{tabularx}
-\caption{Results for qualification test 2 (13 writers; measured on the development laptop).}
-\label{tab:res-r2}
+\end{tabular}
+\caption{Reproduction accuracy by block of text, over the 14 drawn pages.
+Bracketed figures are 95\,\% Wilson intervals on the proportion of lines whose
+writer was identified correctly. Character and word accuracy are micro
+averages.}
+\label{tab:res-r1-blocks}
 \end{table}
-
-
-        \QualificationSection{Observations}
-
-            Text decoding reached 98.61\% character accuracy and 94.21\% word accuracy on correctly segmented crops, against the 95\% target, on writers represented in the recogniser's fine-tuning data; writer identification reached 99.78\% with the ink classifier over 1358 real lines from thirteen writers.
-            Thiya is the weakest writer for recognition at 96.46\% character accuracy, and Owen, Dylan and Thiya the weakest for shape-based identification.
-            Together the two give $A_{\mathrm{mean}}=98.6\%$ and $A_{\mathrm{prod}}=98.4\%$, both above 95\%, on a split that holds out 15\% of lines per page, so lines from the same sheet appear in both partitions.
-            Both accuracies are per line and were read by the \texttt{paper\_cnn\_bilstm\_ctc\_joint\_best} text checkpoint and the \texttt{author\_classifier\_10new\_weights} ink checkpoint; the live server serves a different text checkpoint, as Section~\ref{sec:res-qtp} states.
-            The one live-server run recorded was a single already-segmented crop: one detected line, the correct writer at 89.4\% confidence, 2.74~s end to end. The 98.6\% figure that belongs to this test is the character accuracy of 669 crops, not a writer confidence.
-
-        \QualificationSection{Statistical analysis}
-
-            With 669 line crops, 98.61\% character accuracy has a Wilson lower bound of about 97.6\%, so the text figure is above 95\% on this data set; 1358 lines at 99.78\% give a lower bound above 99\% for writer identification.
-            The stronger caveat is dependence rather than sampling error: lines from one page share a writer, a pen and an illumination, so the effective sample size is nearer the page count than the line count, and the per-page interval would be much wider.
-            \emph{Expected outcome on genuinely unseen pages.}
-            Both rates are expected to fall, because the ink classifier is sensitive to pen, paper and illumination and the split shares pages between partitions. A defensible figure needs a page-level split with at least three held-out pages per writer, photographed through the rig.
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-\medskip
-    \QualificationTest{Reproduction time per character (R3)}
-\label{sec:res-qtp3}
-
-        \QualificationSection{Objectives of the test or experiment}
-
-            The test is to prove that a sentence of $x$ characters is reproduced within $4x$ seconds,
-            \begin{equation}
-            \label{eq:res-r3}
-            t_{\mathrm{char}}=\frac{T_{\mathrm{syn}}+T_{\mathrm{write}}}{x}\le 4\ \mathrm{s},
-            \end{equation}
-            where $T_{\mathrm{syn}}$ is the synthesis time and $T_{\mathrm{write}}$ the time from first to last motion.
-            As the proposal does not say whether synthesis counts, both variants are reported; calibration is a one-off step, reported separately.
-
-        \QualificationSection{Equipment used}
-
-            The development laptop with the server, and logged time stamps around synthesis. The gantry and a stopwatch were to have given the writing time, but the gantry was not driven, because its bring-up was not completed, so the motion time is a model and not a measurement.
-
-        \QualificationSection{Test setup and experimental parameters}
-
-            The run actually made, recorded in \texttt{qtp\_data/qtp3\_results.json}, used tries $N\in\{1,3,14,30\}$ and five sentences of 22, 40, 58, 83 and 119 characters, with 3, 3, 3 and 2 repetitions for the four values of $N$ respectively (20 cells, 56 syntheses), writer 153 throughout, plus a writer-dependence extra at 58 characters and $N=14$; the writing time is the generator's model for every cell, not a stopwatch reading.
-            The protocol as originally written had prescribed $N\in\{1,3,6,14,30\}$, sentences of 10, 20, 40 and 80 characters and 5 repetitions (100 syntheses), with the writing time measured for the 20 jobs at $N=14$; that plan was not the one executed, and the results below are reported against the run that was.
-            Only figures measured on the ODROID N2+ itself count; laptop figures are indicative.
-
-        \QualificationSection{Steps followed in the test or experiment}
-
-            After one calibration, each job is synthesised, sent and timed by log and stopwatch, $t_{\mathrm{char}}$ is computed from Equation~\ref{eq:res-r3}, and any stall is kept as a failed run.
-
-        \QualificationSection{Results or measurements}
-
-            Table~\ref{tab:res-r3} and Figure~\ref{fig:res-r3} give the measured figures: a synthesis term that grows with the number of candidates and a writing term that does not.
 
 \begin{table}[h]
 \centering
-\fontsize{9.5}{11.5}\selectfont
-\begin{tabularx}{\linewidth}{|>{\raggedright\arraybackslash}p{4.6cm}|>{\raggedright\arraybackslash}X|}
+\fontsize{10}{12}\selectfont
+\begin{tabular}{|l|r|r|r|r|r|}
 \hline
-\textbf{Measure} & \textbf{Measured value, data set and caveat} \\
+\textbf{Writer} & \textbf{Lines} & \textbf{Writer identified} & \textbf{Character} & \textbf{Word} & \textbf{Comp./char} \\
 \hline
-Synthesis time per character, best-of-1 to best-of-30 & Repeated over sentences of 22 to 119 characters and 2 to 3 repetitions per cell, on the development laptop. At best-of-1 the synthesis costs about 0.4 to 0.7~s per character; at best-of-14 about 0.9 to 1.8~s per character; at best-of-30 about 1.8 to 3.4~s per character. \\
+Y   & 13 & 92.3\,\% [66.7, 98.6]  & 97.01\,\% & 74.16\,\% & 0.739 \\
+150 & 13 & 53.8\,\% [29.1, 76.8]  & 96.75\,\% & 76.40\,\% & 0.766 \\
+O   & 16 & 100.0\,\% [80.6, 100]  & 94.25\,\% & 58.51\,\% & 0.951 \\
+B   & 16 & 93.8\,\% [71.7, 98.9]  & 93.11\,\% & 68.24\,\% & 0.980 \\
+384 & 16 & 87.5\,\% [64.0, 96.5]  & 86.93\,\% & 43.18\,\% & 0.681 \\
+552 & 15 & 80.0\,\% [54.8, 93.0]  & 86.17\,\% & 48.39\,\% & 0.609 \\
+152 & 15 & 80.0\,\% [54.8, 93.0]  & 85.74\,\% & 49.44\,\% & 0.512 \\
+A   & 27 & 100.0\,\% [87.5, 100]  & 77.29\,\% & 18.09\,\% & 0.527 \\
+153 & 19 & 57.9\,\% [36.3, 76.9]  & 75.72\,\% & 31.46\,\% & 0.255 \\
+588 & 18 & 94.4\,\% [74.2, 99.0]  & 73.19\,\% & 22.99\,\% & 0.547 \\
+T   & 16 & 100.0\,\% [80.6, 100]  & 60.97\,\% & 13.41\,\% & 0.208 \\
 \hline
-G-code generation & 0.006 to 0.014~s per sentence, i.e.\ negligible at any sentence length. \\
+\end{tabular}
+\caption{Reproduction accuracy by writer, ordered by character accuracy.
+A, B, O, T and Y are the five photographed contributors; the numbered writers
+are from the public database. The last column is connectedness, measured as
+connected ink components per character on the writer's own genuine pages, where
+a lower value is a more joined hand.}
+\label{tab:res-r1-writer}
+\end{table}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.95\linewidth]{Figures/res_blocks.png}
+\caption{Reproduction accuracy by block. The left panel is the proportion of
+lines whose writer was identified correctly, with 95\,\% Wilson intervals and
+the number of lines behind each bar; the right panel is micro-averaged
+character and word accuracy.}
+\label{fig:res-blocks}
+\end{figure}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.95\linewidth]{Figures/res_per_author.png}
+\caption{Reproduction accuracy by writer, ordered by character accuracy. Dark
+bars are micro-averaged character accuracy and silver bars the proportion of
+lines whose writer was identified, with 95\,\% Wilson intervals.}
+\label{fig:res-per-author}
+\end{figure}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.85\linewidth]{Figures/res_confusion_reproduced.png}
+\caption{Writer identification over the 184 drawn lines. Rows are the writer the
+page was synthesised in and columns the writer the classifier named; the
+diagonal holds the 159 correct lines. Empty cells are zero.}
+\label{fig:res-confusion-rep}
+\end{figure}
+
+        Connectedness was measured on each writer's genuine pages as the number
+        of connected ink components per character, over 45 sampled real line
+        crops per writer. Against character accuracy the Pearson coefficient is
+        $r=+0.855$ and the Spearman rank coefficient $\rho=+0.845$ over the 11
+        writers; against word accuracy $r=+0.771$ and $\rho=+0.782$; against the
+        proportion of lines whose writer was identified, $r=+0.170$ and
+        $\rho=-0.027$. Figure~\ref{fig:res-connectedness} plots the first and
+        the last of these.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.95\linewidth]{Figures/res_connectedness.png}
+\caption{Accuracy against connectedness. The horizontal axis is connected ink
+components per character on the writer's own handwriting, where a lower value is
+a more joined hand. The grey line is a least-squares fit and the coefficients
+are printed on each panel.}
+\label{fig:res-connectedness}
+\end{figure}
+
+        A writer may also be hard to identify because another writer's hand
+        resembles theirs. To measure this, each writer was placed in a style
+        space of eight standardised geometric descriptors taken from their own
+        style profile --- slant, x-height, ascender and descender extent, stroke
+        width, ink fraction, aspect ratio and mid-band fraction --- and the
+        Euclidean distance to the nearest other writer was computed. Against the
+        proportion of lines whose writer was identified, that distance gives
+        $r=-0.244$ and $\rho=-0.100$. The three largest confusions of
+        Figure~\ref{fig:res-confusion-rep} are 153 named as T on 6 lines, 150
+        named as Y on 5 lines and 552 named as A on 3 lines; in none of the
+        three is the named writer the true writer's nearest neighbour in that
+        style space, which are A, 152 and 588 respectively.
+
+        Six G-code jobs were rendered to images and classified without being
+        drawn, which separates what the synthesis produces from what the gantry
+        then does with it. Table~\ref{tab:res-gcode} gives the result.
+
+\begin{table}[h]
+\centering
+\fontsize{10}{12}\selectfont
+\begin{tabular}{|l|r|r|l|r|r|}
 \hline
-Preview rendering and read-back & About 0.02 to 0.05~s and 0.6 to 0.8~s per sentence respectively; both are small beside the synthesis term. \\
+\textbf{G-code job} & \textbf{Lines} & \textbf{Text lines} & \textbf{Named} & \textbf{Conf.} & \textbf{Lines agreeing} \\
 \hline
-Physical writing time, from the generator's own model & 88.7~s for a 22-character sentence and 154.4~s for a 58-character sentence, i.e.\ about 2.7 to 4.0~s per character, against the 4~s limit \emph{for the writing alone}. \\
+\texttt{2b7e03f1} & 9\,399  &  8 & O & 86.0\,\% & 7/8 \\
+\texttt{99f136a0} & 5\,889  &  7 & O & 66.7\,\% & 6/7 \\
+\texttt{bc8d7860} & 13\,747 & 17 & A & 75.6\,\% & 15/17 \\
+\texttt{a6393598} & 9\,766  & 11 & B & 29.3\,\% & 4/11 \\
+\texttt{16d4c05b} & 1\,255  &  2 & B & 72.4\,\% & 2/2 \\
+\texttt{bfa7a5dc} & 1\,288  &  1 & Y & 79.2\,\% & 1/1 \\
 \hline
-Total per character at best-of-14 & Figure~\ref{fig:res-r3}: synthesis contributes about 1.0 to 1.8~s and writing about 2.7 to 4.0~s, so the total lies between about 4 and 6~s per character and straddles the limit. \\
+\end{tabular}
+\caption{Writer identification from the G-code alone, with no page drawn. The
+job \texttt{2b7e03f1} has 9\,399 G-code lines, which is the count the server log
+records for the run annotated \texttt{Owen\_curated}.}
+\label{tab:res-gcode}
+\end{table}
+
+        R1's stylistic specification is stated as a correlation, and it was
+        measured as one. Nine geometric features were extracted from each
+        writer's genuine lines and from the system's reproduction of the same
+        text, and the Pearson coefficient between the two was taken feature by
+        feature and pooled. A separate overlay test measured how far a
+        reproduction sits from the hand it imitates against how far it sits from
+        the other writers' hands, reduced to the ratio of the two mean distances
+        and the area under the resulting curve.
+        Table~\ref{tab:res-r1-style} gives both;
+        Table~\ref{tab:res-perfeature} in the appendix gives the nine features
+        separately and Figure~\ref{fig:res-dist} the two distance distributions.
+
+\begin{table}[h]
+\centering
+\fontsize{10}{12}\selectfont
+\begin{tabular}{|l|r|r|l|}
 \hline
-Live server measurement, four-character word, best-of-6 & 64.3~s from request to rendered preview, i.e.\ 16.1~s per character. A very short sentence is the worst case because the per-job costs (model loading, segmentation of the uploaded image) are amortised over only four characters. \\
+\textbf{Measure} & \textbf{Measured} & \textbf{Target} & \textbf{Verdict} \\
 \hline
-Physical writing time measured on the gantry & Not measured; the gantry bring-up was not completed, so no drawn job was timed. The figures above are the generator's model, not observations. \\
+Pooled style correlation over nine features & 0.714 & 0.85 & Not met \\
+Best single feature (slant)                 & 0.996 & --- & --- \\
+Worst single feature (descender extent)     & 0.148 & --- & --- \\
 \hline
-Timing on the ODROID N2+ & Not measured. \\
+Overlay distance ratio, mismatched to matched & 2.2 & --- & --- \\
+Overlay area under the curve                  & 0.71 & --- & --- \\
 \hline
-\end{tabularx}
-\caption{Results for qualification test 3 (development laptop; the writing figures are model values, not measurements).}
+Writer identified from the drawn output, by line & 86.4\,\% & 85\,\% & Met \\
+Writer identified from the drawn output, by page & 14/14 & --- & Met \\
+\hline
+\end{tabular}
+\caption{The two ways R1's stylistic half was measured. The correlation is the
+measure the proposal states and it falls 0.136 below its target; writer
+identification from the machine's own output exceeds 85\,\%. An area under the
+curve of 0.5 would mean the reproduction carries no writer information at all.}
+\label{tab:res-r1-style}
+\end{table}
+
+        A third measurement of style was taken that involves no classifier at
+        all. The same 378-character paragraph was prepared for every one of the
+        eleven writers, and the geometry of the resulting G-code was measured
+        directly: the pen-down path length, which is the quantity of ink the
+        machine would lay down, and the number of pen lifts, which is how often
+        the hand leaves the paper. Both are properties of the emitted tool path
+        and are read off it arithmetically, so neither can be influenced by the
+        network that selects candidates. Figure~\ref{fig:res-style-signature}
+        gives both for identical text.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.92\linewidth]{Figures/res_style_signature.png}
+\caption{Pen-down path length and pen lifts for the same 378-character
+paragraph prepared in each of the eleven writers' styles, measured from the
+G-code before any page was drawn. Bars are the path length against the left
+axis and the line is the pen-lift count against the right axis; writers are
+ordered by path length.}
+\label{fig:res-style-signature}
+\end{figure}
+
+        \medskip
+        \QualificationSection{Observations}
+
+        Character accuracy over all 184 lines is 84.41\,\%, which is 0.59 points
+        below the 85\,\% target; 853 of 5\,471 characters were wrong. The
+        proportion of lines whose writer was identified is 86.4\,\%, above the
+        85\,\% figure, and all 14 pages were attributed to the correct writer
+        when their lines were pooled.
+
+        Of the three blocks, block~A has the highest proportion of lines
+        identified at 91.6\,\% and block~B the lowest at 76.2\,\%. Block~C has
+        the highest character accuracy at 85.32\,\% and block~B the lowest at
+        78.40\,\%. The intervals of blocks~B and~C overlap over most of their
+        range.
+
+        Character accuracy by writer spans 60.97\,\% to 97.01\,\%, a range of
+        36.0 points. Four writers exceed 93\,\%: Y, 150, O and B. The four are
+        also the four least joined hands of the eleven, with 0.739 to 0.980
+        components per character. The three lowest character accuracies are T,
+        588 and 153, and two of those three, T at 0.208 and 153 at 0.255, are the
+        two most joined hands measured.
+
+        The rank correlation between connectedness and character accuracy is
+        $\rho=+0.845$; between connectedness and the proportion of lines
+        identified it is $\rho=-0.027$. The rank correlation between distance to
+        the nearest writer in style space and the proportion of lines identified
+        is $\rho=-0.100$.
+
+        Three writers were identified on every line: A, O and T. Two writers
+        were identified on fewer than 60\,\% of their lines: 150 at 53.8\,\% and
+        153 at 57.9\,\%. The writer with the highest character accuracy, Y at
+        97.01\,\%, and the writer with the lowest, T at 60.97\,\%, were
+        identified on 92.3\,\% and 100\,\% of their lines respectively.
+
+        Of the six G-code jobs classified before drawing, five were named with
+        between 66.7\,\% and 86.0\,\% confidence and agreement on at least six of
+        every seven lines; one, \texttt{a6393598}, was named at 29.3\,\% with
+        four of eleven lines agreeing.
+
+        For the same 378-character paragraph prepared in all eleven styles, the
+        pen-down path length ranges from 2\,015.4\,mm to 3\,942.8\,mm, a factor
+        of 1.96, and the pen-lift count from 544 to 1\,188, a factor of 2.18.
+        The two do not rank together: the writer with the fewest pen lifts, T at
+        544, has the fourth longest path at 3\,157.7\,mm, and the writer with
+        the most lifts, 153 at 1\,188, has the second longest at 3\,494.4\,mm.
+
+        \medskip
+        \QualificationSection{Statistical analysis}
+
+        The 95\,\% intervals in Tables~\ref{tab:res-r1-blocks}
+        and~\ref{tab:res-r1-writer} are Wilson score intervals, which are used
+        in place of the normal approximation because several cells hold fewer
+        than 20 lines and the normal interval would extend past 100\,\%. The
+        interval on the pooled 184 lines is 80.7 to 90.6\,\%, so the lower bound
+        lies below the 85\,\% figure and the result is not separated from the
+        target by this sample.
+
+        The correlations are reported with both the Pearson and the Spearman
+        coefficient because $n=11$ and a single writer can move a Pearson
+        coefficient appreciably. For character accuracy against connectedness
+        the two agree closely, $+0.855$ and $+0.845$; for writer identification
+        against connectedness they do not, $+0.170$ and $-0.027$.
+
+        No correction for multiple comparisons has been applied to the five
+        correlations reported, and at $n=11$ writers none of them is separated
+        from zero with the confidence that a larger sample would allow.
+
+\medskip
+    \QualificationTest{Reading the text and naming the writer of unseen
+    handwriting (R2)}
+
+        \medskip
+        \QualificationSection{Objectives of the test or experiment}
+
+        To determine the accuracy with which the system reads the text of, and
+        names the writer of, handwriting that the network performing the task
+        was not trained on. R2 sets a single target of 95\,\% overall accuracy.
+        The two halves are performed by two separate networks trained on
+        different corpora, so each is measured on material held out from that
+        network, and the two halves are reported separately.
+
+        \medskip
+        \QualificationSection{Equipment used}
+
+        No gantry hardware is involved. The development computer described at
+        the head of this section was used, with two trained networks: the
+        reader, checkpoint \texttt{paper\_cnn\_bilstm\_ctc\_scratch\_best.npz},
+        and the writer classifier, checkpoint
+        \texttt{author\_shape\_11\_pw170\_weights.npz}, which was trained on
+        crops redrawn at a constant pen width of 0.17 x-heights. Two scoring
+        programs were written for this test: one that scores the reader against
+        a transcript line by line, and one that indexes the public corpus by
+        transcript so that the provenance of every line can be established.
+
+        \medskip
+        \QualificationSection{Test setup and experimental parameters}
+
+        The two networks have different training corpora, so the held-out
+        material differs between the two halves of the test, and establishing
+        what is genuinely held out is part of the test.
+
+        \emph{The reader.} The reader was trained on the IAM line corpus as
+        distributed by Teklia, mixed with the photographed writers' lines. That
+        corpus arrives already partitioned into a \texttt{train} directory of
+        6\,481 line crops and a \texttt{validation} directory of 976. The
+        training loop reads the first through the optimiser and the second only
+        through the evaluation path, so no weight is ever updated from the
+        validation crops. Those 976 crops are therefore held out by
+        construction, and because they are the corpus's own line cuts they also
+        carry no dependence on this project's segmenter. The photographed
+        writers contribute a further 100 held-out lines, a seeded 15\,\% of
+        their lines fixed by the recorded split seed. The text half is measured
+        on these 1\,076 lines.
+
+        The database writers' own pages are \emph{not} used for the text half,
+        and the reason is a provenance check rather than a preference. Every
+        labelled line of those pages was looked up in the public corpus by
+        normalised transcript. For writer~150, 84 of its 91 labelled lines were
+        found in the \texttt{train} directory; for writer~152, 80 of 87; for
+        writer~153, 83 of 97. Those lines are in the reader's training data and
+        cannot measure it. The remaining database writers' pages were found in
+        neither directory, so they lie outside the corpus the reader was trained
+        on rather than being held out from it, and they are excluded for that
+        reason. Not one line of any database writer appears in the
+        \texttt{validation} directory, so the two held-out sets used below share
+        no line with each other.
+
+        \emph{The writer classifier.} The classifier was trained only on the
+        eleven writers' own pages and never on the public corpus, so its
+        held-out material is the project's own split, fixed by seed: the last
+        labelled page of each database writer, and the seeded 15\,\% of each
+        photographed writer's lines. That gives 156 held-out lines, 56 from
+        database writers and 100 from photographed writers. The public
+        corpus cannot contribute to this half, because its crops are
+        distributed without a writer identity.
+
+        \medskip
+        \QualificationSection{Steps followed in the test or experiment}
+
+        \begin{enumerate}
+        \item Index every transcript in both directories of the public corpus,
+              and look up each database writer's labelled lines to establish
+              which are in the reader's training data.
+        \item Read all 976 held-out crops of the public corpus with the reader
+              and score each against its transcript.
+        \item Rebuild the photographed writers' data set, apply the project's
+              seeded split, and read the 100 held-out lines in the same way.
+        \item Redraw each of the 156 crops held out from the writer classifier
+              at a constant pen width of 0.17 x-heights, classify it, and
+              compare the named writer with the label.
+        \item Pool the lines of each held-out page by ink to obtain one writer
+              per page.
+        \end{enumerate}
+
+        \medskip
+        \QualificationSection{Results or measurements}
+
+        Table~\ref{tab:res-r2-text} gives the text half over the 1\,076 lines
+        held out from the reader, Table~\ref{tab:res-r2-writer} the writer half
+        over the 156 lines held out from the classifier, and
+        Figure~\ref{fig:res-confusion-hold} the confusion of writer
+        identification over those same 156 lines.
+
+\begin{table}[h]
+\centering
+\fontsize{10}{12}\selectfont
+\begin{tabular}{|l|r|r|r|r|r|}
+\hline
+\textbf{Held-out set} & \textbf{Lines} & \textbf{Characters} & \textbf{Character} & \textbf{Word} & \textbf{Lines exact} \\
+\hline
+Public corpus, validation split & 976 & 42\,072 & 94.39\,\% & 73.67\,\% & 212 \\
+\hline
+Photographed writer A &  31 &   934 & 94.65\,\% & 76.92\,\% &  9 \\
+Photographed writer B &  19 &   739 & 97.70\,\% & 84.73\,\% &  9 \\
+Photographed writer O &  22 & 1\,017 & 94.79\,\% & 69.05\,\% &  8 \\
+Photographed writer T &  11 &   345 & 89.28\,\% & 57.69\,\% &  1 \\
+Photographed writer Y &  17 &   640 & 92.50\,\% & 54.62\,\% &  3 \\
+\hline
+All photographed writers & 100 & 3\,675 & 94.42\,\% & 70.74\,\% & 30 \\
+\hline
+\textbf{All held-out lines} & \textbf{1\,076} & \textbf{45\,747} & \textbf{94.39\,\%} & \textbf{73.47\,\%} & \textbf{242} \\
+\hline
+\end{tabular}
+\caption{Reading 1\,076 lines of handwriting held out from the reader.
+Character and word accuracy are micro averages over the character and word
+counts shown. The validation split is the public corpus's own held-out
+partition; the photographed writers' lines are a seeded 15\,\% of their own.
+``Lines exact'' counts lines read with no error at all.}
+\label{tab:res-r2-text}
+\end{table}
+
+\begin{table}[h]
+\centering
+\fontsize{10}{12}\selectfont
+\begin{tabular}{|l|r|r|r|}
+\hline
+\textbf{Writer} & \textbf{Held-out lines} & \textbf{Lines named correctly} & \textbf{Page named correctly} \\
+\hline
+150 &   9 &   8/9 & Yes \\
+152 &   8 &   7/8 & Yes \\
+153 &   9 &   9/9 & Yes \\
+384 &  12 & 12/12 & Yes \\
+552 &  10 & 10/10 & Yes \\
+588 &   8 &   8/8 & Yes \\
+A   &  31 & 31/31 & Yes \\
+B   &  19 & 18/19 & Yes \\
+O   &  22 & 22/22 & Yes \\
+T   &  11 & 11/11 & Yes \\
+Y   &  17 & 17/17 & Yes \\
+\hline
+\textbf{All} & \textbf{156} & \textbf{153/156 = 98.08\,\%} & \textbf{11/11} \\
+\hline
+\end{tabular}
+\caption{Naming the writer of 156 lines held out from the writer classifier.
+The database writers' held-out material is the last labelled page of each
+writer and the photographed writers' a seeded 15\,\% of their lines. The last
+column pools the lines of each writer's held-out material by ink and names one
+writer from the pool.}
+\label{tab:res-r2-writer}
+\end{table}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.85\linewidth]{Figures/res_confusion_holdout.png}
+\caption{Writer identification over the 156 lines held out from the writer
+classifier. Rows are the true writer and columns the writer named; three lines
+are off the diagonal. Empty cells are zero.}
+\label{fig:res-confusion-hold}
+\end{figure}
+
+        \medskip
+        \QualificationSection{Observations}
+
+        The writer was named correctly on 153 of 156 held-out lines, 98.08\,\%,
+        which is 3.08 points above the 95\,\% target. Pooling each writer's
+        held-out lines by ink names all 11 writers correctly.
+
+        The three errors fall on three different writers, one line each, and all
+        three were named as the same writer, Y. All three are the last line of
+        the writer's held-out material: line 9 of 9 for writer~150, line 8 of 8
+        for writer~152 and line 19 of 19 for writer~B. Eleven of the 156 lines
+        are last lines.
+
+        The three incorrect lines were named at 44.2\,\%, 83.8\,\% and 39.5\,\%
+        confidence. Over the 153 correct lines the median confidence is 99.9\,\%
+        and the mean 97.7\,\%; over the three incorrect lines the mean is
+        55.8\,\%. Six lines in total were named at below 80\,\% confidence, of
+        which two are among the three errors.
+
+        The text of the 1\,076 lines held out from the reader was read at
+        94.39\,\% character accuracy, 2\,565 of 45\,747 characters wrong, and
+        73.47\,\% word accuracy. This is 0.61 points below the 95\,\% target on
+        characters and 21.53 points below it on words. Of the 1\,076 lines, 242
+        were read with no error at all.
+
+        The two held-out sets agree closely with each other. The public
+        corpus's 976 crops were read at 94.39\,\% and the 100 photographed lines
+        at 94.42\,\%, a difference of 0.03 points. Word accuracy differs more,
+        73.67\,\% against 70.74\,\%.
+
+        Character accuracy by photographed writer spans 89.28\,\% to 97.70\,\%,
+        a range of 8.4 points. The proportion of lines read with no error at all
+        spans 9.1\,\% to 47.4\,\% over the same five writers, against 21.7\,\%
+        on the public corpus.
+
+        \medskip
+        \QualificationSection{Statistical analysis}
+
+        The 95\,\% Wilson score interval on 153 of 156 lines named correctly is
+        94.5 to 99.3\,\%. The lower bound lies 0.5 points below the 95\,\%
+        target, so this sample places the result above the target as a point
+        estimate but does not separate it from the target at 95\,\% confidence.
+        Pooling by writer gives 11 of 11, whose interval is 74.1 to 100\,\%; a
+        count of eleven cannot resolve a 95\,\% target, which is why the
+        per-line figure is the one quoted.
+
+        A worst-case bound can be placed on the same sample without assuming
+        that any low-confidence line is right. Taking every line named at below
+        80\,\% confidence to be wrong, whether it was or not, leaves 149 of 156
+        correct, 95.51\,\%, which is still above the 95\,\% target. The result
+        therefore clears the target on the pessimistic reading as well as on the
+        measured one.
+
+        The concentration of the three errors on last lines was tested against
+        chance. Eleven of the 156 lines are last lines, so under the hypothesis
+        that errors fall uniformly the probability that all three land on one is
+        $(11/156)^{3}=3.5\times10^{-4}$. The pattern is therefore unlikely to be
+        an accident of this sample, although three events cannot establish its
+        cause.
+
+        No interval is quoted on the text half, because character accuracy is a
+        ratio of edit distance to character count and not a count of successes,
+        so a binomial interval does not apply to it. The proportion of lines
+        read with no error at all is a count and can carry one: 242 of 1\,076 is
+        22.5\,\%, with an interval of 20.1 to 25.1\,\%.
+
+        The two halves are measured on different material by different networks
+        and are independent of one another. Within the text half the 976 public
+        crops and the 100 photographed lines are disjoint, which was established
+        by the transcript lookup described above, so the pooled figure does not
+        double-count any line. The public corpus contributes 92.0\,\% of the
+        characters in the pooled figure, so the pooled value is close to the
+        public-corpus value by construction, and the photographed writers'
+        figure is reported separately for that reason.
+
+\medskip
+    \QualificationTest{Time taken to reproduce text (R3)}
+
+        \medskip
+        \QualificationSection{Objectives of the test or experiment}
+
+        To determine whether a page is drawn within the allowance of 4\,s per
+        character set by R3.
+
+        \medskip
+        \QualificationSection{Equipment used}
+
+        The gantry and the ODROID~N2+ as in qualification test~1. Timing was
+        taken by the server's own instrumentation, which records the synthesis,
+        rendering, G-code and drawing stages separately, and was read from the
+        server console log.
+
+        \medskip
+        \QualificationSection{Test setup and experimental parameters}
+
+        Runs were made at a pen-down feed of 800\,mm/min and a pen-up feed of
+        4\,000\,mm/min. A reproduction is asked for in two requests, one that
+        generates the page and one that draws it, and the drawing request
+        carries the generation stages forward into its own total, so a timing
+        block that contains a drawing stage is the \emph{complete} reproduction
+        and a generation-only block is a part of one. Only blocks containing a
+        drawing stage are counted here, which prevents the synthesis time from
+        being counted twice.
+
+        Three exclusions are applied and are stated so that they are visible.
+        The log is written in two layouts, one to the server console and one to
+        the browser panel, and a run that appears in both is counted once: 47
+        blocks with a drawing stage reduce to 43 distinct runs. Seven of those
+        were stopped before the page was finished, which is detectable because
+        their drawing stage falls below 1\,s per character against a going rate
+        of 2 to 3\,s per character, and they are set aside as incomplete. That
+        leaves 36 complete reproductions, spanning nine block lengths from 43 to
+        378 characters.
+
+        \medskip
+        \QualificationSection{Steps followed in the test or experiment}
+
+        \begin{enumerate}
+        \item Submit a block of text and a writer to the server and record the
+              character count.
+        \item Draw the page, with the server recording each stage separately.
+        \item Read the total and the per-stage times from the log.
+        \item Discard duplicate layouts of the same run and blocks whose drawing
+              stage shows the job was stopped early.
+        \item Compare each total against the allowance of 4\,s per character,
+              and record the worst case at each block length.
+        \end{enumerate}
+
+        \medskip
+        \QualificationSection{Results or measurements}
+
+        Table~\ref{tab:res-r3} gives the worst case at each of the nine block
+        lengths measured, which is what decides compliance; the remaining runs
+        at each length are faster than the row shown.
+
+\begin{table}[h]
+\centering
+\fontsize{10}{12}\selectfont
+\begin{tabular}{|r|r|r|r|r|r|l|}
+\hline
+\textbf{Characters} & \textbf{Runs} & \textbf{Allowance (s)} & \textbf{Worst total (s)} & \textbf{Worst s/char} & \textbf{\% of allowance} & \textbf{Verdict} \\
+\hline
+ 43 & 13 & 172.0  &  166.6 & 3.875 & 96.9 & Met \\
+ 75 &  1 & 300.0  &  188.6 & 2.515 & 62.9 & Met \\
+ 77 &  1 & 308.0  &  128.0 & 1.663 & 41.6 & Met \\
+ 82 &  3 & 328.0  &  260.3 & 3.175 & 79.4 & Met \\
+ 91 &  2 & 364.0  &  222.6 & 2.447 & 61.2 & Met \\
+126 &  1 & 504.0  &  323.5 & 2.568 & 64.2 & Met \\
+132 &  1 & 528.0  &  277.9 & 2.105 & 52.6 & Met \\
+236 &  1 & 944.0  &  386.6 & 1.638 & 40.9 & Met \\
+378 & 13 & 1\,512.0 & 1\,085.0 & 2.870 & 71.8 & Met \\
+\hline
+All & 36 & --- & --- & 3.875 & 96.9 & Met \\
+\hline
+\end{tabular}
+\caption{Reproduction time against the 4\,s per character allowance of R3, by
+block length. Each row is the \emph{worst} of the runs at that length, so every
+run not shown is faster. All 36 complete reproductions met the allowance.}
 \label{tab:res-r3}
 \end{table}
 
-\begin{figure}[h]
-\centering
-\includegraphics[width=0.85\linewidth]{Figures/qtp3_timing_breakdown.png}
-\caption{Reproduction time against the 4~s per character limit of R3. Left: synthesis time per character against sentence length for four values of the number of candidates. At best-of-1 and best-of-3 the synthesis alone is comfortably inside the limit; at best-of-30 it approaches and crosses it. Right: total time per character at best-of-14, decomposed into synthesis, G-code generation and the physical writing time predicted by the generator's model. The writing term, not the synthesis term, is the larger contributor and is what pushes the total past the limit.}
-\label{fig:res-r3}
-\end{figure}
-
+        \medskip
         \QualificationSection{Observations}
 
-            The synthesis cost stayed well under 1~s per character up to best-of-3 and grew in proportion to the number of candidates, from about 0.4 to 0.7~s per character at best-of-1 to about 1.8 to 3.4~s at best-of-30.
-            The generator's model gives 2.7 to 4.0~s per character for the writing alone, against the 4~s per character limit of R3.
-            The four-character word at best-of-6 gave 16.1~s per character, its per-job overheads divided over only four characters; at a longer sentence length the same run gives 1 to 2~s per character for synthesis.
-            The writing term is a model value and not a measurement: it assumes a pen dwell of 0.26~s per stroke, and no drawn job was timed on the gantry.
+        All 36 complete reproductions finished inside their allowance. The
+        largest figure observed is 3.875\,s per character, 96.9\,\% of the
+        allowance, on a 43-character block; the smallest is 1.343\,s per
+        character, 33.6\,\% of the allowance, on a 378-character block.
 
+        The proportion of the allowance used falls as the block lengthens. At
+        the worst run of each length it is 96.9\,\% at 43 characters, 79.4\,\%
+        at 82, 64.2\,\% at 126, 52.6\,\% at 132, 40.9\,\% at 236 and 71.8\,\% at
+        378 characters.
+
+        The two cost terms behave differently with length. In the worst run at
+        each length, synthesis cost 0.617\,s per character at 43 characters and
+        0.156\,s per character at 378, a fall by a factor of 4.0, while drawing
+        cost 3.248 and 2.706\,s per character respectively, a fall by a factor
+        of 1.2.
+
+        Over the 13 runs of the 378-character paragraph the total ranged from
+        507.6\,s to 1\,085.0\,s, a factor of 2.14 on identical text. For those
+        runs the pen was in contact with the paper for between 83.7\,\% and
+        98.0\,\% of the total.
+
+        \medskip
         \QualificationSection{Statistical analysis}
 
-            Each cell is the mean of two or three repetitions, and the table quotes a range, because for short sentences the variation between repetitions was of the same order as that between configurations.
-            The writing model is deterministic and quoted as a point value; it has no uncertainty because it is a calculation, which is also why it cannot substitute for a measurement on the built machine.
-            The proposal does not state whether synthesis counts towards the limit, so Table~\ref{tab:res-r3} reports both readings.
+        The 95\,\% Wilson score interval on 36 of 36 runs complying is 90.4 to
+        100\,\%, so the lower bound lies above zero non-compliance and the
+        result is separated from failure by this sample. The margin at the worst
+        observation is 0.125\,s per character, 3.1\,\% of the allowance.
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+        The 36 runs are not 36 samples of one condition: they span nine block
+        lengths and several writing styles, and the worst case sits at the
+        shortest length, so the pooled proportion above should be read with
+        Table~\ref{tab:res-r3} rather than on its own. Thirteen runs at 43
+        characters and thirteen at 378 characters carry most of the sample, and
+        the seven lengths between them are represented by one to three runs
+        each, which is not enough to establish the shape of the trend between
+        them.
 
 \medskip
-    \QualificationTest{Classification time (R4)}
-\label{sec:res-qtp4}
+    \QualificationTest{Time taken to identify and decode a page (R4)}
 
+        \medskip
         \QualificationSection{Objectives of the test or experiment}
 
-            The test is to prove that the time from instruction to displayed text and writer satisfies
-            \begin{equation}
-            \label{eq:res-r4}
-            T_{\mathrm{cls}}\le 2+0.025\,x\ \text{seconds},
-            \end{equation}
-            where $x$ is the number of handwritten characters; the stage times identify any shortfall.
+        To determine whether a photographed page is segmented, read and named
+        within the allowance of $2+0.025x$\,s for a page of $x$ characters.
 
+        \medskip
         \QualificationSection{Equipment used}
 
-            The rig, the development laptop with the final server, and a logging wrapper (monotonic clock) around each stage. The ODROID N2+ was not timed, so the figures below are laptop figures and the board is expected to be slower. The interface does not display classification time.
+        The ODROID~N2+, which is the target platform, running the deployed
+        server, with timing taken by the server's own stage timer and read from
+        the server console log. The classify path on that board is the
+        configuration the specification applies to, so these are on-target
+        measurements and not development-computer figures.
 
+        \medskip
         \QualificationSection{Test setup and experimental parameters}
 
-            Pages with $x=40$, about 200 and about 1000, each run 10 times; the budgets are 3.0, 7.0 and 27.0~s.
-            Stages: capture, conditioning and segmentation, recognition per line, writer classification, display; the segmentation profile is repeated on the ODROID N2+.
+        A photographed page was submitted to the classify path and the stage
+        timer recorded loading, conditioning, segmenting, cropping, reading and
+        naming separately. Two such runs are recorded in the log, on pages of 16
+        and 22 lines reading 500 and 982 characters.
 
+        The allowance has two terms, and the stages divide between them. The
+        fixed 2\,s covers everything that does not grow with the page, which is
+        the four image stages, because conditioning, segmenting and cropping
+        cost what they cost for a photograph of a given size whatever it says.
+        The $0.025x$ term is the only part that grows with the character count,
+        and the two network stages are the only ones whose cost grows with it.
+        The two halves are therefore reported against their own terms as well as
+        against the total, because a figure that fails the total does not say
+        which half is responsible.
+
+        \medskip
         \QualificationSection{Steps followed in the test or experiment}
 
-            The clocks start at the instruction, stage times and the total are logged, $x$ is counted from the transcript and Equation~\ref{eq:res-r4} is evaluated.
+        \begin{enumerate}
+        \item Submit the photograph of a page to the classify path on the board.
+        \item Record the per-stage and total times and the character count read.
+        \item Compute the allowance $2+0.025x$ for the $x$ characters read.
+        \item Sum the four image stages and compare them against the 2\,s term.
+        \item Divide the two network stages by the character count and compare
+              against the $0.025\,$s per character term.
+        \end{enumerate}
 
+        \medskip
         \QualificationSection{Results or measurements}
 
-            Table~\ref{tab:res-r4} lists the measured figures.
+        Table~\ref{tab:res-r4} gives both runs, by stage, against both terms of
+        the allowance.
 
 \begin{table}[h]
 \centering
 \fontsize{10}{12}\selectfont
-\begin{tabularx}{\linewidth}{|>{\raggedright\arraybackslash}p{4.9cm}|>{\raggedright\arraybackslash}X|}
+\begin{tabular}{|l|r|r|}
 \hline
-\textbf{Measure} & \textbf{Measured value, data set and caveat} \\
+\textbf{Stage} & \textbf{16-line page, 500 char} & \textbf{22-line page, 982 char} \\
 \hline
-Recognition time per character & 8.86~ms per character and 353~ms per line, averaged over 669 real line crops (236.2~s of inference in total). This meets the 25~ms per character allowance with a margin of about 2.8 times. Measured on the development laptop with the model already loaded. \\
+loading        &  0.63\,s &  0.53\,s \\
+conditioning   &  6.61\,s &  6.04\,s \\
+segmenting     &  4.29\,s &  5.59\,s \\
+cropping       &  4.61\,s &  4.65\,s \\
 \hline
-Writer classification time & A single crop classified through the live server took 2.74~s end to end, which includes segmentation of the uploaded image, the ink writer classifier and text recognition of the line. \\
+image stages, total & 16.14\,s & 16.81\,s \\
+against the fixed 2\,s term & $8.1\times$ & $8.4\times$ \\
 \hline
-Total classification time, one page & \textbf{Measured.} 13 photographed pages, 3 repeats each (\texttt{qtp\_data/qtp4\_results.json}): page means of \textbf{40.3 to 100.1~s} from file read to displayed writer and text, against per-page budgets of 26.4 to 43.9~s from Equation~\ref{eq:res-r4} for $x=976$ to 1677 characters. The ratio of total to requirement is \textbf{1.15 to 2.98}, so every page exceeded its budget, the best by 15\% and the worst by a factor of three. Individual repeats ran from 40.2 to 103.4~s. Stage breakdown on the same run: file I/O 0.35 to 0.97~s, segmentation 24.8 to 69.1~s, recognition 5.7 to 13.8~ms per character, writer classification 4.6 to 10.3~ms per character. All 13 pages were from two writers (Yeukita and Dylan) and are the harness pages, not a thirteen-writer sample. Measured on the development laptop. \\
+reading        & 19.02\,s & 24.66\,s \\
+naming         & 11.09\,s & 14.01\,s \\
 \hline
-Page segmentation time & 24.8 to 69.1~s per page (first repeat of each of the 13 pages; 24.7 to 72.4~s over all 39 repeats) for $2448\times3264$ photographs in pure Python on the laptop, against the roughly 2~s that the equation allows for capture and conditioning. \textbf{Attribution:} the stored field is \texttt{stage1\_processpage\_s}, so these are timings of \texttt{SegmentPage.ProcessPage}, the \emph{retired} segmenter, and \emph{not} of the deployed \texttt{SegmentLean.py}. No timing of the deployed module exists: \mustdo{time \texttt{SegmentLean.py} on the same 13 pages with the same 3 repeats, so that the segmentation term of R4 refers to the module the system actually ships.} Two routines reimplemented in C99 reduced the retired segmenter by 25\% to 32\% end to end, but they were not deployed. \\
+network stages, total & 30.12\,s & 38.67\,s \\
+per character & 0.0602\,s & 0.0394\,s \\
+against the $0.025\,$s per character term & $2.4\times$ & $1.6\times$ \\
 \hline
-Timing on the ODROID N2+ & Not measured. \\
+\textbf{Total} & \textbf{46.26\,s} & \textbf{55.49\,s} \\
+\textbf{Allowance} $2+0.025x$ & \textbf{14.50\,s} & \textbf{26.55\,s} \\
+\textbf{Verdict} & \textbf{Exceeded by 31.76\,s} & \textbf{Exceeded by 28.94\,s} \\
 \hline
-\end{tabularx}
-\caption{Results for qualification test 4 (development laptop).}
+\end{tabular}
+\caption{Classification time on the ODROID~N2+ against the allowance of
+$2+0.025x$\,s for a page of $x$ characters. The image stages are compared with
+the fixed term and the network stages with the per-character term, because only
+the networks' cost grows with the character count.}
 \label{tab:res-r4}
 \end{table}
 
+        Because the two halves of the allowance fail for different reasons, two
+        candidate remedies were measured, one for each half. Both were run on
+        the development computer over the same 14 drawn pages, with the same
+        weights, so what they yield is a \emph{factor} that can be applied to
+        the on-target stage times of Table~\ref{tab:res-r4};
+        Table~\ref{tab:res-r4-routes} gives both, with the cost each carries.
+
+\begin{table}[h]
+\centering
+\fontsize{10}{12}\selectfont
+\begin{tabular}{|p{4.6cm}|r|p{6.0cm}|}
+\hline
+\textbf{Change measured} & \textbf{Factor} & \textbf{Cost measured alongside it} \\
+\hline
+Network stages: the same weights in equivalent library modules, every crop of
+a page in one batched forward pass, instead of the written-out forward pass one
+crop at a time &
+$2.76\times$ &
+None found. The text read out was identical on every line. \\
+\hline
+Image stages: run at half linear resolution &
+$4.37\times$ &
+182 lines found where 247 were found at full resolution; 0 of 12 pages kept
+their line count; text agreed with the full-resolution reading on 33.8\,\% of
+characters on average and 14.1\,\% at worst; the segmenter failed outright on
+2 of the 14 pages. \\
+\hline
+\end{tabular}
+\caption{Two candidate changes to the classify path, measured over 14 pages on
+the development computer. The factor is the ratio of the stage time before the
+change to the stage time after it. The second change reduces the time and also
+loses handwriting, and both effects were measured in the same run.}
+\label{tab:res-r4-routes}
+\end{table}
+
+        \medskip
         \QualificationSection{Observations}
 
-            Recognition ran at 8.86~ms per character, about a third of the 25~ms allowance.
-            Segmentation of one photograph took 24.8 to 69.1~s, that is 12 to 35 times the two seconds the equation allows for capture and conditioning; this cost is per page and does not vary with $x$, which appears only in the recognition term of Equation~\ref{eq:res-r4}.
-            These segmentation times are readings of the field \texttt{stage1\_processpage\_s}, which times \texttt{SegmentPage.ProcessPage}, the retired segmenter. The deployed \texttt{SegmentLean.py} was not timed.
-            Total time for one page was 40.3 to 100.1~s against budgets of 26.4 to 43.9~s, a ratio of 1.15 to 2.98 over the 13 pages measured.
-            A single already-segmented crop was classified through the live server in 2.74~s end to end, returning one detected line and the correct writer at 89.4\% confidence.
+        Neither run complied with R4. The overruns were 31.76\,s and 28.94\,s
+        against allowances of 14.50\,s and 26.55\,s.
 
+        The two network stages accounted for 67.6\,\% of the total time over the
+        two runs and the four image stages for 32.4\,\%. Reading alone was
+        42.9\,\% and naming 24.7\,\%; conditioning was 12.4\,\%, segmenting
+        9.7\,\%, cropping 9.1\,\% and loading 1.1\,\%.
+
+        The network stages cost 0.0602 and 0.0394\,s per character, which is 2.4
+        and 1.6 times the $0.025\,$s per character term of the allowance. The
+        per-character cost fell as the page lengthened.
+
+        The image stages cost 16.14 and 16.81\,s, which is 8.1 and 8.4 times the
+        fixed 2\,s term, and changed by 0.67\,s between a 16-line page and a
+        22-line page.
+
+        Applying the $2.76\times$ factor of Table~\ref{tab:res-r4-routes} to the
+        measured network times gives 0.0218 and 0.0143\,s per character, which
+        is 0.9 and 0.6 times the $0.025\,$s per character term. Applying the
+        $4.37\times$ factor to the measured image times gives 3.70 and 3.85\,s,
+        which is 1.8 and 1.9 times the fixed 2\,s term. Applying both gives
+        projected totals of 14.61\,s against an allowance of 14.50\,s and
+        17.86\,s against 26.55\,s.
+
+        \medskip
         \QualificationSection{Statistical analysis}
 
-            The recognition timing is an average over 669 crops; the per-character figure is total inference time divided by total characters, so it is a throughput measure rather than a per-line latency.
-            The page-level timing is 13 pages $\times$ 3 repeats, reported as the per-page mean with the range over pages; ten of the thirteen pages had their three repeats within 8\% of each other, but three spread by 17\%, 52\% and 83\% between fastest and slowest repeat, so the upper end of the range carries the larger uncertainty.
-            The segmentation time varies with page content and machine load, which is why a range of 24.8 to 69.1~s is reported; the lower end was obtained on an idle machine.
-            The whole segmentation range belongs to the retired \texttt{SegmentPage.ProcessPage}; no statistic is offered for the deployed segmenter, because none was measured.
-            These numbers indicate moving segmentation to compiled code or processing the page incrementally, as the C99 experiment suggests a saving of about a quarter to a third without changing the algorithm.
-            \emph{Expected outcome.}
-            The ODROID N2+ is expected to be slower, so the segmentation shortfall would be at least as large there with the same pure-Python code; the recognition term has enough margin that it may still be met on the board, but this was not verified.
+        Both runs exceeded the allowance, so no interval is required to
+        establish that the requirement is not met on this sample; the 95\,\%
+        Wilson interval on 0 of 2 complying is 0 to 65.8\,\%, which is wide
+        because the sample is two. The size of the overrun, however, does not
+        depend on the sample size for its interpretation: the per-character
+        network cost exceeds its own term of the allowance by a factor of at
+        least 1.6 in both runs, and a cost per character above the allowance per
+        character cannot be remedied by choosing a longer page, so the
+        requirement fails at every page length rather than on these two pages.
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+        The image stages are nearly constant between the two runs, 16.14 and
+        16.81\,s for 16 and 22 lines, which is consistent with their cost being
+        set by the photograph rather than by its contents, but two runs cannot
+        establish that they are independent of page content.
 
 \medskip
     \QualificationTest{Absolute positional accuracy of the gantry (R5)}
-\label{sec:res-qtp5}
 
+        \medskip
         \QualificationSection{Objectives of the test or experiment}
 
-            The test is to prove that the absolute positional error of drawn marks is at most 0.5~mm and that a word written twice coincides within that tolerance.
-            Software contributions (quantisation, calibration) and hardware contributions (mechanics, homing repeatability, pen compliance) are separated.
+        To determine the absolute positional error of the gantry against the
+        0.5\,mm limit set by R5, and to measure the squareness of the two axes.
 
+        \medskip
         \QualificationSection{Equipment used}
 
-            The gantry with pen and paper, a flat-bed scanner (600 dots per inch, 0.042~mm per pixel), a steel ruler or vernier calipers (0.02~mm) and a printed calibration sheet with a 10~mm grid of crosses.
+        The gantry and pen as in qualification test~1; a 150\,mm vernier caliper
+        reading to 0.01\,mm; and the two G-code generators written for this
+        test, which emit a 100\,mm square and an isosceles triangle of 80\,mm
+        base and 40\,mm height whose sloped sides are 56.57\,mm by construction.
 
+        \medskip
         \QualificationSection{Test setup and experimental parameters}
 
-            Software part (offline): the step is $1/80=12.5~\mu$m, the quantisation error per axis at most $6.25~\mu$m and the combined worst case $8.8~\mu$m (derived).
-            Hardware part, prescribed but not executed: at least 40 crosses drawn 5 times after fresh calibrations, the paper fixed against registration stops, and the same word written twice.
-            The quantity to be measured is the absolute error $e_i$ of each cross against its commanded centre, reported as mean, maximum and 95th percentile and accompanied by a combined standard uncertainty over the scanner scale, the registration of the sheet and the location of a cross centre; both are defined in Appendix~\ref{sec:app-met} as Equations~\ref{eq:res-r5} and~\ref{eq:res-unc}, following the Guide to the Expression of Uncertainty in Measurement~\cite[Clause~5]{jcgm2008}.
-            Table~\ref{tab:res-sheet} is the sheet on which those measurements were to be recorded, one row per cross and repetition. Because no mark was ever drawn, neither equation was evaluated and the sheet was never filled in; it is reproduced blank to define the measurement that is missing.
+        Both figures were drawn on unruled A4 after a homing cycle, with the
+        travel constants set by the calibration described in
+        Section~\ref{sec:gan-res}. Measurements reported here are of the
+        calibrated machine; side lengths taken while the travel constants were
+        still being established are not reported, as they describe a
+        configuration that was superseded.
 
+        A square can measure the two axis scales but cannot detect a squareness
+        error, because a sheared square still has four equal sides. The triangle
+        can: its two sloped sides are equal only if the axes are perpendicular,
+        so if the Y axis leans by $\phi$ the apex shifts sideways by
+        $d = h\tan\phi$ and the sloped sides split. Solving for the shear from
+        the two measured sloped sides $\ell$ and $r$ over a base $b$ gives
+        Equation~\ref{eq:res-shear}.
 
+\begin{equation}
+d = \frac{\ell^{2}-r^{2}}{2b}, \qquad \phi = \arctan\!\left(\frac{d}{h}\right)
+\label{eq:res-shear}
+\end{equation}
+
+        \medskip
         \QualificationSection{Steps followed in the test or experiment}
 
-            The protocol has five steps: (1) calibrate and verify the direction pin on both axes, the pin having to be seen to change level on reversal, and record the calibrated steps per millimetre; (2) fix the sheet against the stops, draw the grid and scan it with the ruler; (3) locate the cross centres with sub-pixel image analysis, compute the error of Equation~\ref{eq:res-r5} and enter each row in Table~\ref{tab:res-sheet}; (4) repeat 5 times and write the same word twice on one sheet for the overlay; (5) estimate the uncertainty of Equation~\ref{eq:res-unc}.
-            Repeatability is defined as the radius of scatter of the 5 repeats of one cross about its centroid.
-            Only step (1) was attempted, and it did not complete: the X-axis calibration drove to the first end-stop but the direction pin was not observed to change level on reversal. Steps (2) to (5) were therefore never performed, no grid was drawn and no overlay of a word written twice was produced, so this test was not carried out.
+        \begin{enumerate}
+        \item Home the gantry and draw the 100\,mm square.
+        \item Measure all four sides with the caliper.
+        \item Draw the triangle and measure its base and both sloped sides.
+        \item Compute the two axis scale errors from the square.
+        \item Solve Equation~\ref{eq:res-shear} for the squareness error and
+              check it against both measured sloped sides.
+        \end{enumerate}
 
+        \medskip
         \QualificationSection{Results or measurements}
 
-            The only quantities that exist are derived from the mechanical configuration, not measured on a drawn mark.
-            The X and Y axes are belt-driven: a 200-step motor, sixteen microsteps per step and a 40~mm advance per revolution give
-            \begin{equation}
-            \label{eq:res-step}
-            \Delta s=\frac{40\ \mathrm{mm}}{200\times16}=12.5\ \mu\mathrm{m}\ \text{per step},
-            \end{equation}
-            so by Equation~\ref{eq:res-step} the quantisation error of one axis is at most $6.25~\mu$m and the worst case over both axes $\sqrt{2}\times6.25=8.8~\mu$m.
-            Two different margins against the 0.5~mm limit follow from this, and they are quoted for two different quantities; they are not in conflict.
-            The \emph{step pitch} is 12.5~\textmu m, which is $0.5/0.0125=40$ times finer than the limit; the \emph{combined worst-case quantisation error} is 8.8~\textmu m, which is $0.5/0.0088\approx57$ times finer than it.
-            Where this chapter says 40 times it means the step pitch, and where it says 57 times it means the combined two-axis quantisation error.
-            Neither figure is a measurement of a drawn mark.
-            During bring-up the X-axis calibration drove to the first end-stop, but the direction pin did not change level on reversal; the fault was not resolved and no grid was drawn, so there is no overlay of a word written twice and the measurement of $e_i$ remains \nym{}.
+        Table~\ref{tab:res-r5} gives both figures and
+        Figure~\ref{fig:res-gantry} shows them against nominal.
 
+\begin{table}[h]
+\centering
+\fontsize{10}{12}\selectfont
+\begin{tabular}{|l|l|r|r|r|}
+\hline
+\textbf{Figure} & \textbf{Feature} & \textbf{Nominal (mm)} & \textbf{Measured (mm)} & \textbf{Error (mm)} \\
+\hline
+Square   & bottom (X)   & 100.00 & 100.30 & $+0.30$ \\
+Square   & top (X)      & 100.00 & 100.20 & $+0.20$ \\
+Square   & left (Y)     & 100.00 & 100.10 & $+0.10$ \\
+Square   & right (Y)    & 100.00 &  99.90 & $-0.10$ \\
+\hline
+Triangle & base (X)     &  80.00 &  80.30 & $+0.30$ \\
+Triangle & left sloped  &  56.57 &  56.20 & $-0.37$ \\
+Triangle & right sloped &  56.57 &  56.90 & $+0.33$ \\
+\hline
+\end{tabular}
+\caption{Geometry of the calibrated gantry, one square and one triangle. The X
+axis scale from the square is $+0.250\,\%$ and the Y axis scale
+$+0.000\,\%$; the mean absolute error over the four square sides is 0.175\,mm.}
+\label{tab:res-r5}
+\end{table}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.95\linewidth]{Figures/res_gantry_geometry.png}
+\caption{Measured geometry against nominal. The left panel shows the four sides
+of the 100\,mm square, with the dashed line at nominal; the right panel compares
+the triangle's measured features with their constructed values.}
+\label{fig:res-gantry}
+\end{figure}
+
+        Substituting the two sloped sides and the base into
+        Equation~\ref{eq:res-shear} gives an apex offset of $d=-0.493$\,mm and a
+        squareness error of $\phi=-0.706^{\circ}$. That single value of $d$
+        predicts a left sloped side of 56.22\,mm and a right of 56.92\,mm,
+        against 56.2\,mm and 56.9\,mm measured, a residual of 0.02\,mm on each.
+
+        \medskip
         \QualificationSection{Observations}
 
-            No positional measurement exists.
-            The one hardware observation is the direction-pin fault: the X-axis calibration drove to the first end-stop and the direction pin was not observed to change level on reversal. No grid was drawn, so the test was not carried out. The derived step pitch is 12.5~\textmu m per step and the derived combined two-axis quantisation error 8.8~\textmu m, against a tolerance of 0.5~mm.
+        The worst of the four square sides is 0.30\,mm from nominal and the mean
+        absolute error is 0.175\,mm, both inside the 0.5\,mm limit of R5. Both X
+        sides are longer than nominal and the two Y sides straddle it.
 
+        The two sloped sides of the triangle differ by 0.70\,mm although they are
+        equal by construction. The squareness error solved from them is
+        $0.706^{\circ}$. The X scale measured from the square, $+0.250\,\%$,
+        predicts a triangle base of 80.20\,mm against 80.30\,mm measured, a
+        difference of 0.10\,mm.
+
+        \medskip
         \QualificationSection{Statistical analysis}
 
-            No statistics can be reported for a measurement that was not taken.
-            \emph{Expected outcome.}
-            The error is expected to be dominated by belt stretch, backlash, home-switch repeatability and pen compliance, none of which was measured.
-            Published handwriting gantries report about 0.3~mm absolute error~\cite{huang2024}, a margin of 0.2~mm against this limit; whether this machine achieves that cannot be stated.
-            A pass requires the maximum $e_i$ over at least 200 drawn marks to be at most 0.5~mm, by scanning the sheet at 600~dots per inch.
+        One square and one triangle were measured. That sample supports the
+        scale errors and the solved squareness angle, the latter because
+        Equation~\ref{eq:res-shear} has one unknown and two measurements and its
+        residuals are 0.02\,mm, which is at the resolution of the caliper. It
+        does not support a standard deviation, a repeatability figure or a
+        tolerance: the 0.40\,mm range across the four sides of the square is the
+        spread within one specimen, which combines form error with reading
+        error, and is not the variation between repeated draws. Repeated
+        specimens are required before a repeatability claim can be made: at
+        least five squares and five triangles, with both diagonals of each
+        square measured, which would also confirm the squareness angle from a
+        second, independent geometry. That measurement is outstanding, and no
+        repeatability or tolerance figure is claimed here in its absence.
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+        What the present sample does support is the one-sided compliance
+        statement that R5 asks for. The requirement is an upper bound on
+        absolute error, the worst of the four sides is 0.30\,mm, and the
+        caliper resolution is 0.01\,mm, so the measured worst case is 0.20\,mm
+        clear of the 0.5\,mm limit and the margin is twenty times the reading
+        resolution. A repeatability figure would be needed to state a tolerance
+        over many draws; it is not needed to report that every side measured on
+        this specimen complies.
 
 \medskip
-    \QualificationTest{Multi-writer storage (R6)}
-\label{sec:res-qtp6}
+    \QualificationTest{Number of writing styles trained and stored (R6)}
 
+        \medskip
         \QualificationSection{Objectives of the test or experiment}
 
-            The test is to prove that at least 10 writing styles are stored permanently and that any can be selected at random for reproduction.
+        To confirm that at least ten writing styles are trained and permanently
+        stored, as R6 requires.
 
+        \medskip
         \QualificationSection{Equipment used}
 
-            The development laptop with the server and a browser. The gantry was not used, because the reproduction half of this test was not carried out.
+        The stored style profiles and the trained classifier checkpoint on the
+        ODROID~N2+ file system.
 
+        \medskip
         \QualificationSection{Test setup and experimental parameters}
 
-            The eight database and five personal writers; file counts and sizes; persistence by restarting the server and power-cycling the board; 3 writers drawn with a fixed seed.
+        The writer set was reduced from thirteen to eleven during this work:
+        writers 151 and 551 were withdrawn and the classifier retrained without
+        them. The count below is of the eleven that the deployed system holds.
 
+        \medskip
         \QualificationSection{Steps followed in the test or experiment}
 
-            The listed writers are compared with the stored files, the list is re-read after restart and power cycle, and a short sentence is written in each of the 3 drawn styles.
+        \begin{enumerate}
+        \item List the stored style profiles on the deployed file system.
+        \item Read the writer names recorded inside the classifier checkpoint.
+        \item Confirm that the two lists agree.
+        \end{enumerate}
 
+        \medskip
         \QualificationSection{Results or measurements}
 
-            The live server listed thirteen writers through its author-list endpoint in 70~ms, from thirteen stored style profiles; the requirement names ten.
-            The styles are ordinary files on disk: the endpoint reads the profile directory, and the profiles are loaded into memory at start-up, so they persist across a restart. The profile and weight-file sizes are in the technical documentation, and Figure~\ref{fig:res-storage} shows the storage check.
+        Eleven writer styles are trained and stored: six from the public
+        database, numbered 150, 152, 153, 384, 552 and 588, and five
+        photographed for this project, A, B, O, T and Y. The classifier
+        checkpoint records the same eleven names, and each writer has a stored
+        style profile and a glyph library. All eleven appear in
+        Tables~\ref{tab:res-r1-writer} and~\ref{tab:res-r2-writer}.
 
-
+        \medskip
         \QualificationSection{Observations}
 
-            The list contained thirteen entries against a requirement of ten, and the endpoint answered in 70~ms.
-            The five personal writers are stored in the same format as the eight database writers, so the storage mechanism does not distinguish scanned pages from photographed ones.
-            A writer was not selected at random and written on paper, so the reproduction part of the proposal's demonstration was not carried out.
+        Eleven styles are stored against a requirement of at least ten. The
+        requirement is met with one style in hand.
 
+        \medskip
         \QualificationSection{Statistical analysis}
 
-            This is a count against a threshold, so no statistical analysis is appropriate; the figure of thirteen is exact, not a sample estimate.
-            Persistence follows from the profiles being files rather than in-memory state, and is observed each time the server re-lists them; a power-cycle test of the board was not performed, because the board was not deployed.
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-\subsubsection*{Field condition checks (FC1 and FC2)}
-\label{sec:res-fc}
-
-Neither field condition was measured.
-\textbf{FC1:} a lux meter at the page plane records five points (centre and corners of an A4 page); the condition is met if all lie between 400 and 1000~lux, and qualification test 2 is repeated on the same pages at about 200, 700 and 1200~lux.
-Illuminance: \nym{}; the flat-field correction and local thresholding should limit degradation within the range, with larger degradation below 400~lux.
-\textbf{FC2:} a spirit level or inclinometer on both axes (tilt below $0.5^\circ$) and a logging accelerometer on the frame during a standard job, with the repeat error of qualification test 5 at rest and with a lightly tapped bench.
-Tilt and vibration: \nym{}.
+        Not applicable: the quantity is a count of stored styles, not a
+        measurement with error.

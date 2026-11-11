@@ -1,0 +1,147 @@
+\section{Extended design calculations and connections}
+\label{app:des-implementation}
+Numerical substitutions extend the calculations referenced in Design.
+\subsection{Worked values from the implemented system}\label{app:worked-design-calculations}
+
+\subsubsection{Page conditioning and line segmentation}
+The recorded Owen01 trace uses a stored photograph reduced before analysis, producing an $800\times600$ pre-deskew working image. At pixel $(317,343)$, $G=100$. Its $41\times41$ background window has prefix values $20696850$, $18404173$, $18359673$ and $16338366$. Equation~\ref{eq:des-integral} gives $\Sigma=271370$, hence $B_r=271370/1681=161.43367$ and $R=100/161.43367=0.619449$.
+
+For that image, Otsu's criterion selects bin 171. Its class masses are 0.07069375 and 0.92930625, with mean bin indices 124.98356 and 217.71913, giving between-class variance approximately 564.97942. The corresponding ratio threshold is $(171+0.5)(1.2/256)=0.80390625$.
+
+In the Owen01 trace, the scores at $+0.5^\circ$, $+1.0^\circ$ and $+1.5^\circ$ are 442973, 464105 and 439403. The largest score across all seventeen angles is 464105, so the selected rotation is $+1.0^\circ$.
+
+In the recorded boundary between centres 38 and 61, $y_m=49.5$ and $h_g=11.5$. At row 49 the closed mask is zero, giving $C=0.012[(49-49.5)/11.5]^2=0.0000226843$. At column 283, the selected predecessor is row 50 with stored cost 0.00641966. Its one-row change adds 0.02, so the accumulated cost is $0.00641966+0.02+0.0000226843\simeq0.02644234$.
+
+At the implemented 0.012/0.02 setting, mean midpoint offset is 0.363 working pixels; removing midpoint attraction raises it to 4.055 pixels.
+
+
+\subsubsection{Network calculations}
+For the first Owen01 line, channel 0 of the first convolution at canvas row 34, column 462 gives $\sum WX=-1.150897$ with learned bias $b=-0.000435125$. Equation~\ref{eq:des-conv} therefore produces $z=-1.151332$. The nine actual input and learned-weight values are retained in Appendix~\ref{app:des-real-calculations}.
+
+At the same activation, the checkpoint stores $\mu=0.2163021$, $\sigma^2=0.02585394$, $\gamma=1.0193636$ and $\beta=0.1324657$. Using $\epsilon=10^{-5}$ in Equation~\ref{eq:des-bn} gives $y=1.0193636(-1.1513321-0.2163021)/\sqrt{0.02585394+10^{-5}}+0.1324657\simeq-8.53619$.
+
+In the first forward LSTM layer for that line, frame 10 and cell 0 have $c_{t-1}=-2.7277257$, $f_t=0.7306111$, $i_t=0.6666368$ and $g_t=-0.8560218$. Equation~\ref{eq:des-lstm} gives $c_t\simeq-2.5635625$. With $o_t=0.000145395$, the cell emits $h_t\simeq-0.000143680$.
+
+For the complete labelled line ``1.9. Vloggers using fame to support charities is a positive way'', the recorded forward--backward total is $\log Z=-0.47033843$. Equation~\ref{eq:des-ctc} gives $\mathcal L_{\rm CTC}=0.47033843$ and $Z\simeq0.6247908$.
+
+At frame 11, the probability of \texttt{V} is $p_{11,V}=0.98030665$ and the target-constrained occupancy is $q_{11,V}=0.99999995$. The CTC logit derivative is therefore $p-q=-0.01969329$.
+
+The same Owen crop has an estimated body-band height of 38 pixels. At the selected $\rho=0.17$, the width calculation gives $w=\operatorname{clip}(\operatorname{round}(0.17\times38),2,9)=6$, then $k=2\lfloor6/2\rfloor+1=7$.
+
+
+\subsubsection{Glyph extraction and reproduction calculations}
+For the \texttt{V} in that Owen line, frame 11 corresponds to state 11 of the blank-interleaved transcript. Its log emission is $-0.01988991$ and the three admissible predecessor scores are $-13.91888$, $-10.01139$ and $-1.3624485$. Equation~\ref{eq:des-viterbi} selects their maximum and gives $V=-0.01988991-1.3624485=-1.3823384$. Backtracking assigns \texttt{V} the frame interval $[11,12)$.
+
+The refined right boundary of this \texttt{V} is source column 193. Although smoothing gives $\overline p_{193}=2.8$ and the positive-column reference is 14.36, the raw ink count at column 193 is zero. The explicit blank-column rule therefore overrides $2.8/14.36$ and assigns zero cut cost.
+
+A traced point on this \texttt{V} is $(x,y)=(173,59)$, with left cut $x_L=146$, baseline $b=107$, $h_x=38$ and $\tan\phi=-0.0787017$. Equation~\ref{eq:des-glyphcoords} gives $v=48/38=1.263158$ and $u_0=27/38-1.263158(-0.0787017)=0.809939$. After the implementation's three-decimal intermediate rounding and measured post-trim shift $\delta=0.4472489$, the stored point is $(u,v)=(0.363,1.263)$ and the recorded lead is 0.447 x-heights.
+
+Dylan's first stored \texttt{a} variant has recorded prior distance 0.114. Recomputing the pairwise rule on all nine final stored variants gives the smallest total distance, 33.3413, for variant index 4; the other totals range from 34.4306 to 42.9091.
+
+In the generated Owen sentence ``Writing with style.'', the first placement call, after calibration and jitter, uses $(u,v)=(-0.01134565,1.47270173)$, lead $l=0.25117988$, zero shear and drift, and $h_x^{\rm mm}=4$. With the initial placement origin $(0,0)$, Equation~\ref{eq:des-placement} gives $x=4(0.25117988-0.01134565)=0.9593369$\,mm and $y=4(1.47270173)=5.8908069$\,mm.
+
+The final Owen profile's stored glyph distances have median $\widetilde d=0.18355$. Equation~\ref{eq:des-anchor} gives $\lambda=\operatorname{clip}[(0.18355-0.24)/0.08,0,1]=0$.
+
+For the recorded Owen candidate 1, the 19-character target ``Writing with style.'' differs from its reader output by one substitution, giving $A=18/19=0.9473684$. The selected-writer posterior is $P=0.5786133$, so Equation~\ref{eq:des-jointscore} gives $J=0.7184359$.
+
+In the worked Owen example, three pre-repair trials use the fixed text ``Writing with style.'', seeds 2026, 3003 and 3980, and the selected eleven-writer shape model with an explicit width fraction of 0.17. Candidate 1 has $(A,P,J)=(0.947,0.579,0.718)$, while candidate 3 has the same character score but $(P,J)=(0.464,0.623)$. The combined criterion therefore selects candidate 1.
+
+The generated Owen trajectory has $x_0=0.9593369$\,mm and $y_1=6.6340616$\,mm. A point $(2.9829210,5.3303251)$\,mm is placed using the configured origin $(0,251.3)$\,mm, margins $(15,10)$\,mm, unit fit scale and zero line shift. Equation~\ref{eq:des-machinecoords} gives $(x_m,y_m)=(17.0235840,239.9962635)$\,mm. Three-decimal file emission writes this point as \texttt{X17.024 Y239.996}, connecting the trajectory calculation to the motion segment examined in Section~\ref{sec:des-drive}.
+
+For this same generated file, the unrounded distance accumulators are $D_d=139.0263729$\,mm and $D_u=158.1555743$\,mm. At $F_d=900$ and $F_u=2400$\,mm/min, with 56 pen transitions and two 0.35\,s dwell settings, Equation~\ref{eq:des-timebudget} gives $t_{\rm nom}=9.2684249+3.9538894+19.6=32.8223142$\,s. The job metadata reports 32.8\,s after rounding.
+
+
+
+\subsubsection{System integration calculation}
+Applying this vote to the first two archived Owen01 crops gives ink weights 20204 and 21750, with Owen probabilities 0.9996674 and 0.9999279 from the selected 0.17-width model. The recorded page-weight calculation gives $\overline p_{\rm Owen}=(20204\times0.9996674+21750\times0.9999279)/41954\simeq0.9998024$. This is a two-crop calculation trace, not the full-page evaluation reported in Results.
+\subsection{Additional recorded numerical checks}\label{app:des-expanded-checks}\label{app:des-real-calculations}
+\begin{table}[H]\centering\small
+\begin{tabular}{p{.43\linewidth}p{.49\linewidth}}
+\toprule Recorded check & Values\\\midrule
+Convolution patch storage & $368640\times4/2^{20}=1.40625$ MiB\\
+CTC finite-difference losses & $0.4703364611173033$, $0.4703403997759956$\\
+Perturbation and derivative & $10^{-4}$, $-0.0196932934615$\\
+Analytic derivative and difference & $-0.0196932934309$, $3.06\times10^{-11}$\\
+Switch confirmation intervals & $6+6=12$ ms\\
+\bottomrule\end{tabular}
+\caption{Recorded calculation values.}\label{tab:app-numeric-values}\end{table}
+The switch algorithm in Design uses the following recorded confirmation duration.
+\begin{equation}6\,\mathrm{ms}+6\,\mathrm{ms}=12\,\mathrm{ms}.\label{eq:gan-latency}\end{equation}
+\subsection{Extended training procedure}\label{app:des-training-procedures}
+The following procedure is the one referenced in Design.
+\begin{designalgorithm}[H]
+\caption{One numerical training batch and validation checkpoint decision}
+\label{alg:des-train}
+\prequire{Training batch, task, parameters $\theta$ and optimiser state.}
+\begin{designpseudo}
+\pstate{0}{$(X,y)\leftarrow$ task-specific preparation and training augmentation}
+\pstate{0}{$(F,\mathcal K)\leftarrow\operatorname{BackboneForward}(X,\theta)$; retain caches}
+\pstate{0}{\textbf{if} task is reader \textbf{then}}
+\pstate{1}{$(z,\mathcal K_h)\leftarrow\operatorname{BiLSTMHead}(F)$; $(L,g)\leftarrow\operatorname{CTC}(z,y)$}
+\pstate{0}{\textbf{else}}
+\pstate{1}{$(z,\mathcal K_h)\leftarrow\operatorname{WriterHead}(\operatorname{MeanWidth}(F))$}
+\pstate{1}{$(L,g)\leftarrow\operatorname{CrossEntropy}(z,y)$}
+\pstate{0}{\textbf{end if}}
+\pstate{0}{$g_F\leftarrow\operatorname{HeadBackward}(g,\mathcal K_h)$}
+\pstate{0}{$\nabla\theta\leftarrow\operatorname{BackboneBackward}(g_F,\mathcal K)$}
+\pstate{0}{\textbf{if} task is writer \textbf{then} clip total gradient norm to $5$}
+\pstate{0}{$(\theta,\text{state})\leftarrow\operatorname{OptimiserStep}(\theta,\nabla\theta,\text{state})$}
+\pstate{0}{\textbf{if} epoch is complete \textbf{then}}
+\pstate{1}{Validate with fixed preparation, stored normalisation and dropout disabled}
+\pstate{1}{Update schedule; save progress; replace best only if its criterion improves}
+\pstate{0}{\textbf{end if}}
+\pstate{0}{\textbf{return} $L,\theta,\text{state}$}
+\end{designpseudo}
+\end{designalgorithm}
+\subsection{Representation and connection records}
+\begin{table}[H]\centering\small
+\begin{tabularx}{\linewidth}{|p{0.19\linewidth}|X|X|}
+\hline\textbf{Stage}&\textbf{Required input}&\textbf{Output and governing convention}\\\hline
+Segmentation&Photographed or saved page&Ordered raw crops and full-page boxes; image $y$ points down\\\hline
+Recognition&Line crops and model arrays&Text plus writer probabilities interpreted by the checkpoint mapping\\\hline
+Profile construction&Original lines, known transcripts and reader&Writer-keyed glyph paths in x-height units, baseline origin and $y$ up\\\hline
+Synthesis&Text, stored profile, scale and search settings&Millimetre trajectory, source tags and internal selection scores\\\hline
+File conversion&Trajectory and workspace configuration&Absolute millimetre G-code, pen events, placement and timing budget\\\hline
+Physical execution&G-code, connected GPIO and completed calibration&Step-counter updates and job outcome; physical accuracy requires observation\\\hline
+\end{tabularx}
+\caption{Representation boundaries that connect the three main processing stages to the gantry.}
+\label{tab:des-contracts}
+\end{table}
+\subsection{Controller pin and supply planning}
+
+\begin{table}[H]\centering\small
+\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.03}
+\begin{tabular}{p{0.18\linewidth}p{0.22\linewidth}p{0.23\linewidth}p{0.29\linewidth}}\toprule
+\textbf{Header pin / GPIO line} & \textbf{Connection} & \textbf{Direction and nominal level} & \textbf{Notes / verification}\\\midrule
+USB host & ODROID USB host $\rightarrow$ IMX179 camera & USB data and bus power & Camera current draw and captured resolution are not established by the sensor's advertised maximum.\\
+Ethernet / network & ODROID RJ45 or Wi-Fi $\leftrightarrow$ laptop/browser & Network data; no GPIO voltage & Operator request and response path.\\
+ODROID DC jack & Supplied adapter $\rightarrow$ board power input & Actual adapter output unknown & The manufacturer's 12\,V/2\,A recommendation is not confirmation of the adapter in use~\cite{odroidn2ds}.\\
+External supply $+$ & 24\,V supply $\rightarrow$ VMOT on both A4988 carriers & 24\,V DC; supply limit set to 2.11\,A & A separate 0.35\,A supply indication was recorded under one operating condition; neither value is the motor phase-current setting.\\
+3.3\,V header rail & ODROID dedicated 3.3\,V output $\rightarrow$ both A4988 VDD inputs and pen-motor positive rail & 3.3\,V supply & Physical header pin and total rail loading are not recorded.\\
+Ground return & ODROID GND, driver logic/motor returns, switch returns and BC337 emitter & 0\,V reference & A common signal reference is required; exact return routing and physical GND pin are not documented.\\
+\bottomrule\end{tabular}
+\caption{Controller pin, signal-level and supply map for the installed system.}\label{tab:des-pin-map}
+\end{table}
+
+\begin{table}[H]\ContinuedFloat\centering\small
+\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.03}
+\begin{tabular}{p{0.18\linewidth}p{0.22\linewidth}p{0.23\linewidth}p{0.29\linewidth}}\toprule
+\textbf{Header pin / GPIO line} & \textbf{Connection} & \textbf{Direction and nominal level} & \textbf{Notes / verification}\\\midrule
+7 / 64 & \texttt{DIR1\_PIN} $\rightarrow$ X-driver DIR & Output, nominal 0/3.3\,V & Direction state; software inversion is configured for X.\\
+11 / 68 & \texttt{STEP1\_PIN} $\rightarrow$ X-driver STEP & Output pulses, nominal 0/3.3\,V & A4988 advances on STEP pulses; this is a logic input, not the motor supply.\\
+12 / 81 & \texttt{DIR2\_PIN} $\rightarrow$ Y-driver DIR & Output, nominal 0/3.3\,V & Direction state; software inversion is configured for Y.\\
+13 / 69 & \texttt{STEP2\_PIN} $\rightarrow$ Y-driver STEP & Output pulses, nominal 0/3.3\,V & A4988 advances on STEP pulses; this is a logic input, not the motor supply.\\
+15 / 72 & X-min switch $\rightarrow$ \texttt{X\_MIN\_PIN} & Input, active high, nominal 0/3.3\,V & Reported 10\,k$\Omega$ pull-down.\\
+16 / 65 & X-max switch $\rightarrow$ \texttt{X\_MAX\_PIN} & Input, active high, nominal 0/3.3\,V & Reported 10\,k$\Omega$ pull-down.\\
+18 / 66 & Y-min switch $\rightarrow$ \texttt{Y\_MIN\_PIN} & Input, active high, nominal 0/3.3\,V & Reported 10\,k$\Omega$ pull-down.\\
+22 / 67 & Y-max switch $\rightarrow$ \texttt{Y\_MAX\_PIN} & Input, active high, nominal 0/3.3\,V & Reported 10\,k$\Omega$ pull-down.\\
+33 / 70 & Pen-up switch $\rightarrow$ \texttt{PEN\_SWITCH\_PIN} & Input, active high, nominal 0/3.3\,V & High indicates the raised state. Switch model and pull-down location are not recorded.\\
+35 / 71 & \texttt{PEN\_MOTOR\_PIN} $\rightarrow$ 1\,k$\Omega$ base resistor $\rightarrow$ BC337 & Output, nominal 0/3.3\,V & GPIO controls the transistor only; motor current is supplied by the dedicated 3.3\,V rail. A 10\,k$\Omega$ base pull-down was reported; its connection is not documented. No flyback diode is fitted.\\
+A4988 outputs & X/Y carrier 1A/1B and 2A/2B $\rightarrow$ motor coil pairs & Switched/chopped winding drive from VMOT & The coil voltage is not a fixed 24\,V STEP signal. Phase-current limit depends on VREF and sense resistance; actual VREF remains unmeasured~\cite[pp.~4--5, 9]{a4988ds}.\\
+\bottomrule\end{tabular}
+\caption{Controller pin, signal-level and supply map (continued).}
+\end{table}
+\FloatBarrier
+
+
+\FloatBarrier

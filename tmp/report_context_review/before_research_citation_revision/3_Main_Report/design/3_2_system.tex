@@ -1,0 +1,31 @@
+\subsection{System block diagram}
+\label{sec:des-system}
+The complete system connects page capture, handwriting interpretation and physical reproduction. The camera supplies an image to the ODROID N2+, while the gantry receives motion commands from the same computer. Between these interfaces, line images, recognised strings, writer probabilities and pen trajectories are kept as different representations. This makes it possible to inspect the output of one stage before it is used by the next.~\cite[web/server.py]{braunepipeline2026}
+
+
+Figure~\ref{fig:des-hardware-system} shows the hardware connections. The two stepper drivers supply the winding currents; the ODROID supplies STEP and DIR signals rather than motor power through its GPIO pins. Four switches indicate the axis limits and a fifth indicates the pen state. The pen motor is controlled through its own switching circuit. Camera acquisition, inference and job execution are coordinated by the server.~\cite[project implementation]{braunepipeline2026}
+
+
+\begin{figure}[!htbp]\centering
+\designasset{design-hardware-overview.pdf}{0.96}{Labelled system diagram distinguishing motor power, logic signals, switch feedback and camera data.}
+\caption{Hardware architecture of the handwriting robot.~\cite{brauneevidence2026,braunepipeline2026}}
+\label{fig:des-hardware-system}
+\end{figure}
+
+Figure~\ref{fig:des-processing-system} separates the three operating modes. During preparation, labelled line images train the text and writer models, and the text model is also used to extract a writer's glyphs from lines with known transcripts. The resulting weights and style profiles are stored for later use. During classification, the input page is conditioned and separated into lines; the reader produces text and the writer classifier produces a probability distribution over the trained writers. During reproduction, digital text and a selected profile are converted into a trajectory, then G-code, and finally GPIO pulses and pen commands.~\cite[project implementation]{braunepipeline2026}
+
+
+\begin{figure}[!htbp]\centering
+\designasset{design-processing-overview.pdf}{0.96}{Three paths: labelled pages to models/profiles; photographed page to text and writer; text plus selected profile to trajectory, G-code and gantry. Show stored artefacts and shared modules.}
+\caption{Processing architecture and the stored information shared by the operating modes.~\cite{brauneevidence2026,braunepipeline2026}}
+\label{fig:des-processing-system}
+\end{figure}
+
+Recognition and reproduction share models, but they do not perform the same operation. Recognition estimates unknown text from an image. Glyph extraction uses text that is already known to estimate where its characters occur. Reproduction arranges the extracted pen paths into new text and uses the reader and writer classifier to select among candidate renderings. Keeping these roles separate is important: a candidate-selection score indicates how a model judges the generated image, whereas an independently assessed physical page establishes what the complete machine actually reproduced.~\cite[web/server.py]{braunepipeline2026}
+
+The final design reads complete lines rather than requiring isolated letters at FU 2.2. Character boundaries are instead recovered with known transcripts during profile construction. This avoids committing to uncertain cuts before recognising connected handwriting~\cite[recognise.py, PaperCRNNNumpy; style.py, ExtractLineGlyphs]{braunepipeline2026}.
+
+The proposal's functional units remain identifiable in this architecture. Camera acquisition and request handling implement FU~1; conditioning and line preparation implement FU~2.1--2.2; the two trained networks implement classification FU~2.3. Offline weight training corresponds to FU~2.4, while glyph extraction, profile storage and glyph retrieval implement FU~2.5--2.7. Trajectory conversion and the motion interpreter implement FU~2.8, followed by the axis drives, pen holder and lift in FU~3.1--3.4. Training and profile preparation produce stored artefacts before request-time recognition or writing; they are not repeated for each page.~\cite[web/server.py]{braunepipeline2026}
+
+The interface between software and mechanics is G-code. It describes motion in millimetres and pen state without requiring the synthesiser to know GPIO pin numbers. Conversely, the motion interpreter can draw a geometric test file without loading a handwriting model. This separation supports commissioning the gantry independently and localising errors to image processing, trajectory generation or physical execution.~\cite[web/server.py]{braunepipeline2026}
+\FloatBarrier

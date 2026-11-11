@@ -1,0 +1,19 @@
+\subsection{System block diagram}
+\label{sec:des-system}
+The system is split into a main hardware and software block diagram. Figure~\ref{fig:des-hardware-system} shows the hardware connections for page capture, handwriting interpretation and physical reproduction. The system is not required to have an internal power supply, so the ODROID N2+ and the stepper motor are connected to an external supply. A USB webcam held with a page clamp is connected to the ODROID N2+ USB port, to capture page scans. An external device is used as a display interface and to connect through SSH to the ODROID N2+. Two NEMA 17 stepper motors control the $x$ and $y$ axis movement, driver by A4988 stepper motor drivers. GT2 timing belts and pulleys convert the stepper motor rotations to Cartesian movement, moving the pen across the page. Lastly a BC337 transistor circuit is used to drive a N20 gear motor to lift the pen up/down on the page.
+
+\begin{figure}[!ht]\centering
+\includegraphics[width=0.96\linewidth]{Evidence/user_hardware_diagram_input.png}
+\caption{Hardware system block diagram supplied by the author. The detailed controller pins, signal levels and power connections are listed in Table~\ref{tab:des-pin-map}.}
+\label{fig:des-hardware-system}
+\end{figure}
+\FloatBarrier
+
+Figure~\ref{fig:des-processing-system} shows the corresponding software pipeline. When classifying or training with data, the page scan must be conditioned first, through normalization, ink separation etc. and the segmenter splits the page into clean line crops, to be passed into the training or classification models. If the system is prompted to train its models, the cropped lines will either be run with the text model trainer, or gets stroke-normalized to train the author model, and glyph extraction occurs. If classification is occuring, the cropped line is simply passed into the text classifier straight or gets stroke-normalized and passed into the author classifier. Lastly if the system is prompted to reproduced text, the system must first perform the sentence synthesis and G-code generation so the gantry has something to write. The pen feedback loop and emergency stop sequence are triggered depending on the state of the micro-switches used. The end-stop switches also control the calibration sequence of the gantry.
+
+\begin{figure}[!ht]\centering
+\includegraphics[width=0.98\linewidth]{Evidence/user_software_diagram_input.png}
+\caption{Software system block diagram supplied by the author: (1) segmentation, (2) reproduction, (3) training and (4) classification.}
+\label{fig:des-processing-system}
+\end{figure}
+

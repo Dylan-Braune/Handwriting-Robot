@@ -1,0 +1,99 @@
+% Import within the final report's existing appendix, not as a new main section.
+\section{Supporting implementation calculations}
+\label{app:des-implementation}
+The main Design section explains the engineering decisions and representative operations. This appendix records the derivative conventions, image operations and parameter meanings needed to inspect the numerical implementation in more detail~\cite[\texttt{train.py}, \texttt{segment.py}, \texttt{style.py}]{braunepipeline2026}. Algorithms in the main text are explanatory pseudocode; the separately submitted source remains the executable implementation.
+
+\subsection{Numerical network derivatives}
+\label{app:des-derivatives}
+For a linear layer $Y=XW^T+b$ with incoming derivative $G$, the implemented derivatives are $\partial\mathcal L/\partial X=GW$, $\partial\mathcal L/\partial W=G^TX$ and the sum of $G$ over samples for the bias. Convolution applies the corresponding matrix calculation to overlapping image patches as described in Equation~\ref{eq:des-convback}. Contributions to the same input pixel are summed.
+
+For each batch-normalisation channel, $N=BHW$ values contribute to the batch statistics. The training forward pass uses population variance, while the running variance update uses its $N/(N-1)$ corrected estimate. The running update momentum is 0.1. With $\widehat x=(x-\mu)/\sqrt{\sigma^2+\epsilon}$ and $g=\partial\mathcal L/\partial y$, Equation~\ref{eq:app-bnback} gives the input derivative, obtained by simplifying the batch-normalisation chain-rule expressions~\cite[PDF p.~4]{ioffe2015}.
+\begin{equation}
+\frac{\partial\mathcal L}{\partial x_i}=
+\frac{\gamma}{N\sqrt{\sigma^2+\epsilon}}
+\left[Ng_i-\sum_jg_j-\widehat x_i\sum_jg_j\widehat x_j\right].
+\label{eq:app-bnback}
+\end{equation}
+The parameter derivatives accompanying Equation~\ref{eq:app-bnback} are $\sum_i g_i\widehat x_i$ for $\gamma$ and $\sum_i g_i$ for $\beta$. Inference uses stored statistics and requires no batch-dependent update.
+
+ReLU passes an incoming derivative only where its cached input was positive. Spatial max pooling scatters it to the selected maximum in each window. Height-max pooling does the same along height; width averaging distributes the derivative equally over the pooled columns. The implementation uses inverted dropout: it multiplies by the cached Bernoulli mask divided by $1-p$ during training and is the identity at inference. This moves the expected-output scaling from test time to training time relative to the original presentation~\cite[pp.~1931, 1934]{srivastava2014}. Reusing the same mask in the backward calculation is essential.
+
+The LSTM backward pass differentiates the implemented recurrence in Equation~\ref{eq:des-lstm}; full backpropagation through time for this cell form is described by Graves~\cite[pp.~4--5]{graves2013}. It carries both the hidden derivative from the next step and a separate cell derivative. Writing the combined hidden derivative as $d h_t$, Equation~\ref{eq:app-lstmback} shows the dependencies before gate-activation derivatives are applied.
+\begin{equation}
+\begin{aligned}
+d c_t&=d c_t^{\mathrm{next}}+d h_t\odot o_t\odot[1-\tanh^2(c_t)],\\
+d o_t&=d h_t\odot\tanh(c_t),& d f_t&=d c_t\odot c_{t-1},\\
+d i_t&=d c_t\odot g_t,&d g_t&=d c_t\odot i_t,\\
+d c_{t-1}&=d c_t\odot f_t.
+\end{aligned}
+\label{eq:app-lstmback}
+\end{equation}
+Sigmoid gates multiply these derivatives by $a(1-a)$; the candidate multiplies by $1-g_t^2$. The concatenated gate derivatives accumulate outer products with $x_t$ and $h_{t-1}$ into the two weight matrices. Multiplication by $W_h$ provides the next reverse-time hidden derivative in Equation~\ref{eq:app-lstmback}. Each bidirectional layer reverses the appropriate sequence and sums the two input derivatives; stacked layers are differentiated in reverse layer order.
+
+The numerical CTC forward score uses the recurrence in Equation~\ref{eq:app-ctcforward}, written in log space from the CTC path recursion~\cite[PDF p.~4, Sec.~4.1]{graves2006}.
+\begin{equation}
+\alpha_{t,s}=\log p_t(\ell'_s)+
+\operatorname{LSE}_{r\in\mathcal P(s)}\alpha_{t-1,r}.
+\label{eq:app-ctcforward}
+\end{equation}
+The predecessor set in Equation~\ref{eq:app-ctcforward} contains the current state, the preceding state and an admissible two-state skip. A skip is excluded when its destination is blank or repeats the label two states earlier. With log scores $a,b$, the stable pairwise reduction is $m+\log(\exp(a-m)+\exp(b-m))$, where $m=\max(a,b)$; the all-unreachable case remains $-\infty$. The backward recurrence uses successor emissions at $t+1$, yielding the occupancy convention in Equation~\ref{eq:des-ctcgrad}.
+
+\subsection{Optimisers and gradient scaling}
+The reader uses an uncentred RMSprop accumulator, following the moving-square-gradient principle~\cite[PDF p.~29]{tieleman2012}. The code selects its own averaging coefficient and adds the stated decay term. For parameter $\theta$, raw gradient $g$, learning rate $\eta$ and weight-decay coefficient $\lambda_w$, the implemented update is Equation~\ref{eq:app-rmsprop}.
+\begin{equation}
+g' =g+\lambda_w\theta,\quad
+v_t=0.99v_{t-1}+0.01(g')^2,\quad
+\theta_t=\theta_{t-1}-\eta\frac{g'}{\sqrt{v_t}+10^{-8}}.
+\label{eq:app-rmsprop}
+\end{equation}
+Decay in Equation~\ref{eq:app-rmsprop} enters the gradient before accumulation. The writer's AdamW instead uses separate parameter decay, as shown in Equation~\ref{eq:app-adamw}~\cite[p.~2, Alg.~1]{kingma2015}\cite[p.~3, Alg.~2]{loshchilov2019}.
+\begin{equation}
+\begin{aligned}
+m_t&=0.9m_{t-1}+0.1g,& v_t&=0.999v_{t-1}+0.001g^2,\\
+\widehat m_t&=m_t/(1-0.9^t),&\widehat v_t&=v_t/(1-0.999^t),\\
+\theta_t&=\theta_{t-1}-\eta\left(\frac{\widehat m_t}{\sqrt{\widehat v_t}+10^{-8}}+\lambda_w\theta_{t-1}\right).
+\end{aligned}
+\label{eq:app-adamw}
+\end{equation}
+Before the writer update, all gradient tensors are scaled together by $\min(1,5/\|g\|_2)$, with a numerical denominator guard. Clipping individual tensor norms independently would be a different operation. The numerical reader loop does not apply that clipping. Equations~\ref{eq:app-rmsprop} and~\ref{eq:app-adamw} describe code operations, not a claim that their default learning rates were used in every completed run.
+
+\subsection{Morphology, thinning and path simplification}
+For binary mask $M$ and neighbourhood $K$, dilation is the maximum of translated mask values and erosion is their minimum. Closing applies dilation followed by erosion with the same footprint. The implementation obtains rectangular neighbourhood counts through prefix sums; binary comparisons then implement these operations. Connectivity analysis uses horizontal runs and union operations with diagonal overlap admitted, rather than a library component-labelling call.
+
+The thinning conditions follow Zhang and Suen~\cite[p.~237]{zhang1984}. The method inspects the eight neighbours $P_2,\ldots,P_9$ clockwise from north. A removable foreground pixel has two to six foreground neighbours and exactly one background-to-foreground transition around that ring. The two alternating subpasses additionally require, respectively,
+\begin{equation}
+\begin{array}{ll}
+P_2P_4P_6=0,\ P_4P_6P_8=0 &\text{(first subpass)},\\
+P_2P_4P_8=0,\ P_2P_6P_8=0 &\text{(second subpass)}.
+\end{array}
+\label{eq:app-thinning}
+\end{equation}
+Candidates in Equation~\ref{eq:app-thinning} are deleted together in each subpass, and the pair of subpasses repeats until unchanged. This reduces thickness while limiting topology changes; it cannot restore ink already lost during thresholding. The same thinning primitive supports stroke normalisation, glyph tracing and the diagnostic retracing route.
+
+The default tracer begins at graph nodes whose degree differs from two, follows unused pixel edges, and then recovers remaining closed loops. Short dangling spurs are pruned, and nearby chain ends are greedily rejoined when their continuation angle is below $75^\circ$. This remains a geometric estimate rather than a verified natural handwriting order. Polyline simplification compares interior points with the line through the endpoints, retaining a point and splitting recursively when the deviation exceeds tolerance. The code adapts the polyline reduction method~\cite{douglas1973}\designsourceflag{douglas1973}. Near-closed paths are first split at a distant point so that a zero-length endpoint chord does not collapse the loop. The extraction tolerance is 0.6 source pixels before normalisation; final path smoothing and machine decimation occur in their own coordinate units.
+
+\subsection{Profile and trajectory quantities}
+Table~\ref{tab:app-fields} records the fields most likely to be confused during inspection. Full arrays and every tuning constant remain in the source rather than expanding the main text into a variable dictionary.
+\begin{table}[!htbp]\centering\small
+\begin{tabularx}{\linewidth}{|p{0.27\linewidth}|X|}
+\hline\textbf{Quantity}&\textbf{Meaning and unit}\\\hline
+\texttt{xHeightPx}&Reference source x-height in pixels; not a physical pen height\\\hline
+\texttt{strokes}&Ordered point lists in glyph x-height units; $y$ increases upwards\\\hline
+\texttt{width}, \texttt{lead}, \texttt{advance}&Ink width, lead-in and cell/placement extent; distinct x-height quantities\\\hline
+\texttt{top}, \texttt{bot}&Vertical extrema relative to the baseline, in x-heights\\\hline
+\texttt{connL}, \texttt{connR}&Observed boundary crossings during source extraction\\\hline
+\texttt{priorD}&Descriptor distance from the pooled character reference; not writer confidence\\\hline
+\texttt{idealMedoid}, \texttt{idealGlyphs}&Actual representative variant and compatible median-stroke prototype\\\hline
+\texttt{letterAdvance}&Per-character median source advance; sampled variants retain their own placement geometry\\\hline
+\texttt{lineStepMm}&Synthesised baseline spacing before optional machine respacing\\\hline
+\texttt{jointScore}&Internal harmonic selection score; not independent stylistic correlation\\\hline
+\texttt{clipped}&Count of points clamped by the motion-file conversion; not an acceptable layout target\\\hline
+\end{tabularx}
+\caption{Selected implementation fields and their interpretation.}
+\label{tab:app-fields}
+\end{table}
+
+Raw alignment confidence is a path score used for relative filtering, not a calibrated probability of a correct cut. The cross-writer prior uses a median occupancy descriptor, then unit normalisation; its minimum pooled sample count is twelve. Writer consensus retains approximately 75\% of a sufficiently populated pool, with at least three variants. Compatible prototypes group equal stroke counts, resample strokes to 44 points, align them and take robust pointwise summaries. Admission to the variant pool requires prior distance below 0.32 and improvement of more than 0.02 over the median raw distance. These gates reduce malformed geometry but do not prove that a distinctive form is incorrect.
+
+Machine conversion maintains image, glyph, trajectory and machine coordinate frames separately. The line-centre shifts in Equation~\ref{eq:des-machinecoords} are zero when no respacing is requested. Workspace fitting and clipping are distinct: fitting scales the whole trajectory uniformly, while clipping changes individual points and can deform letters. Final file parsing provides a useful conversion check because it reconstructs movements from emitted commands instead of directly displaying the input trajectory again.
+\FloatBarrier

@@ -1,0 +1,271 @@
+% Import within the final report's existing appendix, not as a new main section.
+\section{Supporting implementation calculations}
+\label{app:des-implementation}
+The main Design section explains the engineering decisions and representative operations. This appendix records the derivative conventions, image operations and parameter meanings needed to inspect the numerical implementation in more detail~\cite[\texttt{train.py}, \texttt{segment.py}, \texttt{style.py}]{braunepipeline2026}. Algorithms in the main text are explanatory pseudocode; the separately submitted source remains the executable implementation.
+
+\subsection{Numerical network derivatives}
+\label{app:des-derivatives}
+For a linear layer $Y=XW^T+b$ with incoming derivative $G$, the implemented derivatives are $\partial\mathcal L/\partial X=GW$, $\partial\mathcal L/\partial W=G^TX$ and the sum of $G$ over samples for the bias. Convolution applies the corresponding matrix calculation to overlapping image patches as described in Equation~\ref{eq:des-convback}. Contributions to the same input pixel are summed.~\cite[train.py; segment.py; style.py]{braunepipeline2026}
+
+
+For each batch-normalisation channel, $N=BHW$ values contribute to the batch statistics. The training forward pass uses population variance, while the running variance update uses its $N/(N-1)$ corrected estimate. The running update momentum is 0.1. With $\widehat x=(x-\mu)/\sqrt{\sigma^2+\epsilon}$ and $g=\partial\mathcal L/\partial y$, Equation~\ref{eq:app-bnback} gives the input derivative, obtained by simplifying the batch-normalisation chain-rule expressions~\cite[PDF p.~4]{ioffe2015}.
+\begin{equation}
+\frac{\partial\mathcal L}{\partial x_i}=
+\frac{\gamma}{N\sqrt{\sigma^2+\epsilon}}
+\left[Ng_i-\sum_jg_j-\widehat x_i\sum_jg_j\widehat x_j\right].
+\label{eq:app-bnback}
+\end{equation}
+Calculated example: For three scalar inputs $(-1,0,1)$, $\gamma=1$, $\epsilon=10^{-5}$ and incoming gradients $(1,0,0)$, the middle normalised input is zero. Its derivative is $-1/[3\sqrt{2/3+10^{-5}}]=-0.40825$, despite its own incoming gradient being zero. The shared statistics couple the samples. \cite[train.py, BatchNorm2dBackward]{braunepipeline2026}
+
+The parameter derivatives accompanying Equation~\ref{eq:app-bnback} are $\sum_i g_i\widehat x_i$ for $\gamma$ and $\sum_i g_i$ for $\beta$. Inference uses stored statistics and requires no batch-dependent update.~\cite[train.py; segment.py; style.py]{braunepipeline2026}
+
+ReLU passes an incoming derivative only where its cached input was positive. Spatial max pooling scatters it to the selected maximum in each window. Height-max pooling does the same along height; width averaging distributes the derivative equally over the pooled columns. The implementation uses inverted dropout: it multiplies by the cached Bernoulli mask divided by $1-p$ during training and is the identity at inference. This moves the expected-output scaling from test time to training time relative to the original presentation~\cite[pp.~1931, 1934]{srivastava2014}. Reusing the same mask in the backward calculation is essential.~\cite[train.py; segment.py; style.py]{braunepipeline2026}
+
+The LSTM backward pass differentiates the implemented recurrence in Equation~\ref{eq:des-lstm}; full backpropagation through time for this cell form is described by Graves~\cite[pp.~4--5]{graves2013}. It carries both the hidden derivative from the next step and a separate cell derivative. Writing the combined hidden derivative as $d h_t$, Equation~\ref{eq:app-lstmback} shows the dependencies before gate-activation derivatives are applied.
+\begin{equation}
+\begin{aligned}
+d c_t&=d c_t^{\mathrm{next}}+d h_t\odot o_t\odot[1-\tanh^2(c_t)],\\
+d o_t&=d h_t\odot\tanh(c_t),& d f_t&=d c_t\odot c_{t-1},\\
+d i_t&=d c_t\odot g_t,&d g_t&=d c_t\odot i_t,\\
+d c_{t-1}&=d c_t\odot f_t.
+\end{aligned}
+\label{eq:app-lstmback}
+\end{equation}
+Calculated example: Using the main-text scalar cell $c_t=0.52$, $o_t=0.7$, $f_t=0.8$, with $dh_t=1$ and $dc_t^{\rm next}=0$, gives $dc_t=0.7[1-\tanh^2(0.52)]=0.5403$ and $dc_{t-1}=0.4322$, before any other accumulated paths. \cite[train.py, LstmBackward]{braunepipeline2026}
+
+Sigmoid gates multiply these derivatives by $a(1-a)$; the candidate multiplies by $1-g_t^2$. The concatenated gate derivatives accumulate outer products with $x_t$ and $h_{t-1}$ into the two weight matrices. Multiplication by $W_h$ provides the next reverse-time hidden derivative in Equation~\ref{eq:app-lstmback}. Each bidirectional layer reverses the appropriate sequence and sums the two input derivatives; stacked layers are differentiated in reverse layer order.~\cite[train.py; segment.py; style.py]{braunepipeline2026}
+
+The numerical CTC forward score uses the recurrence in Equation~\ref{eq:app-ctcforward}, written in log space from the CTC path recursion~\cite[PDF p.~4, Sec.~4.1]{graves2006}.
+\begin{equation}
+\alpha_{t,s}=\log p_t(\ell'_s)+
+\operatorname{LSE}_{r\in\mathcal P(s)}\alpha_{t-1,r}.
+\label{eq:app-ctcforward}
+\end{equation}
+Calculated example: For emission 0.7 and predecessor log scores $-2,-3$, $\alpha=\log(0.7)+\log(e^{-2}+e^{-3})=-2.0434$. This exceeds the max-path score $-2.3567$ because both admissible paths contribute. \cite[train.py, CtcLoss]{braunepipeline2026}
+
+The predecessor set in Equation~\ref{eq:app-ctcforward} contains the current state, the preceding state and an admissible two-state skip. A skip is excluded when its destination is blank or repeats the label two states earlier. With log scores $a,b$, the stable pairwise reduction is $m+\log(\exp(a-m)+\exp(b-m))$, where $m=\max(a,b)$; the all-unreachable case remains $-\infty$. The backward recurrence uses successor emissions at $t+1$, yielding the occupancy convention in Equation~\ref{eq:des-ctcgrad}.~\cite[train.py; segment.py; style.py]{braunepipeline2026}
+
+\subsection{Optimisers and gradient scaling}
+The reader uses an uncentred RMSprop accumulator, following the moving-square-gradient principle~\cite[PDF p.~29]{tieleman2012}. The code selects its own averaging coefficient and adds the stated decay term. For parameter $\theta$, raw gradient $g$, learning rate $\eta$ and weight-decay coefficient $\lambda_w$, the implemented update is Equation~\ref{eq:app-rmsprop}.
+\begin{equation}
+g' =g+\lambda_w\theta,\quad
+v_t=0.99v_{t-1}+0.01(g')^2,\quad
+\theta_t=\theta_{t-1}-\eta\frac{g'}{\sqrt{v_t}+10^{-8}}.
+\label{eq:app-rmsprop}
+\end{equation}
+Calculated example: At the first update choose $\theta=1$, $g=0.2$, $\lambda_w=10^{-5}$, $v_0=0$ and $\eta=10^{-3}$. Then $g\prime=0.20001$, $v_1=0.000400040001$ and $\theta_1\simeq0.990000$. The values illustrate the implemented update, not a recovered training step. \cite[train.py, RMSprop]{braunepipeline2026}
+
+Decay in Equation~\ref{eq:app-rmsprop} enters the gradient before accumulation. The writer's AdamW instead uses separate parameter decay, as shown in Equation~\ref{eq:app-adamw}~\cite[p.~2, Alg.~1]{kingma2015}\cite[p.~3, Alg.~2]{loshchilov2019}.
+\begin{equation}
+\begin{aligned}
+m_t&=0.9m_{t-1}+0.1g,& v_t&=0.999v_{t-1}+0.001g^2,\\
+\widehat m_t&=m_t/(1-0.9^t),&\widehat v_t&=v_t/(1-0.999^t),\\
+\theta_t&=\theta_{t-1}-\eta\left(\frac{\widehat m_t}{\sqrt{\widehat v_t}+10^{-8}}+\lambda_w\theta_{t-1}\right).
+\end{aligned}
+\label{eq:app-adamw}
+\end{equation}
+Calculated example: With zero initial moments, $g=0.2$, $\theta_0=1$, $\eta=10^{-3}$ and $\lambda_w=10^{-4}$, $m_1=0.02$, $v_1=0.00004$, $\widehat m_1=0.2$, $\widehat v_1=0.04$ and $\theta_1\simeq0.9989999$. \cite[train.py, AdamW]{braunepipeline2026}
+
+Before the writer update, all gradient tensors are scaled together by $\min(1,5/\|g\|_2)$, with a numerical denominator guard. Clipping individual tensor norms independently would be a different operation. The numerical reader loop does not apply that clipping. Equations~\ref{eq:app-rmsprop} and~\ref{eq:app-adamw} describe code operations, not a claim that their default learning rates were used in every completed run.~\cite[train.py; segment.py; style.py]{braunepipeline2026}
+
+\subsection{Morphology, thinning and path simplification}
+For binary mask $M$ and neighbourhood $K$, dilation is the maximum of translated mask values and erosion is their minimum. Closing applies dilation followed by erosion with the same footprint. The implementation obtains rectangular neighbourhood counts through prefix sums; binary comparisons then implement these operations. Connectivity analysis uses horizontal runs and union operations with diagonal overlap admitted, rather than a library component-labelling call.~\cite[train.py; segment.py; style.py]{braunepipeline2026}
+
+
+The thinning conditions follow Zhang and Suen~\cite[p.~237]{zhang1984}. The method inspects the eight neighbours $P_2,\ldots,P_9$ clockwise from north. A removable foreground pixel has two to six foreground neighbours and exactly one background-to-foreground transition around that ring. The two alternating subpasses additionally require, respectively,
+\begin{equation}
+\begin{array}{ll}
+P_2P_4P_6=0,\ P_4P_6P_8=0 &\text{(first subpass)},\\
+P_2P_4P_8=0,\ P_2P_6P_8=0 &\text{(second subpass)}.
+\end{array}
+\label{eq:app-thinning}
+\end{equation}
+Calculated example: For neighbours $(P_2,\ldots,P_9)=(1,1,1,0,0,0,0,0)$, the neighbour count is three, the circular transition count is one and all listed products are zero. A foreground centre therefore qualifies for deletion in the first subpass; the next subpass uses the updated image. \cite[segment.py, Skeletonize]{braunepipeline2026}
+
+Candidates in Equation~\ref{eq:app-thinning} are deleted together in each subpass, and the pair of subpasses repeats until unchanged. This reduces thickness while limiting topology changes; it cannot restore ink already lost during thresholding. The same thinning primitive supports stroke normalisation, glyph tracing and the diagnostic retracing route.~\cite[train.py; segment.py; style.py]{braunepipeline2026}
+
+The default tracer begins at graph nodes whose degree differs from two, follows unused pixel edges, and then recovers remaining closed loops. Short dangling spurs are pruned, and nearby chain ends are greedily rejoined when their continuation angle is below $75^\circ$. This remains a geometric estimate rather than a verified natural handwriting order. Polyline simplification compares interior points with the line through the endpoints, retaining a point and splitting recursively when the deviation exceeds tolerance. The code adapts the polyline reduction method~\cite[page to verify]{douglas1973}\designsourceflag{douglas1973}. Near-closed paths are first split at a distant point so that a zero-length endpoint chord does not collapse the loop. The extraction tolerance is 0.6 source pixels before normalisation; final path smoothing and machine decimation occur in their own coordinate units.~\cite[train.py; segment.py; style.py]{braunepipeline2026}
+
+\subsection{Profile and trajectory quantities}
+Table~\ref{tab:app-fields} records the fields most likely to be confused during inspection. Full arrays and every tuning constant remain in the source rather than expanding the main text into a variable dictionary.
+
+\begin{table}[!htbp]\centering\small
+\begin{tabularx}{\linewidth}{|p{0.27\linewidth}|X|}
+\hline\textbf{Quantity}&\textbf{Meaning and unit}\\\hline
+\texttt{xHeightPx}&Reference source x-height in pixels; not a physical pen height\\\hline
+\texttt{strokes}&Ordered point lists in glyph x-height units; $y$ increases upwards\\\hline
+\texttt{width}, \texttt{lead}, \texttt{advance}&Ink width, lead-in and cell/placement extent; distinct x-height quantities\\\hline
+\texttt{top}, \texttt{bot}&Vertical extrema relative to the baseline, in x-heights\\\hline
+\texttt{connL}, \texttt{connR}&Observed boundary crossings during source extraction\\\hline
+\texttt{priorD}&Descriptor distance from the pooled character reference; not writer confidence\\\hline
+\texttt{idealMedoid}, \texttt{idealGlyphs}&Actual representative variant and compatible median-stroke prototype\\\hline
+\texttt{letterAdvance}&Per-character median source advance; sampled variants retain their own placement geometry\\\hline
+\texttt{lineStepMm}&Synthesised baseline spacing before optional machine respacing\\\hline
+\texttt{jointScore}&Internal harmonic selection score; not independent stylistic correlation\\\hline
+\texttt{clipped}&Count of points clamped by the motion-file conversion; not an acceptable layout target\\\hline
+\end{tabularx}
+\caption{Selected implementation fields and their interpretation.~\cite{brauneevidence2026,braunepipeline2026}}
+\label{tab:app-fields}
+\end{table}
+
+Raw alignment confidence is a path score used for relative filtering, not a calibrated probability of a correct cut. The cross-writer prior uses a median occupancy descriptor, then unit normalisation; its minimum pooled sample count is twelve. Writer consensus retains approximately 75\% of a sufficiently populated pool, with at least three variants. Compatible prototypes group equal stroke counts, resample strokes to 44 points, align them and take robust pointwise summaries. Admission to the variant pool requires prior distance below 0.32 and improvement of more than 0.02 over the median raw distance. These gates reduce malformed geometry but do not prove that a distinctive form is incorrect.~\cite[train.py; segment.py; style.py]{braunepipeline2026}
+
+Machine conversion maintains image, glyph, trajectory and machine coordinate frames separately. The line-centre shifts in Equation~\ref{eq:des-machinecoords} are zero when no respacing is requested. Workspace fitting and clipping are distinct: fitting scales the whole trajectory uniformly, while clipping changes individual points and can deform letters. Final file parsing provides a useful conversion check because it reconstructs movements from emitted commands instead of directly displaying the input trajectory again.~\cite[train.py; segment.py; style.py]{braunepipeline2026}
+\FloatBarrier
+
+\subsection{Detailed training procedures}\label{app:des-training-procedures}
+The main chapter retains the model, loss, design choices and representative checks. The following pseudocode records the detailed recurrences and update sequence~\cite[train.py]{braunepipeline2026}.
+
+\begin{designalgorithm}
+\caption{Numerical CTC loss and logit gradient~\cite{brauneevidence2026,braunepipeline2026}}
+\label{alg:des-ctc}
+\prequire{Logits $z\in\mathbb R^{T\times B\times C}$ and encoded targets.}
+\begin{designpseudo}
+\pstate{0}{$\log p\leftarrow\operatorname{LogSoftmax}(z)$; $L\leftarrow0$; $g\leftarrow0$}
+\pstate{0}{\textbf{for each} batch item $b$ \textbf{do}}
+\pstate{1}{$\ell'\leftarrow$ target interleaved with blanks}
+\pstate{1}{Initialise $\alpha,\beta$ to $-\infty$; admit first blank and first label}
+\pstate{1}{\textbf{for} $t\leftarrow1$ \textbf{to} $T-1$ \textbf{do}}
+\pstate{2}{\textbf{for each} state $s$ \textbf{do}}
+\pstate{3}{$\alpha_{t,s}\leftarrow\log p_t(\ell'_s)+\operatorname{LSE}_{r\in\mathcal P(s)}\alpha_{t-1,r}$}
+\pstate{2}{\textbf{end for}}
+\pstate{1}{\textbf{end for}}
+\pstate{1}{$\log Z\leftarrow\operatorname{LSE}$ of the admissible final states}
+\pstate{1}{Initialise final $\beta$ to zero; recurse backward with next-frame emissions}
+\pstate{1}{$q_{t,k}\leftarrow\sum_{s:\ell'_s=k}\exp(\alpha_{t,s}+\beta_{t,s}-\log Z)$}
+\pstate{1}{$L\leftarrow L-\log Z$; $g_{t,b,k}\leftarrow(p_t(k)-q_{t,k})/B$}
+\pstate{0}{\textbf{end for}}
+\pstate{0}{\textbf{return} $L/B,g$}
+\end{designpseudo}
+\end{designalgorithm}
+
+\begin{designalgorithm}
+\caption{One numerical training batch and validation checkpoint decision~\cite{brauneevidence2026,braunepipeline2026}}
+\label{alg:des-train}
+\prequire{Training batch, task, parameters $\theta$ and optimiser state.}
+\begin{designpseudo}
+\pstate{0}{$(X,y)\leftarrow$ task-specific preparation and training augmentation}
+\pstate{0}{$(F,\mathcal K)\leftarrow\operatorname{BackboneForward}(X,\theta)$; retain caches}
+\pstate{0}{\textbf{if} task is reader \textbf{then}}
+\pstate{1}{$(z,\mathcal K_h)\leftarrow\operatorname{BiLSTMHead}(F)$; $(L,g)\leftarrow\operatorname{CTC}(z,y)$}
+\pstate{0}{\textbf{else}}
+\pstate{1}{$(z,\mathcal K_h)\leftarrow\operatorname{WriterHead}(\operatorname{MeanWidth}(F))$}
+\pstate{1}{$(L,g)\leftarrow\operatorname{CrossEntropy}(z,y)$}
+\pstate{0}{\textbf{end if}}
+\pstate{0}{$g_F\leftarrow\operatorname{HeadBackward}(g,\mathcal K_h)$}
+\pstate{0}{$\nabla\theta\leftarrow\operatorname{BackboneBackward}(g_F,\mathcal K)$}
+\pstate{0}{\textbf{if} task is writer \textbf{then} clip total gradient norm to $5$}
+\pstate{0}{$(\theta,\text{state})\leftarrow\operatorname{OptimiserStep}(\theta,\nabla\theta,\text{state})$}
+\pstate{0}{\textbf{if} epoch is complete \textbf{then}}
+\pstate{1}{Validate with fixed preparation, stored normalisation and dropout disabled}
+\pstate{1}{Update schedule; save progress; replace best only if its criterion improves}
+\pstate{0}{\textbf{end if}}
+\pstate{0}{\textbf{return} $L,\theta,\text{state}$}
+\end{designpseudo}
+\end{designalgorithm}
+
+\subsection{Expanded numerical calculation checks}\label{app:des-expanded-checks}
+
+For one image, let $X_c$ contain flattened input patches, so the convolution becomes $Y=WX_c+b$. With output derivative $G$, Equation~\ref{eq:des-convback} supplies the two matrix derivatives used by the numerical route.
+\begin{equation}
+\frac{\partial\mathcal L}{\partial W}=GX_c^T,\qquad
+\frac{\partial\mathcal L}{\partial X_c}=W^TG.
+\label{eq:des-convback}
+\end{equation}
+Calculated example: For a reduced two-input patch $X_c=(1,2)^T$, kernel $W=(0.1,0.2)$ and incoming derivative $G=3$, the derivatives are $GX_c^T=(3,6)$ and $W^TG=(0.3,0.6)^T$. Overlapping patches add their contributions to shared input pixels. \cite[train.py, Conv2dBackward]{braunepipeline2026}
+
+Weight and bias derivatives are summed over the batch and output positions. Overlapping patch derivatives in Equation~\ref{eq:des-convback} are added back into the padded input, not overwritten. Max-pool derivatives return to the recorded maxima, width-average derivatives are distributed uniformly, and the LSTM backward pass accumulates both hidden-state and cell-state contributions through time. Appendix~\ref{app:des-implementation} records the remaining derivative conventions and optimiser calculations without repeating the architecture here.~\cite[project records; implementation]{brauneevidence2026,braunepipeline2026}
+
+The matrix formulation also has a memory cost. The first convolution's patch matrix contains $B(1)(3)(3)(64)(640)$ values. At batch size eight, its float32 storage alone is approximately 11.25\,MiB, before later-layer patches, activations or gradients. This calculated example explains why numerical array operations do not automatically imply a small training footprint. Training memory and the embedded forward-only inference footprint must be assessed separately.~\cite[recognise.py; train.py; trainlibrary.py]{braunepipeline2026}
+
+
+
+The finite-difference reference uses Equation~\ref{eq:des-gradcheck}, with one logit or parameter perturbed at a time.
+\begin{equation}
+g_i^{\mathrm{num}}=\frac{\mathcal L(\theta+\varepsilon e_i)
+-\mathcal L(\theta-\varepsilon e_i)}{2\varepsilon}.
+\label{eq:des-gradcheck}
+\end{equation}
+Calculated example: For the controlled scalar loss $\mathcal L(\theta)=\theta^2$, $\theta=2$ and $\varepsilon=10^{-4}$, the estimate is $[(2.0001)^2-(1.9999)^2]/0.0002=4$, matching $2\theta$. This demonstrates the reference calculation, not a new whole-network gradient test. \cite[\texttt{Evidence/bench.json}, CTC check]{brauneevidence2026}
+
+Here $\theta$ is a parameter vector, $e_i$ selects one component and $\varepsilon$ is a small perturbation. Equation~\ref{eq:des-gradcheck} requires care at ReLU or max-pool boundaries and with stochastic dropout. The input or mask must be controlled so that the two loss evaluations test the same local operation.~\cite[recognise.py; train.py; trainlibrary.py]{braunepipeline2026}
+
+
+
+\subsection{Implementation and interface reference tables}\label{app:des-reference-tables}
+These tables preserve supporting implementation distinctions and representation contracts. The main chapter explains the corresponding choices and transitions~\cite[recognise.py; train.py; style.py; web/server.py]{braunepipeline2026}.
+
+\begin{table}[!htbp]\centering\small
+\begin{tabularx}{\linewidth}{|p{0.23\linewidth}|X|X|}
+\hline\textbf{Aspect}&\textbf{First principles route}&\textbf{Framework route}\\\hline
+Layer calculations&Explicit forward and backward operations&Framework modules and automatic differentiation\\\hline
+Architecture&Project's reader and writer definitions&Corresponding layer pattern and parameter names\\\hline
+Data preparation&Project crop, label and split functions&Uses the same preparation functions\\\hline
+Weights for inference&Named array archive&Export to the same named array layout\\\hline
+Verification role&Implementation being checked&Reference for matched numerical comparisons\\\hline
+\end{tabularx}
+\caption{Roles of the numerical and framework implementations.~\cite{brauneevidence2026,braunepipeline2026}}
+\label{tab:des-implementations}
+\end{table}
+
+\begin{table}[!htbp]\centering\small
+\begin{tabularx}{\linewidth}{|p{0.22\linewidth}|X|X|}
+\hline\textbf{Quantity}&\textbf{Source}&\textbf{Use in synthesis}\\\hline
+Slant&Projection concentration under trial shears&Reapplied to stored upright glyphs\\\hline
+X-height&Height of the estimated line body band&Normalises stored paths; physical x-height sets drawing size\\\hline
+Ascender/descender extent&Relative glyph heights&Vertical proportions and line spacing\\\hline
+Letter advance&Character-cell and ink geometry&Placement of following characters\\\hline
+Word spacing&Measured gaps in real line ink&Separation of words\\\hline
+Connectedness&Observed skeleton crossings between adjacent characters&Probability of eligible in-word joins\\\hline
+Glyph variants&Filtered normalised trajectories&Writer-specific letterforms and variation\\\hline
+\end{tabularx}
+\caption{Principal stored style quantities and their roles.~\cite{brauneevidence2026,braunepipeline2026}}
+\label{tab:des-styleparameters}
+\end{table}
+
+\begin{table}[!htbp]\centering\small
+\begin{tabularx}{\linewidth}{|p{0.19\linewidth}|X|X|}
+\hline\textbf{Stage}&\textbf{Required input}&\textbf{Output and governing convention}\\\hline
+Segmentation&Photographed or saved page&Ordered raw crops and full-page boxes; image $y$ points down\\\hline
+Recognition&Line crops and model arrays&Text plus writer probabilities interpreted by the checkpoint mapping\\\hline
+Profile construction&Original lines, known transcripts and reader&Writer-keyed glyph paths in x-height units, baseline origin and $y$ up\\\hline
+Synthesis&Text, stored profile, scale and search settings&Millimetre trajectory, source tags and internal selection scores\\\hline
+File conversion&Trajectory and workspace configuration&Absolute millimetre G-code, pen events, placement and timing budget\\\hline
+Physical execution&G-code, connected GPIO and completed calibration&Step-counter updates and job outcome; physical accuracy requires observation\\\hline
+\end{tabularx}
+\caption{Representation boundaries that connect the three main processing stages to the gantry.~\cite{brauneevidence2026,braunepipeline2026}}
+\label{tab:des-contracts}
+\end{table}
+
+\FloatBarrier
+\subsection{Submission completion record}
+\designgap{Confirm the completion entries against the final submitted deliverables, and identify the computer used for training and profile construction. The proposal's embedded-processing requirement must remain distinguishable from the actual training arrangement.}
+\FloatBarrier
+
+\subsection{Motion-file conversion procedure}\label{app:des-machine-procedure}
+
+\begin{designalgorithm}
+\caption{Trajectory placement and motion-file preparation~\cite{brauneevidence2026,braunepipeline2026}}
+\label{alg:des-machine}
+\prequire{Selected trajectory $T$ and calibrated workspace configuration.}
+\begin{designpseudo}
+\pstate{0}{Measure bounds; determine available width and height after margins and offset}
+\pstate{0}{$a\leftarrow$ uniform fit scale; apply robust height cap when ruled fitting is enabled}
+\pstate{0}{Group paths by text row; determine ruled or free baseline shifts}
+\pstate{0}{$\mathcal P\leftarrow$ machine coordinates from Equation~\ref{eq:des-machinecoords}}
+\pstate{0}{Decimate short segments; optimise path order within rows}
+\pstate{0}{Clamp remaining out-of-bounds points; record their count}
+\pstate{0}{Emit absolute millimetre mode and initial pen state}
+\pstate{0}{\textbf{for each} path $p\in\mathcal P$ \textbf{do}}
+\pstate{1}{Close eligible near-ring; join previous path if configured gap permits}
+\pstate{1}{\textbf{if} a new pen-down path is needed \textbf{then}}
+\pstate{2}{Raise pen; travel to start; lower pen; emit configured dwells}
+\pstate{1}{\textbf{end if}}
+\pstate{1}{Emit drawing moves with modal drawing feed; accumulate ink and travel budgets}
+\pstate{0}{\textbf{end for}}
+\pstate{0}{Raise pen; save file, placement and separate timing budgets}
+\pstate{0}{\textbf{return} file path and job metadata}
+\end{designpseudo}
+\end{designalgorithm}
+
+\FloatBarrier

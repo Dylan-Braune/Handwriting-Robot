@@ -1,0 +1,4 @@
+from pathlib import Path
+P=Path('Report/SubmissionRevision_2026-11-02')
+p=P/'3_Main_Report/4_Results.tex';s=p.read_text().replace(r'\includegraphics[height=.43\textheight,keepaspectratio]{Figures/PhysicalPages/',r'\includegraphics[angle=90,height=.43\textheight,keepaspectratio]{Figures/PhysicalPages/');p.write_text(s)
+p=P/'Appendices/results_evidence.tex';s=p.read_text().replace(r'\includegraphics[width=\linewidth,height=.55\textheight,keepaspectratio]{Figures/PhysicalPages/',r'\includegraphics[angle=90,width=\linewidth,height=.55\textheight,keepaspectratio]{Figures/PhysicalPages/');s=s.replace('Table~\\ref{tab:app-pages} retains all fourteen pages.','Table~\\ref{tab:app-pages} retains all fourteen pages. Photographs are rotated for reading without changing their image data.');p.write_text(s)

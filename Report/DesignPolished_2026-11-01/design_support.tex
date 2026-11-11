@@ -1,0 +1,35 @@
+% Add this file to the report preamble when importing the Design revision.
+\usepackage{tabularx}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{float}
+\usepackage{listings}
+\usepackage{placeins}
+\floatstyle{ruled}
+\newfloat{designalgorithm}{htbp}{loa}
+\floatname{designalgorithm}{Algorithm}
+\newenvironment{designsteps}{\small\begin{enumerate}\setlength{\itemsep}{2pt}\setlength{\parskip}{0pt}\setlength{\topsep}{3pt}}{\end{enumerate}}
+\setlength{\headheight}{15pt}
+\setlength{\emergencystretch}{1em}
+\definecolor{DesignBlue}{RGB}{25,65,105}
+\newcommand{\designsourceflag}[1]{\textcolor{DesignBlue}{\,[\textit{verify source/page:} \texttt{#1}]}}
+\newcommand{\designgap}[1]{\par\smallskip\noindent\begin{minipage}{\linewidth}\color{DesignBlue}\small\textbf{To complete:} #1\end{minipage}\par\smallskip}
+\newcommand{\designasset}[3]{%
+  \IfFileExists{Figures/#1}{\includegraphics[width=#2\linewidth]{Figures/#1}}%
+  {\begin{minipage}{0.91\linewidth}\centering\color{DesignBlue}\small
+  \textbf{Figure requested:} #3\par\medskip\texttt{\detokenize{#1}}\end{minipage}}}
+\lstdefinestyle{designcode}{basicstyle=\ttfamily\small,breaklines=true,
+  columns=fullflexible,keepspaces=true,showstringspaces=false,
+  aboveskip=6pt,belowskip=6pt}
+
+% Line-numbered, indented pseudocode; no external algorithm package needed.
+\newcounter{designline}
+\newenvironment{designpseudo}{\small\setcounter{designline}{0}\begin{list}{}{\setlength{\leftmargin}{2.1em}\setlength{\labelwidth}{1.6em}\setlength{\labelsep}{0.5em}\setlength{\itemsep}{0pt}\setlength{\parsep}{0pt}\setlength{\topsep}{3pt}}}{\end{list}}
+\newcommand{\pstate}[2]{\stepcounter{designline}\item[\arabic{designline}:]\hspace*{#1em}#2}
+\newcommand{\prequire}[1]{\par\small\noindent\textbf{Require:} #1\par}
+\newcommand{\pensure}[1]{\par\small\noindent\textbf{Ensure:} #1\par}
+
+% Keep a paragraph's first/last line with its text, including citation locators.
+\clubpenalty=10000
+\widowpenalty=10000
+\displaywidowpenalty=10000

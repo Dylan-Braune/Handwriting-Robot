@@ -1,5 +1,16 @@
 # Block A — Segmentation and image primitives
 
+> **Written against `Software/CleanPipeline` (v1); the live system is
+> `Software/CleanPipeline3`.** `SegmentLean.py`, `ProfileIO.py` and
+> `MyImage.py` were merged into **`segment.py`**, and `ExtractIAMLines.py`
+> into **`train.py`**. The algorithms below are unchanged, but this is the
+> block that has drifted furthest: **`segment.py` now has 51 definitions and
+> 25 of them are new**, including `Deskew`, `UprightPage`, `LineAxisScore`,
+> `SeamCuts`, `LineCentres`, `RemovePrintedStructure`, `DropArtifactPieces`
+> and `DropSolidCrops`. `StrokeNormalize` moved to **`recognise.py`**.
+> Treat this block as correct on the primitives and incomplete on the pipeline.
+> See the translation table in the index. Checked 2026-10-31.
+
 How a page of handwriting becomes a set of single-line images.
 
 | File | Lines | Role |

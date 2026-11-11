@@ -1,0 +1,310 @@
+\subsection{Style extraction and handwriting reproduction}
+\label{sec:des-reproduction}
+Recognising a line does not provide the motion needed to write it. The reproduction stage must recover usable pen paths from a writer's examples, store the properties that distinguish that writer, and assemble the paths into text that was not necessarily present in the examples. The chosen representation is a library of normalised glyph trajectories accompanied by line-level style measurements. It provides explicit control over scale and movement, while making the limits of character-based reproduction visible.~\cite[style.py; synthesise.py; reproduce.py]{braunepipeline2026}
+
+
+\subsubsection{Choice of reproduction representation}
+The available writer samples are a few labelled pages photographed after writing. A glyph library can reuse these observations without fitting a separate generative network for each writer. Haines et al. provide a relevant precedent: their standard experiments used approximately four A4 pages per writer~\cite[PDF p.~4, Sec.~4]{haines2016}. This is evidence that a small-page collection can support a glyph-based approach, not a guarantee that four pages cover every character or writing context. The present library likewise depends on the characters and variants actually observed.
+
+The offline data also influenced the choice. Graves's recurrent synthesis model learns from ordered pen positions and end-of-stroke markers~\cite[p.~18]{graves2013}; these are not recorded in this project's photographs. A skeleton supplies geometric paths, but cannot recover their true order, speed or pressure. Using it as measured online training data would introduce an unsupported assumption.~\cite[project records; implementation]{brauneevidence2026,braunepipeline2026}
+
+Learned image generators remain a valid alternative, including methods that need very few references from a new writer. For example, One-DM uses one style reference at generation, but its IAM experiment trains with 339 writers and its implementation uses four RTX 3090 GPUs~\cite[p.~9]{dai2024}. A small reference set must therefore be distinguished from the corpus and computation needed to train the generator. Developing and training an additional generator from first principles on the ODROID was outside the chosen computational scope; no training-time comparison was measured. The glyph approach instead retains explicit trajectories that can be scaled, joined and converted directly to machine coordinates. Its trade-off is weaker modelling of connected, context-dependent letterforms, examined at the end of this subsection.~\cite[style.py; synthesise.py; reproduce.py]{braunepipeline2026}
+
+\subsubsection{Character alignment and glyph extraction}
+\label{sec:des-alignment}
+The extraction input is a line image and its known transcript. Character boundaries are not supplied as labels. Instead, the trained reader gives a probability distribution for every output frame, and forced alignment finds the highest-scoring CTC path consistent with the supplied text. This is a localisation problem: the transcript constrains which labels must occur, while the frame scores indicate where they most plausibly occur.~\cite[style.py; synthesise.py; reproduce.py]{braunepipeline2026}
+
+
+The alignment uses the same permitted transitions as the CTC training lattice, but maximises a path score instead of summing all path probabilities. Equation~\ref{eq:des-viterbi} gives the recurrence by replacing path summation in the CTC lattice with maximisation~\cite[PDF pp.~4--5]{graves2006}.
+\begin{equation}
+V(t,s)=\log p_t(\ell'_s)+\max_{r\in\mathcal P(s)}V(t-1,r).
+\label{eq:des-viterbi}
+\end{equation}
+Calculated example: If $p_t(\ell'_s)=0.7$ and the admissible predecessor log scores are $-2$ and $-3$, $V=\log(0.7)+\max(-2,-3)=-2.3567$. Extraction selects one predecessor; the CTC likelihood instead sums both. \cite[recognise.py, CtcForcedAlign]{braunepipeline2026}
+
+Here $\ell'$ is the blank-interleaved transcript and $\mathcal P(s)$ is the permitted predecessor set: stay, advance one state, or skip an admissible blank. Backtracking yields the frames assigned to each character. Equation~\ref{eq:des-viterbi} makes clear why correct text does not guarantee correct boundaries: several spatial allocations can remain plausible under the same transcript.~\cite[style.py; synthesise.py; reproduce.py]{braunepipeline2026}
+
+An output frame is converted through the network canvas to the original crop using the inverse of its aspect-preserving scale. If a frame edge is $t$ out of $T$ and the crop was scaled by $a$, its initial horizontal location is approximately $(640t/T)/a$, clamped to the source width. This undoes the resize rather than assuming that every crop occupied the complete 640-pixel width.~\cite[style.py; synthesise.py; reproduce.py]{braunepipeline2026}
+
+The baseline and x-height are operational estimates from the line's horizontal ink profile, not annotated typographic measurements. With $p(y)=\sum_x M(y,x)$, the implementation takes the first and last rows satisfying $p(y)\geq0.45\max p$ as the body-band top and baseline; their difference gives $h_x$. Bands below three pixels are rejected. This common scale makes glyph dimensions comparable across source resolutions, although unusual capitals, short lines or a large descender can bias the estimated body band.~\cite[style.py; synthesise.py; reproduce.py]{braunepipeline2026}
+
+The worked example in Figure~\ref{fig:des-alignment} uses an archived original Owen line crop, visually matched to the first line of its page transcript, with the joint reader checkpoint. The reader recovered the full line, and the extraction routine then generated the displayed boundaries and normalised paths. Correct text does not certify a correct individual cut: small punctuation and neighbouring strokes still require inspection. The archived crop is identified separately from the new whole-page segmentation run in the evidence manifest.~\cite[project records; implementation]{brauneevidence2026,braunepipeline2026}
+
+The initial boundaries are refined by looking for thin, low ink near the expected cut. Equation~\ref{eq:des-cutcost} describes the principal column cost in \texttt{ExtractLineGlyphs}.
+\begin{equation}
+C_x=\frac{\overline p_x}{q_{0.60}(\{\overline p_j:\overline p_j>0\})}
++1.15\operatorname{clip}\left(\frac{b-y_{\mathrm{top}}(x)}{h_x},0,3\right).
+\label{eq:des-cutcost}
+\end{equation}
+Calculated example: For illustrative smoothed ink count 2, reference percentile 10 and $(b-y_{\rm top})/h_x=0.2$, $C_x=2/10+1.15(0.2)=0.43$. At the same ink count but body height 1.0, the cost rises to 1.35. \cite[style.py, ExtractLineGlyphs]{braunepipeline2026}
+
+Here $\overline p_x$ is smoothed column ink count, the denominator is its 60th percentile over positive counts, $b$ is baseline position, and $y_{\mathrm{top}}(x)$ is the highest ink row in that column. A denominator floor prevents division by zero. A true blank column is assigned zero cost. The search radius is approximately half an x-height, with a smaller penalty for distance from the initial boundary. The two terms in Equation~\ref{eq:des-cutcost} favour a narrow connector near the baseline over cutting through the body of a letter.~\cite[style.py; synthesise.py; reproduce.py]{braunepipeline2026}
+
+One shared boundary array is enforced to remain increasing, with a minimum cell width of $\max(1,0.08h_x)$ pixels. Independently snapping neighbouring boundaries could place both at the same gap and create an empty glyph. Figure~\ref{fig:des-alignment} shows the refined cuts and resulting character shapes.~\cite[style.py; synthesise.py]{braunepipeline2026}
+
+
+\begin{figure}[!htbp]\centering
+\designasset{design-glyph-alignment.pdf}{0.96}{Known transcript above two real line crops; initial CTC locations and refined cut columns distinguished; show resulting glyphs beneath, including a difficult cursive boundary.}
+\caption{Transcript-constrained character localisation and refinement of glyph boundaries.~\cite{brauneevidence2026,braunepipeline2026}}
+\label{fig:des-alignment}
+\end{figure}
+
+\subsubsection{Skeleton tracing and pen path construction}
+Ink is an area, whereas the gantry needs a path. Zhang--Suen thinning reduces the line mask to a one-pixel centreline~\cite[p.~237]{zhang1984}. The complete line is thinned before character cells are separated. Thinning each cut cell independently would introduce an artificial image edge at every character boundary and could change the recovered centreline there.
+
+The skeleton is treated as a graph: adjacent ink pixels form edges, and endpoints and junctions determine where paths begin or split. Redundant diagonal edges are suppressed when an orthogonal route already connects the same local pixels. The default tracer first splits paths at junctions, prunes short dangling spurs, then greedily rejoins nearby ends with a continuation angle below $75^\circ$. Thus the default is not simply one pen lift per junction. A separate through-junction tracer exists but is not enabled by default. Neither procedure establishes natural pen order: the image records final ink, and several stroke sequences can create the same graph.~\cite[style.py; synthesise.py; reproduce.py]{braunepipeline2026}
+
+Traced paths are divided at the character boundaries and simplified while limiting geometric deviation, following the polyline-simplification principle of Douglas and Peucker~\cite[page to verify]{douglas1973}\designsourceflag{douglas1973}. Short spurs and cut ligature tails require care because a genuine small stroke can resemble a skeleton artefact. Isolated dots may thin to a single point with no traceable edge; these are recovered as short paths rather than silently discarded.~\cite[style.py; synthesise.py; reproduce.py]{braunepipeline2026}
+
+A detached \texttt{t} or \texttt{f} crossbar can extend over the next character cell. The extractor checks its width, flatness and height and, when the configured crossbar rule applies, assigns the complete bar to the corresponding letter instead of splitting it at a vertical cut. Such an overlap is not recorded as an in-word pen connection. Without this distinction, a crossbar would both contaminate the next glyph and inflate the profile's connectedness.~\cite[project records; implementation]{brauneevidence2026,braunepipeline2026}
+
+The coordinate frame separates source-image size, baseline and slant from the geometry to be stored. Equation~\ref{eq:des-glyphcoords} first expresses each path point relative to the cut boundary $x_L$ and baseline $b$, using the estimated x-height $h_x$ and slant $\phi$.
+\begin{equation}
+v=\frac{b-y}{h_x},\qquad
+u_0=\frac{x-x_L}{h_x}-v\tan\phi,\qquad u=u_0-\delta.
+\label{eq:des-glyphcoords}
+\end{equation}
+Calculated example: With chosen $b=40$, $y=28$, $h_x=24$, $x-x_L=12$, $\tan\phi=0.2$ and post-trim $\delta=0.1$, $v=0.5$, $u_0=0.5-0.5(0.2)=0.4$ and stored $u=0.3$. The separate lead is $l=0.1$. \cite[style.py, ExtractLineGlyphs]{braunepipeline2026}
+
+Image rows increasing downwards become glyph height increasing upwards. After trimming eligible ligature tails, the code sets $\delta=\min(u_0+v\tan\phi)$ over the remaining points, subtracts it from the stored horizontal coordinates and records lead $l=\operatorname{clip}(\delta,0,1.5)$. Thus the stored path and its lead are separate quantities: they preserve the relation between the character cell and the ink rather than forcing every cell to start at its first stroke. Slant is removed for storage and reapplied during placement. The glyph can then be drawn at a chosen physical x-height instead of a fixed number of source pixels.~\cite[style.py; synthesise.py; reproduce.py]{braunepipeline2026}
+
+Entry and exit positions are recorded along with whether the skeleton crosses a character boundary. This distinguishes a measured original connection from a merely small visual gap. The extracted paths still represent a geometric reconstruction, rather than the writer's true pen trajectory: retracing, pressure and movement direction cannot generally be recovered uniquely from a static image.~\cite[project records; implementation]{brauneevidence2026,braunepipeline2026}
+
+\subsubsection{Glyph selection and library quality}
+The library must retain variation without giving every cut equal credibility. A recogniser can assign the correct transcript while placing one boundary inside a letter, so alignment is followed by geometric and consistency checks. Low-confidence lines are filtered relative to the writer's own alignment distribution. Per-glyph checks reject implausible width, height, stroke count, pen length and disagreement between ink width and the allocated character advance.~\cite[style.py; synthesise.py; reproduce.py]{braunepipeline2026}
+
+
+The width gate allows up to 2.1 x-heights for ordinary characters and 2.9 for wide characters such as \texttt{m} and \texttt{w}. Further width and height checks use the character's own distribution, rather than applying one absolute size to every letter. The 40th-percentile width provides a reference less easily enlarged by a few cuts that contain part of a neighbour. Tightening is retained only when enough variants survive to form a usable pool. These gates encode plausible glyph geometry; their exact values are engineering heuristics, not universal typographic laws.~\cite[style.py; synthesise.py; reproduce.py]{braunepipeline2026}
+
+A cross-writer shape prior supplies a second check. Each variant is represented by a smoothed, normalised $12\times12$ occupancy descriptor. Pooling descriptors of the same character across writers gives a robust reference shape. Its role is to reject malformed cuts from a writer's own library, not to copy another writer's letter into it. Internal consensus then favours variants close to the writer's typical form. The ordinary variant pool is limited to twelve per character; an accepted denoised prototype can be prepended as an additional candidate.~\cite[style.py; synthesise.py; reproduce.py]{braunepipeline2026}
+
+For unit-length descriptor $v_g$ and the normalised median reference $r_c$ for character $c$, the prior distance is $d(g,c)=1-v_g^Tr_c$. Internal consensus instead uses pairwise $L_1$ descriptor distances and chooses the medoid with the lowest total distance. These are two distinct comparisons: resemblance to a pooled character reference and resemblance to this writer's own forms. Algorithm~\ref{alg:des-profile} gives their place in the complete profile-building procedure. For a chosen descriptor dot product of 0.9, prior distance is $1-0.9=0.1$. Three variants with pairwise $L_1$ distances 0.2, 0.6 and 0.5 have summed distances 0.8, 0.7 and 1.1, so the second is the medoid; it remains an observed glyph, rather than an averaged path.~\cite[style.py; synthesise.py]{braunepipeline2026}
+
+
+\begin{designalgorithm}
+\caption{Labelled handwriting to a persistent writer profile~\cite{brauneevidence2026,braunepipeline2026}}
+\label{alg:des-profile}
+\prequire{Labelled original lines $\mathcal L$, trained reader and writer identifier.}
+\begin{designpseudo}
+\pstate{0}{$\mathcal G\leftarrow\varnothing$; $\mathcal S\leftarrow\varnothing$}
+\pstate{0}{\textbf{for each} $(G,\ell)\in\mathcal L$ \textbf{do}}
+\pstate{1}{$A\leftarrow\operatorname{ForcedAlign}(G,\ell)$; estimate baseline, x-height and slant}
+\pstate{1}{\textbf{if} alignment or body band is unusable \textbf{then continue}}
+\pstate{1}{Refine shared increasing cuts; thin full line; trace skeleton paths}
+\pstate{1}{Split paths at cuts; assign crossbars; recover untraced dots}
+\pstate{1}{Normalise glyph coordinates; record advance, lead and boundary crossings}
+\pstate{1}{Append glyphs to $\mathcal G$ and line measurements to $\mathcal S$}
+\pstate{0}{\textbf{end for}}
+\pstate{0}{Cache raw extraction; reject low-confidence lines relative to this writer}
+\pstate{0}{\textbf{for each} character's glyph pool $\mathcal G_c$ \textbf{do}}
+\pstate{1}{Apply size, height-class, path-length and cell-consistency gates}
+\pstate{1}{Refine size range; apply cross-writer prior and within-writer consensus}
+\pstate{1}{Rank and smooth retained variants; construct medoid and eligible prototype}
+\pstate{0}{\textbf{end for}}
+\pstate{0}{\textbf{return} persistent profile containing $\mathcal G$ and robust summaries of $\mathcal S$}
+\end{designpseudo}
+\end{designalgorithm}
+
+Two additional representatives support stable generation: a medoid that is an actual extracted example, and a denoised prototype formed from compatible variants. Prototype strokes are aligned and resampled before taking robust summaries; different stroke counts are not averaged indiscriminately. A prototype is admitted as an additional candidate only when the implemented shape-prior test improves sufficiently. The accepted and rejected variants in Figure~\ref{fig:des-glyphquality} illustrate the distinction between retaining handwriting variation and retaining extraction errors.~\cite[style.py; synthesise.py]{braunepipeline2026}
+
+
+\begin{figure}[!htbp]\centering
+\designasset{design-glyph-quality.pdf}{0.91}{One real writer's character variants, identifying retained forms, neighbour-contaminated or fragmented cuts, the medoid and any accepted denoised prototype. Include the rejection criterion.}
+\caption{Example of glyph-library filtering and representative selection.~\cite{brauneevidence2026,braunepipeline2026}}
+\label{fig:des-glyphquality}
+\end{figure}
+
+Synthesis preferentially samples well-formed variants and can favour a compatible entry height when joining. Where the requested character is unavailable, the code can use a case-related shape, a similar form, an anchor glyph or a simple fallback. These options preserve the ability to generate text, but they do not establish that the missing character was reproduced in the writer's own style. The trajectory records glyph-source information so that fallback use can be distinguished from genuine extracted forms.~\cite[style.py; synthesise.py; reproduce.py]{braunepipeline2026}
+
+The final stored profiles supply the glyph geometry used during the demonstration. Figure~\ref{fig:des-profile-example} shows actual variants from Dylan's final library alongside its representative forms. These paths can be inspected independently of a photograph or a generated sentence, making it possible to distinguish the stored shape from later slant, jitter and connector operations.~\cite[style.py; synthesise.py]{braunepipeline2026}
+
+
+\begin{figure}[!htbp]\centering
+\designasset{design-glyph-profile-example.pdf}{0.98}{Four actual Dylan glyph variants from the final stored profile, its real medoid and median prototype, at matching scale.}
+\caption{Actual glyph variants and representative forms in the final writer profile.~\cite{brauneevidence2026,braunepipeline2026}}
+\label{fig:des-profile-example}
+\end{figure}
+
+This final \texttt{a} pool contains nine variants. The four displayed examples retain recognisable loop geometry while differing in closure and curvature. The medoid and median prototype remain distinct: one selects a real variant, while the other combines compatible paths. A low prior distance expresses resemblance to the character reference, not proof of a better match to the writer.~\cite[style.py; synthesise.py]{braunepipeline2026}
+
+
+\subsubsection{Writer style measurement and storage}
+\label{sec:des-profile}
+Letter shapes alone do not determine the appearance of a line. The profile also stores slant, x-height, ascender and descender extent, word spacing, per-character advance and connectedness. Measurements use medians where a few unusual cuts could otherwise dominate the result. Table~\ref{tab:des-styleparameters} in Appendix~\ref{app:des-reference-tables} gives the stored quantities, their units and their use in synthesis.
+
+Slant is estimated by shearing the ink through candidate angles and measuring concentration of the resulting column profile. The stored angle is the one that most nearly aligns the dominant strokes. This treats slant as a property measured over a line, so it is less dependent on one unusual letter. It remains an estimate affected by letter content; it is not a direct observation of the writer's hand motion.~\cite[style.py; synthesise.py; reproduce.py]{braunepipeline2026}
+
+Connectedness is measured using Equation~\ref{eq:des-connectedness}.
+\begin{equation}
+c=\frac{N_{\mathrm{cross}}}{\max(1,N_{\mathrm{adj}})}.
+\label{eq:des-connectedness}
+\end{equation}
+Calculated example: If twelve of twenty eligible adjacent-letter pairs cross their source boundaries, $c=12/20=0.60$. This illustrative fraction describes observed connections, not the proportion of future joins guaranteed to succeed. \cite[style.py, BuildAuthorProfile]{braunepipeline2026}
+
+Here $N_{\mathrm{adj}}$ counts eligible adjacent non-space glyph pairs and $N_{\mathrm{cross}}$ counts boundaries actually crossed by a traced centreline. Equation~\ref{eq:des-connectedness} measures connections in the source writing; counting pen lifts in a generated file would instead measure the extractor and synthesiser's decisions. The difference is important when assessing how faithfully the library represents cursive writing.~\cite[style.py; synthesise.py; reproduce.py]{braunepipeline2026}
+
+Profiles are stored as structured files containing the writer identifier, measurements and glyph paths. The permanent representation supports the proposal's multiple-writer requirement without re-extracting the source pages for each request. Cached raw extraction also permits a change to filtering without repeating all tracing. The extraction cache and final profile have different purposes: the former preserves intermediate work, while the latter is the version selected for reproduction.~\cite[style.py; synthesise.py; reproduce.py]{braunepipeline2026}
+
+\subsubsection{Text layout and connected handwriting synthesis}
+\label{sec:des-layout}
+The synthesiser receives digital text, a profile, a physical x-height and a line-width limit. It selects a variant for each character, applies controlled shape variation and places the resulting paths into words and lines. Character advance and word spacing are taken from the profile rather than placing every letter at a fixed cell width. A word is moved to the next line when its predicted width exceeds the remaining space.~\cite[style.py; synthesise.py; reproduce.py]{braunepipeline2026}
+
+
+Equation~\ref{eq:des-placement} expresses the main placement operation before machine-coordinate conversion.
+\begin{equation}
+x=p_x+h_x^{\mathrm{mm}}(l+u+sv),\qquad
+y=p_y+h_x^{\mathrm{mm}}(v+d).
+\label{eq:des-placement}
+\end{equation}
+Calculated example: Using the preceding glyph point, choose $h_x^{\rm mm}=4$, $p_x=10$, $p_y=20$, $s=0.2$ and $d=0$. Then $x=10+4(0.1+0.3+0.2\times0.5)=12$ mm and $y=20+4(0.5)=22$ mm. \cite[synthesise.py, SynthesizeText]{braunepipeline2026}
+
+Here $(u,v)$ is a stored glyph point, $l$ is its lead-in offset, $s$ is the applied slant shear, $d$ is local baseline drift, and $(p_x,p_y)$ is the placement origin. The physical x-height $h_x^{\mathrm{mm}}$ converts the normalised path to millimetres. Equation~\ref{eq:des-placement} keeps the source shape, line layout and physical scale as separate quantities.~\cite[style.py; synthesise.py; reproduce.py]{braunepipeline2026}
+
+Small random translations, rotations and scale changes avoid using identical paths for every occurrence of a letter. A correlated drift term changes the baseline gradually instead of introducing unrelated vertical jumps. The implemented drift update uses a persistence factor of 0.85 and bounds displacement to $\pm0.25$ x-heights. Such variation is controlled rather than unrestricted: too much jitter degrades letter identity and can cause neighbouring glyphs to collide. A collision guard maintains a nominal 0.05 x-height clearance where appropriate.~\cite[style.py; synthesise.py; reproduce.py]{braunepipeline2026}
+
+Variant choice is weighted rather than uniform: the best-ranked forms receive greater probability, and a compatible entry height is preferred when joining. The legibility anchoring strength is also profile-dependent. In the automatic setting, Equation~\ref{eq:des-anchor} maps the median stored prior distance $\widetilde d$ into a value $\lambda$.
+\begin{equation}
+\lambda=\operatorname{clip}\left(\frac{\widetilde d-0.24}{0.32-0.24},0,1\right).
+\label{eq:des-anchor}
+\end{equation}
+Calculated example: An illustrative median prior distance $\widetilde d=0.28$ gives $\lambda=(0.28-0.24)/0.08=0.5$; distances below 0.24 or above 0.32 saturate at zero or one. \cite[synthesise.py, AutoLegibility]{braunepipeline2026}
+
+A clean library therefore retains more sampled personal variants; a library with poor descriptor agreement uses stronger anchors. The anchor first prefers an acceptable representative from the writer's own profile, then uses a generic form when necessary. Equation~\ref{eq:des-anchor} is a heuristic for allocation of trust, not a learned probability that a glyph is correct. Source tags identify own, case-related, similar, core, fallback or blank output. In particular, ``core'' can represent either a personal representative or a generic anchor; that tag alone cannot quantify how much personal geometry was preserved.~\cite[style.py; synthesise.py; reproduce.py]{braunepipeline2026}
+
+For connected writing, the profile's connection fraction is used as a probability for eligible neighbouring letters. The code suppresses joining for profiles below a 0.45 connection threshold. A proposed join also requires a compatible glyph source and a gap no greater than 0.80 x-heights. This prevents a generic print fallback from being treated as a natural cursive attachment and prevents a long flat connector across an unusually large space. The body stroke is distinguished from a dot or crossbar so that the next letter does not connect to a detached mark.~\cite[style.py; synthesise.py; reproduce.py]{braunepipeline2026}
+
+The default connector uses a shallow curved path between the exit and entry points, with sag limited relative to x-height and separation. A tangent-based alternative exists, but its flag is disabled in the current configuration. When a join is accepted, the connector and both bodies form one continuous pen-down path. Figure~\ref{fig:des-joins} relates endpoint selection to the resulting paths, including a pair for which a connector is unsuitable.~\cite[style.py; synthesise.py]{braunepipeline2026}
+
+
+\begin{figure}[!htbp]\centering
+\designasset{design-glyph-joining.pdf}{0.94}{Enlarged real glyph pair with body, dot/crossbar, entry and exit labelled; show accepted connector and one rejected large-gap or incompatible-source case.}
+\caption{Assembly of eligible glyph bodies into connected pen paths.~\cite{brauneevidence2026,braunepipeline2026}}
+\label{fig:des-joins}
+\end{figure}
+
+Line-level style calibration compensates for differences between measurements of individual stored glyphs and measurements of the assembled line. A probe is rendered without jitter, measured using the same style functions, and compared with the reference slant and vertical proportions. Limited shear and extent corrections are applied over three iterations. This improves internal consistency of the representation, but it remains calibration against the project's own measurements; independent evaluation is needed to establish physical stylistic fidelity.~\cite[style.py; synthesise.py; reproduce.py]{braunepipeline2026}
+
+\subsubsection{Candidate selection for legibility and writer identity}
+\label{sec:des-selection}
+One set of random variant choices can be more readable than another without being more characteristic of the writer. Candidate selection therefore evaluates both quantities. Each candidate trajectory is rendered at constant ink width, read by the text recogniser, and judged by the stroke-normalised writer classifier introduced in Section~\ref{sec:des-shapenamer}. Uniform rendering keeps candidate selection focused on reproducible geometry, while the shape classifier applies the selected stroke-normalisation convention.~\cite[style.py; synthesise.py; reproduce.py]{braunepipeline2026}
+
+
+The score in Equation~\ref{eq:des-jointscore} combines text recovery and the requested writer's probability.
+\begin{equation}
+A=\max\left(0,1-\frac{d_{\mathrm{edit}}(\widehat t,t)}{|t|}\right),\qquad
+J=\begin{cases}2AP/(A+P),&A+P>0,\\0,&\text{otherwise}.\end{cases}
+\label{eq:des-jointscore}
+\end{equation}
+Calculated example: For a 20-character target with two edit operations, $A=1-2/20=0.90$. If the selected writer posterior is $P=0.80$, $J=2(0.90)(0.80)/1.70=0.8471$. This constructed score explains selection and is not a measured stylistic-correlation result. \cite[recognise.py, CharAcc; synthesise.py, SynthesizeJointBestOf]{braunepipeline2026}
+
+Here $t$ is intended text, $\widehat t$ is recognised text, $d_{\mathrm{edit}}$ is the minimum number of insertions, deletions and substitutions, using the reader error convention~\cite[PDF p.~2, Sec.~2.1]{graves2006}, and $P$ is the model probability of the selected writer. The harmonic mean $J$ in Equation~\ref{eq:des-jointscore} penalises a weak component. For example, $A=0.95$ and $P=0.30$ give $J\approx0.456$, whereas $A=P=0.65$ give $J=0.65$. An arithmetic mean would give the former candidate 0.625 and obscure much of its poor writer score.~\cite[style.py; synthesise.py; reproduce.py]{braunepipeline2026}
+
+Algorithm~\ref{alg:des-joint} gives the bounded search and repair procedure. The server default is fourteen candidates, with the number configurable. Because an entire candidate is rerendered and rescored, a repair is judged in its assembled context rather than by an isolated character score.~\cite[style.py; synthesise.py]{braunepipeline2026}
+
+
+\begin{designalgorithm}
+\caption{Joint candidate search and bounded legibility repair~\cite{brauneevidence2026,braunepipeline2026}}
+\label{alg:des-joint}
+\prequire{Text, writer profile, reader, shape classifier, seed $s$ and trial budget $K$.}
+\begin{designpseudo}
+\pstate{0}{$J^*\leftarrow-1$; $R\leftarrow\varnothing$; determine anchoring strength}
+\pstate{0}{\textbf{for} $k\leftarrow0$ \textbf{to} $\max(1,K)-1$ \textbf{do}}
+\pstate{1}{$T\leftarrow\operatorname{SynthesizeText}(\text{text},\text{profile},s+977k)$}
+\pstate{1}{$I\leftarrow\operatorname{RenderUniformInk}(T)$; $(A,P,J)\leftarrow\operatorname{Score}(I)$}
+\pstate{1}{\textbf{if} $J>J^*$ \textbf{then} $(T^*,I^*,J^*)\leftarrow(T,I,J)$}
+\pstate{1}{\textbf{if} $J^*\geq0.99$ \textbf{then break}}
+\pstate{0}{\textbf{end for}}
+\pstate{0}{\textbf{for} at most three configured repair rounds \textbf{do}}
+\pstate{1}{\textbf{if} $J^*\geq0.995$ \textbf{then break}}
+\pstate{1}{$W\leftarrow$ up to two weak aligned positions not already in $R$}
+\pstate{1}{\textbf{if} $W=\varnothing$ \textbf{then break}}
+\pstate{1}{$R'\leftarrow R\cup W$; regenerate with stronger anchors at $R'$ and seed $s$}
+\pstate{1}{Render and rescore the complete trial trajectory}
+\pstate{1}{\textbf{if} $J>J^*$ \textbf{then} commit $R'$ and the new best trajectory}
+\pstate{0}{\textbf{end for}}
+\pstate{0}{\textbf{return} $T^*$ with selection and accepted-repair metadata}
+\end{designpseudo}
+\end{designalgorithm}
+
+A repair is retained only when the complete trial improves the joint score. This bounds the search and protects the best candidate already found. A separate reader-only helper uses a different escalation policy; it is not part of this joint selection procedure.~\cite[style.py; synthesise.py]{braunepipeline2026}
+
+
+More trials increase the opportunities to find a useful combination, but also add recogniser and writer-model calls. Search quality therefore has a computational cost for fixed text and profiles. The repaired or fallback glyph proportion also matters: legibility gained by replacing distinctive forms has a stylistic cost. Figure~\ref{fig:des-candidates} relates the individual candidate scores to the selected trajectory.~\cite[style.py; synthesise.py]{braunepipeline2026}
+
+
+\begin{figure}[!htbp]\centering
+\designasset{design-candidate-selection.pdf}{0.95}{Three to five candidates for one writer and sentence, labelled with reader accuracy A, requested-writer probability P and joint score J; mark the selected candidate and any anchor replacements.}
+\caption{Example of joint candidate selection for a fixed writer, input text and search configuration.~\cite{brauneevidence2026,braunepipeline2026}}
+\label{fig:des-candidates}
+\end{figure}
+
+In the worked Owen example, three pre-repair trials use the fixed text ``Writing with style.'', seeds 2026, 3003 and 3980, and the selected eleven-writer shape model with an explicit width fraction of 0.17. Candidate 1 has $(A,P,J)=(0.947,0.579,0.718)$, while candidate 3 has the same character score but $(P,J)=(0.464,0.623)$. The combined criterion therefore selects candidate 1. Its reader output begins with a lower-case ``w'', which accounts for one edit rather than perfect text recovery. This is an inspectable scoring example before repair, not a claim that the full default search or the physical system attained those scores.~\cite[style.py; synthesise.py; reproduce.py]{braunepipeline2026}
+
+The same models guide selection, so their scores cannot independently prove the output's quality. A classifier can prefer an image for model-specific reasons, and its posterior is not an 85\% stylistic correlation measurement. The search is a design mechanism; final physical handwriting must be qualified separately. Increasing the search budget also does not recover a letterform that is absent or incorrectly extracted from the source library.~\cite[style.py; synthesise.py; reproduce.py]{braunepipeline2026}
+
+\subsubsection{Machine coordinate mapping and G-code generation}
+\label{sec:des-gcode}
+The selected trajectory is mapped into the calibrated workspace. Normalised glyph size, line spacing and machine margins are handled separately: fitting the height of a tall descender should not silently change the meaning of the ruling or move a line outside the available area. Robust extent measurements limit the effect of a single unusually tall glyph on the scale of the complete passage.~\cite[style.py; synthesise.py; reproduce.py]{braunepipeline2026}
+
+
+The physical x-height is first chosen from the page ruling and a stored x-height-to-pitch ratio where available. Otherwise the code uses a fraction of 0.46, giving an illustrative $8.4(0.46)=3.864$\,mm x-height at the default 8.4\,mm ruling. A probe of the actual requested text can reduce that value if robust line extent exceeds 1.25 rulings. The extent is measured using the 98th-percentile stroke tops and second-percentile bottoms, with exact extremes for fewer than eight strokes. It limits the influence of a few outlying strokes, but is not a guarantee that every extreme lies inside the nominal band.~\cite[style.py; synthesise.py; reproduce.py]{braunepipeline2026}
+
+Two placement modes are supported. Ruled placement adjusts each line's measured centre to the configured ruling independently of the character scale. Free placement preserves the synthesised pitch after scaling, which can avoid forcing large ascenders and descenders from neighbouring lines into contact. A line offset selects a later starting position and reduces the remaining page height. Algorithm~\ref{alg:des-machine} summarises the conversion before file generation.
+The full conversion procedure is retained as Algorithm~\ref{alg:des-machine} in Appendix~\ref{app:des-machine-procedure}.~\cite[style.py; synthesise.py]{braunepipeline2026}
+
+
+For the basic mapping, Equation~\ref{eq:des-machinecoords} places a trajectory with bounds $(x_0,y_0,x_1,y_1)$ within the page margins.
+\begin{equation}
+x_m=o_x+m_x+a(x-x_0),\qquad
+y_m=o_y-m_y-d_y-a(y_1-y)+\Delta_y.
+\label{eq:des-machinecoords}
+\end{equation}
+Calculated example: For a chosen origin $(0,250)$ mm, margins $(15,10)$ mm, scale $a=1$, bounds $x_0=0$, $y_1=20$, and no line shifts, trajectory point $(5,12)$ becomes $(x_m,y_m)=(20,232)$ mm. These illustrative coordinates must still pass workspace checks. \cite[reproduce.py, ToMachine]{braunepipeline2026}
+
+Here $(o_x,o_y)$ is the configured machine origin, $m_x,m_y$ are margins, $a$ is a fit scale, $d_y$ selects the line offset and $\Delta_y$ is any line-spacing adjustment. Both stored trajectories and machine coordinates use upward-increasing $y$; Equation~\ref{eq:des-machinecoords} positions later lines lower on the page rather than introducing another arbitrary image flip. Requested points are restricted to the usable travel, but clamping is a last boundary protection: it can distort a letter and must not be treated as successful layout.~\cite[style.py; synthesise.py; reproduce.py]{braunepipeline2026}
+
+Strokes are ordered within text rows so that path shortening does not scramble reading order. Short path segments can be decimated, and nearby consecutive strokes may be joined without a lift. The current default distance is 0.6\,mm for such joins and for closing a near-complete ring. These operations save travel and pen changes, but can also introduce unintended ink if set too aggressively; their scale relative to the chosen writing size matters. The code retains clipped-point and stroke information to make these effects inspectable.~\cite[style.py; synthesise.py; reproduce.py]{braunepipeline2026}
+
+The generated file selects millimetres and absolute positioning. A travel move reaches the start of a stroke with the pen raised, the pen is lowered, drawing moves follow, and the pen is raised before the next travel. Figure~\ref{fig:des-gcode-excerpt} gives an illustrative 10\,mm segment; it is not a claim of a measured hardware test. The interpreter assigns \texttt{M3} and \texttt{M5} to pen down and pen up respectively.~\cite[style.py; synthesise.py]{braunepipeline2026}
+
+
+\begin{figure}[!htbp]
+\begin{lstlisting}[style=designcode]
+G21
+G90
+G0 F4000 X20.000 Y30.000
+M3
+G4 P0.350
+G1 F800
+G1 X30.000 Y30.000
+M5
+G4 P0.350
+M2
+\end{lstlisting}
+\caption{Illustrative G-code sequence for positioning, lowering the pen, drawing one line and raising the pen.~\cite{brauneevidence2026,braunepipeline2026}}
+\label{fig:des-gcode-excerpt}
+\end{figure}
+
+Feed is modal, so the travel feed is restated after drawing rather than assuming that the first \texttt{G0 F} remains active. Pen dwell defaults to 350\,ms in each direction and is configurable separately for raising and lowering. This dwell is additional to the switch-confirmed actuation performed by the interpreter. A timing estimate that counted only geometric travel would omit those repeated state-change costs. Conversely, a trapezoidal acceleration parameter in a configuration object does not establish that the actual GPIO loop executes acceleration ramps.~\cite[style.py; synthesise.py; reproduce.py]{braunepipeline2026}
+
+Equation~\ref{eq:des-timebudget} expresses a nominal job budget from the generated geometry.
+\begin{equation}
+t_{\mathrm{nom}}=\frac{60D_d}{F_d}+\frac{60D_u}{F_u}
++\frac{N_p(t_{\mathrm{up}}+t_{\mathrm{down}})}{2}.
+\label{eq:des-timebudget}
+\end{equation}
+Calculated example: For chosen $D_d=100$ mm, $D_u=50$ mm, $F_d=800$ mm/min, $F_u=4000$ mm/min, twenty transitions and two 0.35 s dwells, $t_{\rm nom}=7.50+0.75+7.00=15.25$ s. It remains a nominal budget, not a measured job time. \cite[reproduce.py, WriteGcode]{braunepipeline2026}
+
+Here $D_d,D_u$ are drawing and pen-up distances in millimetres, $F_d,F_u$ their feeds in mm/min, $N_p$ is the number of pen transitions and the dwell times are in seconds. The last term assumes alternating up/down events. Equation~\ref{eq:des-timebudget} separates settings that affect ink quality from settings that mainly affect non-writing time. It excludes synthesis, switch-confirmed motor actuation, GPIO overhead and the directional pulse-delay effect in Equation~\ref{eq:des-pulsetime}; the saved estimate is therefore not the measured R3 completion time.~\cite[style.py; synthesise.py; reproduce.py]{braunepipeline2026}
+
+\subsubsection{Reproduction verification and design limitations}
+The reproduction checks follow the representations established above: aligned source ink, stored glyph paths, assembled trajectories and emitted machine commands. Re-rendering the emitted G-code can reveal a coordinate inversion, scale change, missing stroke or additional joining segment before drawing. Comparing that render with the selected trajectory checks conversion; comparing the physical drawing with the render checks execution. These comparisons localise errors without substituting for end-to-end qualification.~\cite[style.py; synthesise.py; reproduce.py]{braunepipeline2026}
+
+
+Appendix~\ref{app:des-visual-tests} shows the same sentence generated from four stored profiles alongside paths independently parsed from their emitted G-code. Nine controlled conversion fixtures additionally preserved path vertex counts with no clipping and a maximum coordinate discrepancy of $0.0004$\,mm, consistent with writing coordinates to three decimal places. Joins and ring closure were disabled only for those correspondence fixtures so that the vertices could be paired; the four profile illustrations used the normal configuration. Neither check measures the mechanism's positional accuracy.~\cite[style.py; synthesise.py; reproduce.py]{braunepipeline2026}
+
+The representation's main advantage is that its geometry is explicit and inspectable. A defective glyph can be traced to a source crop, stored paths can be viewed independently of the machine, and physical size follows from a defined transformation. The main limitation is the loss of context when a connected word is divided into reusable characters. Real letterforms change with their neighbours, whereas a finite glyph pool and join rules approximate that dependence. Skeletons also omit pressure and true temporal order. These losses explain why a plausible letter library need not reproduce every connected style equally well.~\cite[style.py; synthesise.py; reproduce.py]{braunepipeline2026}
+
+Possible extensions include context-dependent multi-character units, better alignment, trajectory acquisition and a verified alternative junction tracer. Each addresses a different loss: multi-character units preserve local letter interactions, trajectory acquisition restores temporal information, and improved tracing changes how an existing skeleton becomes strokes. Their implementation would require corresponding changes to extraction, storage or the source data, rather than a larger candidate search alone.
+The retained design therefore prioritises extraction from the available offline pages and explicit control of the plotted geometry. Recovering natural pen dynamics would require new trajectory data, while replacing the library with a learned generator would add a separate training and validation problem. The alternative tracer remains an implementation option; its presence alone does not establish an improvement over the default.~\cite[style.py; synthesise.py; reproduce.py]{braunepipeline2026}
+\FloatBarrier

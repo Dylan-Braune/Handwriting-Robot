@@ -1,5 +1,19 @@
 # Block D — Hardware control and the web service
 
+> **Written against `Software/CleanPipeline` (v1); the live system is
+> `Software/CleanPipeline3`.** `Gantry.py` → **`reproduce.py`** (24 of 24
+> definitions), `Server.py` → **`web/server.py`** (14 of 23),
+> `Camera.py` → **`web/camera.py`**, `WebRenderHelpers.py` →
+> **`web/render.py`**. The gantry driver transferred completely and the
+> explanations below are current.
+>
+> `web/server.py` has grown the most: it now stands a photographed page on its
+> correct axis with `StandUp` before segmenting, holds two writer classifiers
+> and chooses between them with `PAGE_NAMER` and `PAGE_NAMER_STROKE_NORM`, and
+> records per-stage timings through the new `timing.py`. The travel constants
+> in `reproduce.py` are calibration outputs and have changed since this was
+> written. Checked 2026-10-31.
+
 | File | Lines | Role |
 |---|---|---|
 | `Gantry.py` | 825 | Odroid N2+ direct-GPIO gantry driver. Bit-bangs step/dir, interprets G-code, homes and calibrates, enforces end-stops. |
