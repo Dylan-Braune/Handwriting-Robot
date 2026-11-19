@@ -29,6 +29,14 @@ import os
 #outright; 0 answers but is not a capture device, which leaves 1
 CAMERA_INDEX = int(os.environ.get("CAMERA_INDEX","1"))
 
+#the sensor's native size, 8MP and four thirds.  cv2 opens a UVC webcam at
+#640x480 unless it is told otherwise, and a page of writing at 640x480 has an
+#x-height of about four pixels: the segmenter found NO lines at all in a real
+#capture off the board.  at 3264x2448 the x-height is about thirty pixels,
+#which is the size the reader was trained on
+CAMERA_WIDTH = int(os.environ.get("CAMERA_WIDTH","3264"))
+CAMERA_HEIGHT = int(os.environ.get("CAMERA_HEIGHT","2448"))
+
 WARMUP_FRAMES = 5   #a UVC webcam's first frame after opening is often dark/unfocused
 
 
@@ -44,21 +52,35 @@ def _GetLock():
     return _previewLock
 
 
+#---_Open: the device, at the size everything here uses---
+#the fourcc is set BEFORE the size: a UVC webcam only offers anything above
+#VGA in motion-JPEG, and left on raw YUY2 the bandwidth limit silently holds
+#the frame down to 640x480 however large a size is asked for
+def _Open(idx):
+    import cv2
+    cap = cv2.VideoCapture(idx)
+    if not cap.isOpened():
+        cap.release()
+        return None
+    cap.set(cv2.CAP_PROP_FOURCC,cv2.VideoWriter_fourcc(*"MJPG"))
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH,CAMERA_WIDTH)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT,CAMERA_HEIGHT)
+    return cap
+
+
 #opens (and keeps open) the camera for live preview streaming. Safe to
 #call repeatedly -- a no-op if already open. Kept separate from
 #CaptureImage() so a short-lived capture doesn't leave the sensor powered
 #on between uses -- the camera only runs while someone's actually
 #watching the live feed to frame the shot and let autofocus settle.
 def PreviewStart(index=None):
-    import cv2
     global _previewCap
     with _GetLock():
         if _previewCap is not None:
             return
         idx = CAMERA_INDEX if index is None else index
-        cap = cv2.VideoCapture(idx)
-        if not cap.isOpened():
-            cap.release()
+        cap = _Open(idx)
+        if cap is None:
             raise RuntimeError(f"Could not open camera at index {idx} for preview.")
         _previewCap = cap
 
@@ -102,6 +124,8 @@ def PreviewFrameJpeg():
 #only allow one process/handle to hold the device at a time, and this is
 #also the intended flow: watch the live preview until autofocus settles
 #on the page, then capture "the good image" from what's already showing.
+#the preview runs at the same size as the still, so the frame taken from
+#it is the full sized one
 def CaptureImage(timeout=10,index=None):
     import cv2
 
@@ -115,9 +139,8 @@ def CaptureImage(timeout=10,index=None):
             return outPath
 
     idx = CAMERA_INDEX if index is None else index
-    cap = cv2.VideoCapture(idx)
-    if not cap.isOpened():
-        cap.release()
+    cap = _Open(idx)
+    if cap is None:
         raise RuntimeError(
             f"Could not open camera at index {idx}. Is it plugged in, and "
             "not already in use by another program (close any other app "
