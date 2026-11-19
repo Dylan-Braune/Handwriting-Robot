@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Handwriting Robot — Training</title>
+<link rel="stylesheet" href="style.css" />
+<style>
+.seg { display:flex; gap:8px; margin-bottom:14px; }
+.seg button { flex:1; background:transparent; color:var(--silver);
+  border:1px solid var(--border); }
+.seg button.on { background:var(--cyan); color:#05181a; border-color:var(--cyan); }
+.row2 { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+.row2 label { margin:0 0 4px; }
+/* the writer picker: one tick per writer there is data for */
+.writers { display:grid; grid-template-columns:repeat(auto-fill,minmax(118px,1fr));
+  gap:6px; margin-top:6px; }
+.writers label { display:flex; align-items:center; gap:7px; margin:0;
+  background:var(--bg-panel-2); border:1px solid var(--border); border-radius:6px;
+  padding:7px 9px; font-size:0.85rem; color:var(--silver); cursor:pointer; }
+.writers label.off { opacity:0.45; }
+.writers input { width:15px; height:15px; accent-color:var(--cyan); cursor:pointer; }
+.writers .tag { color:var(--silver-dim); font-size:0.7rem; margin-left:auto; }
+.log { background:#05070a; border:1px solid var(--border); border-radius:6px;
+  padding:12px; margin-top:12px; max-height:380px; overflow:auto;
+  font-family:"Consolas",monospace; font-size:0.76rem; color:var(--silver);
+  white-space:pre-wrap; }
+.running { color:var(--cyan); font-weight:600; }
+</style>
+</head>
+<body>
+<div id="topbar"></div>
+
+<main>
+  <div class="page-header">
+    <div><h1>Training</h1></div>
+  </div>
+
+  <div class="grid">
+    <div class="panel">
+      <h2>Train a model</h2>
+
+      <div class="seg" id="taskSeg">
+        <button data-task="text" class="on">Text reader</button>
+        <button data-task="author">Author namer</button>
+      </div>
+
+      <div class="row2">
+        <div><label>Epochs</label><input type="number" id="epochs" value="40" min="1" max="400" /></div>
+        <div><label>Batch</label><input type="number" id="batch" value="8" min="1" max="64" /></div>
+      </div>
+      <div class="row2" style="margin-top:10px">
+        <div><label>Learning rate</label><input type="text" id="lr" value="0.001" /></div>
+        <div><label>Seed</label><input type="number" id="seed" value="7" min="0" /></div>
+      </div>
+      <label style="margin-top:10px">Run tag</label>
+      <input type="text" id="tag" value="demo" placeholder="leave blank to write the shipped checkpoint" />
+
+      <div id="textOnly">
+        <label style="margin-top:14px">Data source</label>
+        <select id="source">
+          <option value="joint">joint — public lines plus the photographed writers</option>
+          <option value="teklia">teklia — public pre-cut lines only</option>
+          <option value="pages">pages — segment the database pages here</option>
+        </select>
+        <div class="row2" style="margin-top:10px">
+          <div><label>Share of each batch from photographed lines</label>
+            <input type="number" id="personalFraction" value="0.20" min="0" max="1" step="0.05" /></div>
+          <div><label>Page limit (blank = all)</label>
+            <input type="number" id="pages" min="1" /></div>
+        </div>
+      </div>
+
+      <div id="authorOnly" hidden>
+        <label style="margin-top:14px">Writers to train on</label>
+        <div class="writers" id="writerPicker"></div>
+        <div class="btn-row" style="margin-top:8px">
+          <button class="secondary" id="pickAllBtn">All</button>
+          <button class="secondary" id="pickElevenBtn">The eleven with a glyph library</button>
+          <button class="secondary" id="pickNoneBtn">None</button>
+        </div>
+      </div>
+
+      <label class="offline-ctl" style="margin-top:14px">
+        <input type="checkbox" id="resume" /><span>Resume from this module's own checkpoint</span>
+      </label>
+      <label style="margin-top:10px">Or warm-start from a checkpoint in the weights folder</label>
+      <select id="warmStart"><option value="">(none)</option></select>
+
+      <div class="btn-row">
+        <button id="startBtn">Start training</button>
+        <button id="stopBtn" class="danger">&#9632; Stop</button>
+      </div>
+      <div class="error-banner" id="trainError"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Add an author</h2>
+
+      <label style="margin-top:14px">Name</label>
+      <input type="text" id="newName" placeholder="letters, digits, - and _ only" />
+
+      <label>Page photographs</label>
+      <input type="file" id="newImages" accept="image/*" multiple />
+
+      <label style="margin-top:10px">Transcripts — one <code>&lt;page&gt;_labels.txt</code> per image</label>
+      <input type="file" id="newLabels" accept=".txt" multiple />
+
+      <label style="margin-top:10px">…or, for a single page, type the lines here</label>
+      <textarea id="newTranscript" placeholder="One written line per text line, in order."></textarea>
+
+      <div class="btn-row">
+        <button id="addBtn">Build the glyph profile</button>
+      </div>
+      <div class="error-banner" id="addError"></div>
+      <div class="result-box" id="addResult"></div>
+
+      <h2 style="margin-top:26px">Writers with a glyph library</h2>
+      <table class="timing-table" id="profileTable"></table>
+    </div>
+  </div>
+
+  <div class="panel" style="margin-top:20px">
+    <h2>Job</h2>
+    <div class="stat-row">
+      <span class="k">State</span>
+      <span class="v" id="jobState">Nothing running</span>
+    </div>
+    <div class="log" id="jobLog">(no log yet)</div>
+  </div>
+</main>
+
+<script src="app.js"></script>
+<script>
+renderTopbar("training");
+
+// every writer there is data for on this machine, and whether the shipped
+// namer has a class for them.  the eleven with a glyph library are the ones
+// the author model was trained on; 151 and 551 have pages but no class
+const DATABASE = ["150", "151", "152", "153", "384", "551", "552", "588"];
+const PERSONAL = ["abhinav", "dylan", "owen", "thiya", "yeukita"];
+const ELEVEN = ["150", "152", "153", "384", "552", "588",
+                "abhinav", "dylan", "owen", "thiya", "yeukita"];
+
+let task = "text";
+let profiles = [];
+
+// ---- the writer picker ----------------------------------------------------
+(function buildPicker() {
+  const el = document.getElementById("writerPicker");
+  const rows = DATABASE.map(w => [w, "database"]).concat(PERSONAL.map(w => [w, "photographed"]));
+  el.innerHTML = rows.map(([w, kind]) => {
+    const inEleven = ELEVEN.includes(w);
+    return `<label class="${inEleven ? "" : "off"}">
+      <input type="checkbox" value="${w}" ${inEleven ? "checked" : ""} />
+      <span>${w}</span><span class="tag">${kind}</span></label>`;
+  }).join("");
+})();
+
+function pickedWriters() {
+  return [...document.querySelectorAll("#writerPicker input:checked")].map(i => i.value);
+}
+function setPicked(list) {
+  document.querySelectorAll("#writerPicker input").forEach(i => { i.checked = list.includes(i.value); });
+}
+document.getElementById("pickAllBtn").addEventListener("click",
+  () => setPicked(DATABASE.concat(PERSONAL)));
+document.getElementById("pickElevenBtn").addEventListener("click", () => setPicked(ELEVEN));
+document.getElementById("pickNoneBtn").addEventListener("click", () => setPicked([]));
+
+// ---- which task -----------------------------------------------------------
+document.querySelectorAll("#taskSeg button").forEach(b => {
+  b.addEventListener("click", () => {
+    task = b.dataset.task;
+    document.querySelectorAll("#taskSeg button").forEach(x => x.classList.toggle("on", x === b));
+    document.getElementById("textOnly").hidden = task !== "text";
+    document.getElementById("authorOnly").hidden = task !== "author";
+  });
+});
+
+// ---- the checkpoints on disk, for warm-starting ---------------------------
+async function loadCheckpoints() {
+  const sel = document.getElementById("warmStart");
+  try {
+    const info = await apiFetch("/api/model_info");
+    const names = [info.text_recognizer.weights_file,
+                   info.writer_id_ink_based.weights_file,
+                   info.writer_id_stroke_normalised.weights_file];
+    [...new Set(names)].forEach(n => {
+      const o = document.createElement("option");
+      o.value = n; o.textContent = n;
+      sel.appendChild(o);
+    });
+  } catch (_) {}
+}
+
+// ---- the writers that already have a glyph library -----------------------
+async function loadProfiles() {
+  const t = document.getElementById("profileTable");
+  try {
+    profiles = await apiFetch("/api/authors");
+  } catch (e) {
+    t.innerHTML = `<tr><td>${e.message}</td></tr>`;
+    return;
+  }
+  let h = "<tr><th>Writer</th><th class='num'>Chars</th><th class='num'>Variants</th>"
+        + "<th class='num'>Lines</th><th class='num'>Slant</th><th class='num'>Conn.</th>"
+        + "<th>Namer</th></tr>";
+  for (const a of profiles) {
+    h += `<tr><td>${a.id}</td><td class="num">${a.glyphs}</td>`
+       + `<td class="num">${a.variants ?? "—"}</td><td class="num">${a.lines ?? "—"}</td>`
+       + `<td class="num">${a.slantDeg == null ? "—" : (a.slantDeg > 0 ? "+" : "") + a.slantDeg + "°"}</td>`
+       + `<td class="num">${a.connectedness ?? "—"}</td>`
+       + `<td>${a.inGantryModels ? "yes" : "no class"}</td></tr>`;
+  }
+  document.getElementById("profileTable").innerHTML = h;
+}
+
+// ---- starting, stopping and watching -------------------------------------
+document.getElementById("startBtn").addEventListener("click", async () => {
+  clearError("trainError");
+  const body = {
+    task,
+    epochs: parseInt(document.getElementById("epochs").value || "40", 10),
+    batch: parseInt(document.getElementById("batch").value || "8", 10),
+    lr: parseFloat(document.getElementById("lr").value || "0.001"),
+    seed: parseInt(document.getElementById("seed").value || "7", 10),
+    tag: document.getElementById("tag").value.trim(),
+    resume: document.getElementById("resume").checked,
+    warmStart: document.getElementById("warmStart").value,
+  };
+  if (task === "text") {
+    body.source = document.getElementById("source").value;
+    body.personalFraction = parseFloat(document.getElementById("personalFraction").value || "0.2");
+    const pages = document.getElementById("pages").value.trim();
+    if (pages) body.pages = parseInt(pages, 10);
+  } else {
+    const w = pickedWriters();
+    if (!w.length) { showError("trainError", "Tick at least one writer."); return; }
+    body.writers = w;
+  }
+  const btn = document.getElementById("startBtn");
+  btn.disabled = true;
+  try {
+    const res = await apiFetch("/api/train/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.started) showError("trainError", res.error || "Could not start.");
+    poll();
+  } catch (e) {
+    showError("trainError", e.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.getElementById("stopBtn").addEventListener("click", async () => {
+  clearError("trainError");
+  try {
+    const res = await apiFetch("/api/train/stop", { method: "POST" });
+    if (res.message) showError("trainError", res.message);
+    render(res);
+  } catch (e) {
+    showError("trainError", e.message);
+  }
+});
+
+document.getElementById("addBtn").addEventListener("click", async () => {
+  clearError("addError");
+  const name = document.getElementById("newName").value.trim();
+  const images = document.getElementById("newImages").files;
+  const labels = document.getElementById("newLabels").files;
+  const typed = document.getElementById("newTranscript").value.trim();
+  if (!name) { showError("addError", "Give the writer a name."); return; }
+  if (!images.length) { showError("addError", "Attach at least one page photograph."); return; }
+  if (!labels.length && !typed) { showError("addError", "Attach a transcript, or type the lines in."); return; }
+  if (!labels.length && images.length > 1) {
+    showError("addError", "Typing the lines in only works for one page. Attach one "
+                        + "'<page>_labels.txt' per image instead.");
+    return;
+  }
+
+  const form = new FormData();
+  form.append("name", name);
+  for (const f of images) form.append("images", f);
+  for (const f of labels) form.append("labels", f);
+  if (typed) form.append("transcript", typed);
+
+  const btn = document.getElementById("addBtn");
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Building...';
+  try {
+    const res = await apiFetch("/api/authors/add", { method: "POST", body: form });
+    if (!res.started) showError("addError", res.error || "Could not start.");
+    poll();
+  } catch (e) {
+    showError("addError", e.message);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = "Build the glyph profile";
+  }
+});
+
+function render(st) {
+  const state = document.getElementById("jobState");
+  if (st.running) {
+    state.innerHTML = `<span class="running">${st.kind} — ${st.label}</span>`
+      + (st.seconds ? ` · ${st.seconds.toFixed(0)} s` : "");
+  } else if (st.kind) {
+    state.textContent = `${st.kind} — ${st.label}: ${st.message || (st.ok ? "finished" : "stopped")}`;
+    state.className = "v" + (st.ok === true ? " good" : st.ok === false ? " bad" : "");
+  } else {
+    state.textContent = "Nothing running";
+    state.className = "v";
+  }
+  const log = document.getElementById("jobLog");
+  const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 20;
+  log.textContent = st.log || "(no log yet)";
+  if (atBottom) log.scrollTop = log.scrollHeight;
+
+  if (st.result) {
+    const r = st.result;
+    const box = document.getElementById("addResult");
+    box.innerHTML =
+      `<div class="stat-row"><span class="k">Built</span><span class="v good">${r.author}</span></div>`
+      + `<div class="stat-row"><span class="k">Characters</span><span class="v">${r.characters}</span></div>`
+      + `<div class="stat-row"><span class="k">Variants</span><span class="v">${r.variants}</span></div>`
+      + `<div class="stat-row"><span class="k">Lines used</span><span class="v">${r.lines_used}</span></div>`
+      + `<div class="stat-row"><span class="k">Slant / connectedness</span>`
+      + `<span class="v">${r.slant_deg}° / ${r.connectedness}</span></div>`
+      + `<div class="stat-row"><span class="k">In the namer's classes</span>`
+      + `<span class="v${r.in_namer_classes ? " good" : ""}">${
+          r.in_namer_classes ? "yes" : "no"}</span></div>`
+      ;
+    box.classList.add("show");
+    loadProfiles();
+  }
+}
+
+// one poll, slowing to a crawl when nothing is running: a training run can
+// take hours and there is nothing to be gained from asking every second
+let pollTimer = null;
+async function poll() {
+  if (pollTimer) clearTimeout(pollTimer);
+  let next = 8000;
+  try {
+    const st = await apiFetch("/api/train/status");
+    render(st);
+    next = st.running ? 2000 : 15000;
+  } catch (_) {}
+  pollTimer = setTimeout(poll, next);
+}
+
+loadCheckpoints();
+loadProfiles();
+poll();
+</script>
+</body>
+</html>

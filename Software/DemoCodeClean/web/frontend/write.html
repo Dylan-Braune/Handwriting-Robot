@@ -1,0 +1,782 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Handwriting Robot — Write</title>
+<link rel="stylesheet" href="style.css" />
+<style>
+.line-ctl { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.line-ctl .line-no { color:var(--silver); font-size:0.9rem; }
+.line-ctl .line-no b { color:var(--cyan); font-size:1.1rem; }
+.line-ctl .line-h { color:var(--silver-dim); font-size:0.82rem; margin-left:auto; }
+.line-ctl .line-h input { width:68px; background:var(--bg-panel-2); color:var(--white);
+  border:1px solid var(--border); border-radius:6px; padding:5px 7px; font-family:var(--font); }
+/* the page diagram is drawn to scale from the millimetres the backend
+   reports, so what it shows is where the pen will actually go */
+.page-map { margin:12px 0 4px; }
+.page-map svg { display:block; width:100%; max-width:260px; height:auto;
+  background:var(--bg-panel-2); border:1px solid var(--border); border-radius:8px; }
+.page-map .cap { color:var(--silver-dim); font-size:0.76rem; margin-top:6px; }
+.feed-ctl { margin-top:14px; }
+.feed-ctl .feed-head { display:flex; align-items:baseline; gap:8px; }
+.feed-ctl .feed-head .val { color:var(--cyan); font-variant-numeric:tabular-nums; }
+.feed-ctl .feed-head .secs { color:var(--silver-dim); font-size:0.8rem; margin-left:auto; }
+.feed-ctl input[type=range] { width:100%; accent-color:var(--cyan); margin:4px 0 0; }
+.budget { margin-top:14px; border:1px solid var(--border); border-radius:6px; padding:10px 12px; }
+.budget-head { color:var(--silver-dim); font-size:0.78rem; margin-bottom:8px; }
+.budget-row { display:grid; grid-template-columns:84px 64px 44px 1fr; gap:8px;
+              align-items:baseline; font-size:0.84rem; padding:3px 0;
+              font-variant-numeric:tabular-nums; }
+.budget-row span:nth-child(2) { color:var(--cyan); text-align:right; }
+.budget-row span:nth-child(3) { color:var(--silver-dim); text-align:right; }
+.budget-sub { color:var(--silver-dim); font-size:0.76rem; }
+.budget-total { border-top:1px solid var(--border); margin-top:6px; padding-top:6px; }
+/* driving the pen by hand */
+.jog { display:grid; grid-template-columns:1fr 1fr; gap:10px; align-items:end; }
+.jog label { margin:0 0 4px; }
+.jog-bounds { color:var(--silver-dim); font-size:0.78rem; margin-top:8px;
+  font-variant-numeric:tabular-nums; }
+.jog-pos { color:var(--cyan); font-variant-numeric:tabular-nums; font-weight:600; }
+</style>
+</head>
+<body>
+<div id="topbar"></div>
+
+<main>
+  <div class="page-header">
+    <div><h1>Write as an author</h1></div>
+    <button class="reset-btn" id="resetPageBtn" title="Clear this page back to blank">⟳ Reset</button>
+  </div>
+
+  <div class="calibration-panel" id="calibrationPanel">
+    <div class="stat-row">
+      <span class="k">Gantry calibration</span>
+      <span class="v" id="calibStatus">Checking...</span>
+    </div>
+    <div class="btn-row">
+      <button id="calibrateBtn">📐 Calibrate</button>
+    </div>
+    <label class="offline-ctl">
+      <input type="checkbox" id="offlineMode" />
+      <span>Offline mode</span>
+    </label>
+    <div class="error-banner" id="calibrateError"></div>
+  </div>
+
+  <div class="grid locked" id="mainGrid">
+    <div class="panel">
+      <h2>Job</h2>
+
+      <label>Text</label>
+      <textarea id="writeText">The gantry writes this sentence for the first time today</textarea>
+
+      <label>Author</label>
+      <select data-author-select id="writeAuthor"></select>
+
+      <label>Candidate draws per line</label>
+      <input type="number" id="nTries" value="20" min="1" max="60" />
+
+      <label class="offline-ctl">
+        <input type="checkbox" id="bestPrio" />
+        <span>Best-prior glyphs</span>
+      </label>
+
+      <label style="margin-top:18px">Line on the page</label>
+      <div class="line-ctl">
+        <button id="linePrevBtn" class="secondary">&#9650;</button>
+        <span class="line-no">line <b id="lineNo">1</b><span id="lineOfN"></span></span>
+        <button id="lineNextBtn" class="secondary">&#9660;</button>
+        <span class="line-h">ruling
+          <input type="number" id="lineHeightMm" value="8.4" min="2" max="30" step="0.1" /> mm</span>
+      </div>
+      <label class="offline-ctl">
+        <input type="checkbox" id="ignoreRuling" checked />
+        <span>Ignore the ruling when spacing the lines</span>
+      </label>
+
+      <div class="page-map" id="pageMap"></div>
+
+      <label style="margin-top:20px">Feeds and dwell</label>
+      <div class="feed-ctl">
+        <div class="feed-head">
+          <span>✍ Writing (pen down)</span>
+          <span class="val" id="drawFeedVal">900 mm/min</span>
+          <span class="secs" id="drawFeedSecs">15.0 mm/s</span>
+        </div>
+        <input type="range" id="drawFeed" min="100" max="3000" step="50" value="900" />
+      </div>
+      <div class="feed-ctl">
+        <div class="feed-head">
+          <span>↗ Traversal (pen up)</span>
+          <span class="val" id="travelFeedVal">2400 mm/min</span>
+          <span class="secs" id="travelFeedSecs">40.0 mm/s</span>
+        </div>
+        <input type="range" id="travelFeed" min="300" max="6000" step="100" value="2400" />
+      </div>
+      <div class="feed-ctl">
+        <div class="feed-head">
+          <span>⬆ Wait after pen UP</span>
+          <span class="val" id="penUpDwellVal">350 ms</span>
+        </div>
+        <input type="range" id="penUpDwell" min="0" max="600" step="10" value="350" />
+      </div>
+      <div class="feed-ctl">
+        <div class="feed-head">
+          <span>⬇ Wait after pen DOWN</span>
+          <span class="val" id="penDownDwellVal">350 ms</span>
+        </div>
+        <input type="range" id="penDownDwell" min="0" max="600" step="10" value="350" />
+      </div>
+      <div class="budget" id="jobBudget" hidden></div>
+
+      <div class="btn-row">
+        <button id="generateBtn">Generate G-code</button>
+      </div>
+      <div class="error-banner" id="generateError"></div>
+
+      <label style="margin-top:24px">Or read an existing G-code file back</label>
+      <input type="file" id="gcodeFileInput" accept=".gcode,.nc,.txt" />
+      <label style="margin-top:10px">Expected text (optional)</label>
+      <input type="text" id="gcodeExpectedText" />
+      <div class="btn-row">
+        <button id="uploadGcodeBtn" class="secondary">📄 Analyze G-code</button>
+      </div>
+      <div class="error-banner" id="uploadError"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Result</h2>
+      <div class="result-box" id="resultBox">
+        <img id="previewImg" class="preview" />
+
+        <div class="stat-row" style="margin-top:12px">
+          <span class="k">Text accuracy</span>
+          <span class="v" id="rAcc">—</span>
+        </div>
+        <div class="pct-bar"><div id="rAccBar" style="width:0%"></div></div>
+        <div class="stat-row">
+          <span class="k">Author</span>
+          <span class="v" id="rWriter">—</span>
+        </div>
+        <div class="stat-row">
+          <span class="k">G-code lines</span>
+          <span class="v" id="rLines">—</span>
+        </div>
+        <div class="stat-row">
+          <span class="k">Pen pulses</span>
+          <span class="v" id="rPulses">—</span>
+        </div>
+        <div class="stat-row">
+          <span class="k">Estimated draw time</span>
+          <span class="v" id="rDrawEst">—</span>
+        </div>
+
+        <label style="margin-top:16px">Read back off the G-code</label>
+        <div class="readback" id="rReadBack"></div>
+
+        <div class="timing-box" id="generateTiming"></div>
+        <div class="timing-box" id="drawTiming"></div>
+
+        <div class="btn-row">
+          <a id="downloadLink" download="job.gcode"><button class="secondary">⬇ job.gcode</button></a>
+          <button id="sendToGantryBtn">🖊 Send to gantry</button>
+          <button id="stopBtn" class="danger">&#9632; STOP</button>
+        </div>
+        <div class="stat-row" style="margin-top:10px">
+          <span class="k">Gantry</span>
+          <span class="v" id="gantryStatus">—</span>
+        </div>
+        <div class="error-banner" id="gantryError"></div>
+
+        <label style="margin-top:16px">G-code (first 40 lines)</label>
+        <pre class="code" id="gcodePreview"></pre>
+      </div>
+      <p class="hint" id="idlePlaceholder"></p>
+
+      <h2 style="margin-top:26px">Pen</h2>
+      <div class="jog">
+        <div><label>X mm</label><input type="number" id="jogX" step="0.5" value="0" /></div>
+        <div><label>Y mm</label><input type="number" id="jogY" step="0.5" value="0" /></div>
+      </div>
+      <div class="btn-row">
+        <button id="jogGoBtn" class="secondary">Go to X,Y</button>
+        <button id="penDownBtn" class="secondary">⬇ Pen down</button>
+        <button id="penUpBtn" class="secondary">⬆ Pen up</button>
+      </div>
+      <div class="jog-bounds" id="jogBounds">—</div>
+      <div class="error-banner" id="jogError"></div>
+    </div>
+  </div>
+</main>
+
+<script src="app.js"></script>
+<script>
+renderTopbar("write");
+populateAuthorDropdowns();
+
+const PAGE_KEY = "write";
+//read ONCE, before anything on this page saves state: restoring the line
+//number persists as a side effect, which would overwrite the saved choice
+//with the unticked default box and stop offline mode ever turning itself on
+const SAVED_OFFLINE = (loadPageState(PAGE_KEY) || {}).offlineMode;
+const generateBtn = document.getElementById("generateBtn");
+const sendToGantryBtn = document.getElementById("sendToGantryBtn");
+const idlePlaceholder = document.getElementById("idlePlaceholder");
+let lastJobId = null;
+
+function persist(extra = {}) {
+  savePageState(PAGE_KEY, {
+    writeText: document.getElementById("writeText").value,
+    writeAuthor: document.getElementById("writeAuthor").value,
+    nTries: document.getElementById("nTries").value,
+    line: typeof currentLine === "number" ? currentLine : 0,
+    lineHeightMm: document.getElementById("lineHeightMm").value,
+    ignoreRuling: document.getElementById("ignoreRuling").checked,
+    bestPrio: document.getElementById("bestPrio").checked,
+    drawFeed: document.getElementById("drawFeed").value,
+    travelFeed: document.getElementById("travelFeed").value,
+    penUpDwell: document.getElementById("penUpDwell").value,
+    penDownDwell: document.getElementById("penDownDwell").value,
+    offlineMode: document.getElementById("offlineMode").checked,
+    placement: lastPlacement || null,
+    lastJobId,
+    lastResult: extra.lastResult !== undefined ? extra.lastResult : (persist._lastResult || null),
+  });
+  if (extra.lastResult !== undefined) persist._lastResult = extra.lastResult;
+}
+
+async function showResult(res) {
+  idlePlaceholder.style.display = "none";
+  document.getElementById("resultBox").classList.add("show");
+  // the page render, not the tight crop: this is the sheet the machine will
+  // draw, and it is the picture the read-back was taken from
+  const img = res.page_url || res.preview_url;
+  document.getElementById("previewImg").src = absoluteUrl(img) + "?t=" + Date.now();
+  document.getElementById("rReadBack").textContent = res.read_back_text || "(nothing read back)";
+
+  const acc = res.text_accuracy_pct;
+  document.getElementById("rAcc").textContent =
+    (acc === null || acc === undefined) ? "(no expected text)" : acc + "%";
+  document.getElementById("rAccBar").style.width = (acc || 0) + "%";
+
+  // who the namer calls the page it was handed, and how sure it is that this
+  // is the writer that was ASKED for.  a writer the namer has no class for
+  // gets no confidence figure at all rather than a misleading one
+  const w = document.getElementById("rWriter");
+  if (res.writer_confidence_pct === null || res.writer_confidence_pct === undefined) {
+    w.textContent = res.writer_named ? res.writer_named + " (asked-for writer not in the namer)" : "—";
+    w.className = "v";
+  } else {
+    const lines = res.writer_lines_naming_asked_for ? ` · ${res.writer_lines_naming_asked_for} lines` : "";
+    w.textContent = `${res.writer_named} · ${res.writer_confidence_pct}% as ${res.author}${lines}`;
+    w.className = "v" + (res.writer_named === res.author ? " good" : " bad");
+  }
+
+  document.getElementById("rLines").textContent = res.gcode_line_count ?? "—";
+  document.getElementById("rPulses").textContent = res.pen_pulses ?? "—";
+  const est = res.budget && res.budget.estimatedSeconds;
+  document.getElementById("rDrawEst").textContent = est ? est.toFixed(1) + " s" : "—";
+
+  // The timing display.  It used to print res.synth_seconds, which no version
+  // of this server has ever sent, so the field read "undefined" on every job
+  // while the real stage breakdown sat unused in res.timing.  The stage table
+  // IS the timing display now: synthesis, rendering, G-code, placing on the
+  // page and reading back, each with its share and its cost per character.
+  renderTiming("generateTiming", res.timing);
+  // a previous job's drawing time is not this job's, so it is cleared
+  renderTiming("drawTiming", null);
+
+  const gcodeUrl = absoluteUrl(res.gcode_url);
+  document.getElementById("downloadLink").href = gcodeUrl;
+  try {
+    const gcodeText = await (await fetch(gcodeUrl)).text();
+    document.getElementById("gcodePreview").textContent =
+      gcodeText.split("\n").slice(0, 40).join("\n") + "\n...";
+  } catch (_) {
+    document.getElementById("gcodePreview").textContent = "(could not reload the G-code)";
+  }
+}
+
+function resetPage() {
+  lastJobId = null;
+  persist._lastResult = null;
+  document.getElementById("writeText").value = "";
+  document.getElementById("nTries").value = "20";
+  document.getElementById("resultBox").classList.remove("show");
+  document.getElementById("gantryStatus").textContent = "—";
+  idlePlaceholder.style.display = "block";
+  clearError("generateError");
+  clearError("gantryError");
+}
+
+wireResetButton("resetPageBtn", PAGE_KEY, resetPage);
+
+(function restore() {
+  const s = loadPageState(PAGE_KEY);
+  if (!s) return;
+  if (s.writeText !== undefined) document.getElementById("writeText").value = s.writeText;
+  if (s.nTries) document.getElementById("nTries").value = s.nTries;
+  lastJobId = s.lastJobId || null;
+  if (s.writeAuthor) {
+    const trySet = () => {
+      const sel = document.getElementById("writeAuthor");
+      if ([...sel.options].some(o => o.value === s.writeAuthor)) sel.value = s.writeAuthor;
+      else setTimeout(trySet, 200);
+    };
+    trySet();
+  }
+  if (s.lastResult) showResult(s.lastResult);
+})();
+
+document.getElementById("writeText").addEventListener("input", () => persist());
+document.getElementById("writeAuthor").addEventListener("change", () => persist());
+document.getElementById("nTries").addEventListener("input", () => persist());
+
+async function refreshGantryStatus() {
+  const el = document.getElementById("gantryStatus");
+  if (document.getElementById("offlineMode").checked) return;
+  try {
+    const res = await apiFetch("/api/gantry/status");
+    el.textContent = res.connected ? "Connected" : "Not connected";
+    el.className = "v" + (res.connected ? " good" : "");
+  } catch (e) {
+    el.textContent = "Unknown";
+    el.className = "v";
+  }
+}
+
+// --- calibration gate ---------------------------------------------------
+const mainGrid = document.getElementById("mainGrid");
+const calibrationPanel = document.getElementById("calibrationPanel");
+const calibStatus = document.getElementById("calibStatus");
+const calibrateBtn = document.getElementById("calibrateBtn");
+const offlineModeEl = document.getElementById("offlineMode");
+
+let lastCalibrated = false, lastCalibration = null;
+
+// Offline mode waives the calibration gate: DRAWING needs a homed machine
+// with measured steps-per-mm, generating a file does not touch the machine at
+// all.  Sending and jogging stay blocked, because those genuinely do.
+function applyGate() {
+  const offline = offlineModeEl.checked;
+  mainGrid.classList.toggle("locked", !offline && !lastCalibrated);
+  sendToGantryBtn.disabled = offline;
+  for (const id of ["jogGoBtn", "penDownBtn", "penUpBtn"])
+    document.getElementById(id).disabled = offline || !lastCalibrated;
+  const st = document.getElementById("gantryStatus");
+  if (offline) {
+    st.textContent = "Offline — generation only";
+    st.className = "v";
+  }
+}
+
+offlineModeEl.addEventListener("change", () => {
+  applyGate();
+  if (!offlineModeEl.checked) { refreshGantryStatus(); refreshPenPosition(); }
+  persist();
+});
+
+function setCalibrated(calibrated, calibration) {
+  lastCalibrated = calibrated;
+  lastCalibration = calibration;
+  calibrationPanel.classList.toggle("done", calibrated);
+  applyGate();
+  if (calibrated && calibration) {
+    calibStatus.textContent = "Calibrated";
+    calibStatus.className = "v good";
+    calibrateBtn.textContent = "📐 Recalibrate";
+  } else {
+    calibStatus.textContent = "Not calibrated";
+    calibStatus.className = "v bad";
+    calibrateBtn.textContent = "📐 Calibrate";
+  }
+  refreshPenPosition();
+}
+
+async function checkCalibration() {
+  const saved = SAVED_OFFLINE;
+  try {
+    const res = await apiFetch("/api/gantry/status");
+    offlineModeEl.checked = (saved !== undefined && saved !== null) ? !!saved : !res.connected;
+    setCalibrated(res.calibrated, res.calibration);
+  } catch (e) {
+    offlineModeEl.checked = (saved !== undefined && saved !== null) ? !!saved : true;
+    setCalibrated(false, null);
+  }
+}
+
+calibrateBtn.addEventListener("click", async () => {
+  clearError("calibrateError");
+  calibrateBtn.disabled = true;
+  calibrateBtn.innerHTML = '<span class="spinner"></span> Homing...';
+  try {
+    const res = await apiFetch("/api/gantry/calibrate", { method: "POST" });
+    if (res.calibrated) setCalibrated(true, res.calibration);
+    else { setCalibrated(false, null); showError("calibrateError", res.message || "Calibration failed."); }
+  } catch (e) {
+    setCalibrated(false, null);
+    showError("calibrateError", e.message);
+  } finally {
+    calibrateBtn.disabled = false;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Driving the pen by hand.
+// A typed coordinate is held inside the homed area by the SERVER, using the
+// same clamp the G-code runner uses, so this page cannot drive the carriage
+// into a switch even with a mistyped number.  The bounds are shown because a
+// number silently clamped is worse than one refused.
+// ---------------------------------------------------------------------------
+let jogBounds = null;
+
+async function refreshPenPosition() {
+  const el = document.getElementById("jogBounds");
+  if (offlineModeEl.checked) { el.textContent = "Offline — the pen is not driven."; return; }
+  try {
+    const res = await apiFetch("/api/gantry/position");
+    jogBounds = res.bounds || null;
+    if (jogBounds) {
+      document.getElementById("jogX").min = jogBounds.x_min_mm;
+      document.getElementById("jogX").max = jogBounds.x_max_mm;
+      document.getElementById("jogY").min = jogBounds.y_min_mm;
+      document.getElementById("jogY").max = jogBounds.y_max_mm;
+    }
+    if (!res.connected) { el.textContent = "Gantry not connected."; return; }
+    if (!res.calibrated) { el.textContent = "Calibrate before driving the pen."; return; }
+    el.innerHTML = `at <span class="jog-pos">X${res.x_mm} Y${res.y_mm}</span> mm, pen `
+      + `<span class="jog-pos">${res.pen_up ? "up" : "down"}</span> · `
+      + `bounds X 0–${jogBounds.x_max_mm}, Y 0–${jogBounds.y_max_mm} mm`;
+  } catch (e) {
+    el.textContent = "Position unknown.";
+  }
+}
+
+document.getElementById("jogGoBtn").addEventListener("click", async () => {
+  clearError("jogError");
+  const btn = document.getElementById("jogGoBtn");
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Moving...';
+  try {
+    const res = await apiFetch("/api/gantry/jog", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ x: parseFloat(document.getElementById("jogX").value),
+                             y: parseFloat(document.getElementById("jogY").value) }),
+    });
+    if (!res.moved) showError("jogError", res.message);
+    else if (res.clamped)
+      showError("jogError", `Held inside the work area: went to X${res.x_mm} Y${res.y_mm} mm.`);
+    await refreshPenPosition();
+  } catch (e) {
+    showError("jogError", e.message);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = "Go to X,Y";
+  }
+});
+
+async function setPen(down) {
+  clearError("jogError");
+  const btn = document.getElementById(down ? "penDownBtn" : "penUpBtn");
+  const label = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>';
+  try {
+    const res = await apiFetch("/api/gantry/pen", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ down }),
+    });
+    if (!res.ok) showError("jogError", res.message);
+    await refreshPenPosition();
+  } catch (e) {
+    showError("jogError", e.message);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = label;
+  }
+}
+
+document.getElementById("penDownBtn").addEventListener("click", () => setPen(true));
+document.getElementById("penUpBtn").addEventListener("click", () => setPen(false));
+
+const uploadGcodeBtn = document.getElementById("uploadGcodeBtn");
+uploadGcodeBtn.addEventListener("click", async () => {
+  clearError("uploadError");
+  const file = document.getElementById("gcodeFileInput").files[0];
+  if (!file) { showError("uploadError", "Choose a .gcode file first."); return; }
+  uploadGcodeBtn.disabled = true;
+  uploadGcodeBtn.innerHTML = '<span class="spinner"></span> Reading...';
+  try {
+    const form = new FormData();
+    form.append("gcode", file);
+    const expectedText = document.getElementById("gcodeExpectedText").value.trim();
+    if (expectedText) form.append("expected_text", expectedText);
+    const res = await apiFetch("/api/gcode/upload", { method: "POST", body: form });
+    lastJobId = res.job_id;
+    await showResult(res);
+    persist({ lastResult: res });
+    refreshGantryStatus();
+  } catch (e) {
+    showError("uploadError", e.message);
+  } finally {
+    uploadGcodeBtn.disabled = false;
+    uploadGcodeBtn.innerHTML = "📄 Analyze G-code";
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Which ruled line to write on.  The backend offsets the whole trajectory by
+// that many rulings; this keeps the number, draws the page, and steps it after
+// each successful job so a sheet fills by itself instead of every job landing
+// on top of the last one.
+// ---------------------------------------------------------------------------
+let currentLine = 0;
+let lastPlacement = null;
+
+function lineHeightMm() { return parseFloat(document.getElementById("lineHeightMm").value) || 8.4; }
+function ignoreRuling() { return document.getElementById("ignoreRuling").checked; }
+function bestPrio() { return document.getElementById("bestPrio").checked; }
+
+// the diagram has to step by the pitch the job was really drawn at.  drawing
+// 8.4 mm rules under a job spaced at 11.75 is the lie that hid the collisions
+function mapPitchMm() {
+  if (lastPlacement && lastPlacement.ignoredRuling && lastPlacement.drawnPitchMm > 0)
+    return lastPlacement.drawnPitchMm;
+  return lineHeightMm();
+}
+
+function setLine(n, placement) {
+  const max = lastPlacement ? lastPlacement.linesOnPage - 1 : 98;
+  currentLine = Math.max(0, Math.min(n, max));
+  if (placement) lastPlacement = placement;
+  document.getElementById("lineNo").textContent = currentLine + 1;
+  document.getElementById("lineOfN").textContent =
+    lastPlacement ? ` of ${lastPlacement.linesOnPage}` : "";
+  document.getElementById("linePrevBtn").disabled = currentLine <= 0;
+  document.getElementById("lineNextBtn").disabled =
+    !!lastPlacement && currentLine >= lastPlacement.linesOnPage - 1;
+  drawPageMap();
+  persist();
+}
+
+// drawn from the millimetres the backend reported, not from anything guessed
+// in the browser: same frame as the G-code, y measured UP
+function drawPageMap() {
+  const el = document.getElementById("pageMap");
+  if (!el) return;
+  const lh = mapPitchMm();
+  const p = lastPlacement;
+  const bedTop = p ? p.bedTopYmm : 180, bedBot = p ? p.bedBottomYmm : 0;
+  const bedL = p ? p.bedLeftXmm : 10, bedR = p ? p.bedRightXmm : 200;
+  const firstY = p ? p.firstLineYmm : 156;
+  const W = bedR - bedL, H = bedTop - bedBot;
+  const mmToY = (y) => (bedTop - y);
+  const nLines = Math.max(1, Math.floor((firstY - bedBot) / lh) + 1);
+
+  let rules = "";
+  for (let i = 0; i < nLines; i++) {
+    const y = mmToY(firstY - i * lh);
+    const on = i === currentLine;
+    rules += `<line x1="0" y1="${y.toFixed(1)}" x2="${W}" y2="${y.toFixed(1)}"
+      stroke="${on ? "#4fd8e8" : "#2a2f36"}" stroke-width="${on ? 1.1 : 0.5}"/>`;
+  }
+  let band = "";
+  if (p && p.lineIndex === currentLine) {
+    const y = mmToY(p.topYmm), h = Math.max(1, p.topYmm - p.bottomYmm);
+    band = `<rect x="${(p.leftXmm - bedL).toFixed(1)}" y="${y.toFixed(1)}"
+      width="${Math.max(1, p.rightXmm - p.leftXmm).toFixed(1)}" height="${h.toFixed(1)}"
+      fill="#4fd8e8" fill-opacity="0.35" stroke="#4fd8e8" stroke-width="0.6"/>`;
+  }
+  const cap = p
+    ? `line ${currentLine + 1} of ${nLines} · ${p.topYmm.toFixed(1)}–${p.bottomYmm.toFixed(1)} mm`
+    : `line ${currentLine + 1}`;
+  el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">
+      <rect x="0" y="0" width="${W}" height="${H}" fill="#14171b" stroke="#2a2f36"/>
+      ${rules}${band}
+    </svg><div class="cap">${cap}</div>`;
+}
+
+document.getElementById("linePrevBtn").addEventListener("click", () => setLine(currentLine - 1));
+document.getElementById("lineNextBtn").addEventListener("click", () => setLine(currentLine + 1));
+document.getElementById("lineHeightMm").addEventListener("input", () => { drawPageMap(); persist(); });
+document.getElementById("ignoreRuling").addEventListener("change", () => { drawPageMap(); persist(); });
+document.getElementById("bestPrio").addEventListener("change", () => persist());
+
+(function restoreLine() {
+  const s = loadPageState(PAGE_KEY) || {};
+  if (s.lineHeightMm) document.getElementById("lineHeightMm").value = s.lineHeightMm;
+  if (s.ignoreRuling !== undefined && s.ignoreRuling !== null)
+    document.getElementById("ignoreRuling").checked = !!s.ignoreRuling;
+  if (s.bestPrio !== undefined && s.bestPrio !== null)
+    document.getElementById("bestPrio").checked = !!s.bestPrio;
+  lastPlacement = s.placement || null;
+  setLine(s.line || 0);
+})();
+
+// ---------------------------------------------------------------------------
+// The two feed rates and the two dwells.  They trade against each other: the
+// pen-down feed is a quality knob (a tight curve drawn too fast overshoots)
+// and the pen-up feed is pure time, since nothing is drawn while the carriage
+// crosses the page.
+// ---------------------------------------------------------------------------
+const drawFeedEl = document.getElementById("drawFeed");
+const travelFeedEl = document.getElementById("travelFeed");
+const penUpDwellEl = document.getElementById("penUpDwell");
+const penDownDwellEl = document.getElementById("penDownDwell");
+
+function drawFeedMmMin()   { return parseFloat(drawFeedEl.value) || 900; }
+function travelFeedMmMin() { return parseFloat(travelFeedEl.value) || 2400; }
+function penUpDwellMs()    { const v = parseFloat(penUpDwellEl.value);   return isNaN(v) ? 350 : v; }
+function penDownDwellMs()  { const v = parseFloat(penDownDwellEl.value); return isNaN(v) ? 350 : v; }
+
+let lastBudget = null;
+
+function renderFeeds() {
+  const d = drawFeedMmMin(), t = travelFeedMmMin();
+  const up = penUpDwellMs(), down = penDownDwellMs();
+  document.getElementById("drawFeedVal").textContent = `${d} mm/min`;
+  document.getElementById("travelFeedVal").textContent = `${t} mm/min`;
+  document.getElementById("drawFeedSecs").textContent = `${(d / 60).toFixed(1)} mm/s`;
+  document.getElementById("travelFeedSecs").textContent = `${(t / 60).toFixed(1)} mm/s`;
+  document.getElementById("penUpDwellVal").textContent = up === 0 ? "none" : `${up} ms`;
+  document.getElementById("penDownDwellVal").textContent = down === 0 ? "none" : `${down} ms`;
+  renderBudget();
+}
+
+// where a job's time actually goes, so a tweak can be aimed at the biggest of
+// the three.  acceleration is ignored, so every figure is a FLOOR on the real
+// time: a short segment never reaches its commanded feed
+function renderBudget() {
+  const el = document.getElementById("jobBudget");
+  if (!lastBudget) { el.hidden = true; return; }
+  const d = drawFeedMmMin(), t = travelFeedMmMin();
+  const up = penUpDwellMs(), down = penDownDwellMs();
+  const draw = lastBudget.drawMm * 60 / d;
+  const trav = lastBudget.travelMm * 60 / t;
+  const dwell = (lastBudget.penPulses || 0) * (up + down) / 2000;
+  const total = draw + trav + dwell;
+  const row = (name, s, extra) =>
+    `<div class="budget-row"><span>${name}</span><span>${s.toFixed(1)} s</span>` +
+    `<span>${total > 0 ? Math.round(100 * s / total) : 0}%</span>` +
+    `<span class="budget-sub">${extra}</span></div>`;
+  el.innerHTML =
+    `<div class="budget-head">Where this job's time goes (floor, ignores acceleration)</div>` +
+    row("Writing", draw, `${lastBudget.drawMm} mm at ${d} mm/min`) +
+    row("Traversal", trav, `${lastBudget.travelMm} mm at ${t} mm/min`) +
+    row("Pen dwell", dwell, `${lastBudget.penPulses} pulses at ${up}/${down} ms`) +
+    `<div class="budget-row budget-total"><span>Total</span>` +
+    `<span>${total.toFixed(1)} s</span><span></span><span></span></div>`;
+  el.hidden = false;
+}
+
+for (const el of [drawFeedEl, travelFeedEl, penUpDwellEl, penDownDwellEl])
+  el.addEventListener("input", () => { renderFeeds(); persist(); });
+
+(function restoreFeeds() {
+  const s = loadPageState(PAGE_KEY) || {};
+  if (s.drawFeed) drawFeedEl.value = s.drawFeed;
+  if (s.travelFeed) travelFeedEl.value = s.travelFeed;
+  if (s.penUpDwell !== undefined && s.penUpDwell !== null) penUpDwellEl.value = s.penUpDwell;
+  if (s.penDownDwell !== undefined && s.penDownDwell !== null) penDownDwellEl.value = s.penDownDwell;
+  renderFeeds();
+})();
+
+generateBtn.addEventListener("click", async () => {
+  clearError("generateError");
+  const text = document.getElementById("writeText").value.trim();
+  const author = document.getElementById("writeAuthor").value;
+  const nTries = parseInt(document.getElementById("nTries").value || "20", 10);
+  if (!text) { showError("generateError", "Enter some text first."); return; }
+  if (!author) { showError("generateError", "No author selected."); return; }
+
+  generateBtn.disabled = true;
+  generateBtn.innerHTML = '<span class="spinner"></span> Generating...';
+  try {
+    const res = await apiFetch("/api/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, author, nTries,
+                             line: currentLine, lineHeightMm: lineHeightMm(),
+                             drawFeedMmMin: drawFeedMmMin(),
+                             travelFeedMmMin: travelFeedMmMin(),
+                             penUpDwellMs: penUpDwellMs(),
+                             penDownDwellMs: penDownDwellMs(),
+                             ignoreRuling: ignoreRuling(),
+                             bestPrio: bestPrio() }),
+    });
+    lastJobId = res.job_id;
+    if (res.budget) { lastBudget = res.budget; renderFeeds(); }
+    await showResult(res);
+    // step past the WHOLE job, converted through the pitch it was really
+    // drawn at: with the ruling ignored the lines sit 10 to 13 mm apart
+    // rather than 8.4, so advancing by the text-line count would write the
+    // next job over the tail of this one
+    if (res.placement) {
+      const lines = Math.max(1, res.placement.textLines || 1);
+      const pitch = res.placement.drawnPitchMm || lineHeightMm();
+      const used = Math.max(lines, Math.ceil(lines * pitch / lineHeightMm()));
+      setLine(currentLine + used, res.placement);
+    }
+    persist({ lastResult: res });
+    refreshGantryStatus();
+  } catch (e) {
+    showError("generateError", e.message);
+  } finally {
+    generateBtn.disabled = false;
+    generateBtn.innerHTML = "Generate G-code";
+  }
+});
+
+// deliberately not disabled while a job runs, not gated on there being a job,
+// and not gated on calibration: someone pressing this wants the motors to
+// stop now, whatever state the page believes the machine is in
+const stopBtn = document.getElementById("stopBtn");
+stopBtn.addEventListener("click", async () => {
+  clearError("gantryError");
+  stopBtn.disabled = true;
+  stopBtn.innerHTML = '<span class="spinner"></span> Stopping...';
+  try {
+    const res = await apiFetch("/api/gantry/stop", { method: "POST" });
+    const el = document.getElementById("gantryStatus");
+    el.textContent = res.message;
+    el.className = "v" + (res.stopped && res.pen_up && res.parked ? " good" : " bad");
+    if (!res.stopped || res.latched || !res.pen_up || !res.parked)
+      showError("gantryError", res.message || "Stop failed.");
+  } catch (e) {
+    showError("gantryError", e.message);
+  } finally {
+    stopBtn.disabled = false;
+    stopBtn.innerHTML = "&#9632; STOP";
+  }
+});
+
+sendToGantryBtn.addEventListener("click", async () => {
+  clearError("gantryError");
+  if (!lastJobId) { showError("gantryError", "Generate something first."); return; }
+  sendToGantryBtn.disabled = true;
+  sendToGantryBtn.innerHTML = '<span class="spinner"></span> Drawing...';
+  try {
+    const res = await apiFetch(`/api/write/${lastJobId}`, { method: "POST" });
+    const el = document.getElementById("gantryStatus");
+    el.textContent = res.message;
+    el.className = "v" + (res.sent ? " good" : res.gantry_connected ? "" : " bad");
+    // the gantry parks itself when the file has run, so the call returning is
+    // the job finishing, and its wall time is the real drawing time
+    renderTiming("drawTiming", res.timing);
+    refreshPenPosition();
+  } catch (e) {
+    showError("gantryError", e.message);
+  } finally {
+    sendToGantryBtn.disabled = false;
+    sendToGantryBtn.innerHTML = "🖊 Send to gantry";
+  }
+});
+
+refreshGantryStatus();
+checkCalibration();
+</script>
+</body>
+</html>

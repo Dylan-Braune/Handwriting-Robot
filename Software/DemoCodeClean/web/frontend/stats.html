@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Handwriting Robot — Model &amp; Style</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div id="topbar"></div>
+
+<main>
+  <div class="page-header">
+    <div><h1>Authors</h1></div>
+  </div>
+
+  <div class="error-banner" id="loadError"></div>
+
+  <div id="authorGallery"></div>
+</main>
+
+<script src="app.js"></script>
+<script>
+renderTopbar("stats");
+
+//the authors come from the profile folder, which is the set that HAS a
+//stored glyph library -- the thing this page shows.  it used to read the
+//list out of the model information endpoint, which is no longer asked for
+async function load() {
+  try {
+    const authors = await apiFetch("/api/authors");
+    await renderAuthorGallery(authors);
+  } catch (e) {
+    showError("loadError", e.message);
+  }
+}
+
+async function renderAuthorGallery(authors) {
+  const container = document.getElementById("authorGallery");
+  container.innerHTML = authors.map(a => `
+    <div class="author-card" id="card-${a.id}">
+      <h3>${a.id}</h3>
+    </div>
+  `).join("");
+
+  for (const a of authors) {
+    const card = document.getElementById(`card-${a.id}`);
+    let samplesHtml = "";
+    try {
+      const samples = await apiFetch(`/api/samples/${a.id}`);
+      if (Array.isArray(samples)) {
+        samplesHtml = samples.map(s =>
+          `<img src="${absoluteUrl(s.image_url)}" />`).join("");
+      }
+    } catch (_) {}
+    card.innerHTML = `
+      <h3>${a.id}</h3>
+      <div class="samples">${samplesHtml}</div>
+      <details class="glyphs">
+        <summary>Show stored glyphs</summary>
+        <img src="${absoluteUrl(`/api/glyphs/${a.id}`)}" loading="lazy" />
+      </details>`;
+  }
+}
+
+load();
+</script>
+</body>
+</html>
