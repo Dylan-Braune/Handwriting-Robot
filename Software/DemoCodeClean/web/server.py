@@ -74,7 +74,6 @@ import recognise as REC
 import reproduce as REP
 import segment as SEG
 import synthesise as SYN
-import retrace as RETRACE
 import timing as TIMING
 
 import camera as CAM
@@ -124,7 +123,7 @@ NAME_FROM_LINES = 0   #kept so an older caller setting it is not a crash
 #---ORIENT_PROBE_LINES: lines read both ways round to settle which end is up---
 #3 is enough: the gap between upright and inverted is large and consistent,
 #and probing every line doubled the read stage for the same answer
-ORIENT_PROBE_LINES = 3
+ORIENT_PROBE_LINES = 3   #three lines read both ways settle which end is up
 
 
 def OpenUpright(src):
@@ -148,26 +147,26 @@ def OpenUpright(src):
     what cv2.imwrite produces for the webcam captures, so this is safe to
     use on every path into the system.
     """
-    return ImageOps.exif_transpose(Image.open(src))
+    return ImageOps.exif_transpose(Image.open(src))   #the orientation tag applied to the pixels themselves
 
 
 def IngestImage(src):
     """Open a page just taken by the camera and stand it the right way up."""
     img = OpenUpright(src)
-    deg = int(CAPTURE_ROTATE_DEG) % 360
+    deg = int(CAPTURE_ROTATE_DEG) % 360   #only quarter turns mean anything here
     if deg:
         #expand keeps the whole page after a quarter turn instead of
         #cropping it back to the old frame
-        img = img.rotate(deg, expand=True)
+        img = img.rotate(deg, expand=True)   #expand keeps the whole page after the turn
     return img
 
 API_KEY = os.environ.get("WEBAPP_API_KEY", "")
-PORT = int(os.environ.get("PORT", "5000"))
+PORT = int(os.environ.get("PORT", "5000"))   #the port the flask app listens on
 
 #how many candidates the joint search draws per line.  14 is the tuned value:
 #raising it from 6 lifted the reported writer identification to 97.5 per cent
 #and text accuracy to 81.6 per cent, and it costs time linearly
-DEFAULT_TRIES = int(os.environ.get("WEBAPP_TRIES", "14"))
+DEFAULT_TRIES = int(os.environ.get("WEBAPP_TRIES", "14"))  #fourteen candidates a line and the cost rises with it
 
 #---how finely a job is drawn, in pixels per millimetre---
 #the tight preview is the picture of the pen path on its own, cropped to the
@@ -175,8 +174,8 @@ DEFAULT_TRIES = int(os.environ.get("WEBAPP_TRIES", "14"))
 #the whole sheet with the writing where the machine will actually put it, so
 #it is several thousand pixels across and 10 is enough: at a 4 mm x-height
 #that is a 40 px x-height, which is the size the reader was trained on
-PREVIEW_PX_PER_MM = 18.0
-PAGE_PX_PER_MM = 10.0
+PREVIEW_PX_PER_MM = 18.0   #the tight preview at the scale the synthesiser scores on
+PAGE_PX_PER_MM = 10.0   #and the whole sheet at 10 which is a 40 pixel x-height at 4 mm
 
 app = Flask(__name__, static_folder=None)
 CORS(app)
@@ -194,19 +193,19 @@ CORS(app)
 #is the weakest of the four on disk; READER_WEIGHTS picks another by name for
 #a run without editing recognise.py itself
 _reader = os.environ.get("READER_WEIGHTS")
-READER_PATH = (paths.Weights/_reader) if _reader else REC.DEFAULT_TEXT_WEIGHTS
+READER_PATH = (paths.Weights/_reader) if _reader else REC.DEFAULT_TEXT_WEIGHTS   #an environment variable can name another checkpoint
 print("[server] loading the reader from %s" % READER_PATH.name)
 TEXT_MODEL = REC.PaperCRNNNumpy(checkpointPath=READER_PATH)
 
 print("[server] loading the ink namer from %s" % REC.DEFAULT_AUTHOR_WEIGHTS.name)
 INK_MODEL = REC.AuthorClassifierCNNNumpy(checkpointPath=REC.DEFAULT_AUTHOR_WEIGHTS)
 INK_MAP = INK_MODEL.authorMapping
-INK_BY_INDEX = {v: k for k, v in INK_MAP.items()}
+INK_BY_INDEX = {v: k for k, v in INK_MAP.items()}  # class index back to the writer name
 
 #this tree ships one namer, the shape one, so the ink handle above and the
 #shape handle here are the same loaded model rather than two checkpoints
 print("[server] loading the shape namer from %s" % REC.DEFAULT_AUTHOR_WEIGHTS.name)
-SHAPE_MODEL = INK_MODEL
+SHAPE_MODEL = INK_MODEL   #one namer ships here so both handles point at it
 SHAPE_MAP = SHAPE_MODEL.authorMapping
 
 #======================================================================
@@ -270,11 +269,11 @@ SHAPE_MAP = SHAPE_MODEL.authorMapping
 #----------------------------------------------------------------------
 #======================================================================
 PAGE_NAMER = SHAPE_MODEL
-PAGE_NAMER_STROKE_NORM = True
+PAGE_NAMER_STROKE_NORM = True    #a photographed page is named off redrawn crops
 
 #the per-line pool uses exactly these, so a pooled page and a sequential
 #page are the same computation
-LW.Configure(TEXT_MODEL, PAGE_NAMER, PAGE_NAMER_STROKE_NORM)
+LW.Configure(TEXT_MODEL, PAGE_NAMER, PAGE_NAMER_STROKE_NORM)   #the pool holds the same models as the sequential path
 PAGE_BY_INDEX = {v: k for k, v in PAGE_NAMER.authorMapping.items()}
 print("[server] naming photographed pages with %s, strokeNormalise=%s"
       % ("the shape namer" if PAGE_NAMER is SHAPE_MODEL else "the ink namer",
@@ -289,7 +288,7 @@ def LoadProfiles():
     out = {}
     for f in sorted(paths.Profiles.glob("*.json")):
         try:
-            out[f.stem] = json.load(open(f, encoding="utf-8"))
+            out[f.stem] = json.load(open(f, encoding="utf-8"))   # the file stem is the writer name
         except Exception as e:
             print("[server] skipping profile %s: %s" % (f.name, e))
     return out
@@ -307,7 +306,7 @@ def Remember2(d):
     """record an already-built timing dict, for work timed outside a Run"""
     with TIMINGS_LOCK:
         TIMINGS.append(d)
-        del TIMINGS[:-200]
+        del TIMINGS[:-200]   #the last two hundred runs are kept
     return d
 
 
@@ -322,7 +321,7 @@ def Remember(run):
 
 @app.before_request
 def CheckApiKey():
-    if API_KEY and request.headers.get("X-API-Key") != API_KEY:
+    if API_KEY and request.headers.get("X-API-Key") != API_KEY:   #the key is checked only when one is set
         abort(401)
 
 
@@ -336,7 +335,7 @@ def Index():
 
 @app.route("/<path:name>")
 def Static(name):
-    if (FRONTEND/name).exists():
+    if (FRONTEND/name).exists():  #any file in the frontend folder is served as it is
         return send_from_directory(FRONTEND, name)
     abort(404)
 
@@ -351,7 +350,7 @@ def ApiAuthors():
         p = PROFILES[a]
         out.append(dict(id=a,
                         glyphs=len(p.get("glyphs") or {}),
-                        variants=sum(len(v) for v in (p.get("glyphs") or {}).values()),
+                        variants=sum(len(v) for v in (p.get("glyphs") or {}).values()),   #every stored shape across every character
                         lines=p.get("nLines"),
                         #the style page prints these, and was showing
                         #"undefined" for both because they were measured into
@@ -363,18 +362,18 @@ def ApiAuthors():
                         ascender=p.get("ascender"),
                         descender=p.get("descender"),
                         legibility=p.get("legibilityLambda"),
-                        inGantryModels=a in SHAPE_MAP))
+                        inGantryModels=a in SHAPE_MAP))   #whether the namer holds a class for this writer
     return jsonify(out)
 
 
 @app.route("/api/images/<imageId>")
 def ApiGetImage(imageId):
-    safe = "".join(c for c in imageId if c.isalnum() or c == "_")
+    safe = "".join(c for c in imageId if c.isalnum() or c == "_")   # the id is reduced to letters digits and underscore
     if safe.startswith("page_"):
         #the whole sheet, with the writing where the machine will put it
-        p = JOBS/safe[5:]/"page.png"
+        p = JOBS/safe[5:]/"page.png"   #the whole sheet with the writing placed on it
     elif safe.startswith("job_"):
-        p = JOBS/safe[4:]/"preview.png"
+        p = JOBS/safe[4:]/"preview.png"   #the pen path cropped to its own ink
     else:
         p = UPLOADS/("%s.jpg" % safe)
     if not p.exists():
@@ -389,7 +388,7 @@ def ApiCameraCapture():
     except Exception as e:
         return jsonify({"error": "Camera failed: %s" % e}), 200
     imageId = uuid.uuid4().hex
-    IngestImage(captured).convert("RGB").save(UPLOADS/("%s.jpg" % imageId))
+    IngestImage(captured).convert("RGB").save(UPLOADS/("%s.jpg" % imageId))   # the capture stood up and saved under a fresh id
     return jsonify({"image_id": imageId, "image_url": "/api/images/%s" % imageId})
 
 
@@ -419,7 +418,7 @@ def ApiPreviewStream():
                 jpeg = CAM.PreviewFrameJpeg()
             except RuntimeError:
                 break
-            yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"+jpeg+b"\r\n")
+            yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"+jpeg+b"\r\n")   #one jpeg per part is what an img tag reads
     return Response(Frames(),
                     mimetype="multipart/x-mixed-replace; boundary=frame")
 
@@ -442,7 +441,7 @@ def ApiPreviewStream():
 #======================================================================
 def StandUp(gray):
     """Put a page on its correct axis.  Returns (page, degrees, scores)."""
-    up, deg, s0, s90 = SEG.UprightPage(gray)
+    up, deg, s0, s90 = SEG.UprightPage(gray)   #the axis settled from the writing on the page
     return up, deg, {"axis_0": round(s0, 3), "axis_90": round(s90, 3)}
 
 
@@ -463,28 +462,28 @@ def ReadAllLines(crops):
     already show beyond doubt.  The sampled lines are not read again.
     """
     def Read(c, flip):
-        img = np.rot90(c, 2) if flip else c
+        img = np.rot90(c, 2) if flip else c   #two quarter turns put the crop upside down
         return REC.ReadTextScored(Image.fromarray(img).convert("L"), TEXT_MODEL)
 
     n = len(crops)
-    probe = list(np.unique(np.linspace(0, n-1, min(ORIENT_PROBE_LINES, n))
+    probe = list(np.unique(np.linspace(0, n-1, min(ORIENT_PROBE_LINES, n))  #the probe lines spread evenly down the page
                            .round().astype(int)))
     fwd = {i: Read(crops[i], False) for i in probe}
     rev = {i: Read(crops[i], True) for i in probe}
-    sF = float(np.mean([fwd[i][1] for i in probe]))
-    sR = float(np.mean([rev[i][1] for i in probe]))
+    sF = float(np.mean([fwd[i][1] for i in probe]))   #mean reading confidence the right way up
+    sR = float(np.mean([rev[i][1] for i in probe]))   #and upside down
 
-    flip = sR > sF
+    flip = sR > sF   #the more confident reading settles the page
     cache = rev if flip else fwd
     #the probed lines are already read; the rest are independent of one
     #another and go out to the pool
-    todo = [(i, crops[i], flip) for i in range(n) if i not in cache]
+    todo = [(i, crops[i], flip) for i in range(n) if i not in cache]   #the probed lines are already read
     done = {i: (t, sc) for i, t, sc in LW.Map(LW.ReadOne, todo)}
     out = [cache[i] if i in cache else done[i] for i in range(n)]
     if flip:
         #the order the lines come back in changes too, so the caller is
         #given it and can put everything else it holds per line in step
-        idx = list(range(n))[::-1]
+        idx = list(range(n))[::-1]   #turning the page over reverses the line order too
         return ([np.rot90(crops[i], 2) for i in idx], [out[i][0] for i in idx],
                 [out[i][1] for i in idx], idx, 180, sF, sR)
     idx = list(range(n))
@@ -498,8 +497,8 @@ def SplitExpected(expectedText, n):
     written line each word belongs to, so this returns None and the per
     line accuracy columns are left empty rather than guessed at.
     """
-    got = [l.strip() for l in (expectedText or "").splitlines() if l.strip()]
-    return got if len(got) == n and n > 0 else None
+    got = [l.strip() for l in (expectedText or "").splitlines() if l.strip()]   #the expected text as its own lines
+    return got if len(got) == n and n > 0 else None    #matched per line only when the counts agree
 
 
 def WriteReport(reportId, payload):
@@ -517,7 +516,7 @@ def WriteReport(reportId, payload):
                   "text_accuracy_pct", "word_accuracy_pct",
                   "mean_line_char_accuracy_pct", "lines_detected",
                   "lines_dropped_as_blots", "orientation_applied_deg"):
-            w.writerow(["# %s" % k, payload.get(k)])
+            w.writerow(["# %s" % k, payload.get(k)])   # the page figures go in as comment rows above the table
         w.writerow([])
         w.writerow(cols)
         for r in payload["lines"]:
@@ -541,16 +540,16 @@ def ApiReport(reportId, ext="csv"):
 #---WordAcc: fraction of whole words that came back exactly right---
 #kept here because the recognise.py in this tree exports CharAcc only
 def WordAcc(pred,truth):
-    tw,pw = truth.split(),pred.split()
+    tw,pw = truth.split(),pred.split()   # both sides split into words
     if not tw:
         return 1.0
     m,n = len(tw),len(pw)
     dp = [[0]*(n+1) for _ in range(m+1)]
     for i in range(m):
         for j in range(n):
-            dp[i+1][j+1] = (dp[i][j]+1 if tw[i].lower()==pw[j].lower()
+            dp[i+1][j+1] = (dp[i][j]+1 if tw[i].lower()==pw[j].lower()   #the longest run of words appearing in both in order
                             else max(dp[i][j+1],dp[i+1][j]))
-    return dp[m][n]/m
+    return dp[m][n]/m  #over the number of words in the transcript
 
 
 #======================================================================
@@ -569,7 +568,7 @@ def ApiClassify():
             #orientation in EXIF, and the saved copy below is what the page
             #and the segmenter both read afterwards, so it is turned ONCE
             #here and the two can never disagree
-            page = OpenUpright(request.files["image"].stream).convert("L")
+            page = OpenUpright(request.files["image"].stream).convert("L")   # an upload is turned once on the way in
             imageId = uuid.uuid4().hex
         elif request.form.get("image_id"):
             imageId = "".join(c for c in request.form["image_id"] if c.isalnum())
@@ -583,34 +582,34 @@ def ApiClassify():
         #saved to disk is the stood up one, so the picture the browser
         #shows and the one the segmenter reads stay the same picture.  an
         #already upright page scores higher on its own axis and is left be
-        gray, axisDeg, axisScores = StandUp(np.asarray(page, dtype=np.uint8))
-        Image.fromarray(gray).convert("RGB").save(UPLOADS/("%s.jpg" % imageId))
+        gray, axisDeg, axisScores = StandUp(np.asarray(page, dtype=np.uint8))  #both paths stand the page up the same way
+        Image.fromarray(gray).convert("RGB").save(UPLOADS/("%s.jpg" % imageId))   #the stood up copy is the one the browser shows
 
     #this tree's SegmentLines takes no timer, so conditioning, segmenting and
     #cropping cannot be reported apart here and the whole of it is one stage
     with run.Step("segmenting", chars=0):
-        lines, _dbg, info = SEG.SegmentLines(gray)
+        lines, _dbg, info = SEG.SegmentLines(gray)   # the page cut into line crops
     crops = [np.asarray(ln["image"]) for ln in lines]
     if not crops:
         return jsonify({"error": "No handwriting lines were detected.",
                         "timing": Remember(run)}), 422
 
     with run.Step("reading", chars=0) as step:
-        crops, readLines, readScores, order, flipDeg, sF, sR = ReadAllLines(crops)
+        crops, readLines, readScores, order, flipDeg, sF, sR = ReadAllLines(crops)    #every line read and the end to end orientation settled
         lines = [lines[i] for i in order]   #keep the crop metadata in step
         step.chars = sum(len(t) for t in readLines)
     predictedText = " ".join(readLines)
 
     with run.Step("naming", chars=len(predictedText)):
-        perLineProbs, avg, inkWeights = LW.NameWriter(crops)
+        perLineProbs, avg, inkWeights = LW.NameWriter(crops)   #a vote per line and an ink weighted page vote
         bestIdx = int(np.argmax(avg))
         predictedAuthor = PAGE_BY_INDEX[bestIdx]
 
     #---the per line table, which is what the downloadable report holds---
     truthLines = SplitExpected(expectedText, len(crops))
     named = [PAGE_BY_INDEX[int(np.argmax(p))] for p in perLineProbs]
-    agree = sum(1 for n in named if n == predictedAuthor)
-    correct = (sum(1 for n in named if n == expectedAuthor)
+    agree = sum(1 for n in named if n == predictedAuthor)   # how many lines name the same writer as the page
+    correct = (sum(1 for n in named if n == expectedAuthor)   #and how many name the writer the user said it was
                if expectedAuthor else None)
 
     lineRows = []
@@ -619,8 +618,8 @@ def ApiClassify():
         lineRows.append({
             "line": i+1,
             "author_named": named[i],
-            "author_confidence_pct": round(100*float(p[int(np.argmax(p))]), 1),
-            "page_author_probability_pct": round(100*float(p[bestIdx]), 1),
+            "author_confidence_pct": round(100*float(p[int(np.argmax(p))]), 1),   #this line own strongest writer
+            "page_author_probability_pct": round(100*float(p[bestIdx]), 1),   #and what it gave the writer the page settled on
             "author_matches_page": named[i] == predictedAuthor,
             "author_correct": (named[i] == expectedAuthor) if expectedAuthor else None,
             "char_accuracy_pct": (round(100*REC.CharAcc(readLines[i], t), 1)
@@ -646,7 +645,7 @@ def ApiClassify():
         "word_accuracy_pct": (round(100*WordAcc(predictedText, expectedText), 1)
                               if expectedText else None),
         #the mean of the per line figures, which is the one quoted per page
-        "mean_line_char_accuracy_pct": (round(float(np.mean(meanLineChar)), 1)
+        "mean_line_char_accuracy_pct": (round(float(np.mean(meanLineChar)), 1)   #the mean of the per line figures
                                         if meanLineChar else None),
         "predicted_author": predictedAuthor,
         #the pooled posterior over every line, weighted by ink
@@ -659,7 +658,7 @@ def ApiClassify():
         "author_correct": (predictedAuthor == expectedAuthor) if expectedAuthor else None,
         "lines_detected": len(crops),
         "lines_dropped_as_blots": info.get("dropped", 0),
-        "orientation_applied_deg": (axisDeg+flipDeg) % 360,
+        "orientation_applied_deg": (axisDeg+flipDeg) % 360,  #the quarter turn and the half turn added together
         "orientation_scores": dict(axisScores, read_upright=round(sF, 3),
                                    read_inverted=round(sR, 3)),
         "page_angle_deg": info.get("angle"),
@@ -709,7 +708,7 @@ def ReadBackPage(previewImg, pxPerMm):
     arr = np.asarray(previewImg, dtype=np.uint8)
     pad = max(8, int(8.0*float(pxPerMm or 8.0)))   #8 mm of paper, as the writers' own sheets have
     padded = np.full((arr.shape[0]+2*pad, arr.shape[1]+2*pad), 255, np.uint8)
-    padded[pad:pad+arr.shape[0], pad:pad+arr.shape[1]] = arr
+    padded[pad:pad+arr.shape[0], pad:pad+arr.shape[1]] = arr  # the render sits in the middle of that white sheet
     try:
         #mergeValley is asked for HERE and nowhere else.  it was added when
         #this read the tight trajectory render, which is drawn at one pen
@@ -719,7 +718,7 @@ def ReadBackPage(previewImg, pxPerMm):
         #way: measured on four-line pages from two writers it gave the same
         #4 lines and the same 95.4 and 97.7 per cent with it and without it.
         #it is kept because it costs nothing and still covers the tight case
-        lines, _dbg, _info = SEG.SegmentLines(padded, mergeValley=0.72)
+        lines, _dbg, _info = SEG.SegmentLines(padded, mergeValley=0.72)   #the same segmenter a photograph goes through
     except Exception:
         #a read-back is a report, never the job: if segmenting throws, say
         #what the single-line path says rather than failing the request
@@ -736,8 +735,8 @@ def ReadBackPage(previewImg, pxPerMm):
     #of it into the reader's fixed-height strip returned "." for a line the
     #segmenter had already cut correctly and which reads at 85 per cent.
     #the crop the segmenter found is the line, however many it found
-    crops = [np.asarray(ln["image"]) for ln in lines]
-    text = " ".join(filter(None, (
+    crops = [np.asarray(ln["image"]) for ln in lines]   #the crops are reused for both the reading and the naming
+    text = " ".join(filter(None, (   # each line read on its own then joined with spaces
         REC.ReadText(Image.fromarray(c).convert("L"), TEXT_MODEL) for c in crops)))
     return text, crops
 
@@ -752,10 +751,10 @@ def JobResponse(jobId, written, previewImg, run, expectedText=None,
         #one writer for the page, from every line, ink-weighted: the same
         #NameWriter a photographed page goes through
         with run.Step("naming", chars=len(readBack or "")):
-            perLine, avg, _w = LW.NameWriter(crops)
+            perLine, avg, _w = LW.NameWriter(crops)   #the drawn page named exactly as a photographed one is
         named = PAGE_BY_INDEX[int(np.argmax(avg))]
         if askedFor in SHAPE_MAP:
-            conf = round(100*float(avg[SHAPE_MAP[askedFor]]), 1)
+            conf = round(100*float(avg[SHAPE_MAP[askedFor]]), 1)   #how strongly the page scores as the writer asked for
             agree = sum(1 for p in perLine
                         if PAGE_BY_INDEX[int(np.argmax(p))] == askedFor)
             linesNaming = "%d/%d" % (agree, len(perLine))
@@ -786,7 +785,7 @@ def _Clamp(value, default, lo, hi):
         return float(default)
     #a slider that has been dragged to zero should not silently become a
     #machine that never moves, so the floor is a real feed rate
-    return float(min(max(v, lo), hi))
+    return float(min(max(v, lo), hi))   #the value held between the two limits
 
 
 @app.route("/api/generate", methods=["POST"])
@@ -805,14 +804,14 @@ def ApiGenerate():
     #hand the namer has never seen.  an author added from the training page
     #is exactly that case, so it falls back to one unscored draw rather
     #than being refused outright
-    judged = author if author in SHAPE_MAP else None
+    judged = author if author in SHAPE_MAP else None   # a writer with no class cannot be scored by the namer
 
     profile = PROFILES[author]
     #which ruled line to write on.  without it every job lands at the same
     #height and the second one is drawn on top of the first
     cfg = REP.GantryConfig()
-    lineH = float(data.get("lineHeightMm") or cfg.lineHeightMm)
-    lineIdx = max(0, int(data.get("line", 0)))
+    lineH = float(data.get("lineHeightMm") or cfg.lineHeightMm)   #the ruling pitch the job is placed against
+    lineIdx = max(0, int(data.get("line", 0)))  #which ruled line the writing starts on
     #the two feeds are separate because they buy different things.  the
     #pen-down feed is a quality control: a tight curve drawn too fast
     #overshoots, which is what rounds off the small loops of an 'e'.  the
@@ -820,13 +819,13 @@ def ApiGenerate():
     #carriage crosses the page, so it can be raised to pay for a slower
     #draw without costing any accuracy.  clamped to what the runner will
     #accept at the bottom and to a rate the belts hold at the top
-    drawFeed = _Clamp(data.get("drawFeedMmMin"), cfg.drawFeedMmMin, 60.0, 3000.0)
-    travelFeed = _Clamp(data.get("travelFeedMmMin"), cfg.travelFeedMmMin, 60.0, 6000.0)
+    drawFeed = _Clamp(data.get("drawFeedMmMin"), cfg.drawFeedMmMin, 60.0, 3000.0)   #the pen down feed between 60 and 3000 mm a minute
+    travelFeed = _Clamp(data.get("travelFeedMmMin"), cfg.travelFeedMmMin, 60.0, 6000.0)   # and the pen up feed up to 6000
     #the two pen dwells are tunable from the page because the only way to find
     #the real throw time is to cut them until the pen starts missing, and that
     #has to be done against the machine rather than guessed at.  zero is a
     #legal setting: it emits no G4 at all
-    penUpDwell = _Clamp(data.get("penUpDwellMs"), cfg.penUpDwellMs, 0.0, 1000.0)
+    penUpDwell = _Clamp(data.get("penUpDwellMs"), cfg.penUpDwellMs, 0.0, 1000.0)   #the dwell after a lift in milliseconds
     penDownDwell = _Clamp(data.get("penDownDwellMs"), cfg.penDownDwellMs, 0.0, 1000.0)
     #a page that will be photographed and read back wants the laid-out
     #pitch, not the ruling: on the ruling the ascenders and descenders of
@@ -839,8 +838,8 @@ def ApiGenerate():
     #on the weakest writer it gained 1.1 points of character accuracy on its
     #own, and 3.4 with the weak-character repair pass that follows it, with
     #writer identification unchanged at 100 per cent
-    bestPrio = bool(data.get("bestPrio", False))
-    cfg = dataclasses.replace(cfg, lineHeightMm=lineH, lineOffsetMm=lineIdx*lineH,
+    bestPrio = bool(data.get("bestPrio", False))   #the best formed shape per letter rather than a draw
+    cfg = dataclasses.replace(cfg, lineHeightMm=lineH, lineOffsetMm=lineIdx*lineH,  #a copy of the machine config carrying these settings
                               ignoreRuling=ignore,
                               drawFeedMmMin=drawFeed, travelFeedMmMin=travelFeed,
                               penUpDwellMs=penUpDwell, penDownDwellMs=penDownDwell)
@@ -849,13 +848,13 @@ def ApiGenerate():
     with run.Step("synthesis"):
         #size the letters to the ruling BEFORE laying out, so the line breaks
         #are chosen for the size that will actually be written
-        xh = REP.XhForRuling(profile, cfg, text)
+        xh = REP.XhForRuling(profile, cfg, text)    # the letters are sized to the ruling before the layout
         if judged is None:
             traj = SYN.SynthesizeText(text, profile, mmPerXh=xh,
                                       lineWidthMm=cfg.usableWidthMm,
                                       bestPrio=bestPrio)
         else:
-            traj = SYN.SynthesizeJointBestOf(
+            traj = SYN.SynthesizeJointBestOf(   #several candidates scored by both networks
                 judged, text, profile, nTries=nTries,
                 mmPerXh=xh, lineWidthMm=cfg.usableWidthMm, bestPrio=bestPrio,
                 reader=TEXT_MODEL, authorModel=SHAPE_MODEL, authorMapping=SHAPE_MAP)
@@ -869,11 +868,11 @@ def ApiGenerate():
         #this tree.  it was being called with profile= and uniformInk=, which
         #this build's signature has never had, so every generate raised
         #TypeError before it reached the G-code stage
-        preview = SYN.RenderTrajectory(traj, pxPerMm=PREVIEW_PX_PER_MM)
+        preview = SYN.RenderTrajectory(traj, pxPerMm=PREVIEW_PX_PER_MM)   # the pen path drawn cropped to its own ink
         Image.fromarray(np.asarray(preview, dtype=np.uint8)).save(jobDir/"preview.png")
 
     with run.Step("gcode"):
-        written = REP.WriteGcode(traj, cfg, str(jobDir/"job.gcode"),
+        written = REP.WriteGcode(traj, cfg, str(jobDir/"job.gcode"),   # the path placed on the bed and written as g-code
                                  title="web job %s" % author)
 
     #the read-back is taken off the G-CODE, on a whole sheet of paper, not
@@ -883,13 +882,13 @@ def ApiGenerate():
         #was actually laid out at has to be handed over: at the default 4 mm
         #a job sized down to fit a tighter ruling would be drawn with too
         #thick a pen and read back as a blur
-        pageImg = RenderGcodePage(jobDir/"job.gcode", cfg,
+        pageImg = RenderGcodePage(jobDir/"job.gcode", cfg,    #the file read back and drawn on a whole sheet
                                   mmPerXh=traj.meta.get("mmPerXh", 4.0))
         Image.fromarray(np.asarray(pageImg, dtype=np.uint8)).save(jobDir/"page.png")
 
     #the generation stages are stored with the job so that drawing it later can
     #report the whole reproduction, generation included, against one allowance
-    (jobDir/"meta.json").write_text(json.dumps({"text": text, "author": author,
+    (jobDir/"meta.json").write_text(json.dumps({"text": text, "author": author,   # the settings and the generation timings stay with the job
                                                 "nTries": nTries, "line": lineIdx,
                                                 "bestPrio": bestPrio,
                                                 "lineHeightMm": lineH,
@@ -923,53 +922,11 @@ def ApiGenerate():
 
 
 #----------------------------------------------------------------------
-#POST /api/retrace   multipart: image (file) or image_id
 #the page's own ink traced straight into G-code, with no recognition and
 #no synthesis in between.  drawing this and comparing it against the
 #original page measures the gantry by itself, since nothing along the way
 #made a decision that could have changed the shapes
 #----------------------------------------------------------------------
-@app.route("/api/retrace", methods=["POST"])
-def ApiRetrace():
-    if "image" in request.files and request.files["image"].filename:
-        imageId = uuid.uuid4().hex
-        srcPath = UPLOADS/("%s.jpg" % imageId)
-        OpenUpright(request.files["image"].stream).convert("RGB").save(srcPath)
-    elif request.form.get("image_id"):
-        imageId = "".join(c for c in request.form["image_id"] if c.isalnum())
-        srcPath = UPLOADS/("%s.jpg" % imageId)
-        if not srcPath.exists():
-            return jsonify({"error": "Unknown image_id"}), 400
-    else:
-        return jsonify({"error": "Provide either 'image' or 'image_id'"}), 400
-
-    jobId = uuid.uuid4().hex
-    jobDir = JOBS/jobId
-    jobDir.mkdir(parents=True, exist_ok=True)
-    try:
-        result = RETRACE.RetracePage(srcPath, jobDir/"job.gcode",
-                                     cfg=REP.GantryConfig(),
-                                     previewPath=jobDir/"preview.png")
-    except SystemExit as e:
-        return jsonify({"error": str(e)}), 422
-
-    (jobDir/"meta.json").write_text(json.dumps(
-        {"text": "", "author": "retrace", "source": str(srcPath),
-         "generateStages": result["timing"]["stages"]}), encoding="utf-8")
-    Remember2(result["timing"])
-    return jsonify({
-        "job_id": jobId,
-        "gcode_url": "/api/gcode/%s" % jobId,
-        "preview_url": "/api/images/job_%s" % jobId,
-        "source_url": "/api/images/%s" % imageId,
-        "lines_traced": result["timing"]["lines"],
-        "strokes_traced": result["tracedStrokes"],
-        "gcode_line_count": result["lines"],
-        "pen_pulses": result["penPulses"],
-        "scale": round(result["scale"], 4),
-        "clamped_points": result["clipped"],
-        "timing": result["timing"],
-    })
 
 
 #======================================================================
@@ -981,7 +938,7 @@ def ApiRetrace():
 #======================================================================
 #---IsConnected: whether the pins are currently claimed---
 def IsConnected():
-    return getattr(REP,"req",None) is not None
+    return getattr(REP,"req",None) is not None    # the gpio request exists once the pins are claimed
 
 
 #---WriteGcodeFile: claim the pins, draw the file, say how the job ended---
@@ -989,7 +946,7 @@ def IsConnected():
 #RunGcodeFile sets them as it goes and returns nothing itself
 def WriteGcodeFile(path):
     REP.Connect()
-    REP.RunGcodeFile(path)
+    REP.RunGcodeFile(path)  # this call returns once the machine has drawn the whole file
     return {"estopped": REP.estopped,
             "tripped_switch": REP.TrippedSwitch,
             "aborted": REP.lastJobAborted}
@@ -1008,28 +965,28 @@ def ParseGcode(path):
     x = y = 0.0
     with open(path,encoding="utf-8") as f:
         for raw in f:
-            line = raw.split(";")[0].strip()
+            line = raw.split(";")[0].strip()   #anything after a semicolon is a comment
             if not line:
                 continue
             up = line.upper()
             code = up.split()[0]
-            if code=="M5":
+            if code=="M5":   # a pen lift closes the stroke being collected
                 if penDown and len(cur)>=2:
                     strokes.append(cur)
                 cur,penDown = [],False
                 continue
-            if code=="M3":
+            if code=="M3":   #and a pen drop starts a new one where the pen stands
                 penDown = True
                 cur = [(x,y)]
                 continue
             if code in ("G0","G1"):
-                nx = re.search(r"X(-?\d+\.?\d*)",up)
+                nx = re.search(r"X(-?\d+\.?\d*)",up)   #the x and y words of the move
                 ny = re.search(r"Y(-?\d+\.?\d*)",up)
                 if nx:
                     x = float(nx.group(1))
                 if ny:
                     y = float(ny.group(1))
-                if (nx or ny) and penDown:
+                if (nx or ny) and penDown:   # a move with the pen down adds a point to the stroke
                     cur.append((x,y))
     if penDown and len(cur)>=2:
         strokes.append(cur)
@@ -1058,19 +1015,19 @@ def ParseGcode(path):
 def RenderGcodePage(gcodePath, cfg, pxPerMm=None, mmPerXh=4.0):
     pxPerMm = float(pxPerMm or PAGE_PX_PER_MM)
     strokes = ParseGcode(str(gcodePath))
-    W = max(8, int(round(float(cfg.boundsMaxXmm)*pxPerMm)))
+    W = max(8, int(round(float(cfg.boundsMaxXmm)*pxPerMm)))   #the sheet sized from the work area
     H = max(8, int(round(float(cfg.boundsMaxYmm)*pxPerMm)))
     arr = np.full((H, W), 255, np.uint8)
     #one pen width everywhere, the same width the synthesiser draws with, so
     #the namer is not being handed an ink cue that the real pen would not give
-    sp = max(1, int(round(SYN.UNIFORM_PEN_WIDTH_XH*mmPerXh*pxPerMm)))
+    sp = max(1, int(round(SYN.UNIFORM_PEN_WIDTH_XH*mmPerXh*pxPerMm)))    #the pen width in x-heights turned into pixels
     for s in strokes:
         #machine millimetres with y measured UP, image pixels with y down
-        pts = [(x*pxPerMm, (float(cfg.boundsMaxYmm)-y)*pxPerMm) for (x, y) in s]
+        pts = [(x*pxPerMm, (float(cfg.boundsMaxYmm)-y)*pxPerMm) for (x, y) in s]   #machine millimetres with y up into image pixels with y down
         SYN.DrawPolyline(arr, pts, 0, sp)
     soft = SYN.UNIFORM_SOFT_FRAC*max(1.0, sp)
     if soft > 0.05:
-        arr = SYN.Blur(arr, soft)
+        arr = SYN.Blur(arr, soft)   #the edge softened as the synthesiser renders it
     return np.asarray(arr, dtype=np.uint8)
 
 
@@ -1093,7 +1050,7 @@ def ApiGcodeUpload():
         pageImg = RenderGcodePage(gcodePath, REP.GantryConfig())
         Image.fromarray(np.asarray(pageImg, dtype=np.uint8)).save(jobDir/"page.png")
         Image.fromarray(np.asarray(pageImg, dtype=np.uint8)).save(jobDir/"preview.png")
-    written = dict(lines=sum(1 for _ in open(gcodePath, encoding="utf-8", errors="replace")),
+    written = dict(lines=sum(1 for _ in open(gcodePath, encoding="utf-8", errors="replace")),   # an uploaded file is counted rather than measured
                    penPulses=None)
     return JobResponse(jobId, written, pageImg, run, pxPerMm=PAGE_PX_PER_MM,
                        nameWriter=True, askedFor=None,
@@ -1125,7 +1082,7 @@ def ApiGantryStatus():
         except REP.GantryNotConnectedError as e:
             return jsonify({"connected": False, "calibrated": False, "detail": str(e)})
     return jsonify({"connected": True,
-                    "calibrated": REP.Calibration["done"],
+                    "calibrated": REP.Calibration["done"],   # true once homing has set the steps per millimetre
                     "calibration": REP.Calibration if REP.Calibration["done"] else None})
 
 
@@ -1135,7 +1092,7 @@ def ApiGantryCalibrate():
     try:
         REP.Connect()
         with run.Step("homing"):
-            result = REP.Calibrate()
+            result = REP.Calibrate()  #both axes driven to their switches and the travel counted
     except REP.GantryNotConnectedError as e:
         return jsonify({"calibrated": False, "message": "Gantry not connected: %s" % e})
     except RuntimeError as e:
@@ -1153,7 +1110,7 @@ def ApiGantryCalibrate():
 @app.route("/api/gantry/stop", methods=["POST"])
 def ApiGantryStop():
     try:
-        result = REP.EmergencyStop()
+        result = REP.EmergencyStop()   # the job stopped the pen lifted and the carriage parked
     except REP.GantryNotConnectedError as e:
         return jsonify({"stopped": False, "gantry_connected": False,
                         "message": "Gantry not connected: %s" % e})
@@ -1185,7 +1142,7 @@ def ApiGantryStop():
 def PenPositionMm():
     spmmX = REP.Calibration["steps_per_mm_x"]
     spmmY = REP.Calibration["steps_per_mm_y"]
-    return (REP.CurrentXSteps/spmmX-REP.EDGE_TOLERANCE_MM,
+    return (REP.CurrentXSteps/spmmX-REP.EDGE_TOLERANCE_MM,   # the step counters turned back into millimetres
             REP.CurrentYSteps/spmmY-REP.EDGE_TOLERANCE_MM)
 
 
@@ -1231,7 +1188,7 @@ def ApiGantryJog():
     #an absent coordinate means "leave this axis alone", so one box can be
     #used on its own without the other silently jumping to zero
     curX, curY = PenPositionMm()
-    x = _Clamp(data.get("x", curX), curX, b["x_min_mm"], b["x_max_mm"])
+    x = _Clamp(data.get("x", curX), curX, b["x_min_mm"], b["x_max_mm"])    #an absent coordinate leaves that axis where it is
     y = _Clamp(data.get("y", curY), curY, b["y_min_mm"], b["y_max_mm"])
     feed = _Clamp(data.get("feedMmMin"), REP.GantryConfig().travelFeedMmMin,
                   60.0, 6000.0)
@@ -1242,7 +1199,7 @@ def ApiGantryJog():
     run = TIMING.Run("jog")
     try:
         with run.Step("moving", chars=0):
-            REP._GcodeLinearMove(x, y, feed)
+            REP._GcodeLinearMove(x, y, feed)   #the same move the g-code runner makes
     except RuntimeError as e:
         return jsonify({"moved": False, "gantry_connected": True, "bounds": b,
                         "message": "Move failed: %s" % e})
@@ -1250,7 +1207,7 @@ def ApiGantryJog():
     return jsonify({"moved": True, "gantry_connected": True, "bounds": b,
                     "x_mm": round(nx, 2), "y_mm": round(ny, 2),
                     "requested_x_mm": round(x, 2), "requested_y_mm": round(y, 2),
-                    "clamped": bool(abs(x-float(data.get("x", curX) or curX)) > 0.01
+                    "clamped": bool(abs(x-float(data.get("x", curX) or curX)) > 0.01   #true when the target was pulled inside the bounds
                                     or abs(y-float(data.get("y", curY) or curY)) > 0.01),
                     "pen_up": bool(REP.PenIsUp()),
                     "message": "At X%.1f Y%.1f mm." % (nx, ny),
@@ -1262,7 +1219,7 @@ def ApiGantryPen():
     data = request.get_json(silent=True) or {}
     #"down" is the word the page uses, because that is the thing being asked
     #for; SetPen is written the other way round and takes targetUp
-    wantUp = not bool(data.get("down", False))
+    wantUp = not bool(data.get("down", False))    #the page asks for down and SetPen takes up
     try:
         REP.Connect()
     except REP.GantryNotConnectedError as e:
@@ -1288,17 +1245,17 @@ def ApiWriteGcode(jobId):
     meta = {}
     if (jobDir/"meta.json").exists():
         meta = json.loads((jobDir/"meta.json").read_text(encoding="utf-8"))
-    chars = len(meta.get("text", ""))
+    chars = len(meta.get("text", ""))   #the character count the allowance is measured against
 
     #replay what generating this job cost, so the figure reported here is the
     #whole reproduction: synthesis, rendering, gcode and then the pen
     priorStages = meta.get("generateStages") or []
     run = TIMING.Run("reproduce", chars=chars, lines=1)
     for s in priorStages:
-        run.Carry(s.get("stage", "earlier"), s.get("seconds", 0.0), s.get("characters", 0) or 0)
+        run.Carry(s.get("stage", "earlier"), s.get("seconds", 0.0), s.get("characters", 0) or 0)   #the generation stages counted into this reproduction
     try:
         with run.Step("drawing", chars=chars):
-            result = WriteGcodeFile(str(gcodePath))
+            result = WriteGcodeFile(str(gcodePath))    #the call blocks until the machine has parked again
     except REP.GantryNotConnectedError as e:
         return jsonify({"sent": False, "gantry_connected": False,
                         "message": "Gantry not connected: %s" % e})
@@ -1308,7 +1265,7 @@ def ApiWriteGcode(jobId):
 
     #a job the stop button interrupted did not finish, and reporting it as
     #sent would put an accuracy figure against a half-drawn page
-    if result.get("aborted"):
+    if result.get("aborted"):   #a stopped job leaves a half drawn page
         return jsonify({"sent": False, "gantry_connected": True, "aborted": True,
                         "message": "Job stopped before it finished. The page is "
                                    "incomplete -- do not measure it.",
@@ -1332,10 +1289,10 @@ def ApiWriteGcode(jobId):
 @app.route("/api/model_info")
 def ApiModelInfo():
     def Params(model):
-        return int(sum(arr.size for arr in model.sd.values()))
+        return int(sum(arr.size for arr in model.sd.values()))   #every number in every weight array
 
     def Mb(path):
-        return round(path.stat().st_size/(1024*1024), 2) if path and path.exists() else None
+        return round(path.stat().st_size/(1024*1024), 2) if path and path.exists() else None   #the checkpoint size in megabytes
 
     return jsonify({
         "text_recognizer": {
@@ -1393,7 +1350,7 @@ def ApiModelInfo():
             "gcode_round_trip_iou": 0.9974,
             "gcode_max_error_mm": 0.0007,
         },
-        "charset_size": len(REC.CHARSET)+1,
+        "charset_size": len(REC.CHARSET)+1,   # the characters plus the ctc blank
         "input_canvas": [REC.INPUT_HEIGHT, REC.INPUT_WIDTH],
         "timing_allowances": TIMING.ALLOWANCE_TEXT,
         "device": "cpu (numpy inference, no machine-learning library at runtime)",
@@ -1408,17 +1365,17 @@ def ApiTimings():
     for r in rows:
         s = summary.setdefault(r["kind"], dict(runs=0, totalSeconds=0.0, characters=0))
         s["runs"] += 1
-        s["totalSeconds"] += r["totalSeconds"]
+        s["totalSeconds"] += r["totalSeconds"]   #the runs of one kind added up
         s["characters"] += r["characters"] or 0
     for kind, s in summary.items():
-        s["meanSeconds"] = round(s["totalSeconds"]/s["runs"], 3)
-        s["meanSecondsPerChar"] = (round(s["totalSeconds"]/s["characters"], 4)
+        s["meanSeconds"] = round(s["totalSeconds"]/s["runs"], 3)   #their mean wall time
+        s["meanSecondsPerChar"] = (round(s["totalSeconds"]/s["characters"], 4)   #and the mean per character
                                    if s["characters"] else None)
         #the allowance scales with characters, so the mean is marked against
         #the allowance for the mean number of characters
         formula = TIMING.ALLOWANCE.get(kind)
         meanChars = s["characters"]/s["runs"] if s["runs"] else 0
-        s["meanAllowanceSeconds"] = round(formula(meanChars), 2) if formula and meanChars else None
+        s["meanAllowanceSeconds"] = round(formula(meanChars), 2) if formula and meanChars else None   #the allowance for the mean character count
         s["allowanceFormula"] = TIMING.ALLOWANCE_TEXT.get(kind)
         s["meanWithinAllowance"] = (bool(s["meanSeconds"] <= s["meanAllowanceSeconds"])
                                     if s["meanAllowanceSeconds"] else None)
@@ -1430,7 +1387,7 @@ def ApiSamples(author):
     if author not in PROFILES:
         abort(404)
     try:
-        pairs = RENDER.SampleCrops(author, n=2)
+        pairs = RENDER.SampleCrops(author, n=2)   #two real line crops of this writer with their transcripts
     except Exception as e:
         return jsonify({"error": str(e)}), 200
     #a bare list, which is what the page maps over
@@ -1442,7 +1399,7 @@ def ApiSamples(author):
 def ApiSampleFile(author, filename):
     safe = "".join(c for c in filename if c.isalnum() or c in "._-")
     p = RENDER.CACHE_DIR/safe
-    if not safe.startswith("sample_%s_" % author) or not p.exists():
+    if not safe.startswith("sample_%s_" % author) or not p.exists():   #the name has to belong to the writer asked for
         abort(404)
     return send_file(str(p))
 
@@ -1452,7 +1409,7 @@ def ApiGlyphs(author):
     if author not in PROFILES:
         abort(404)
     try:
-        return send_file(str(RENDER.GlyphGridPath(author, PROFILES[author])))
+        return send_file(str(RENDER.GlyphGridPath(author, PROFILES[author])))   #the sheet of every stored variant of every letter
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -1482,9 +1439,9 @@ TRAIN_LOGS.mkdir(parents=True, exist_ok=True)
 #---BgRunning: whether the slot is occupied, reaping a finished subprocess---
 def BgRunning():
     p = BG.get("proc")
-    if p is not None and p.poll() is not None:
+    if p is not None and p.poll() is not None:   #a finished subprocess is reaped here
         BG["done"] = True
-        BG["ok"] = (p.returncode == 0)
+        BG["ok"] = (p.returncode == 0)   #a zero exit code means it finished cleanly
         BG["message"] = ("Finished." if p.returncode == 0
                          else "Exited with code %d." % p.returncode)
         BG["proc"] = None
@@ -1503,7 +1460,7 @@ def BgLogTail(limit=400):
         lines = Path(p).read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         return ""
-    return "\n".join(lines[-int(limit):])
+    return "\n".join(lines[-int(limit):])   #the tail of the log the page polls
 
 
 #---BgStatus: the shape both the training page and the add-author form read---
@@ -1536,11 +1493,11 @@ def ApiTrainStop():
             return jsonify(dict(BgStatus(),
                                 message="A profile build cannot be interrupted; "
                                         "it will finish on its own."))
-        p.terminate()
+        p.terminate()   #a training subprocess is asked to stop
         try:
             p.wait(timeout=10)
         except Exception:
-            p.kill()
+            p.kill()   #and killed outright when it stays up past ten seconds
         BG["done"] = True
         BG["ok"] = False
         BG["message"] = "Stopped."
@@ -1567,11 +1524,11 @@ def ApiTrainStart():
         return jsonify({"started": False,
                         "error": "task must be 'text' or 'author'"}), 400
 
-    epochs = int(_Clamp(data.get("epochs"), 40, 1, 400))
+    epochs = int(_Clamp(data.get("epochs"), 40, 1, 400))   #every number off the page is bounded before it reaches a command line
     batch = int(_Clamp(data.get("batch"), 8, 1, 64))
     lr = _Clamp(data.get("lr"), 1e-3, 1e-6, 1.0)
     seed = int(_Clamp(data.get("seed"), 7, 0, 999999))
-    argv = [sys.executable, "-u", str(CP3/"train.py"), task,
+    argv = [sys.executable, "-u", str(CP3/"train.py"), task,   #the same command line the measured checkpoints were trained with
             "--epochs", str(epochs), "--batch", str(batch),
             "--lr", repr(lr), "--seed", str(seed)]
 
@@ -1581,7 +1538,7 @@ def ApiTrainStart():
     #purpose -- but the page defaults it to something, because the first epoch
     #to beat its starting score writes the file and a demonstration run would
     #otherwise leave the website loading a one-epoch model
-    tag = "".join(c for c in str(data.get("tag") or "").strip()
+    tag = "".join(c for c in str(data.get("tag") or "").strip()   # the tag is reduced to letters digits hyphen and underscore
                   if c.isalnum() or c in "-_")[:40]
     if tag:
         argv += ["--tag", tag]
@@ -1600,7 +1557,7 @@ def ApiTrainStart():
     else:
         #only the writers this build has data for, checked here rather than
         #letting train.py refuse after the dataset has been read in
-        known = set(paths.DatabaseWriters)|set(paths.PersonalWriters)
+        known = set(paths.DatabaseWriters)|set(paths.PersonalWriters)   #the writers this build holds data for
         writers = [w for w in (data.get("writers") or []) if w in known]
         if data.get("writers") and not writers:
             return jsonify({"started": False,
@@ -1614,7 +1571,7 @@ def ApiTrainStart():
     warm = (data.get("warmStart") or "").strip()
     if warm:
         #a name out of the weights folder, never a path from the request
-        safe = "".join(c for c in warm if c.isalnum() or c in "._-")
+        safe = "".join(c for c in warm if c.isalnum() or c in "._-")   #a warm start names a file in the weights folder
         if not (paths.Weights/safe).exists():
             return jsonify({"started": False,
                             "error": "no checkpoint named %r in the weights "
@@ -1627,10 +1584,10 @@ def ApiTrainStart():
                             "error": "%s is already running (%s). Stop it first."
                                      % (BG["kind"], BG["label"])}), 409
         logPath = TRAIN_LOGS/("train_%s_%s.log" % (task, uuid.uuid4().hex[:8]))
-        fh = open(logPath, "w", encoding="utf-8", buffering=1)
+        fh = open(logPath, "w", encoding="utf-8", buffering=1)   #line buffered so the page can tail it while it runs
         fh.write("$ %s\n\n" % " ".join(argv))
         try:
-            proc = subprocess.Popen(argv, cwd=str(CP3), stdout=fh,
+            proc = subprocess.Popen(argv, cwd=str(CP3), stdout=fh,   #the run is a subprocess so a crash leaves the server up
                                     stderr=subprocess.STDOUT)
         except OSError as e:
             fh.close()
@@ -1672,7 +1629,7 @@ def ApiTrainLog():
 @app.route("/api/authors/add", methods=["POST"])
 def ApiAddAuthor():
     raw = (request.form.get("name") or "").strip().lower()
-    name = "".join(c for c in raw if c.isalnum() or c in "_-")
+    name = "".join(c for c in raw if c.isalnum() or c in "_-")   #letters digits hyphen and underscore survive
     if not name or name != raw:
         return jsonify({"error": "Give the writer a name made of letters, digits, "
                                  "'-' or '_' only."}), 400
@@ -1681,7 +1638,7 @@ def ApiAddAuthor():
                                  "name, or delete that file first." % name}), 400
 
     images = [f for f in request.files.getlist("images") if f.filename]
-    labels = {Path(f.filename).stem.replace("_labels", ""): f
+    labels = {Path(f.filename).stem.replace("_labels", ""): f   # each transcript keyed by the page stem it belongs to
               for f in request.files.getlist("labels") if f.filename}
     if not images:
         return jsonify({"error": "Attach at least one photograph of a written page."}), 400
@@ -1701,7 +1658,7 @@ def ApiAddAuthor():
     #and retraining it means still having their pages.  they are kept here
     #rather than in PersonalDataset so that the measured dataset stays exactly
     #what it was when the reported figures were taken
-    keepDir = paths.Cache/"AddedWriters"/name
+    keepDir = paths.Cache/"AddedWriters"/name   # the uploaded pages are kept for a later training run
     (keepDir/"Pages").mkdir(parents=True, exist_ok=True)
     (keepDir/"Labels").mkdir(parents=True, exist_ok=True)
 
@@ -1710,7 +1667,7 @@ def ApiAddAuthor():
         key = Path(f.filename).stem
         stem = "".join(c for c in key if c.isalnum() or c in "._-") or "page"
         try:
-            gray = np.asarray(OpenUpright(f.stream).convert("L"), dtype=np.uint8)
+            gray = np.asarray(OpenUpright(f.stream).convert("L"), dtype=np.uint8)   #the page read and flattened to grey
         except Exception as e:
             return jsonify({"error": "could not read %s: %s" % (f.filename, e)}), 400
         gray, _deg, _sc = StandUp(gray)
@@ -1722,11 +1679,11 @@ def ApiAddAuthor():
             return jsonify({"error": "no transcript for %s -- attach "
                                      "%s_labels.txt" % (f.filename, stem)}), 400
         #the same leading "7<tab>" index the shipped label files carry
-        lines = [re.sub(r"^\d+\t", "", l.strip())
+        lines = [re.sub(r"^\d+\t", "", l.strip())   #a leading index and tab comes off each transcript line
                  for l in text.splitlines() if l.strip()]
         #the STOOD UP page is what is kept, because that is the page the
         #letters were actually cut out of
-        Image.fromarray(gray).convert("L").save(keepDir/"Pages"/("%s.png" % stem))
+        Image.fromarray(gray).convert("L").save(keepDir/"Pages"/("%s.png" % stem))    #the stood up page is the one the letters were cut from
         (keepDir/"Labels"/("%s_labels.txt" % stem)).write_text(
             "\n".join(lines), encoding="utf-8")
         pages.append((gray, lines))
@@ -1740,9 +1697,9 @@ def ApiAddAuthor():
         with open(logPath, "w", encoding="utf-8", buffering=1) as fh:
             with contextlib.redirect_stdout(fh), contextlib.redirect_stderr(fh):
                 try:
-                    res = STY.BuildProfileFromPages(
+                    res = STY.BuildProfileFromPages(    #the same build the enrol script runs
                         name, pages, outPath, TEXT_MODEL,
-                        priorLibs=PROFILES, inNamer=name in SHAPE_MAP)
+                        priorLibs=PROFILES, inNamer=name in SHAPE_MAP)   #the stored writers supply the cross writer letter prior
                 except Exception as e:
                     print("[add] FAILED: %s" % e, flush=True)
                     with BG_LOCK:
@@ -1751,7 +1708,7 @@ def ApiAddAuthor():
                     return
         #picked up straight away, so the writer can be written with without
         #restarting the server
-        PROFILES.clear()
+        PROFILES.clear()   #the profiles are read again so the new writer is usable at once
         PROFILES.update(LoadProfiles())
         res["authorsNow"] = sorted(PROFILES)
         res["pages_kept_in"] = str(keepDir)
@@ -1764,7 +1721,7 @@ def ApiAddAuthor():
         if BgRunning():
             return jsonify({"error": "%s is already running (%s). Wait for it or "
                                      "stop it first." % (BG["kind"], BG["label"])}), 409
-        t = threading.Thread(target=Work, name="addauthor", daemon=True)
+        t = threading.Thread(target=Work, name="addauthor", daemon=True)  #a thread because the result comes back through the loaded reader
         BG.update(kind="profile", label=name, started=time.time(), proc=None,
                   thread=t, logPath=logPath, done=False, ok=None,
                   message="Segmenting the pages and cutting the letters out.",
@@ -1776,4 +1733,4 @@ def ApiAddAuthor():
 
 if __name__ == "__main__":
     print("[server] listening on 0.0.0.0:%d, serving %s" % (PORT, FRONTEND))
-    app.run(host="0.0.0.0", port=PORT, threaded=True)
+    app.run(host="0.0.0.0", port=PORT, threaded=True)   #threaded so the stop button is served while a job draws

@@ -39,23 +39,23 @@ from segment import (Elastic,Otsu,Resize,RowRunLength,Warp)
 def Conv2dForward(x,weight,bias,padding=1):
     B,C,H,W = x.shape
     OutC,InC,kh,kw = weight.shape
-    xp = np.pad(x,((0,0),(0,0),(padding,padding),(padding,padding)))
+    xp = np.pad(x,((0,0),(0,0),(padding,padding),(padding,padding)))   #a one pixel border of zeros holds the output size steady
     Hp,Wp = xp.shape[2],xp.shape[3]
-    outH = Hp-kh+1
+    outH = Hp-kh+1   # padded height less the kernel height
     outW = Wp-kw+1
 
     s = xp.strides
     shape = (B,C,kh,kw,outH,outW)
-    strides = (s[0],s[1],s[2],s[3],s[2],s[3])
+    strides = (s[0],s[1],s[2],s[3],s[2],s[3])   #one step along the kernel and one along the output both move one row
     #a strided view holding every patch, with no data copied
     cols = np.lib.stride_tricks.as_strided(xp,shape=shape,strides=strides)
-    colsFlat = cols.reshape(B,C*kh*kw,outH*outW)
+    colsFlat = cols.reshape(B,C*kh*kw,outH*outW)   # each patch flattened into a column of C times 9
 
-    w = weight.reshape(OutC,C*kh*kw)
+    w = weight.reshape(OutC,C*kh*kw)  #and each filter into a row of the same length
     out = (w@colsFlat).reshape(B,OutC,outH,outW)   #one batched matrix multiply
     if bias is not None:
-        out = out+bias.reshape(1,OutC,1,1)
-    cache = (x.shape,weight,colsFlat,padding,kh,kw,outH,outW)
+        out = out+bias.reshape(1,OutC,1,1)   #one bias per filter across the whole map
+    cache = (x.shape,weight,colsFlat,padding,kh,kw,outH,outW)   #the columns are held for the weight gradient
     return out,cache
 
 #----------------------------------------------------------------------
@@ -66,21 +66,21 @@ def Conv2dBackward(dout,cache):
     xShape,weight,colsFlat,padding,kh,kw,outH,outW = cache
     B,C,H,W = xShape
     OutC = weight.shape[0]
-    doutFlat = dout.reshape(B,OutC,outH*outW)
+    doutFlat = dout.reshape(B,OutC,outH*outW)   #the output gradient laid out one row per filter
 
-    dw = (doutFlat@colsFlat.transpose(0,2,1)).sum(axis=0).reshape(weight.shape)
-    db = dout.sum(axis=(0,2,3))
+    dw = (doutFlat@colsFlat.transpose(0,2,1)).sum(axis=0).reshape(weight.shape)   #output gradient times the patch columns summed over the batch
+    db = dout.sum(axis=(0,2,3))   # the bias gradient is the whole output gradient per filter
 
     w = weight.reshape(OutC,C*kh*kw)
-    dcolsFlat = w.T@doutFlat
+    dcolsFlat = w.T@doutFlat   #the weights transposed carry the gradient back to every patch
     dcols = dcolsFlat.reshape(B,C,kh,kw,outH,outW)
 
     Hp,Wp = H+2*padding,W+2*padding
     dxp = np.zeros((B,C,Hp,Wp),dtype=dout.dtype)
     for i in range(kh):
         for j in range(kw):
-            dxp[:,:,i:i+outH,j:j+outW]+=dcols[:,:,i,j,:,:]
-    dx = dxp[:,:,padding:padding+H,padding:padding+W]
+            dxp[:,:,i:i+outH,j:j+outW]+=dcols[:,:,i,j,:,:]   #each kernel offset added back as a shifted slice so overlaps sum
+    dx = dxp[:,:,padding:padding+H,padding:padding+W]   #the padding border comes back off
     return dx,dw,db
 
 #----------------------------------------------------------------------
@@ -88,16 +88,16 @@ def Conv2dBackward(dout,cache):
 #running values inference will use
 #----------------------------------------------------------------------
 def BatchNorm2dForwardTrain(x,gamma,beta,runningMean,runningVar,momentum=0.1,eps=1e-5):
-    N = x.shape[0]*x.shape[2]*x.shape[3]
-    mu = x.mean(axis=(0,2,3))
+    N = x.shape[0]*x.shape[2]*x.shape[3]   #batch times height times width values per channel
+    mu = x.mean(axis=(0,2,3))  # the mean of each channel over the batch
     xc = x-mu.reshape(1,-1,1,1)
-    varBiased = (xc**2).mean(axis=(0,2,3))
-    std = np.sqrt(varBiased+eps)
-    xhat = xc/std.reshape(1,-1,1,1)
-    out = gamma.reshape(1,-1,1,1)*xhat+beta.reshape(1,-1,1,1)
+    varBiased = (xc**2).mean(axis=(0,2,3))    #and the variance divided by N
+    std = np.sqrt(varBiased+eps)   #epsilon keeps the root away from zero
+    xhat = xc/std.reshape(1,-1,1,1)  # the channel now has mean 0 and variance 1
+    out = gamma.reshape(1,-1,1,1)*xhat+beta.reshape(1,-1,1,1)  #the learned scale and shift go on afterwards
 
     varUnbiased = varBiased*N/max(N-1,1)   #the running variance is the unbiased estimate
-    runningMean[:] = (1-momentum)*runningMean+momentum*mu
+    runningMean[:] = (1-momentum)*runningMean+momentum*mu  # the running values move a tenth of the way each batch
     runningVar[:] = (1-momentum)*runningVar+momentum*varUnbiased
 
     cache = (xhat,std,gamma,N)
@@ -109,38 +109,38 @@ def BatchNorm2dForwardTrain(x,gamma,beta,runningMean,runningVar,momentum=0.1,eps
 #----------------------------------------------------------------------
 def BatchNorm2dBackward(dout,cache):
     xhat,std,gamma,N = cache
-    dgamma = (dout*xhat).sum(axis=(0,2,3))
+    dgamma = (dout*xhat).sum(axis=(0,2,3))  # the gradient of the scale is the output gradient times xhat
     dbeta = dout.sum(axis=(0,2,3))
-    dxhat = dout*gamma.reshape(1,-1,1,1)
-    dx = (1.0/(N*std.reshape(1,-1,1,1)))*(
+    dxhat = dout*gamma.reshape(1,-1,1,1)    #and the gradient reaching xhat is scaled by gamma
+    dx = (1.0/(N*std.reshape(1,-1,1,1)))*(   #the mean and the variance both depend on every value in the batch
         N*dxhat
-        -dxhat.sum(axis=(0,2,3)).reshape(1,-1,1,1)
-        -xhat*(dxhat*xhat).sum(axis=(0,2,3)).reshape(1,-1,1,1)
+        -dxhat.sum(axis=(0,2,3)).reshape(1,-1,1,1)   #the term coming through the mean
+        -xhat*(dxhat*xhat).sum(axis=(0,2,3)).reshape(1,-1,1,1)   #and the term coming through the variance
     )
     return dx,dgamma,dbeta
 
 #---ReluForward: keeps positives and remembers which inputs they were---
 def ReluForward(x):
-    out = np.maximum(x,0)
-    return out,(x>0)
+    out = np.maximum(x,0)   # negatives go to zero
+    return out,(x>0)   #and which inputs were positive is kept for the backward pass
 
 #---ReluBackward: the gradient passes only where the input was positive---
 def ReluBackward(dout,cache):
     mask = cache
-    return dout*mask
+    return dout*mask  #the gradient passes only where the input was positive
 
 #---MaxPool2dForward: keeps the largest value in each window and remembers where it was---
 def MaxPool2dForward(x,kernel=2,stride=2):
     B,C,H,W = x.shape
-    outH,outW = H//stride,W//stride
+    outH,outW = H//stride,W//stride   #a 2x2 window halves both axes
     xc = x[:,:,:outH*stride,:outW*stride]
     s = xc.strides
     shape = (B,C,outH,outW,kernel,kernel)
-    strides = (s[0],s[1],s[2]*stride,s[3]*stride,s[2],s[3])
+    strides = (s[0],s[1],s[2]*stride,s[3]*stride,s[2],s[3])  #two strides step the window and two step inside it
     windows = np.lib.stride_tricks.as_strided(xc,shape=shape,strides=strides)
     flat = windows.reshape(B,C,outH,outW,kernel*kernel)
-    argmax = flat.argmax(axis=4)
-    out = np.take_along_axis(flat,argmax[...,None],axis=4)[...,0]
+    argmax = flat.argmax(axis=4)    #which of the four values in each window won
+    out = np.take_along_axis(flat,argmax[...,None],axis=4)[...,0]   #and its value is the output
     cache = (x.shape,argmax,kernel,stride,outH,outW)
     return out,cache
 
@@ -149,16 +149,16 @@ def MaxPool2dBackward(dout,cache):
     xShape,argmax,kernel,stride,outH,outW = cache
     B,C,H,W = xShape
     dflat = np.zeros((B,C,outH,outW,kernel*kernel),dtype=dout.dtype)
-    np.put_along_axis(dflat,argmax[...,None],dout[...,None],axis=4)
+    np.put_along_axis(dflat,argmax[...,None],dout[...,None],axis=4)   # the gradient goes to the winner and the other three stay zero
     dwindows = dflat.reshape(B,C,outH,outW,kernel,kernel)
     dx = np.zeros(xShape,dtype=dout.dtype)
     #the windows do not overlap, so the blocks are placed directly
-    dx[:,:,:outH*stride,:outW*stride] = dwindows.transpose(0,1,2,4,3,5).reshape(B,C,outH*stride,outW*stride)
+    dx[:,:,:outH*stride,:outW*stride] = dwindows.transpose(0,1,2,4,3,5).reshape(B,C,outH*stride,outW*stride)   # the windows laid back out as an image
     return dx
 
 #---AdaptiveMaxPoolHeightForward: collapses the height to one row, keeping the winning row index---
 def AdaptiveMaxPoolHeightForward(x):
-    argmax = x.argmax(axis=2)
+    argmax = x.argmax(axis=2)   #the strongest row in each column
     out = np.take_along_axis(x,argmax[:,:,None,:],axis=2)
     cache = (x.shape,argmax)
     return out,cache
@@ -167,22 +167,22 @@ def AdaptiveMaxPoolHeightForward(x):
 def AdaptiveMaxPoolHeightBackward(dout,cache):
     xShape,argmax = cache
     dx = np.zeros(xShape,dtype=dout.dtype)
-    np.put_along_axis(dx,argmax[:,:,None,:],dout,axis=2)
+    np.put_along_axis(dx,argmax[:,:,None,:],dout,axis=2)   #only that row receives the gradient
     return dx
 
 #---AdaptiveAvgPoolWidthForward: averages along the width axis---
 def AdaptiveAvgPoolWidthForward(x):
-    out = x.mean(axis=2,keepdims=True)
+    out = x.mean(axis=2,keepdims=True)   #the mean along the width axis
     return out,x.shape[2]
 
 #---AdaptiveAvgPoolWidthBackward: spreads the gradient evenly back over that width---
 def AdaptiveAvgPoolWidthBackward(dout,cache):
     W = cache
-    return np.repeat(dout,W,axis=2)/W
+    return np.repeat(dout,W,axis=2)/W   #each of the W columns takes an equal share
 
 #---LinearForward: weights times input, plus bias---
 def LinearForward(x,weight,bias):
-    out = x@weight.T
+    out = x@weight.T   #x times the weight matrix transposed
     if bias is not None:
         out = out+bias
     return out,(x,weight)
@@ -192,18 +192,18 @@ def LinearBackward(dout,cache):
     x,weight = cache
     #x may carry leading dimensions beyond the batch, as (T,B,in) does, so
     #everything but the last axis is flattened
-    flatX = x.reshape(-1,x.shape[-1])
+    flatX = x.reshape(-1,x.shape[-1])    #the time and batch axes flattened into one
     flatDout = dout.reshape(-1,dout.shape[-1])
-    dw = flatDout.T@flatX
-    db = flatDout.sum(axis=0)
-    dx = (dout@weight).reshape(x.shape)
+    dw = flatDout.T@flatX   #output gradient transposed times the input
+    db = flatDout.sum(axis=0)   #and the bias gradient is their sum
+    dx = (dout@weight).reshape(x.shape)  #the gradient back to the input
     return dx,dw,db
 
 #---DropoutForward: zeroes values at random while training, scaling the survivors up---
 def DropoutForward(x,p,training,rng):
     if not training or p<=0:
         return x,None
-    mask = (rng.random(x.shape)>=p)/(1.0-p)
+    mask = (rng.random(x.shape)>=p)/(1.0-p)   #a fifth of the values drop and the survivors scale up by 1 over 0.8
     return x*mask,mask
 
 #---DropoutBackward: the gradient follows the same mask---
@@ -218,7 +218,7 @@ def ConvBlockForwardTrain(x,params,prefix,nLayers):
     caches = []
     for i in range(nLayers):
         c = i*3
-        x,convCache = Conv2dForward(x,params[f"{prefix}.{c}.weight"],params[f"{prefix}.{c}.bias"],padding=1)
+        x,convCache = Conv2dForward(x,params[f"{prefix}.{c}.weight"],params[f"{prefix}.{c}.bias"],padding=1)   #convolution then batch norm then relu for each layer
         x,bnCache = BatchNorm2dForwardTrain(
             x,params[f"{prefix}.{c+1}.weight"],params[f"{prefix}.{c+1}.bias"],
             params[f"{prefix}.{c+1}.running_mean"],params[f"{prefix}.{c+1}.running_var"],
@@ -230,10 +230,10 @@ def ConvBlockForwardTrain(x,params,prefix,nLayers):
 #---ConvBlockBackwardTrain: and its gradients, in reverse order---
 def ConvBlockBackwardTrain(dout,caches,prefix,nLayers):
     grads = {}
-    for i in reversed(range(nLayers)):
+    for i in reversed(range(nLayers)):   #the layers come back in reverse order
         c = i*3
         convCache,bnCache,reluCache = caches[i]
-        dout = ReluBackward(dout,reluCache)
+        dout = ReluBackward(dout,reluCache)   # relu first then batch norm then the convolution
         dout,dgamma,dbeta = BatchNorm2dBackward(dout,bnCache)
         dout,dw,db = Conv2dBackward(dout,convCache)
         grads[f"{prefix}.{c}.weight"] = dw
@@ -252,16 +252,16 @@ def LstmForwardTrain(x,weightIh,weightHh,biasIh,biasHh,hiddenSize):
     stepCache = []
 
     for t in range(T):
-        gates = x[t]@weightIh.T+biasIh+hPrev@weightHh.T+biasHh
-        i = Sigmoid(gates[:,0*H:1*H])
-        f = Sigmoid(gates[:,1*H:2*H])
-        g = np.tanh(gates[:,2*H:3*H])
-        o = Sigmoid(gates[:,3*H:4*H])
-        cNew = f*cPrev+i*g
+        gates = x[t]@weightIh.T+biasIh+hPrev@weightHh.T+biasHh   #this column and the previous output give all four gates at once
+        i = Sigmoid(gates[:,0*H:1*H])   # the input gate decides how much is written
+        f = Sigmoid(gates[:,1*H:2*H])   #the forget gate how much is kept
+        g = np.tanh(gates[:,2*H:3*H])   #g is the candidate content between minus 1 and 1
+        o = Sigmoid(gates[:,3*H:4*H])  #and the output gate how much of it shows
+        cNew = f*cPrev+i*g   # old memory scaled plus new content added
         tanhC = np.tanh(cNew)
-        hNew = o*tanhC
+        hNew = o*tanhC   #the output is the squashed memory through that gate
         outputs[t] = hNew
-        stepCache.append((x[t],hPrev,cPrev,i,f,g,o,tanhC))
+        stepCache.append((x[t],hPrev,cPrev,i,f,g,o,tanhC))   # every gate value of every column is kept for the backward pass
         hPrev,cPrev = hNew,cNew
 
     cache = (stepCache,weightIh,weightHh,H)
@@ -286,27 +286,27 @@ def LstmBackward(dOutputs,cache):
     dhNext = np.zeros((B,H),dtype=dOutputs.dtype)
     dcNext = np.zeros((B,H),dtype=dOutputs.dtype)
 
-    for t in range(T-1,-1,-1):
+    for t in range(T-1,-1,-1):   #walking back from the last column to the first
         xt,hPrev,cPrev,i,f,g,o,tanhC = stepCache[t]
-        dh = dOutputs[t]+dhNext
-        do = dh*tanhC
-        doPre = do*o*(1-o)
-        dc = dcNext+dh*o*(1-tanhC**2)
-        df = dc*cPrev
+        dh = dOutputs[t]+dhNext   #gradient from this column plus the one carried back from the next
+        do = dh*tanhC   # h equals o times tanh c so this is the gradient of o
+        doPre = do*o*(1-o)   #through the sigmoid derivative s times 1 minus s
+        dc = dcNext+dh*o*(1-tanhC**2)   #the memory gradient from the future plus from this output
+        df = dc*cPrev    #c equals f times c previous plus i times g
         dfPre = df*f*(1-f)
         di = dc*g
-        diPre = di*i*(1-i)
+        diPre = di*i*(1-i)   #the input gate through its own sigmoid
         dg = dc*i
-        dgPre = dg*(1-g**2)
-        dcPrev = dc*f
+        dgPre = dg*(1-g**2)   # and the candidate through the tanh derivative
+        dcPrev = dc*f  #the forget gate is the path the memory gradient travels back along
 
-        dGates = np.concatenate([diPre,dfPre,dgPre,doPre],axis=1)
-        dWeightIh+=dGates.T@xt
+        dGates = np.concatenate([diPre,dfPre,dgPre,doPre],axis=1)   #the four gate gradients joined in the same order as the forward
+        dWeightIh+=dGates.T@xt   # the weights are shared so their gradients add over every column
         dWeightHh+=dGates.T@hPrev
         dBiasIh+=dGates.sum(axis=0)
         dBiasHh+=dGates.sum(axis=0)
-        dX[t] = dGates@weightIh
-        dhNext = dGates@weightHh
+        dX[t] = dGates@weightIh   # the gradient reaching the features of this column
+        dhNext = dGates@weightHh  #and the one reaching the previous output
         dcNext = dcPrev
 
     return dX,dWeightIh,dWeightHh,dBiasIh,dBiasHh
@@ -314,25 +314,25 @@ def LstmBackward(dOutputs,cache):
 #---BidirectionalLstmForwardTrain: both directions, keeping both sets of saved values---
 def BidirectionalLstmForwardTrain(x,paramsFwd,paramsBwd,hiddenSize):
     outF,cacheF = LstmForwardTrain(x,**paramsFwd,hiddenSize=hiddenSize)
-    outB,cacheB = LstmForwardTrain(x[::-1],**paramsBwd,hiddenSize=hiddenSize)
-    outB = outB[::-1]
-    out = np.concatenate([outF,outB],axis=2)
+    outB,cacheB = LstmForwardTrain(x[::-1],**paramsBwd,hiddenSize=hiddenSize)   #the second direction runs on the reversed columns
+    outB = outB[::-1]   #flipped back so column t lines up in both halves
+    out = np.concatenate([outF,outB],axis=2)   #256 forward and 256 backward give 512 per column
     return out,(cacheF,cacheB,hiddenSize)
 
 #---BidirectionalLstmBackward: splits the gradient and sends each half back its own way---
 def BidirectionalLstmBackward(dout,cache):
     cacheF,cacheB,hiddenSize = cache
     H = hiddenSize
-    dOutF = dout[:,:,:H]
+    dOutF = dout[:,:,:H]   #the first half of the gradient belongs to the forward direction
     dOutB = dout[:,:,H:2*H]
 
     dxF,dWihF,dWhhF,dbihF,dbhhF = LstmBackward(dOutF,cacheF)
     #the backward direction ran on the time-reversed input, so its own
     #output gradient is reversed going in and its dx reversed coming out
-    dxB,dWihB,dWhhB,dbihB,dbhhB = LstmBackward(dOutB[::-1],cacheB)
-    dxB = dxB[::-1]
+    dxB,dWihB,dWhhB,dbihB,dbhhB = LstmBackward(dOutB[::-1],cacheB)   # reversed going in
+    dxB = dxB[::-1]   #and reversed again coming out
 
-    dx = dxF+dxB
+    dx = dxF+dxB  #both directions read the same input so their gradients add
     gradsFwd = dict(weightIh=dWihF,weightHh=dWhhF,biasIh=dbihF,biasHh=dbhhF)
     gradsBwd = dict(weightIh=dWihB,weightHh=dWhhB,biasIh=dbihB,biasHh=dbhhB)
     return dx,gradsFwd,gradsBwd
@@ -358,11 +358,11 @@ def MultilayerBidirectionalLstmBackward(dout,caches):
 
 #---LogSumExp: adds two numbers held as logarithms without overflowing---
 def LogSumExp(a,b):
-    m = np.maximum(a,b)
+    m = np.maximum(a,b)   #the larger of the two comes out of the exponentials
     with np.errstate(invalid="ignore"):
         #log(e^a+e^b) = m+log(e^(a-m)+e^(b-m)), both -inf is a forbidden
         #transition and must stay -inf
-        out = np.where(np.isneginf(m),-np.inf,m+np.log(np.exp(a-m)+np.exp(b-m)))
+        out = np.where(np.isneginf(m),-np.inf,m+np.log(np.exp(a-m)+np.exp(b-m)))  #two barred moves stay barred
     return out
 
 #----------------------------------------------------------------------
@@ -372,9 +372,9 @@ def LogSumExp(a,b):
 #----------------------------------------------------------------------
 def CtcLoss(rawLogits,targets):
     T,B,C = rawLogits.shape
-    m = rawLogits.max(axis=2,keepdims=True)
-    logProbs = rawLogits-m-np.log(np.exp(rawLogits-m).sum(axis=2,keepdims=True))
-    probs = np.exp(logProbs)
+    m = rawLogits.max(axis=2,keepdims=True)   #the maximum is subtracted before the exponentials
+    logProbs = rawLogits-m-np.log(np.exp(rawLogits-m).sum(axis=2,keepdims=True))   # the scores as log probabilities over the classes
+    probs = np.exp(logProbs)   #and the same as plain probabilities
 
     dRawLogits = np.zeros_like(rawLogits)
     totalLoss = 0.0
@@ -382,32 +382,32 @@ def CtcLoss(rawLogits,targets):
 
     for b in range(B):
         labels = targets[b]
-        ext = [0]
+        ext = [0]  #the extended label starts with a blank
         for l in labels:
-            ext+=[l,0]
+            ext+=[l,0]   #then every character followed by another blank
         S = len(ext)
         lp = logProbs[:,b,:]
 
         logAlpha = np.full((T,S),NEG)
-        logAlpha[0,0] = lp[0,ext[0]]
+        logAlpha[0,0] = lp[0,ext[0]]   # column 0 may sit on the leading blank
         if S>1:
-            logAlpha[0,1] = lp[0,ext[1]]
+            logAlpha[0,1] = lp[0,ext[1]]  #or on the first character
         for t in range(1,T):
-            stay = logAlpha[t-1]
-            prev1 = np.concatenate(([NEG],logAlpha[t-1,:-1]))
-            prev2 = np.concatenate(([NEG,NEG],logAlpha[t-1,:-2]))
+            stay = logAlpha[t-1]   # holding on the same row
+            prev1 = np.concatenate(([NEG],logAlpha[t-1,:-1]))  #arriving from one row up
+            prev2 = np.concatenate(([NEG,NEG],logAlpha[t-1,:-2]))  #or two rows up over a blank
             for s in range(2,S):
                 if ext[s]==0 or ext[s]==ext[s-2]:
                     prev2[s] = NEG   #a skip onto a blank or a repeat is forbidden
-            combined = LogSumExp(LogSumExp(stay,prev1),prev2)
-            logAlpha[t] = combined+lp[t,ext]
+            combined = LogSumExp(LogSumExp(stay,prev1),prev2)   #all three ways in added together
+            logAlpha[t] = combined+lp[t,ext]   #times the chance of emitting that symbol now
 
         logBeta = np.full((T,S),NEG)
-        logBeta[T-1,S-1] = 0.0
+        logBeta[T-1,S-1] = 0.0   #a path has to finish on the last blank
         if S>1:
-            logBeta[T-1,S-2] = 0.0
+            logBeta[T-1,S-2] = 0.0   # or on the last character
         for t in range(T-2,-1,-1):
-            nxt = logBeta[t+1]+lp[t+1,ext]
+            nxt = logBeta[t+1]+lp[t+1,ext]   #the backward sweep works the same way mirrored
             stay = nxt
             nextMinus1 = np.concatenate((nxt[1:],[NEG]))
             nextMinus2 = np.concatenate((nxt[2:],[NEG,NEG]))
@@ -416,29 +416,29 @@ def CtcLoss(rawLogits,targets):
                     nextMinus2[s] = NEG
             logBeta[t] = LogSumExp(LogSumExp(stay,nextMinus1),nextMinus2)
 
-        logP = LogSumExp(logAlpha[T-1,S-1],logAlpha[T-1,S-2] if S>1 else NEG)
-        totalLoss+=-logP
+        logP = LogSumExp(logAlpha[T-1,S-1],logAlpha[T-1,S-2] if S>1 else NEG)   #both finishing positions give the total path probability
+        totalLoss+=-logP   # and minus its logarithm is the loss for this line
 
         #alpha times beta over every extended position emitting a class,
         #divided by the total path probability
-        logGamma = logAlpha+logBeta-logP
+        logGamma = logAlpha+logBeta-logP   # alpha times beta over the total is the chance of being at that cell
         gamma = np.exp(logGamma)
         occ = np.zeros((T,C))
         for s in range(S):
-            occ[:,ext[s]]+=gamma[:,s]
-        dRawLogits[:,b,:] = probs[:,b,:]-occ
+            occ[:,ext[s]]+=gamma[:,s]   # the lattice rows folded back onto the 75 classes
+        dRawLogits[:,b,:] = probs[:,b,:]-occ   #what the network predicted less what the alignments expect
 
-    return totalLoss/B,dRawLogits/B
+    return totalLoss/B,dRawLogits/B   #both averaged over the batch
 
 #---CrossEntropyLoss: cross entropy, for the writer namer---
 def CrossEntropyLoss(logits,targetIdx):
     B = logits.shape[0]
     m = logits.max(axis=1,keepdims=True)
-    logProbs = logits-m-np.log(np.exp(logits-m).sum(axis=1,keepdims=True))
-    loss = -logProbs[np.arange(B),targetIdx].mean()
+    logProbs = logits-m-np.log(np.exp(logits-m).sum(axis=1,keepdims=True))  #the same stable log softmax over the writers
+    loss = -logProbs[np.arange(B),targetIdx].mean()   #minus the log probability of the right writer
     probs = np.exp(logProbs)
     dLogits = probs.copy()
-    dLogits[np.arange(B),targetIdx]-=1.0
+    dLogits[np.arange(B),targetIdx]-=1.0   #the gradient is the probabilities less a one at the true class
     dLogits/=B
     return loss,dLogits
 
@@ -450,15 +450,15 @@ class RMSprop:
         self.alpha = alpha
         self.eps = eps
         self.weightDecay = weightDecay
-        self.sqAvg = {k: np.zeros_like(v) for k,v in params.items()}
+        self.sqAvg = {k: np.zeros_like(v) for k,v in params.items()}   #one running squared gradient per weight array
 
     def Step(self,grads):
         for k,p in self.params.items():
             g = grads[k]
             if self.weightDecay>0:
-                g = g+self.weightDecay*p
-            self.sqAvg[k] = self.alpha*self.sqAvg[k]+(1-self.alpha)*(g**2)
-            p-=self.lr*g/(np.sqrt(self.sqAvg[k])+self.eps)
+                g = g+self.weightDecay*p   #the decay is folded into the gradient here
+            self.sqAvg[k] = self.alpha*self.sqAvg[k]+(1-self.alpha)*(g**2)   # the running average keeps 99 percent and takes 1 percent new
+            p-=self.lr*g/(np.sqrt(self.sqAvg[k])+self.eps)   #the step is divided by the root of that average
 
 #----------------------------------------------------------------------
 #AdamW: momentum and that scaling together, with the weight decay applied
@@ -471,19 +471,19 @@ class AdamW:
         self.beta1,self.beta2 = betas
         self.eps = eps
         self.weightDecay = weightDecay
-        self.m = {k: np.zeros_like(v) for k,v in params.items()}
-        self.v = {k: np.zeros_like(v) for k,v in params.items()}
+        self.m = {k: np.zeros_like(v) for k,v in params.items()}   #m is the running mean of the gradients
+        self.v = {k: np.zeros_like(v) for k,v in params.items()}   #and v the running mean of their squares
         self.t = 0
 
     def Step(self,grads):
         self.t+=1
         for k,p in self.params.items():
             g = grads[k]
-            self.m[k] = self.beta1*self.m[k]+(1-self.beta1)*g
-            self.v[k] = self.beta2*self.v[k]+(1-self.beta2)*(g**2)
-            mHat = self.m[k]/(1-self.beta1**self.t)
+            self.m[k] = self.beta1*self.m[k]+(1-self.beta1)*g   #the momentum term keeps nine tenths
+            self.v[k] = self.beta2*self.v[k]+(1-self.beta2)*(g**2)  #and the squared term keeps 999 thousandths
+            mHat = self.m[k]/(1-self.beta1**self.t)   # both start at zero so they are corrected for that bias
             vHat = self.v[k]/(1-self.beta2**self.t)
-            p-=self.lr*(mHat/(np.sqrt(vHat)+self.eps)+self.weightDecay*p)
+            p-=self.lr*(mHat/(np.sqrt(vHat)+self.eps)+self.weightDecay*p)   #the decay is applied to the weight rather than the gradient
 
 #---ReduceLrOnPlateau: cuts the step size when the validation metric stops improving---
 class ReduceLrOnPlateau:
@@ -496,13 +496,13 @@ class ReduceLrOnPlateau:
         self.badEpochs = 0
 
     def Step(self,metric):
-        if metric<self.best:
+        if metric<self.best:  #a new best resets the patience
             self.best = metric
             self.badEpochs = 0
         else:
             self.badEpochs+=1
-            if self.badEpochs>self.patience:
-                self.optimizer.lr = max(self.minLr,self.optimizer.lr*self.factor)
+            if self.badEpochs>self.patience:   # past five epochs with no improvement
+                self.optimizer.lr = max(self.minLr,self.optimizer.lr*self.factor)  #the rate halves and stops at the floor
                 self.badEpochs = 0
 
 #---CosineAnnealingLr: eases the step size down a cosine curve over the run---
@@ -515,14 +515,14 @@ class CosineAnnealingLr:
 
     def Step(self):
         self.epoch+=1
-        self.optimizer.lr = 0.5*self.baseLr*(1+np.cos(np.pi*self.epoch/self.tMax))
+        self.optimizer.lr = 0.5*self.baseLr*(1+np.cos(np.pi*self.epoch/self.tMax))   #half a cosine runs the rate from the base down to zero
 
 #---ClipGradNorm: scales the whole gradient back when it is longer than a limit---
 def ClipGradNorm(grads,maxNorm=5.0):
-    totalNormSq = sum(float((g**2).sum()) for g in grads.values())
+    totalNormSq = sum(float((g**2).sum()) for g in grads.values())   #every gradient treated as one long vector
     totalNorm = np.sqrt(totalNormSq)
     if totalNorm>maxNorm:
-        scale = maxNorm/(totalNorm+1e-6)
+        scale = maxNorm/(totalNorm+1e-6)   #scaled so its length comes back to the limit
         for k in grads:
             grads[k] = grads[k]*scale
     return totalNorm
@@ -534,9 +534,9 @@ ZIGZAG = np.array([0,1,8,16,9,2,3,10,17,24,32,25,18,11,4,5,12,19,26,33,40,48,41,
 
 #---IdctMatrix: the matrix M with f = M.T @ F @ M, the separable inverse cosine transform---
 def IdctMatrix():
-    u = np.arange(8).reshape(8,1)
+    u = np.arange(8).reshape(8,1)   #the eight frequencies down and the eight positions across
     x = np.arange(8).reshape(1,8)
-    m = np.cos((2*x+1)*u*np.pi/16)*0.5
+    m = np.cos((2*x+1)*u*np.pi/16)*0.5   #the cosine basis of the 8 point transform
     m[0,:] *= 1.0/np.sqrt(2.0)   #the u=0 basis carries half the weight
     return m
 
@@ -548,25 +548,25 @@ IDCT_M = IdctMatrix()
 #just reconstructed, so those two walk the row
 #----------------------------------------------------------------------
 def UnfilterPng(raw,height,stride,bpp):
-    out = np.zeros((height,stride),dtype=np.uint8)
+    out = np.zeros((height,stride),dtype=np.uint8)    #one row of bytes per image row
     prev = np.zeros(stride,dtype=np.uint8)
     pos = 0
     for r in range(height):
-        ft = raw[pos]
+        ft = raw[pos]   #the first byte of each row names its filter
         line = np.frombuffer(raw,dtype=np.uint8,count=stride,offset=pos+1)
         pos += 1+stride
         if ft==0:
             cur = line.copy()
         elif ft==1:                                  #sub: a running total along the row
             if bpp==1:
-                cur = (np.cumsum(line,dtype=np.int64)&255).astype(np.uint8)
+                cur = (np.cumsum(line,dtype=np.int64)&255).astype(np.uint8)   #sub is a running total along the row wrapping at 256
             else:
                 pad = (-stride)%bpp
                 wide = np.concatenate([line.astype(np.int64),np.zeros(pad,dtype=np.int64)])
-                cur = (np.cumsum(wide.reshape(-1,bpp),axis=0).reshape(-1)[:stride]&255
+                cur = (np.cumsum(wide.reshape(-1,bpp),axis=0).reshape(-1)[:stride]&255   #with more than one byte a pixel the total runs per channel
                        ).astype(np.uint8)
         elif ft==2:                                  #up: add the row above, wrapping at 256
-            cur = line+prev
+            cur = line+prev   #up adds the row above
         else:
             cur = bytearray(line)
             pv = prev.tobytes()
@@ -574,15 +574,15 @@ def UnfilterPng(raw,height,stride,bpp):
                 for i in range(min(bpp,stride)):
                     cur[i] = (cur[i]+(pv[i]>>1))&255
                 for i in range(bpp,stride):
-                    cur[i] = (cur[i]+((cur[i-bpp]+pv[i])>>1))&255
+                    cur[i] = (cur[i]+((cur[i-bpp]+pv[i])>>1))&255   #average takes half of left plus above
             else:                                    #paeth: whichever neighbour predicts best
                 for i in range(min(bpp,stride)):
                     cur[i] = (cur[i]+pv[i])&255
                 for i in range(bpp,stride):
                     a,b,c = cur[i-bpp],pv[i],pv[i-bpp]
-                    est = a+b-c
+                    est = a+b-c    #paeth predicts left plus above less the corner
                     da,db,dc = abs(est-a),abs(est-b),abs(est-c)
-                    cur[i] = (cur[i]+(a if (da<=db and da<=dc) else (b if db<=dc else c)))&255
+                    cur[i] = (cur[i]+(a if (da<=db and da<=dc) else (b if db<=dc else c)))&255   #and takes whichever of the three sits closest
             cur = np.frombuffer(bytes(cur),dtype=np.uint8)
         out[r] = cur
         prev = cur
@@ -598,11 +598,11 @@ def DecodePng(data):
     idat = []
     i = 8
     while i<len(data):
-        length = int.from_bytes(data[i:i+4],"big")
+        length = int.from_bytes(data[i:i+4],"big")   #each chunk starts with its length and its four letter kind
         kind = data[i+4:i+8]
         body = data[i+8:i+8+length]
         if kind==b"IHDR":
-            width = int.from_bytes(body[0:4],"big")
+            width = int.from_bytes(body[0:4],"big")   #the header chunk carries the size
             height = int.from_bytes(body[4:8],"big")
             bitDepth,colourType,interlace = body[8],body[9],body[12]
         elif kind==b"PLTE":
@@ -611,16 +611,16 @@ def DecodePng(data):
             idat.append(body)
         elif kind==b"IEND":
             break
-        i += 12+length
+        i += 12+length   #length plus the four length bytes the four kind bytes and four crc
     if bitDepth!=8 or interlace!=0:
         raise ValueError("only 8 bit non interlaced png is handled, got depth %d interlace %d"
                          % (bitDepth,interlace))
-    channels = {0:1,2:3,3:1,4:2,6:4}[colourType]
-    raw = zlib.decompress(b"".join(idat))
+    channels = {0:1,2:3,3:1,4:2,6:4}[colourType]    #grey rgb palette grey with alpha and rgba
+    raw = zlib.decompress(b"".join(idat))    #the data chunks join into one deflate stream
     pixels = UnfilterPng(raw,height,width*channels,channels)
     pixels = pixels.reshape(height,width,channels)
     if colourType==3:
-        return palette[pixels[:,:,0]]
+        return palette[pixels[:,:,0]]   #a palette image reads its colours out of the table
     if colourType in (0,4):
         return pixels[:,:,0]          #the second channel of type 4 is alpha
     return pixels[:,:,:3]
@@ -641,14 +641,14 @@ def BuildHuffTable(counts,values):
         minCode[length] = code
         for _ in range(counts[length-1]):
             if length<=8:
-                base = code<<(8-length)
-                for fill in range(1<<(8-length)):
+                base = code<<(8-length)   # a short code is padded out to eight bits
+                for fill in range(1<<(8-length)):   #and every byte starting with it points at the same value
                     lut[base+fill] = values[k]
                     lutLen[base+fill] = length
             code += 1
             k += 1
         maxCode[length] = code-1
-        code <<= 1
+        code <<= 1    #the next code length shifts the counter up one bit
     return dict(minCode=minCode,maxCode=maxCode,valPtr=valPtr,values=values,
                 lut=lut,lutLen=lutLen)
 
@@ -664,7 +664,7 @@ class JpegBitReader:
         self.nBits = 0
 
     def Fill(self):
-        while self.nBits<=24:
+        while self.nBits<=24:   #the buffer is topped up to at least 25 bits
             if self.pos>=len(self.data):
                 self.bits = (self.bits<<8)|0
                 self.nBits += 8
@@ -672,7 +672,7 @@ class JpegBitReader:
             b = self.data[self.pos]
             if b==0xFF:
                 nxt = self.data[self.pos+1] if self.pos+1<len(self.data) else 0xD9
-                if nxt==0x00:
+                if nxt==0x00:   #a zero after 0xFF is stuffing and is dropped
                     self.pos += 2
                 else:
                     self.bits = (self.bits<<8)|0   #a marker: feed zeros
@@ -686,7 +686,7 @@ class JpegBitReader:
     def Peek8(self):
         if self.nBits<8:
             self.Fill()
-        return (self.bits>>(self.nBits-8))&0xFF
+        return (self.bits>>(self.nBits-8))&0xFF   #the next eight bits without consuming them
 
     def Skip(self,n):
         self.nBits -= n
@@ -697,7 +697,7 @@ class JpegBitReader:
             return 0
         if self.nBits<n:
             self.Fill()
-        v = (self.bits>>(self.nBits-n))&((1<<n)-1)
+        v = (self.bits>>(self.nBits-n))&((1<<n)-1)    # the next n bits as a number
         self.Skip(n)
         return v
 
@@ -706,7 +706,7 @@ class JpegBitReader:
         self.bits = 0
         self.nBits = 0
         while self.pos+1<len(self.data):
-            if self.data[self.pos]==0xFF and 0xD0<=self.data[self.pos+1]<=0xD7:
+            if self.data[self.pos]==0xFF and 0xD0<=self.data[self.pos+1]<=0xD7:   #the markers 0xD0 to 0xD7 are the restart ones
                 self.pos += 2
                 return
             self.pos += 1
@@ -714,14 +714,14 @@ class JpegBitReader:
 #---DecodeHuffValue: reads one huffman-coded value, by lookup where the code is short enough---
 def DecodeHuffValue(reader,table):
     peek = reader.Peek8()
-    length = int(table["lutLen"][peek])
+    length = int(table["lutLen"][peek])   #a code of eight bits or fewer is one lookup
     if length:
         reader.Skip(length)
         return int(table["lut"][peek])
     code = 0
     for length in range(1,17):
-        code = (code<<1)|reader.Receive(1)
-        if code<=table["maxCode"][length]:
+        code = (code<<1)|reader.Receive(1)   #a longer code is built one bit at a time
+        if code<=table["maxCode"][length]:   # until it falls inside the range held for that length
             return table["values"][table["valPtr"][length]+code-table["minCode"][length]]
     raise ValueError("bad huffman code")
 
@@ -729,7 +729,7 @@ def DecodeHuffValue(reader,table):
 def Extend(value,nBits):
     if nBits==0:
         return 0
-    return value if value>=(1<<(nBits-1)) else value-(1<<nBits)+1
+    return value if value>=(1<<(nBits-1)) else value-(1<<nBits)+1   # the top half of the range is positive and the bottom half negative
 
 #----------------------------------------------------------------------
 #DecodeJpeg: a baseline JPEG file to a grey array, only the luminance component is
@@ -763,7 +763,7 @@ def DecodeJpeg(data):
         if marker==0xDB:                                   #quantisation tables
             p = 0
             while p<len(body):
-                precision,tableId = body[p]>>4,body[p]&15
+                precision,tableId = body[p]>>4,body[p]&15  #the high nibble is the precision and the low one the table id
                 step = 64*(2 if precision else 1)
                 raw = np.frombuffer(body[p+1:p+1+step],
                                     dtype=">u2" if precision else np.uint8).astype(np.int32)
@@ -773,7 +773,7 @@ def DecodeJpeg(data):
             height = int.from_bytes(body[1:3],"big")
             width = int.from_bytes(body[3:5],"big")
             for c in range(body[5]):
-                cid,samp,qid = body[6+c*3],body[7+c*3],body[8+c*3]
+                cid,samp,qid = body[6+c*3],body[7+c*3],body[8+c*3]   # id sampling factors and quantisation table of each component
                 comps.append(dict(id=cid,h=samp>>4,v=samp&15,q=qid))
         elif marker in (0xC2,0xC3,0xC5,0xC6,0xC7,0xC9,0xCA,0xCB,0xCD,0xCE,0xCF):
             raise ValueError("only baseline jpeg is handled, this file is SOF%d" % (marker-0xC0))
@@ -800,13 +800,13 @@ def DecodeJpeg(data):
 
     hMax = max(c["h"] for c in comps)
     vMax = max(c["v"] for c in comps)
-    mcuW,mcuH = 8*hMax,8*vMax
+    mcuW,mcuH = 8*hMax,8*vMax   #one coding unit covers 8 pixels times the largest sampling factor
     mcusX = (width+mcuW-1)//mcuW
     mcusY = (height+mcuH-1)//mcuH
 
     y = comps[0]
     blocksPerRow = mcusX*y["h"]
-    yBlocks = np.zeros((mcusY*y["v"],blocksPerRow,64),dtype=np.int32)
+    yBlocks = np.zeros((mcusY*y["v"],blocksPerRow,64),dtype=np.int32)   #room for every luminance block of the image
     qY = quant[y["q"]]
 
     reader = JpegBitReader(data,scanPos)
@@ -826,24 +826,24 @@ def DecodeJpeg(data):
                     for bx in range(comp["h"]):
                         block = np.zeros(64,dtype=np.int32) if isLuma else None
                         t = DecodeHuffValue(reader,dcTable)
-                        pred[comp["id"]] += Extend(reader.Receive(t),t)
+                        pred[comp["id"]] += Extend(reader.Receive(t),t)  #the dc value is stored as a difference from the block before
                         if isLuma:
-                            block[0] = pred[comp["id"]]*qY[0]
+                            block[0] = pred[comp["id"]]*qY[0]   #and multiplied back up by its quantisation step
                         k = 1
                         while k<64:
                             rs = DecodeHuffValue(reader,acTable)
-                            run,size = rs>>4,rs&15
+                            run,size = rs>>4,rs&15   #how many zeros come first and how many bits the value takes
                             if size==0:
-                                if run==15:
+                                if run==15:   #a run of sixteen zeros with no value
                                     k += 16
                                     continue
-                                break
+                                break   # and a bare zero ends the block
                             k += run
                             if k>63:
                                 break
                             value = Extend(reader.Receive(size),size)
                             if isLuma:
-                                block[ZIGZAG[k]] = value*qY[k]
+                                block[ZIGZAG[k]] = value*qY[k]   #the zigzag order unpicked back into an 8 by 8 layout
                             k += 1
                         if isLuma:
                             yBlocks[my*comp["v"]+by,mx*comp["h"]+bx] = block
@@ -855,11 +855,11 @@ def DecodeJpeg(data):
     #contraction: einsum walks its own loop while two matrix products go
     #to the linear algebra library.  float64 throughout, which is what
     #einsum promoted to anyway, so the pixels are unchanged
-    flat = yBlocks.reshape(-1,8,8).astype(np.float64)
-    spatial = (IDCT_M.T@flat@IDCT_M)+128.0
-    plane = spatial.reshape(rows,cols,8,8).transpose(0,2,1,3).reshape(rows*8,cols*8)
+    flat = yBlocks.reshape(-1,8,8).astype(np.float64)   #every block stacked for one pass
+    spatial = (IDCT_M.T@flat@IDCT_M)+128.0   #the separable inverse transform then the 128 level shift back
+    plane = spatial.reshape(rows,cols,8,8).transpose(0,2,1,3).reshape(rows*8,cols*8)   # the blocks laid out as a picture
     if y["h"]!=hMax or y["v"]!=vMax:
-        plane = np.repeat(np.repeat(plane,vMax//y["v"],axis=0),hMax//y["h"],axis=1)
+        plane = np.repeat(np.repeat(plane,vMax//y["v"],axis=0),hMax//y["h"],axis=1)  #a subsampled plane is stretched back to full size
     return np.clip(plane[:height,:width],0,255).astype(np.uint8)
 
 #----------------------------------------------------------------------
@@ -875,14 +875,14 @@ def ReadImageFile(path):
     else:
         raise ValueError("unrecognised image format: %s" % path)
     if arr.ndim==3:
-        arr = np.rint(arr[...,:3]@np.array([0.299,0.587,0.114])).astype(np.uint8)
+        arr = np.rint(arr[...,:3]@np.array([0.299,0.587,0.114])).astype(np.uint8)   #the standard luminance weights flatten colour to grey
     return arr
 
 #---EncodeCrop: packs a crop into bytes for the cache---
 def EncodeCrop(arr):
     buf = io.BytesIO()
     np.save(buf,np.asarray(arr,dtype=np.uint8),allow_pickle=False)
-    return zlib.compress(buf.getvalue(),6)
+    return zlib.compress(buf.getvalue(),6)   #the array saved as npy then deflated
 
 #----------------------------------------------------------------------
 #DecodeCrop: and unpacks it, accepting either the compressed .npy this writes or the
@@ -890,9 +890,9 @@ def EncodeCrop(arr):
 #----------------------------------------------------------------------
 def DecodeCrop(raw):
     try:
-        return np.load(io.BytesIO(zlib.decompress(raw)),allow_pickle=False)
+        return np.load(io.BytesIO(zlib.decompress(raw)),allow_pickle=False)   #the compressed npy path
     except zlib.error:
-        return np.asarray(DecodePng(raw),dtype=np.uint8)
+        return np.asarray(DecodePng(raw),dtype=np.uint8)   #and older caches hold raw png bytes
 
 #---ReadLabelLines: reads a page's typed transcript, one written line per line---
 def ReadLabelLines(imgPath,labelPath=None):
@@ -907,16 +907,16 @@ def ClusterRows(rows,maxGap=5):
     rows = np.asarray(sorted(rows),dtype=np.int64)
     if rows.size==0:
         return []
-    cut = np.nonzero(np.diff(rows)>maxGap)[0]+1
-    return [int(g.mean()) for g in np.split(rows,cut) if g.size]
+    cut = np.nonzero(np.diff(rows)>maxGap)[0]+1   #a gap over five rows starts a new cluster
+    return [int(g.mean()) for g in np.split(rows,cut) if g.size]   #each cluster reports its mean row
 
 #---FindRuleLineClusters: the rows holding the printed ruling on a form---
 def FindRuleLineClusters(binaryImg,rawGrayscaleArray=None):
     h,w = binaryImg.shape
     row = (rawGrayscaleArray<225) if rawGrayscaleArray is not None else (binaryImg>0)
-    longest = RowRunLength(row).max(axis=1)
+    longest = RowRunLength(row).max(axis=1)   #the longest unbroken dark run in each row
     filled = row.sum(axis=1)
-    ruleRows = np.nonzero((longest>w*0.25)&(filled>w*0.10))[0]
+    ruleRows = np.nonzero((longest>w*0.25)&(filled>w*0.10))[0]   #a quarter of the width in one run and a tenth dark overall
     return ClusterRows(ruleRows.tolist())
 
 #---RemoveStraightFormLines: blanks the rows holding that ruling---
@@ -927,7 +927,7 @@ def RemoveStraightFormLines(hwRegion):
     longest = RowRunLength(row).max(axis=1)
     hit = np.nonzero((longest>w*0.25)&(row.sum(axis=1)>w*0.10))[0]
     for r in hit:
-        cleaned[max(0,r-2):min(h,r+3),:] = 0
+        cleaned[max(0,r-2):min(h,r+3),:] = 0   #the rule row and two either side are blanked
     return cleaned
 
 #---DetectPageBounds: the top and bottom of the handwriting area, from those rule clusters---
@@ -935,8 +935,8 @@ def DetectPageBounds(binaryImg,rawGrayscaleArray=None):
     h,_w = binaryImg.shape
     clusters = FindRuleLineClusters(binaryImg,rawGrayscaleArray)
 
-    topCandidates = [c for c in clusters if h*0.12<c<h*0.40]
-    botCandidates = [c for c in clusters if h*0.55<c<h*0.92]
+    topCandidates = [c for c in clusters if h*0.12<c<h*0.40]  #the top rule sits in the upper part of the form
+    botCandidates = [c for c in clusters if h*0.55<c<h*0.92]   #and the bottom rule in the lower part
 
     topY = topCandidates[-1]+8 if topCandidates else int(h*0.12)
     botY = botCandidates[0]-8 if botCandidates else int(h*0.80)
@@ -948,8 +948,8 @@ def MergeUndersizedFragments(lines,minRelativeHeight=0.4):
         return lines
 
     heights = [e-s for s,e in lines]
-    medianHeight = sorted(heights)[len(heights)//2]
-    threshold = medianHeight*minRelativeHeight
+    medianHeight = sorted(heights)[len(heights)//2]   #the median detected line height
+    threshold = medianHeight*minRelativeHeight   # a piece under 40 percent of it is a fragment
 
     merged = list(lines)
     changed = True
@@ -965,7 +965,7 @@ def MergeUndersizedFragments(lines,minRelativeHeight=0.4):
             else:
                 gapPrev = merged[i][0]-merged[i-1][1]
                 gapNext = merged[i+1][0]-merged[i][1]
-                neighbor = i-1 if gapPrev<=gapNext else i+1
+                neighbor = i-1 if gapPrev<=gapNext else i+1   # it joins whichever neighbour sits closer
 
             lo,hi = min(i,neighbor),max(i,neighbor)
             combined = (min(merged[lo][0],merged[hi][0]),max(merged[lo][1],merged[hi][1]))
@@ -988,22 +988,22 @@ def MergeOrSplitToExpectedLineCount(lines,rowInkCount,expectedLineCount):
             prevS,prevE = adjusted[i]
             currS,currE = adjusted[i+1]
             gap = currS-prevE
-            gapInk = np.mean(rowInkCount[prevE:currS]) if currS>prevE else 0
+            gapInk = np.mean(rowInkCount[prevE:currS]) if currS>prevE else 0  #how much ink lies in the gap between two lines
             gapScores.append((gap+gapInk,i))
 
-        _,mergeIdx = min(gapScores)
+        _,mergeIdx = min(gapScores)   #the smallest gap with the least ink merges first
         adjusted[mergeIdx] = (adjusted[mergeIdx][0],adjusted[mergeIdx+1][1])
         del adjusted[mergeIdx+1]
 
     while len(adjusted)<expectedLineCount:
-        splittable = [(e-s,i,s,e) for i,(s,e) in enumerate(adjusted) if (e-s)>=42]
+        splittable = [(e-s,i,s,e) for i,(s,e) in enumerate(adjusted) if (e-s)>=42]   #only a line over 42 rows tall can be split
         if not splittable:
             break
 
         _,splitIdx,s,e = max(splittable)
         lo,hi = s+18,e-18
         if hi>lo:
-            splitY = lo+int(np.argmin(rowInkCount[lo:hi]))
+            splitY = lo+int(np.argmin(rowInkCount[lo:hi]))    #the cut goes at the row holding the least ink
         else:
             splitY = (s+e)//2
         adjusted[splitIdx:splitIdx+1] = [(s,splitY),(splitY,e)]
@@ -1012,13 +1012,13 @@ def MergeOrSplitToExpectedLineCount(lines,rowInkCount,expectedLineCount):
 
 #---EstimateLinePitch: the line spacing on this page, from the first autocorrelation peak---
 def EstimateLinePitch(smoothedRowInk,minPitch=40,maxPitch=400):
-    sig = smoothedRowInk-smoothedRowInk.mean()
-    autocorr = np.correlate(sig,sig,mode='full')[len(sig)-1:]
+    sig = smoothedRowInk-smoothedRowInk.mean()   #the mean comes off before correlating
+    autocorr = np.correlate(sig,sig,mode='full')[len(sig)-1:]   # the profile correlated against itself
     maxPitch = min(maxPitch,len(autocorr))
     if maxPitch<=minPitch:
         return minPitch
     search = autocorr[minPitch:maxPitch]
-    return minPitch+int(np.argmax(search))
+    return minPitch+int(np.argmax(search))   #the strongest repeat in the search range is the pitch
 
 #----------------------------------------------------------------------
 #SplitLinesByPeriodicity: splits a block that is really several evenly spaced lines, at the valleys
@@ -1030,18 +1030,18 @@ def SplitLinesByPeriodicity(binaryRegion,ruleLineHints=None,smoothWindow=9,minLi
         return []
 
     kernel = np.ones(smoothWindow)/smoothWindow
-    smoothed = np.convolve(rowInk,kernel,mode='same')
+    smoothed = np.convolve(rowInk,kernel,mode='same')   #a moving average over nine rows
 
     pitch = EstimateLinePitch(smoothed)
-    minDistance = max(minLineHeight,int(pitch*0.55))
-    peaks = FindPeaks(-smoothed,distance=minDistance,
+    minDistance = max(minLineHeight,int(pitch*0.55))   # cuts are kept at least 55 percent of a pitch apart
+    peaks = FindPeaks(-smoothed,distance=minDistance,  #peaks of the negated profile are its valleys
                          prominence=max(1.0,rowInk.max()*0.03))
 
     if ruleLineHints:
         snapWindow = max(6,int(pitch*0.12))
         peaks = list(peaks)
         for i,p in enumerate(peaks):
-            nearby = [r for r in ruleLineHints if abs(r-p)<=snapWindow]
+            nearby = [r for r in ruleLineHints if abs(r-p)<=snapWindow]    # a cut near a printed rule snaps onto it
             if nearby:
                 peaks[i] = min(nearby,key=lambda r: abs(r-p))
         peaks = np.array(sorted(set(peaks)))
@@ -1059,7 +1059,7 @@ def ExtractLinePatches(page,targetHeight=32,maxWidth=1024,expectedLineCount=None
         RawGrayscaleArray = np.rint(RawGrayscaleArray[...,:3].mean(2)).astype(np.uint8)
     h,w = RawGrayscaleArray.shape
 
-    BinaryInvertedImage = ((RawGrayscaleArray<Otsu(RawGrayscaleArray)).astype(np.uint8)*255)
+    BinaryInvertedImage = ((RawGrayscaleArray<Otsu(RawGrayscaleArray)).astype(np.uint8)*255)   #ink reads 255 and paper 0 after this
 
     if not isDataset:
         #no printed prompt box to bound against, so almost the whole page
@@ -1072,7 +1072,7 @@ def ExtractLinePatches(page,targetHeight=32,maxWidth=1024,expectedLineCount=None
     #a hard buffer below topY, so a rule-line detection a few pixels out
     #cannot pull header pixels into a line crop
     HANDWRITING_TOP_MARGIN = 15
-    handwritingStartY = min(botY,topY+HANDWRITING_TOP_MARGIN)
+    handwritingStartY = min(botY,topY+HANDWRITING_TOP_MARGIN)   #a fixed buffer below the top rule
 
     hwRegion = BinaryInvertedImage[handwritingStartY:botY,:].copy()
     regionH,regionW = hwRegion.shape
@@ -1081,9 +1081,9 @@ def ExtractLinePatches(page,targetHeight=32,maxWidth=1024,expectedLineCount=None
 
     #mask the left vertical margin line and the page edges
     colInkHeights = np.sum(hwRegion>0,axis=0)
-    vertLineCols = np.where(colInkHeights>regionH*0.40)[0]
+    vertLineCols = np.where(colInkHeights>regionH*0.40)[0]   # a column dark down 40 percent of the region is a margin line
     hwRegion[:,vertLineCols] = 0
-    hwRegion[:,:int(w*0.07)] = 0
+    hwRegion[:,:int(w*0.07)] = 0   #the outer seven percent of the page is cleared
     hwRegion[:,int(w*0.97):] = 0
 
     rowInkCount = np.sum(hwRegion>0,axis=1)
@@ -1093,19 +1093,19 @@ def ExtractLinePatches(page,targetHeight=32,maxWidth=1024,expectedLineCount=None
         mergedLines = SplitLinesByPeriodicity(hwRegion)
         mergedLines = MergeUndersizedFragments(mergedLines)
     else:
-        hasInk = rowInkCount>max(10,int(w*0.006))
+        hasInk = rowInkCount>max(10,int(w*0.006))   # a row needs this much ink to count as written on
 
         pad1D = np.pad(hasInk,(3,3),mode='constant')
         smoothedInk = np.zeros_like(hasInk)
-        for dy in range(7):
+        for dy in range(7):   # the ink rows grown by three either way joins a broken line
             smoothedInk = np.logical_or(smoothedInk,pad1D[dy:dy+len(hasInk)])
 
         #a zero padded each end, so a run touching the first or last row
         #still shows as a +1 and a -1 in the difference
-        diff = np.diff(np.concatenate(([0],smoothedInk.astype(np.int8),[0])))
+        diff = np.diff(np.concatenate(([0],smoothedInk.astype(np.int8),[0])))   #plus one marks a run start and minus one a run end
         lineStarts,lineEnds = np.where(diff==1)[0],np.where(diff==-1)[0]
 
-        rawLines = [(s,e) for s,e in zip(lineStarts,lineEnds) if (e-s)>=8]
+        rawLines = [(s,e) for s,e in zip(lineStarts,lineEnds) if (e-s)>=8]   # runs under eight rows are dropped
 
         #merge descender fragments
         mergedLines = []
@@ -1115,7 +1115,7 @@ def ExtractLinePatches(page,targetHeight=32,maxWidth=1024,expectedLineCount=None
             else:
                 prevS,prevE = mergedLines[-1]
                 currS,currE = line
-                if (currS-prevE)<18:
+                if (currS-prevE)<18:   #a gap under 18 rows is a descender rather than a line break
                     mergedLines[-1] = (prevS,currE)
                 else:
                     mergedLines.append(line)
@@ -1129,7 +1129,7 @@ def ExtractLinePatches(page,targetHeight=32,maxWidth=1024,expectedLineCount=None
 
     for idx,(s,e) in enumerate(mergedLines):
         #s and e are offsets from handwritingStartY, where hwRegion starts
-        absY1 = handwritingStartY+max(0,s-5)
+        absY1 = handwritingStartY+max(0,s-5)   # the row range turned back into page coordinates
         absY2 = handwritingStartY+min(regionH,e+5)
         cropH = absY2-absY1
 
@@ -1138,20 +1138,20 @@ def ExtractLinePatches(page,targetHeight=32,maxWidth=1024,expectedLineCount=None
         inkCols = np.where(colSum>0)[0]
         if len(inkCols)==0: continue
 
-        absX1 = max(0,inkCols[0]-8)
+        absX1 = max(0,inkCols[0]-8)  #cropped to the ink with eight pixels of margin
         absX2 = min(w,inkCols[-1]+8)
         cropW = absX2-absX1
 
         rawLineCrop = RawGrayscaleArray[absY1:absY2,absX1:absX2]
-        scaleRatio = targetHeight/float(cropH)
-        newWidth = min(maxWidth,max(1,int(cropW*scaleRatio)))
+        scaleRatio = targetHeight/float(cropH)   #the scale that brings this crop to 32 rows
+        newWidth = min(maxWidth,max(1,int(cropW*scaleRatio)))   #the width follows the same scale up to the cap
 
         #linear, not a sharpening kernel: overshoot at a hard ink edge
         #leaves a pale halo that later reads as ink
         resized = Resize(rawLineCrop,newWidth,targetHeight,'linear')
 
         #padded to a fixed width with white, left aligned
-        paddedCanvas = np.full((targetHeight,maxWidth),255,np.uint8)
+        paddedCanvas = np.full((targetHeight,maxWidth),255,np.uint8)   #a white canvas of the fixed size
         paddedCanvas[:,:newWidth] = resized
 
         ExtractedLineSamples.append({
@@ -1163,7 +1163,7 @@ def ExtractLinePatches(page,targetHeight=32,maxWidth=1024,expectedLineCount=None
 
     #the transcript is returned beside the crops only when the two agree on
     #the line count, so n crops can never be paired with a different number
-    formattedTextLines = (labelLines if labelLines is not None
+    formattedTextLines = (labelLines if labelLines is not None   #the transcript comes back only when the counts match
                           and len(labelLines)==len(ExtractedLineSamples)
                           else [""]*len(ExtractedLineSamples))
 
@@ -1171,7 +1171,7 @@ def ExtractLinePatches(page,targetHeight=32,maxWidth=1024,expectedLineCount=None
 
 #---EncodeText: a transcript line into label numbers---
 def EncodeText(text):
-    return np.array([CHAR_TO_IDX[c] for c in text if c in CHAR_TO_IDX],dtype=np.int64)
+    return np.array([CHAR_TO_IDX[c] for c in text if c in CHAR_TO_IDX],dtype=np.int64)   #characters outside the charset are dropped
 
 #----------------------------------------------------------------------
 #FindPeaks: peaks in a profile, where a peak counts only if the profile falls by the
@@ -1180,21 +1180,21 @@ def EncodeText(text):
 #----------------------------------------------------------------------
 def FindPeaks(sm,floorFrac=0.0,minGap=0,prominence=None,distance=None):
     sm = np.asarray(sm,dtype=np.float64)
-    floor = floorFrac*sm.max() if floorFrac>0 else -np.inf
+    floor = floorFrac*sm.max() if floorFrac>0 else -np.inf   #a peak also has to clear this fraction of the tallest
     peaks = [i for i in range(1,len(sm)-1)
              if sm[i]>=sm[i-1] and sm[i]>sm[i+1] and sm[i]>floor]   #>= then >, so a flat top counts once
 
     if prominence is not None:
         keep = []
         for i in peaks:
-            j,lo = i-1,sm[i]
+            j,lo = i-1,sm[i]   #walking left for the lowest point before the profile rises higher
             while j>=0 and sm[j]<=sm[i]:   #walk left until the profile rises above this peak
                 lo = min(lo,sm[j]); j-=1
             leftLow = lo
             j,lo = i+1,sm[i]
             while j<len(sm) and sm[j]<=sm[i]:
                 lo = min(lo,sm[j]); j+=1
-            if sm[i]-max(leftLow,lo)>=prominence:
+            if sm[i]-max(leftLow,lo)>=prominence:   #the peak has to stand this far above the higher of the two valleys
                 keep.append(i)
         peaks = keep
 
@@ -1203,7 +1203,7 @@ def FindPeaks(sm,floorFrac=0.0,minGap=0,prominence=None,distance=None):
         return peaks
     kept = []
     for i in sorted(peaks,key=lambda j:-sm[j]):   #tallest first
-        if all(abs(i-j)>=gap for j in kept):
+        if all(abs(i-j)>=gap for j in kept):   #and no two kept peaks come within the distance
             kept.append(i)
     return sorted(kept)
 
@@ -1211,40 +1211,40 @@ def FindPeaks(sm,floorFrac=0.0,minGap=0,prominence=None,distance=None):
 def MyAffine(img,angleDeg=0.0,shearDeg=0.0,fillValue=255):
     a = np.asarray(img,dtype=np.uint8)
     h,w = a.shape
-    cx,cy = w/2.0,h/2.0
+    cx,cy = w/2.0,h/2.0   #the transform turns about the image centre
     ang,sh = np.radians(angleDeg),np.radians(shearDeg)
-    R = np.array([[np.cos(ang),-np.sin(ang),0],[np.sin(ang),np.cos(ang),0],[0,0,1]])
-    Sh = np.array([[1,np.tan(sh),0],[0,1,0],[0,0,1]])
-    T1 = np.array([[1,0,-cx],[0,1,-cy],[0,0,1]])
+    R = np.array([[np.cos(ang),-np.sin(ang),0],[np.sin(ang),np.cos(ang),0],[0,0,1]])   # the rotation matrix
+    Sh = np.array([[1,np.tan(sh),0],[0,1,0],[0,0,1]])   #and the shear matrix
+    T1 = np.array([[1,0,-cx],[0,1,-cy],[0,0,1]])   #the centre moves to the origin first
     T2 = np.array([[1,0,cx],[0,1,cy],[0,0,1]])
-    Mi = np.linalg.inv(T2@R@Sh@T1)
+    Mi = np.linalg.inv(T2@R@Sh@T1)   # inverted so each output pixel can look up its source
     return Warp(a,(Mi[0,0],Mi[0,1],Mi[0,2],Mi[1,0],Mi[1,1],Mi[1,2]),fill=fillValue)
 
 #---AugmentShear: leans the writing a little more or less---
 def AugmentShear(img):
-    k = random.uniform(-0.6,0.6)
-    shearDeg = math.degrees(math.atan(k))
+    k = random.uniform(-0.6,0.6)   #a shear factor between minus 0.6 and 0.6
+    shearDeg = math.degrees(math.atan(k))   #which is about 31 degrees either way
     return MyAffine(img,angleDeg=0.0,shearDeg=shearDeg)
 
 #---AugmentRotate: tilts the line slightly---
 def AugmentRotate(img):
-    angle = random.uniform(-2.5,2.5)
+    angle = random.uniform(-2.5,2.5)   #a tilt of up to two and a half degrees
     return MyAffine(img,angleDeg=angle,shearDeg=0.0)
 
 #---FindPerspectiveCoeffs: solves the small linear system that maps four corners onto four others---
 def FindPerspectiveCoeffs(startpoints,endpoints):
     matrix = []
     for (x,y),(X,Y) in zip(endpoints,startpoints):
-        matrix.append([x,y,1,0,0,0,-X*x,-X*y])
+        matrix.append([x,y,1,0,0,0,-X*x,-X*y])  #each corner gives two rows of the 8 by 8 system
         matrix.append([0,0,0,x,y,1,-Y*x,-Y*y])
     A = np.array(matrix,dtype=np.float64)
     B = np.array(startpoints,dtype=np.float64).reshape(8)
-    return tuple(np.linalg.solve(A,B))
+    return tuple(np.linalg.solve(A,B))   #eight equations for the eight coefficients
 
 #---AugmentPerspective: applies that map, as photographing a page off square would---
 def AugmentPerspective(img):
     h,w = np.asarray(img).shape[:2]
-    DistortionScale = random.uniform(0.03,0.08)
+    DistortionScale = random.uniform(0.03,0.08)   #corners move by 3 to 8 percent of the half size
     startpoints,endpoints = PerspectiveJitterPoints(w,h,DistortionScale)
     coeffs = FindPerspectiveCoeffs(startpoints,endpoints)
     #eight coefficients, so Warp divides by the varying third row
@@ -1277,17 +1277,17 @@ def PerspectiveJitterPoints(width,height,DistortionScale):
 
 #---AugmentElastic: bends the strokes locally---
 def AugmentElastic(img):
-    sigma = random.choice([3,4])
-    alpha = random.choice([15,20])
+    sigma = random.choice([3,4])   # how smooth the displacement field is
+    alpha = random.choice([15,20])   #and how strongly it pulls
     rng = np.random.default_rng(random.randrange(1<<30))
     return Elastic(np.asarray(img,dtype=np.uint8),sigma,alpha,rng)
 
 #---AugmentLineImage: picks one of the augmentations at random for one crop---
 def AugmentLineImage(img):
-    candidates = [fn for fn in AUGMENTATIONS if random.random()<0.5]
+    candidates = [fn for fn in AUGMENTATIONS if random.random()<0.5]   #each of the four is a candidate on a coin flip
     if not candidates:
         return img
-    return random.choice(candidates)(img)
+    return random.choice(candidates)(img)  #and exactly one of the survivors is applied
 
 AUGMENTATIONS = [AugmentShear,AugmentRotate,AugmentElastic,AugmentPerspective]
 
@@ -1329,13 +1329,13 @@ class LineImageCache:
             tmpPath = self.manifestPath.with_suffix(".tmp")
             with open(tmpPath,"wb") as f:
                 pickle.dump({"processed_pages": list(ProcessedPages),"shard_files": ShardFiles},f)
-            os.replace(tmpPath,self.manifestPath)
+            os.replace(tmpPath,self.manifestPath)  # written aside then moved so a crash leaves no half manifest
 
         #only newly collected pages are written, into their own shard
         def FlushPending(PendingPages):
             if not PendingPages:
                 return
-            shardName = f"shard_{len(ShardFiles):06d}.pkl"
+            shardName = f"shard_{len(ShardFiles):06d}.pkl"   #each flush writes its own numbered shard
             shardPath = self.shardsDir/shardName
             tmpPath = shardPath.with_suffix(".tmp")
             with open(tmpPath,"wb") as f:
@@ -1362,7 +1362,7 @@ class LineImageCache:
         try:
             for idx,(authorId,imgPath) in enumerate(allPages,1):
                 pageKey = f"{authorId}/{imgPath.name}"
-                if pageKey in ProcessedPages:
+                if pageKey in ProcessedPages:   #pages already cut are skipped on a rerun
                     continue
 
                 pct = (idx/TotalFiles)*100.0 if TotalFiles>0 else 0.0
@@ -1391,7 +1391,7 @@ class LineImageCache:
                 PendingPages[pageKey] = pngList
                 ProcessedPages.add(pageKey)
                 PageCounter+=1
-                if PageCounter%SaveEveryNPages==0:
+                if PageCounter%SaveEveryNPages==0:    #progress is written out every ten pages
                     FlushPending(PendingPages)
                     PendingPages = {}
 
@@ -1439,7 +1439,7 @@ class IAMLineDatasetRaw:
         )
 
         self.authorFolders = sorted(p.name for p in rootDir.iterdir() if p.is_dir())
-        self.authorToIdx = {author: idx for idx,author in enumerate(self.authorFolders)}
+        self.authorToIdx = {author: idx for idx,author in enumerate(self.authorFolders)}   #the sorted folder order fixes the class numbers
 
         MismatchedPages = 0
         OversizedLabels = 0
@@ -1449,7 +1449,7 @@ class IAMLineDatasetRaw:
             if not AuthorPages:
                 continue
             LabeledPages = [p for p in AuthorPages if ReadLabelLines(str(p))]
-            HoldoutPageName = LabeledPages[-1].name if len(LabeledPages)>=MinPagesForHoldout else None
+            HoldoutPageName = LabeledPages[-1].name if len(LabeledPages)>=MinPagesForHoldout else None   # the last labelled page is held out once a writer has three
 
             for imgPath in AuthorPages:
                 pageKey = f"{authorId}/{imgPath.name}"
@@ -1461,7 +1461,7 @@ class IAMLineDatasetRaw:
                 if pngList is None:
                     continue
 
-                if len(pngList)!=len(LabelLines):
+                if len(pngList)!=len(LabelLines):   # the crops and the transcript have to agree on the line count
                     MismatchedPages+=1
                     print(f"[Dataset] Skipping {pageKey}: cached image has {len(pngList)} line(s) but "
                           f"the current label has {len(LabelLines)} line(s) -- segmentation and label "
@@ -1476,7 +1476,7 @@ class IAMLineDatasetRaw:
                     if len(target)==0:
                         continue
                     #a label this long needs more columns than CTC has
-                    if len(target)>MAX_SAFE_LABEL_CHARS:
+                    if len(target)>MAX_SAFE_LABEL_CHARS:   #a label longer than the columns can carry is skipped
                         OversizedLabels+=1
                         print(f"[Dataset] Skipping oversized line label ({len(target)} chars, cap is "
                               f"{MAX_SAFE_LABEL_CHARS}) at {pageKey} line {lineIdx}: {text[:80]!r}...")
@@ -1507,14 +1507,14 @@ class IAMLineDatasetRaw:
 
     def __getitem__(self,idx):
         item = self.samples[idx]
-        img = ResizeLineImageFixed(DecodeCrop(item["imageBytes"]))
-        if self.isTrain:
+        img = ResizeLineImageFixed(DecodeCrop(item["imageBytes"]))   #the cached crop fitted onto the 64 by 640 canvas
+        if self.isTrain:   #augmentation runs on training data only
             img = AugmentLineImage(img)
         imgTensor = TensorFromResized(img)
         return imgTensor,item["target"],item["text"]
 
     def HoldoutSplitIndices(self):
-        trainIdx = [i for i,s in enumerate(self.samples) if not s["is_holdout"]]
+        trainIdx = [i for i,s in enumerate(self.samples) if not s["is_holdout"]]   #held-out lines never reach training
         testIdx = [i for i,s in enumerate(self.samples) if s["is_holdout"]]
         return trainIdx,testIdx
 
@@ -1539,8 +1539,8 @@ class TrainEvalView:
 #---TextCollateFn: joins a batch of crops and flattens their labels for CTC---
 def TextCollateFn(batch):
     images,targets,texts = zip(*batch)
-    TargetLengths = np.array([len(t) for t in targets],dtype=np.int64)
-    FlatTargets = np.concatenate(targets)
+    TargetLengths = np.array([len(t) for t in targets],dtype=np.int64)   #how many characters each line carries
+    FlatTargets = np.concatenate(targets)   #and every label joined end to end
     #each crop arrives shaped (1,1,H,W), so they join along that first axis
     return np.concatenate(images,0),FlatTargets,TargetLengths,list(texts)
 
@@ -1560,14 +1560,14 @@ class AuthorLabeledView:
     def __getitem__(self,i):
         item = self.base.samples[self.indices[i]]
         gray = DecodeCrop(item["imageBytes"])
-        normImg = StrokeNormalize(np.array(gray))
+        normImg = StrokeNormalize(np.array(gray))   #thinned to a centreline then redrawn at one pen width
         if normImg is not None:
             gray = normImg   #the raw crop is kept only if no usable ink was found
         img = ResizeLineImageFixed(gray)
         if self.isTrain:
             img = AugmentLineImage(img)
         imgTensor = TensorFromResized(img)
-        authorId = item["page_key"].split("/")[0]
+        authorId = item["page_key"].split("/")[0]   #the writer is the part of the key before the slash
         authorIdx = self.base.authorToIdx[authorId]
         return imgTensor,authorIdx,item["page_key"]
 
@@ -1587,16 +1587,16 @@ def AddPersonalSamples(base):
     for author in paths.PersonalWriters:
         for imgPath,labelPath in paths.PersonalWriterPages(author):
             imgSize = imgPath.stat().st_size if imgPath.exists() else 0
-            digest = (hashlib.sha1(labelPath.read_bytes()).hexdigest()
+            digest = (hashlib.sha1(labelPath.read_bytes()).hexdigest()   #a fingerprint of the transcript file
                       if labelPath.exists() else "")
             stamp.append((imgPath.name,imgSize,digest))
-    key = tuple(sorted(stamp))
+    key = tuple(sorted(stamp))   #name size and digest of every page is the cache key
 
     if cachePath.exists():
         try:
             with open(cachePath,"rb") as f:
                 cached = pickle.load(f)
-            if cached.get("key")==key:
+            if cached.get("key")==key:   #nothing changed so the stored crops are reused
                 base.samples.extend(cached["samples"])
                 print(f"[Personal] {len(cached['samples'])} line samples read from the cache",
                       flush=True)
@@ -1606,25 +1606,25 @@ def AddPersonalSamples(base):
             print(f"[Personal] cache unreadable ({e}), cutting again",flush=True)
 
     added = []
-    rng = random.Random(paths.SplitSeed)
+    rng = random.Random(paths.SplitSeed)   #a fixed seed so the same lines are held out every run
     nAdded = 0
     print(f"[Personal] cutting pages for {paths.PersonalWriters} into lines",flush=True)
     for author in paths.PersonalWriters:
         for imgPath,labelPath in paths.PersonalWriterPages(author):
             print(f"[Personal] {imgPath.name} ...",end="",flush=True)
-            leanLines,_ov,_info = SL.SegmentLines(ReadImageFile(imgPath))
+            leanLines,_ov,_info = SL.SegmentLines(ReadImageFile(imgPath))    #the same segmentation the live system uses
             crops = [np.asarray(ln["image"]) for ln in leanLines]
             gt = ReadLabelLines(str(imgPath),str(labelPath))
-            gt = [g for g in gt if g.strip()!="MESS"]
-            n = min(len(crops),len(gt))
+            gt = [g for g in gt if g.strip()!="MESS"]  #lines transcribed as MESS are dropped
+            n = min(len(crops),len(gt))   #crops pair with transcript lines in order
             rows = list(zip(range(n),crops[:n],gt[:n]))
             rng.shuffle(rows)
-            nVal = max(1,round(len(rows)*paths.ValFraction))
+            nVal = max(1,round(len(rows)*paths.ValFraction))   #fifteen percent of each page is held out
             for rank,(origIdx,crop,text) in enumerate(rows):
                 target = EncodeText(text)
                 if len(target)==0:
                     continue
-                isHoldout = rank<nVal
+                isHoldout = rank<nVal   #the first slice of the shuffled order
                 pageKey = f"{author}/{imgPath.stem}_{origIdx:02d}.png"
                 sample = {
                     "page_key": pageKey,
@@ -1654,7 +1654,7 @@ class TekliaLineDataset:
         self.items = []
         print(f"[Teklia] indexing {rootDir.name} ...",end="",flush=True)
         for imgPath in sorted(rootDir.glob("*.png")):
-            labelPath = imgPath.with_name(imgPath.stem+"_labels.txt")
+            labelPath = imgPath.with_name(imgPath.stem+"_labels.txt")   #each line image carries a transcript of the same stem
             if labelPath.exists():
                 text = labelPath.read_text(encoding="utf-8").strip()
                 if text:
@@ -1675,10 +1675,10 @@ class TekliaLineDataset:
         return imgTensor,EncodeText(text),text
 
 #the longest label CTC can fit in the available columns
-MAX_SAFE_LABEL_CHARS = int((INPUT_WIDTH//4)*0.75)
+MAX_SAFE_LABEL_CHARS = int((INPUT_WIDTH//4)*0.75)   #160 columns at three quarters gives a cap of 120 characters
 
 #how much memory the LSTM carries, per direction
-HIDDEN_SIZE = 256
+HIDDEN_SIZE = 256   #256 each way so a column comes out as 512 numbers
 
 WEIGHTS_DIR = paths.Weights
 DEFAULT_TEXT_CACHE_DIR = paths.Cache/"line_image_cache"
@@ -1691,28 +1691,28 @@ DEFAULT_TEXT_DATA_DIR = DEFAULT_AUTHOR_DATA_DIR
 #feed each output
 #----------------------------------------------------------------------
 def InitConv(rng,outCh,inCh,kh,kw):
-    fanIn = inCh*kh*kw
+    fanIn = inCh*kh*kw  #how many inputs feed one output of the filter
     std = np.sqrt(2.0/fanIn)   #Kaiming normal, for a relu gain
-    w = rng.normal(0.0,std,size=(outCh,inCh,kh,kw)).astype(np.float32)
+    w = rng.normal(0.0,std,size=(outCh,inCh,kh,kw)).astype(np.float32)    # normal weights at that spread and zero biases
     b = np.zeros(outCh,dtype=np.float32)
     return w,b
 
 #---InitBatchNorm: a batch-norm layer's starting scale, shift and running statistics---
 def InitBatchNorm(ch):
-    return (np.ones(ch,dtype=np.float32),np.zeros(ch,dtype=np.float32),
+    return (np.ones(ch,dtype=np.float32),np.zeros(ch,dtype=np.float32),    #scale 1 shift 0 running mean 0 and running variance 1
             np.zeros(ch,dtype=np.float32),np.ones(ch,dtype=np.float32))
 
 #---InitLinear: random starting weights for a linear layer---
 def InitLinear(rng,outF,inF):
-    bound = 1.0/np.sqrt(inF)
+    bound = 1.0/np.sqrt(inF)   #uniform within one over the root of the input count
     w = rng.uniform(-bound,bound,size=(outF,inF)).astype(np.float32)
     b = rng.uniform(-bound,bound,size=outF).astype(np.float32)
     return w,b
 
 #---InitLstmDirection: the four gate matrices of one LSTM direction---
 def InitLstmDirection(rng,inputSize,hiddenSize):
-    bound = 1.0/np.sqrt(hiddenSize)
-    wIh = rng.uniform(-bound,bound,size=(4*hiddenSize,inputSize)).astype(np.float32)
+    bound = 1.0/np.sqrt(hiddenSize)   #the lstm bound comes off the hidden size
+    wIh = rng.uniform(-bound,bound,size=(4*hiddenSize,inputSize)).astype(np.float32)   #four gates stacked into one matrix
     wHh = rng.uniform(-bound,bound,size=(4*hiddenSize,hiddenSize)).astype(np.float32)
     bIh = rng.uniform(-bound,bound,size=4*hiddenSize).astype(np.float32)
     bHh = rng.uniform(-bound,bound,size=4*hiddenSize).astype(np.float32)
@@ -1722,7 +1722,7 @@ def InitLstmDirection(rng,inputSize,hiddenSize):
 def InitConvBlock(rng,params,prefix,inCh,outCh,nLayers):
     c = inCh
     for i in range(nLayers):
-        idx = i*3
+        idx = i*3   #index 2 of each triple is the relu which carries no weights
         w,b = InitConv(rng,outCh,c,3,3)
         params[f"{prefix}.{idx}.weight"] = w
         params[f"{prefix}.{idx}.bias"] = b
@@ -1735,13 +1735,13 @@ def InitConvBlock(rng,params,prefix,inCh,outCh,nLayers):
 
 #---InitBackboneParams: the three-stage backbone both networks share---
 def InitBackboneParams(rng,params):
-    InitConvBlock(rng,params,"stage1",1,32,2)
-    InitConvBlock(rng,params,"stage2",32,64,4)
-    InitConvBlock(rng,params,"stage3",64,128,6)
+    InitConvBlock(rng,params,"stage1",1,32,2)   #one channel into 32 over two layers
+    InitConvBlock(rng,params,"stage2",32,64,4)   #then 32 into 64 over four
+    InitConvBlock(rng,params,"stage3",64,128,6)   # and 64 into 128 over six
 
 #---TrainableParams: every array the optimiser may touch---
 def TrainableParams(params):
-    return {k:v for k,v in params.items() if not k.endswith("running_mean") and not k.endswith("running_var")}
+    return {k:v for k,v in params.items() if not k.endswith("running_mean") and not k.endswith("running_var")}  # the running statistics are recorded rather than learned
 
 #---SaveCheckpoint: writes the weights and the run state to an .npz---
 def SaveCheckpoint(path,params,extra=None):
@@ -1767,7 +1767,7 @@ def LoadParamsInto(params,checkpointPath):
     loaded = 0
     for k in params:
         if k in sd and sd[k].shape==params[k].shape:
-            params[k][...] = sd[k].astype(np.float32)
+            params[k][...] = sd[k].astype(np.float32)   #copied into the array in place so the optimiser keeps pointing at it
             loaded+=1
     return loaded
 
@@ -1780,9 +1780,9 @@ def AppendLog(path,line):
 #---BackboneForwardTrain: the shared backbone forward, keeping what the backward pass needs---
 def BackboneForwardTrain(x,params):
     x,c1 = ConvBlockForwardTrain(x,params,"stage1",2)
-    x,poolCache1 = MaxPool2dForward(x,2,2)
+    x,poolCache1 = MaxPool2dForward(x,2,2)   #64 by 640 halves to 32 by 320
     x,c2 = ConvBlockForwardTrain(x,params,"stage2",4)
-    x,poolCache2 = MaxPool2dForward(x,2,2)
+    x,poolCache2 = MaxPool2dForward(x,2,2)    #and again to 16 by 160
     x,c3 = ConvBlockForwardTrain(x,params,"stage3",6)
     cache = dict(c1=c1,c2=c2,c3=c3,poolCache1=poolCache1,poolCache2=poolCache2)
     return x,cache
@@ -1811,7 +1811,7 @@ def EvalBackboneForward(params,x):
 #---IterateBatches: hands out shuffled batches for one pass over a dataset---
 def IterateBatches(dataset,batchSize,rng,shuffle):
     n = len(dataset)
-    order = rng.permutation(n) if shuffle else np.arange(n)
+    order = rng.permutation(n) if shuffle else np.arange(n)   #a fresh shuffle each epoch
     for start in range(0,n,batchSize):
         idxs = order[start:start+batchSize]
         yield [dataset[int(i)] for i in idxs]
@@ -1838,7 +1838,7 @@ def InitTextModelParams(seed,numClasses):
         params[f"sequence.bias_ih_l{l}_reverse"] = bIhR
         params[f"sequence.bias_hh_l{l}_reverse"] = bHhR
 
-    w,b = InitLinear(rng,numClasses,HIDDEN_SIZE*2)
+    w,b = InitLinear(rng,numClasses,HIDDEN_SIZE*2)   #the head maps 512 features onto one score per class
     params["text_head.weight"] = w
     params["text_head.bias"] = b
     return params
@@ -1859,13 +1859,13 @@ def TextModelForward(x,params):
     backboneOut,backboneCache = BackboneForwardTrain(x,params)
     pooled,hpCache = AdaptiveMaxPoolHeightForward(backboneOut)
     B,C,_,W = pooled.shape
-    squeezed = pooled[:,:,0,:]
+    squeezed = pooled[:,:,0,:]  #the height axis is now 1 and drops away
     seqIn = np.transpose(squeezed,(2,0,1))   #width becomes the CTC time axis
 
     seqOut,lstmCaches = MultilayerBidirectionalLstmForwardTrain(
         seqIn,BuildLstmLayerParams(params),HIDDEN_SIZE)
 
-    rawLogits,linCache = LinearForward(seqOut,params["text_head.weight"],params["text_head.bias"])
+    rawLogits,linCache = LinearForward(seqOut,params["text_head.weight"],params["text_head.bias"])   # 512 per column into 75 class scores
     cache = dict(backboneCache=backboneCache,hpCache=hpCache,lstmCaches=lstmCaches,linCache=linCache,bchw=(B,C,W))
     return rawLogits,cache
 
@@ -1888,8 +1888,8 @@ def TextModelBackward(dRawLogits,cache):
         grads[f"sequence.bias_hh_l{l}_reverse"] = gradsBwd["biasHh"]
 
     B,C,W = cache["bchw"]
-    dSqueezed = np.transpose(dSeqIn,(1,2,0))
-    dPooled = dSqueezed[:,:,None,:]
+    dSqueezed = np.transpose(dSeqIn,(1,2,0))   #the forward transpose undone
+    dPooled = dSqueezed[:,:,None,:]   # and the height axis put back as size one
     dBackboneOut = AdaptiveMaxPoolHeightBackward(dPooled,cache["hpCache"])
     dx,backboneGrads = BackboneBackwardTrain(dBackboneOut,cache["backboneCache"])
     grads.update(backboneGrads)
@@ -1909,7 +1909,7 @@ def EvalTextForward(params,x):
 def TextNumpyBatch(batch):
     images,flatTargets,targetLengths,texts = TextCollateFn(batch)
     targets,offset = [],0
-    for length in targetLengths:
+    for length in targetLengths:   # the flat label array cut back into one list per line
         length = int(length)
         targets.append(flatTargets[offset:offset+length].tolist())
         offset+=length
@@ -1927,16 +1927,16 @@ def ValidateTextModel(valSet,params,batchSize,rng):
     for batch in IterateBatches(valSet,batchSize,rng,shuffle=False):
         images,targets,texts = TextNumpyBatch(batch)
         rawLogits = EvalTextForward(params,images)
-        loss,_ = CtcLoss(rawLogits,targets)
+        loss,_ = CtcLoss(rawLogits,targets)   #the loss on lines training never saw
         totalLoss+=loss
         nBatches+=1
         logProbs = CLS.LogSoftmax(rawLogits,axis=2)
         preds = CLS.DecodeCtc(logProbs)
         for pred,truth in zip(preds,texts):
             totalChars+=len(truth)
-            totalCharErrors+=CLS.Levenshtein(pred,truth)
+            totalCharErrors+=CLS.Levenshtein(pred,truth)  #inserts deletes and substitutions counted against the transcript
     avgLoss = totalLoss/max(1,nBatches)
-    charAcc = 1.0-totalCharErrors/max(1,totalChars)
+    charAcc = 1.0-totalCharErrors/max(1,totalChars)   #errors over characters taken off one
     return avgLoss,charAcc
 
 #---BuildPagesSplit: splits the database pages into training and held-out views---
@@ -1997,15 +1997,15 @@ def BuildJointSplit(dataDir):
 #as needed
 #----------------------------------------------------------------------
 def IterateMixedBatches(mainSet,extraSet,batchSize,fraction,rng,shuffle=True):
-    nExtra = min(len(extraSet),max(1,int(round(batchSize*fraction)))) if len(extraSet) else 0
-    nMain = max(1,batchSize-nExtra)
+    nExtra = min(len(extraSet),max(1,int(round(batchSize*fraction)))) if len(extraSet) else 0   # 20 percent of 8 rounds to 2 personal lines
+    nMain = max(1,batchSize-nExtra)   #and the other six come from the public set
     mainOrder = rng.permutation(len(mainSet)) if shuffle else np.arange(len(mainSet))
     extraOrder = rng.permutation(len(extraSet)) if (shuffle and nExtra) else np.arange(len(extraSet))
     extraAt = 0
-    for start in range(0,len(mainSet),nMain):
+    for start in range(0,len(mainSet),nMain):   #one epoch is one pass over the public set
         batch = [mainSet[int(i)] for i in mainOrder[start:start+nMain]]
         for _ in range(nExtra):
-            if extraAt>=len(extraOrder):
+            if extraAt>=len(extraOrder):   # the smaller set is reshuffled and used again
                 extraOrder = rng.permutation(len(extraSet))
                 extraAt = 0
             batch.append(extraSet[int(extraOrder[extraAt])])
@@ -2027,14 +2027,14 @@ def TrainTextModel(numEpochs,batchSize,lr,seed,maxPages,dataDir,source="pages",r
         trainSet,valSet = BuildPagesSplit(maxPages,dataDir)
     print(f"[Split] Train lines: {len(trainSet)} | Held-out val lines: {len(valSet)}")
 
-    numClasses = len(CHARSET)+1
+    numClasses = len(CHARSET)+1   #74 characters plus the blank at slot 0
     params = InitTextModelParams(seed,numClasses)
     trainable = TrainableParams(params)
-    optimizer = RMSprop(trainable,lr=lr,weightDecay=1e-5)
-    scheduler = ReduceLrOnPlateau(optimizer,factor=0.5,patience=5,minLr=1e-5)
+    optimizer = RMSprop(trainable,lr=lr,weightDecay=1e-5)   #the reader trains on rmsprop
+    scheduler = ReduceLrOnPlateau(optimizer,factor=0.5,patience=5,minLr=1e-5)   #and halves the rate after five flat epochs
 
     rng = np.random.default_rng(seed)
-    bestValLoss = np.inf
+    bestValLoss = np.inf   #the first epoch beats infinity
     #the tag keeps a run beside the shipped checkpoint instead of over it,
     #so a demonstration cannot leave the website loading a half-trained one
     stem = "paper_cnn_bilstm_ctc_scratch"+(("_"+tag) if tag else "")
@@ -2050,7 +2050,7 @@ def TrainTextModel(numEpochs,batchSize,lr,seed,maxPages,dataDir,source="pages",r
     if resume and ckptPath.exists():
         loaded = LoadParamsInto(params,ckptPath)
         prevEpoch,prevBest = LoadCheckpointMeta(ckptPath)
-        startEpoch = prevEpoch+1
+        startEpoch = prevEpoch+1   #the run carries on from the stored epoch
         if prevBest is not None:
             bestValLoss = prevBest
         print(f"[Resume] loaded {loaded}/{len(params)} tensors from {ckptPath}, "
@@ -2064,11 +2064,11 @@ def TrainTextModel(numEpochs,batchSize,lr,seed,maxPages,dataDir,source="pages",r
                    else IterateBatches(trainSet,batchSize,rng,shuffle=True))
         for batch in batches:
             images,targets,_texts = TextNumpyBatch(batch)
-            rawLogits,cache = TextModelForward(images,params)
-            loss,dRawLogits = CtcLoss(rawLogits,targets)
-            _,grads = TextModelBackward(dRawLogits,cache)
+            rawLogits,cache = TextModelForward(images,params)   #the forward pass and everything the backward needs
+            loss,dRawLogits = CtcLoss(rawLogits,targets)  # the loss and its gradient on every column score
+            _,grads = TextModelBackward(dRawLogits,cache)   #the chain rule back to every weight
             trainableGrads = {k:grads[k] for k in trainable}
-            optimizer.Step(trainableGrads)
+            optimizer.Step(trainableGrads)   #one weight update per batch
             epochLoss+=loss
             nBatches+=1
             if nBatches==1 or nBatches%5==0:
@@ -2077,20 +2077,20 @@ def TrainTextModel(numEpochs,batchSize,lr,seed,maxPages,dataDir,source="pages",r
         print()
         trainLoss = epochLoss/max(1,nBatches)
 
-        valLoss,valCharAcc = ValidateTextModel(valSet,params,batchSize,rng)
+        valLoss,valCharAcc = ValidateTextModel(valSet,params,batchSize,rng)   # the held-out set is read with no augmentation
         if personalVal is not None and len(personalVal):
             #the public held-out set says whether it reads handwriting, this
             #one says whether it reads these writers
             _pLoss,pAcc = ValidateTextModel(personalVal,params,batchSize,rng)
             print(f"[TrainText] held-out personal char-acc {pAcc:.2%}")
-        scheduler.Step(valLoss)
-        improved = valLoss<bestValLoss
+        scheduler.Step(valLoss)   #the validation loss drives the schedule
+        improved = valLoss<bestValLoss   #the reader is selected on loss rather than accuracy
         savedMsg = ""
         if improved:
             bestValLoss = valLoss
             SaveCheckpoint(bestPath,params,extra={"__epoch__":np.array(epoch),"__best__":np.array(bestValLoss)})
             savedMsg = " [BEST SAVED]"
-        SaveCheckpoint(ckptPath,params,extra={"__epoch__":np.array(epoch),"__best__":np.array(bestValLoss)})
+        SaveCheckpoint(ckptPath,params,extra={"__epoch__":np.array(epoch),"__best__":np.array(bestValLoss)})   #the latest epoch is always saved for resuming
 
         elapsedMin = (time.time()-epochStart)/60
         print(f"[TrainText] Epoch {epoch:03d} | Train loss {trainLoss:.3f} | "
@@ -2107,10 +2107,10 @@ def InitAuthorModelParams(seed,numAuthors):
     rng = np.random.default_rng(seed)
     params = {}
     InitBackboneParams(rng,params)
-    w0,b0 = InitLinear(rng,96,128)
+    w0,b0 = InitLinear(rng,96,128)   #128 backbone features into 96 hidden
     params["author_head.0.weight"] = w0
     params["author_head.0.bias"] = b0
-    w3,b3 = InitLinear(rng,numAuthors,96)
+    w3,b3 = InitLinear(rng,numAuthors,96)  #and 96 into one score per writer
     params["author_head.3.weight"] = w3
     params["author_head.3.bias"] = b3
     return params
@@ -2124,11 +2124,11 @@ def AuthorModelForward(x,params,training,rng):
     pooledH,hpCache = AdaptiveMaxPoolHeightForward(backboneOut)
     squeezed = pooledH[:,:,0,:]
     pooledW,apCache = AdaptiveAvgPoolWidthForward(squeezed)   #the width is collapsed too
-    pooled = pooledW[:,:,0]
+    pooled = pooledW[:,:,0]   #one 128 number fingerprint for the whole line
 
     h,lin1Cache = LinearForward(pooled,params["author_head.0.weight"],params["author_head.0.bias"])
     h,reluCache = ReluForward(h)
-    h,dropCache = DropoutForward(h,0.2,training,rng)
+    h,dropCache = DropoutForward(h,0.2,training,rng)   #a fifth of the hidden values drop during training
     logits,lin2Cache = LinearForward(h,params["author_head.3.weight"],params["author_head.3.bias"])
 
     cache = dict(backboneCache=backboneCache,hpCache=hpCache,apCache=apCache,
@@ -2148,7 +2148,7 @@ def AuthorModelBackward(dLogits,cache):
     grads["author_head.0.weight"] = dw1
     grads["author_head.0.bias"] = db1
 
-    dPooledW = dpooled[:,:,None]
+    dPooledW = dpooled[:,:,None]   #the width axis put back as size one
     dSqueezed = AdaptiveAvgPoolWidthBackward(dPooledW,cache["apCache"])
     dPooledH = dSqueezed[:,:,None,:]
     dBackboneOut = AdaptiveMaxPoolHeightBackward(dPooledH,cache["hpCache"])
@@ -2174,7 +2174,7 @@ def ValidateAuthorModel(valSet,params,batchSize,rng):
     for batch in IterateBatches(valSet,batchSize,rng,shuffle=False):
         images,authorIdxs,_ = AuthorCollateFn(batch)
         logits = EvalAuthorForward(params,images)
-        preds = np.argmax(logits,axis=1)
+        preds = np.argmax(logits,axis=1)   #the highest scoring writer for each crop
         correct+=int((preds==authorIdxs).sum())
         total+=len(authorIdxs)
     return correct/max(1,total)
@@ -2187,7 +2187,7 @@ def ValidateAuthorModel(valSet,params,batchSize,rng):
 def TrainAuthorModel(numEpochs,batchSize,lr,seed,resume=False,warmStart=None,
                      writers=None,tag=None):
     #the writer list is passed in, leaving paths.py untouched
-    wanted = list(writers) if writers else list(paths.DatabaseWriters+paths.PersonalWriters)
+    wanted = list(writers) if writers else list(paths.DatabaseWriters+paths.PersonalWriters)    #every writer with data unless a subset is named
     unknown = [w for w in wanted if w not in paths.DatabaseWriters+paths.PersonalWriters]
     if unknown:
         raise SystemExit("unknown writer(s): %s\nknown: %s"
@@ -2197,14 +2197,14 @@ def TrainAuthorModel(numEpochs,batchSize,lr,seed,resume=False,warmStart=None,
 
     base = IAMLineDatasetRaw(rootDir=str(DEFAULT_AUTHOR_DATA_DIR),cacheDir=str(DEFAULT_AUTHOR_CACHE_DIR))
     before = len(base.samples)
-    base.samples = [s for s in base.samples if s["page_key"].split("/")[0] in wantedDb]
+    base.samples = [s for s in base.samples if s["page_key"].split("/")[0] in wantedDb]   # database writers outside the list are dropped
     print(f"[Filter] kept {len(base.samples)}/{before} database samples for {wantedDb}")
 
     AddPersonalSamples(base)
     #the writers left out are dropped before the split, or one could still
     #land in validation and be scored against a class the model has not got
-    base.samples = [s for s in base.samples if s["page_key"].split("/")[0] in wanted]
-    base.authorFolders = sorted(wanted)
+    base.samples = [s for s in base.samples if s["page_key"].split("/")[0] in wanted]    #and the personal ones are filtered after they are added
+    base.authorFolders = sorted(wanted)   #the sorted list fixes which index each writer holds
     base.authorToIdx = {a:i for i,a in enumerate(base.authorFolders)}
     print(f"[Authors] {len(base.authorFolders)}: {base.authorFolders}")
     print(f"[Crops] stroke-normalised at {CLS.PenWidthXh:.2f} x-heights")
@@ -2219,11 +2219,11 @@ def TrainAuthorModel(numEpochs,batchSize,lr,seed,resume=False,warmStart=None,
     numAuthors = len(base.authorFolders)
     params = InitAuthorModelParams(seed,numAuthors)
     trainable = TrainableParams(params)
-    optimizer = AdamW(trainable,lr=lr,weightDecay=1e-4)
-    scheduler = CosineAnnealingLr(optimizer,tMax=numEpochs)
+    optimizer = AdamW(trainable,lr=lr,weightDecay=1e-4)   #the namer trains on adamw
+    scheduler = CosineAnnealingLr(optimizer,tMax=numEpochs)   #with the rate following a cosine over the whole run
 
     rngBatch = np.random.default_rng(seed)
-    rngDropout = np.random.default_rng(seed+1)
+    rngDropout = np.random.default_rng(seed+1)   #dropout draws from its own seeded generator
     bestAcc = 0.0
     #as above: a tagged run never overwrites the shipped namer
     stem = "author_shape_11w_pw170_scratch"+(("_"+tag) if tag else "")
@@ -2251,21 +2251,21 @@ def TrainAuthorModel(numEpochs,batchSize,lr,seed,resume=False,warmStart=None,
         for batch in IterateBatches(trainSet,batchSize,rngBatch,shuffle=True):
             images,authorIdxs,_ = AuthorCollateFn(batch)
             logits,cache = AuthorModelForward(images,params,training=True,rng=rngDropout)
-            loss,dLogits = CrossEntropyLoss(logits,authorIdxs)
+            loss,dLogits = CrossEntropyLoss(logits,authorIdxs)   #cross entropy against the true writer
             _,grads = AuthorModelBackward(dLogits,cache)
             trainableGrads = {k:grads[k] for k in trainable}
-            ClipGradNorm(trainableGrads,maxNorm=5.0)
+            ClipGradNorm(trainableGrads,maxNorm=5.0)   #the gradient is clipped before the step
             optimizer.Step(trainableGrads)
             epochLoss+=loss
             nBatches+=1
-        scheduler.Step()
+        scheduler.Step()   #the cosine advances once an epoch
         trainLoss = epochLoss/max(1,nBatches)
 
-        valAcc = ValidateAuthorModel(valSet,params,batchSize,rngBatch)
+        valAcc = ValidateAuthorModel(valSet,params,batchSize,rngBatch)   # the namer is selected on accuracy rather than loss
         savedMsg = ""
         if valAcc>bestAcc:
             bestAcc = valAcc
-            SaveCheckpoint(outPath,params,extra={"__author_names__":np.array(base.authorFolders),
+            SaveCheckpoint(outPath,params,extra={"__author_names__":np.array(base.authorFolders),  # the writer names travel inside the weights file
                                                   "__epoch__":np.array(epoch),"__best__":np.array(bestAcc)})
             savedMsg = " [SAVED]"
         SaveCheckpoint(ckptPath,params,extra={"__author_names__":np.array(base.authorFolders),
@@ -2290,10 +2290,10 @@ def Main():
     import argparse
     ap = argparse.ArgumentParser(description="train the reader or the namer from first principles")
     ap.add_argument("task",choices=["text","author"])
-    ap.add_argument("--epochs",type=int,default=40)
-    ap.add_argument("--batch",type=int,default=8)
+    ap.add_argument("--epochs",type=int,default=40)   #one epoch is one pass over the training lines
+    ap.add_argument("--batch",type=int,default=8)   #eight lines go through together per update
     ap.add_argument("--lr",type=float,default=1e-3)
-    ap.add_argument("--seed",type=int,default=7)
+    ap.add_argument("--seed",type=int,default=7)    # the seed fixes the starting weights and the batch order
     ap.add_argument("--source",choices=["joint","teklia","pages"],default="joint",
                     help="joint: the pre-cut public lines plus the photographed "
                          "writers. teklia: public lines only. pages: segment the "
@@ -2313,9 +2313,9 @@ def Main():
                          "the shipped one rather than over it")
     args = ap.parse_args()
 
-    warm = Path(args.warmStart) if args.warmStart else None
+    warm = Path(args.warmStart) if args.warmStart else None    # a warm start path is taken as given
     if warm and not warm.exists():
-        candidate = WEIGHTS_DIR/warm.name
+        candidate = WEIGHTS_DIR/warm.name  #or looked for by name inside the weights folder
         if candidate.exists():
             warm = candidate
         else:

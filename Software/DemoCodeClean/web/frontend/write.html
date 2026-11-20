@@ -219,7 +219,7 @@ const PAGE_KEY = "write";
 //read ONCE, before anything on this page saves state: restoring the line
 //number persists as a side effect, which would overwrite the saved choice
 //with the unticked default box and stop offline mode ever turning itself on
-const SAVED_OFFLINE = (loadPageState(PAGE_KEY) || {}).offlineMode;
+const SAVED_OFFLINE = (loadPageState(PAGE_KEY) || {}).offlineMode;   //read once before anything on this page saves over it
 const generateBtn = document.getElementById("generateBtn");
 const sendToGantryBtn = document.getElementById("sendToGantryBtn");
 const idlePlaceholder = document.getElementById("idlePlaceholder");
@@ -230,7 +230,7 @@ function persist(extra = {}) {
     writeText: document.getElementById("writeText").value,
     writeAuthor: document.getElementById("writeAuthor").value,
     nTries: document.getElementById("nTries").value,
-    line: typeof currentLine === "number" ? currentLine : 0,
+    line: typeof currentLine === "number" ? currentLine : 0,   //the ruled line the next job starts on
     lineHeightMm: document.getElementById("lineHeightMm").value,
     ignoreRuling: document.getElementById("ignoreRuling").checked,
     bestPrio: document.getElementById("bestPrio").checked,
@@ -251,29 +251,29 @@ async function showResult(res) {
   document.getElementById("resultBox").classList.add("show");
   // the page render, not the tight crop: this is the sheet the machine will
   // draw, and it is the picture the read-back was taken from
-  const img = res.page_url || res.preview_url;
-  document.getElementById("previewImg").src = absoluteUrl(img) + "?t=" + Date.now();
+  const img = res.page_url || res.preview_url;   //the whole sheet where there is one and the tight crop otherwise
+  document.getElementById("previewImg").src = absoluteUrl(img) + "?t=" + Date.now();   //the timestamp keeps the browser off a cached image
   document.getElementById("rReadBack").textContent = res.read_back_text || "(nothing read back)";
 
   const acc = res.text_accuracy_pct;
   document.getElementById("rAcc").textContent =
     (acc === null || acc === undefined) ? "(no expected text)" : acc + "%";
-  document.getElementById("rAccBar").style.width = (acc || 0) + "%";
+  document.getElementById("rAccBar").style.width = (acc || 0) + "%";   //the bar width is the read back accuracy
 
   // who the namer calls the page it was handed, and how sure it is that this
   // is the writer that was ASKED for.  a writer the namer has no class for
   // gets no confidence figure at all rather than a misleading one
   const w = document.getElementById("rWriter");
-  if (res.writer_confidence_pct === null || res.writer_confidence_pct === undefined) {
+  if (res.writer_confidence_pct === null || res.writer_confidence_pct === undefined) {   //a writer with no class in the namer gets no confidence figure
     w.textContent = res.writer_named ? res.writer_named + " (asked-for writer not in the namer)" : "—";
     w.className = "v";
   } else {
     const lines = res.writer_lines_naming_asked_for ? ` · ${res.writer_lines_naming_asked_for} lines` : "";
     w.textContent = `${res.writer_named} · ${res.writer_confidence_pct}% as ${res.author}${lines}`;
-    w.className = "v" + (res.writer_named === res.author ? " good" : " bad");
+    w.className = "v" + (res.writer_named === res.author ? " good" : " bad");   //green when the page names the writer that was asked for
   }
 
-  document.getElementById("rLines").textContent = res.gcode_line_count ?? "—";
+  document.getElementById("rLines").textContent = res.gcode_line_count ?? "—";   // a dash stands in for a missing figure
   document.getElementById("rPulses").textContent = res.pen_pulses ?? "—";
   const est = res.budget && res.budget.estimatedSeconds;
   document.getElementById("rDrawEst").textContent = est ? est.toFixed(1) + " s" : "—";
@@ -285,14 +285,14 @@ async function showResult(res) {
   // page and reading back, each with its share and its cost per character.
   renderTiming("generateTiming", res.timing);
   // a previous job's drawing time is not this job's, so it is cleared
-  renderTiming("drawTiming", null);
+  renderTiming("drawTiming", null);   // an earlier drawing time belongs to an earlier job
 
   const gcodeUrl = absoluteUrl(res.gcode_url);
   document.getElementById("downloadLink").href = gcodeUrl;
   try {
     const gcodeText = await (await fetch(gcodeUrl)).text();
     document.getElementById("gcodePreview").textContent =
-      gcodeText.split("\n").slice(0, 40).join("\n") + "\n...";
+      gcodeText.split("\n").slice(0, 40).join("\n") + "\n...";   //the first forty lines of the file as a preview
   } catch (_) {
     document.getElementById("gcodePreview").textContent = "(could not reload the G-code)";
   }
@@ -310,7 +310,7 @@ function resetPage() {
   clearError("gantryError");
 }
 
-wireResetButton("resetPageBtn", PAGE_KEY, resetPage);
+wireResetButton("resetPageBtn", PAGE_KEY, resetPage);   //the reset button clears the saved state and blanks the form
 
 (function restore() {
   const s = loadPageState(PAGE_KEY);
@@ -321,7 +321,7 @@ wireResetButton("resetPageBtn", PAGE_KEY, resetPage);
   if (s.writeAuthor) {
     const trySet = () => {
       const sel = document.getElementById("writeAuthor");
-      if ([...sel.options].some(o => o.value === s.writeAuthor)) sel.value = s.writeAuthor;
+      if ([...sel.options].some(o => o.value === s.writeAuthor)) sel.value = s.writeAuthor;   // the author list may still be loading so this retries
       else setTimeout(trySet, 200);
     };
     trySet();
@@ -335,7 +335,7 @@ document.getElementById("nTries").addEventListener("input", () => persist());
 
 async function refreshGantryStatus() {
   const el = document.getElementById("gantryStatus");
-  if (document.getElementById("offlineMode").checked) return;
+  if (document.getElementById("offlineMode").checked) return;  //offline mode asks the machine nothing
   try {
     const res = await apiFetch("/api/gantry/status");
     el.textContent = res.connected ? "Connected" : "Not connected";
@@ -360,10 +360,10 @@ let lastCalibrated = false, lastCalibration = null;
 // all.  Sending and jogging stay blocked, because those genuinely do.
 function applyGate() {
   const offline = offlineModeEl.checked;
-  mainGrid.classList.toggle("locked", !offline && !lastCalibrated);
-  sendToGantryBtn.disabled = offline;
+  mainGrid.classList.toggle("locked", !offline && !lastCalibrated);   //the page locks until the machine is homed
+  sendToGantryBtn.disabled = offline;    // drawing needs the machine and generating does not
   for (const id of ["jogGoBtn", "penDownBtn", "penUpBtn"])
-    document.getElementById(id).disabled = offline || !lastCalibrated;
+    document.getElementById(id).disabled = offline || !lastCalibrated;   //jogging and the pen need a homed machine
   const st = document.getElementById("gantryStatus");
   if (offline) {
     st.textContent = "Offline — generation only";
@@ -398,7 +398,7 @@ async function checkCalibration() {
   const saved = SAVED_OFFLINE;
   try {
     const res = await apiFetch("/api/gantry/status");
-    offlineModeEl.checked = (saved !== undefined && saved !== null) ? !!saved : !res.connected;
+    offlineModeEl.checked = (saved !== undefined && saved !== null) ? !!saved : !res.connected;  //a saved choice wins and otherwise the connection decides
     setCalibrated(res.calibrated, res.calibration);
   } catch (e) {
     offlineModeEl.checked = (saved !== undefined && saved !== null) ? !!saved : true;
@@ -412,7 +412,7 @@ calibrateBtn.addEventListener("click", async () => {
   calibrateBtn.innerHTML = '<span class="spinner"></span> Homing...';
   try {
     const res = await apiFetch("/api/gantry/calibrate", { method: "POST" });
-    if (res.calibrated) setCalibrated(true, res.calibration);
+    if (res.calibrated) setCalibrated(true, res.calibration);   //homing unlocks the rest of the page
     else { setCalibrated(false, null); showError("calibrateError", res.message || "Calibration failed."); }
   } catch (e) {
     setCalibrated(false, null);
@@ -433,12 +433,12 @@ let jogBounds = null;
 
 async function refreshPenPosition() {
   const el = document.getElementById("jogBounds");
-  if (offlineModeEl.checked) { el.textContent = "Offline — the pen is not driven."; return; }
+  if (offlineModeEl.checked) { el.textContent = "Offline — the pen is not driven."; return; }   // nothing is asked of a machine that is not there
   try {
     const res = await apiFetch("/api/gantry/position");
     jogBounds = res.bounds || null;
     if (jogBounds) {
-      document.getElementById("jogX").min = jogBounds.x_min_mm;
+      document.getElementById("jogX").min = jogBounds.x_min_mm;   //the boxes take their limits from the homed area
       document.getElementById("jogX").max = jogBounds.x_max_mm;
       document.getElementById("jogY").min = jogBounds.y_min_mm;
       document.getElementById("jogY").max = jogBounds.y_max_mm;
@@ -462,11 +462,11 @@ document.getElementById("jogGoBtn").addEventListener("click", async () => {
     const res = await apiFetch("/api/gantry/jog", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ x: parseFloat(document.getElementById("jogX").value),
+      body: JSON.stringify({ x: parseFloat(document.getElementById("jogX").value),   //the typed coordinates are sent as millimetres
                              y: parseFloat(document.getElementById("jogY").value) }),
     });
-    if (!res.moved) showError("jogError", res.message);
-    else if (res.clamped)
+    if (!res.moved) showError("jogError", res.message);   // a refused move says why
+    else if (res.clamped)    //and a move pulled inside the bounds says where it went
       showError("jogError", `Held inside the work area: went to X${res.x_mm} Y${res.y_mm} mm.`);
     await refreshPenPosition();
   } catch (e) {
@@ -487,7 +487,7 @@ async function setPen(down) {
     const res = await apiFetch("/api/gantry/pen", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ down }),
+      body: JSON.stringify({ down }),   //the page asks for down and the server works in up
     });
     if (!res.ok) showError("jogError", res.message);
     await refreshPenPosition();
@@ -513,7 +513,7 @@ uploadGcodeBtn.addEventListener("click", async () => {
     const form = new FormData();
     form.append("gcode", file);
     const expectedText = document.getElementById("gcodeExpectedText").value.trim();
-    if (expectedText) form.append("expected_text", expectedText);
+    if (expectedText) form.append("expected_text", expectedText);   // an expected text turns the read back into an accuracy
     const res = await apiFetch("/api/gcode/upload", { method: "POST", body: form });
     lastJobId = res.job_id;
     await showResult(res);
@@ -536,21 +536,21 @@ uploadGcodeBtn.addEventListener("click", async () => {
 let currentLine = 0;
 let lastPlacement = null;
 
-function lineHeightMm() { return parseFloat(document.getElementById("lineHeightMm").value) || 8.4; }
+function lineHeightMm() { return parseFloat(document.getElementById("lineHeightMm").value) || 8.4; }    //the ruling pitch with 8.4 mm as the fallback
 function ignoreRuling() { return document.getElementById("ignoreRuling").checked; }
 function bestPrio() { return document.getElementById("bestPrio").checked; }
 
 // the diagram has to step by the pitch the job was really drawn at.  drawing
 // 8.4 mm rules under a job spaced at 11.75 is the lie that hid the collisions
 function mapPitchMm() {
-  if (lastPlacement && lastPlacement.ignoredRuling && lastPlacement.drawnPitchMm > 0)
+  if (lastPlacement && lastPlacement.ignoredRuling && lastPlacement.drawnPitchMm > 0)   //the diagram steps by the pitch the job was really drawn at
     return lastPlacement.drawnPitchMm;
   return lineHeightMm();
 }
 
 function setLine(n, placement) {
-  const max = lastPlacement ? lastPlacement.linesOnPage - 1 : 98;
-  currentLine = Math.max(0, Math.min(n, max));
+  const max = lastPlacement ? lastPlacement.linesOnPage - 1 : 98;   // how many ruled lines fit on the sheet
+  currentLine = Math.max(0, Math.min(n, max));    //the line number held inside the page
   if (placement) lastPlacement = placement;
   document.getElementById("lineNo").textContent = currentLine + 1;
   document.getElementById("lineOfN").textContent =
@@ -573,19 +573,19 @@ function drawPageMap() {
   const bedL = p ? p.bedLeftXmm : 10, bedR = p ? p.bedRightXmm : 200;
   const firstY = p ? p.firstLineYmm : 156;
   const W = bedR - bedL, H = bedTop - bedBot;
-  const mmToY = (y) => (bedTop - y);
-  const nLines = Math.max(1, Math.floor((firstY - bedBot) / lh) + 1);
+  const mmToY = (y) => (bedTop - y);   // millimetres up the bed become pixels down the drawing
+  const nLines = Math.max(1, Math.floor((firstY - bedBot) / lh) + 1);   //the ruled lines between the first one and the bottom
 
   let rules = "";
   for (let i = 0; i < nLines; i++) {
-    const y = mmToY(firstY - i * lh);
-    const on = i === currentLine;
+    const y = mmToY(firstY - i * lh);   //each rule sits one pitch below the one above
+    const on = i === currentLine;   //the line the next job will use is drawn brighter
     rules += `<line x1="0" y1="${y.toFixed(1)}" x2="${W}" y2="${y.toFixed(1)}"
       stroke="${on ? "#4fd8e8" : "#2a2f36"}" stroke-width="${on ? 1.1 : 0.5}"/>`;
   }
   let band = "";
   if (p && p.lineIndex === currentLine) {
-    const y = mmToY(p.topYmm), h = Math.max(1, p.topYmm - p.bottomYmm);
+    const y = mmToY(p.topYmm), h = Math.max(1, p.topYmm - p.bottomYmm);   // the band covers the height the writing really occupied
     band = `<rect x="${(p.leftXmm - bedL).toFixed(1)}" y="${y.toFixed(1)}"
       width="${Math.max(1, p.rightXmm - p.leftXmm).toFixed(1)}" height="${h.toFixed(1)}"
       fill="#4fd8e8" fill-opacity="0.35" stroke="#4fd8e8" stroke-width="0.6"/>`;
@@ -613,7 +613,7 @@ document.getElementById("bestPrio").addEventListener("change", () => persist());
   if (s.bestPrio !== undefined && s.bestPrio !== null)
     document.getElementById("bestPrio").checked = !!s.bestPrio;
   lastPlacement = s.placement || null;
-  setLine(s.line || 0);
+  setLine(s.line || 0);   // the saved line number is restored
 })();
 
 // ---------------------------------------------------------------------------
@@ -627,9 +627,9 @@ const travelFeedEl = document.getElementById("travelFeed");
 const penUpDwellEl = document.getElementById("penUpDwell");
 const penDownDwellEl = document.getElementById("penDownDwell");
 
-function drawFeedMmMin()   { return parseFloat(drawFeedEl.value) || 900; }
+function drawFeedMmMin()   { return parseFloat(drawFeedEl.value) || 900; }   //the pen down feed in millimetres a minute
 function travelFeedMmMin() { return parseFloat(travelFeedEl.value) || 2400; }
-function penUpDwellMs()    { const v = parseFloat(penUpDwellEl.value);   return isNaN(v) ? 350 : v; }
+function penUpDwellMs()    { const v = parseFloat(penUpDwellEl.value);   return isNaN(v) ? 350 : v; }    // an empty box falls back to 350 ms
 function penDownDwellMs()  { const v = parseFloat(penDownDwellEl.value); return isNaN(v) ? 350 : v; }
 
 let lastBudget = null;
@@ -639,7 +639,7 @@ function renderFeeds() {
   const up = penUpDwellMs(), down = penDownDwellMs();
   document.getElementById("drawFeedVal").textContent = `${d} mm/min`;
   document.getElementById("travelFeedVal").textContent = `${t} mm/min`;
-  document.getElementById("drawFeedSecs").textContent = `${(d / 60).toFixed(1)} mm/s`;
+  document.getElementById("drawFeedSecs").textContent = `${(d / 60).toFixed(1)} mm/s`;   //the same feed per second
   document.getElementById("travelFeedSecs").textContent = `${(t / 60).toFixed(1)} mm/s`;
   document.getElementById("penUpDwellVal").textContent = up === 0 ? "none" : `${up} ms`;
   document.getElementById("penDownDwellVal").textContent = down === 0 ? "none" : `${down} ms`;
@@ -654,13 +654,13 @@ function renderBudget() {
   if (!lastBudget) { el.hidden = true; return; }
   const d = drawFeedMmMin(), t = travelFeedMmMin();
   const up = penUpDwellMs(), down = penDownDwellMs();
-  const draw = lastBudget.drawMm * 60 / d;
-  const trav = lastBudget.travelMm * 60 / t;
-  const dwell = (lastBudget.penPulses || 0) * (up + down) / 2000;
+  const draw = lastBudget.drawMm * 60 / d;   //drawing distance over the draw feed in seconds
+  const trav = lastBudget.travelMm * 60 / t;   //and travel distance over the travel feed
+  const dwell = (lastBudget.penPulses || 0) * (up + down) / 2000;   //pulses times the mean of the two dwells
   const total = draw + trav + dwell;
   const row = (name, s, extra) =>
     `<div class="budget-row"><span>${name}</span><span>${s.toFixed(1)} s</span>` +
-    `<span>${total > 0 ? Math.round(100 * s / total) : 0}%</span>` +
+    `<span>${total > 0 ? Math.round(100 * s / total) : 0}%</span>` +   //each part as a percentage of the total
     `<span class="budget-sub">${extra}</span></div>`;
   el.innerHTML =
     `<div class="budget-head">Where this job's time goes (floor, ignores acceleration)</div>` +
@@ -688,7 +688,7 @@ generateBtn.addEventListener("click", async () => {
   clearError("generateError");
   const text = document.getElementById("writeText").value.trim();
   const author = document.getElementById("writeAuthor").value;
-  const nTries = parseInt(document.getElementById("nTries").value || "20", 10);
+  const nTries = parseInt(document.getElementById("nTries").value || "20", 10);   //how many candidates the joint search draws
   if (!text) { showError("generateError", "Enter some text first."); return; }
   if (!author) { showError("generateError", "No author selected."); return; }
 
@@ -708,16 +708,16 @@ generateBtn.addEventListener("click", async () => {
                              bestPrio: bestPrio() }),
     });
     lastJobId = res.job_id;
-    if (res.budget) { lastBudget = res.budget; renderFeeds(); }
+    if (res.budget) { lastBudget = res.budget; renderFeeds(); }   //the measured distances feed the time panel
     await showResult(res);
     // step past the WHOLE job, converted through the pitch it was really
     // drawn at: with the ruling ignored the lines sit 10 to 13 mm apart
     // rather than 8.4, so advancing by the text-line count would write the
     // next job over the tail of this one
     if (res.placement) {
-      const lines = Math.max(1, res.placement.textLines || 1);
-      const pitch = res.placement.drawnPitchMm || lineHeightMm();
-      const used = Math.max(lines, Math.ceil(lines * pitch / lineHeightMm()));
+      const lines = Math.max(1, res.placement.textLines || 1);   //how many text lines the job used
+      const pitch = res.placement.drawnPitchMm || lineHeightMm();   //and the pitch they were drawn at
+      const used = Math.max(lines, Math.ceil(lines * pitch / lineHeightMm()));   // converted into how many rulings they covered
       setLine(currentLine + used, res.placement);
     }
     persist({ lastResult: res });
@@ -742,7 +742,7 @@ stopBtn.addEventListener("click", async () => {
     const res = await apiFetch("/api/gantry/stop", { method: "POST" });
     const el = document.getElementById("gantryStatus");
     el.textContent = res.message;
-    el.className = "v" + (res.stopped && res.pen_up && res.parked ? " good" : " bad");
+    el.className = "v" + (res.stopped && res.pen_up && res.parked ? " good" : " bad");   //green only when the pen lifted and the carriage parked
     if (!res.stopped || res.latched || !res.pen_up || !res.parked)
       showError("gantryError", res.message || "Stop failed.");
   } catch (e) {
@@ -759,7 +759,7 @@ sendToGantryBtn.addEventListener("click", async () => {
   sendToGantryBtn.disabled = true;
   sendToGantryBtn.innerHTML = '<span class="spinner"></span> Drawing...';
   try {
-    const res = await apiFetch(`/api/write/${lastJobId}`, { method: "POST" });
+    const res = await apiFetch(`/api/write/${lastJobId}`, { method: "POST" });   //this call returns once the machine has finished drawing
     const el = document.getElementById("gantryStatus");
     el.textContent = res.message;
     el.className = "v" + (res.sent ? " good" : res.gantry_connected ? "" : " bad");
@@ -775,7 +775,7 @@ sendToGantryBtn.addEventListener("click", async () => {
   }
 });
 
-refreshGantryStatus();
+refreshGantryStatus();   //the page asks the machine where it stands on load
 checkCalibration();
 </script>
 </body>

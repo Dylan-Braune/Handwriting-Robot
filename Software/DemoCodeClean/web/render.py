@@ -33,7 +33,7 @@ def _font(size,bold=False):
     if key not in _FONT_CACHE:
         name = "consolab.ttf" if bold else "consola.ttf"
         try:
-            _FONT_CACHE[key] = ImageFont.truetype(f"C:/Windows/Fonts/{name}",size)
+            _FONT_CACHE[key] = ImageFont.truetype(f"C:/Windows/Fonts/{name}",size)   # the windows console font where it is present
         except Exception:
             _FONT_CACHE[key] = ImageFont.load_default()
     return _FONT_CACHE[key]
@@ -50,18 +50,18 @@ def _RenderOneGlyph(g,cell=90,pad=8):
         return im
     xs = [p[0] for p in allpts]
     ys = [p[1] for p in allpts]
-    x0,x1,y0,y1 = min(xs),max(xs),min(ys),max(ys)
+    x0,x1,y0,y1 = min(xs),max(xs),min(ys),max(ys)   #the bounding box of the whole glyph
     w = max(x1-x0,0.01)
     h = max(y1-y0,0.01)
-    scale = (cell-2*pad)/max(w,h)
+    scale = (cell-2*pad)/max(w,h)   # the longer side fills the cell inside its padding
 
     def tx(p):
-        return (pad+(p[0]-x0)*scale,cell-pad-(p[1]-y0)*scale)
+        return (pad+(p[0]-x0)*scale,cell-pad-(p[1]-y0)*scale)  #y is flipped since the image counts rows downwards
 
     for s in strokes:
         pts = [tx(p) for p in s]
         if len(pts)>=2:
-            draw.line(pts,fill=0,width=2)
+            draw.line(pts,fill=0,width=2)   # each stroke drawn as a two pixel black line
     return im
 
 
@@ -71,23 +71,23 @@ def _RenderOneGlyph(g,cell=90,pad=8):
 #development.
 def GlyphGridPath(author,profile):
     outPath = CACHE_DIR/f"glyphs_{author}.png"
-    if outPath.exists():
+    if outPath.exists():   #a rendered sheet is reused until the profile changes
         return outPath
 
     glyphs = profile.get("glyphs") or {}
     if not glyphs:
         raise KeyError(f"No glyphs in the profile for {author!r}")
     chars = sorted(glyphs.keys())
-    maxVariants = max(len(v) for v in glyphs.values())
+    maxVariants = max(len(v) for v in glyphs.values())   #the widest letter pool sets the column count
     cell = 90
     labelW = 28
     W = labelW+maxVariants*cell
-    H = len(chars)*cell
+    H = len(chars)*cell   #one row of cells per character
     sheet = Image.new("RGB",(W,H),"white")
     draw = ImageDraw.Draw(sheet)
     font = _font(13,bold=True)
     for ri,c in enumerate(chars):
-        draw.text((4,ri*cell+cell//2-8),repr(c)[1:-1],fill=(0,0,150),font=font)
+        draw.text((4,ri*cell+cell//2-8),repr(c)[1:-1],fill=(0,0,150),font=font)   #the character itself labels its row
         for ci,g in enumerate(glyphs[c]):
             im = _RenderOneGlyph(g,cell=cell)
             sheet.paste(im.convert("RGB"),(labelW+ci*cell,ri*cell))
@@ -105,7 +105,7 @@ def GlyphGridPath(author,profile):
 def SampleCrops(author,n=2):
     metaPath = CACHE_DIR/f"sample_{author}_meta.txt"
     cached = sorted(CACHE_DIR.glob(f"sample_{author}_*.png"))
-    if len(cached)>=n and metaPath.exists():
+    if len(cached)>=n and metaPath.exists():   # cached crops and their transcripts are served straight back
         texts = metaPath.read_text(encoding="utf-8").splitlines()
         return list(zip(cached[:n],texts[:n]))
 
@@ -126,9 +126,9 @@ def SampleCrops(author,n=2):
 
     picked = []
     for s in base.samples:
-        if s.get("is_holdout"):
+        if s.get("is_holdout"):   #held-out lines are the measurement set
             continue
-        if 20<=len(s["text"])<=70:
+        if 20<=len(s["text"])<=70:   #mid length lines show the hand better than two words
             picked.append(s)
         if len(picked)>=n:
             break
@@ -140,5 +140,5 @@ def SampleCrops(author,n=2):
         Image.fromarray(np.asarray(arr,dtype=np.uint8)).convert("L").save(path)
         outPaths.append(path)
         texts.append(s["text"])
-    metaPath.write_text("\n".join(texts),encoding="utf-8")
+    metaPath.write_text("\n".join(texts),encoding="utf-8")   #the transcripts are stored beside the images
     return list(zip(outPaths,texts))

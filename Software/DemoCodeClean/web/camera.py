@@ -27,15 +27,15 @@ import os
 #which /dev/videoN (Linux) or device index (Windows) to open.  the board
 #reports two devices, so only 0 and 1 are valid and index 2 is refused
 #outright; 0 answers but is not a capture device, which leaves 1
-CAMERA_INDEX = int(os.environ.get("CAMERA_INDEX","1"))
+CAMERA_INDEX = int(os.environ.get("CAMERA_INDEX","1"))   #the board reports two devices and index 1 is the capture one
 
 #the sensor's native size, 8MP and four thirds.  cv2 opens a UVC webcam at
 #640x480 unless it is told otherwise, and a page of writing at 640x480 has an
 #x-height of about four pixels: the segmenter found NO lines at all in a real
 #capture off the board.  at 3264x2448 the x-height is about thirty pixels,
 #which is the size the reader was trained on
-CAMERA_WIDTH = int(os.environ.get("CAMERA_WIDTH","3264"))
-CAMERA_HEIGHT = int(os.environ.get("CAMERA_HEIGHT","2448"))
+CAMERA_WIDTH = int(os.environ.get("CAMERA_WIDTH","3264"))   #the sensor native width
+CAMERA_HEIGHT = int(os.environ.get("CAMERA_HEIGHT","2448"))  #and height which puts the x-height at about thirty pixels
 
 WARMUP_FRAMES = 5   #a UVC webcam's first frame after opening is often dark/unfocused
 
@@ -62,8 +62,8 @@ def _Open(idx):
     if not cap.isOpened():
         cap.release()
         return None
-    cap.set(cv2.CAP_PROP_FOURCC,cv2.VideoWriter_fourcc(*"MJPG"))
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH,CAMERA_WIDTH)
+    cap.set(cv2.CAP_PROP_FOURCC,cv2.VideoWriter_fourcc(*"MJPG"))   #motion jpeg is set before the size
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH,CAMERA_WIDTH)   #then the frame size is asked for
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT,CAMERA_HEIGHT)
     return cap
 
@@ -96,7 +96,7 @@ def PreviewStop():
 
 
 def PreviewActive():
-    return _previewCap is not None
+    return _previewCap is not None   #true while the preview holds the device
 
 
 #grabs one frame from the already-open preview camera and returns
@@ -107,10 +107,10 @@ def PreviewFrameJpeg():
     with _GetLock():
         if _previewCap is None:
             raise RuntimeError("Preview not started -- call preview_start() first.")
-        ok,frame = _previewCap.read()
+        ok,frame = _previewCap.read()    #one frame off the open preview handle
     if not ok:
         raise RuntimeError("Failed to read a preview frame.")
-    ok,buf = cv2.imencode(".jpg",frame)
+    ok,buf = cv2.imencode(".jpg",frame)   #encoded in memory rather than written to disk
     if not ok:
         raise RuntimeError("Failed to JPEG-encode preview frame.")
     return buf.tobytes()
@@ -131,10 +131,10 @@ def CaptureImage(timeout=10,index=None):
 
     with _GetLock():
         if _previewCap is not None:
-            ok,frame = _previewCap.read()
+            ok,frame = _previewCap.read()   #the still comes from the frame already showing
             if not ok:
                 raise RuntimeError("Failed to read a frame from the open preview.")
-            outPath = CAPTURE_DIR/f"capture_{int(time.time()*1000)}.jpg"
+            outPath = CAPTURE_DIR/f"capture_{int(time.time()*1000)}.jpg"  #the file name carries the capture time in milliseconds
             cv2.imwrite(str(outPath),frame)
             return outPath
 
@@ -147,17 +147,17 @@ def CaptureImage(timeout=10,index=None):
             "using the webcam, e.g. a video call)?"
         )
 
-    deadline = time.time()+timeout
+    deadline = time.time()+timeout   #ten seconds for the warm up frames
     frame = None
     try:
         for _ in range(WARMUP_FRAMES):
             if time.time()>deadline:
                 break
-            ok,frame = cap.read()
+            ok,frame = cap.read()   # each warm up frame replaces the one before
             if not ok:
                 frame = None
     finally:
-        cap.release()
+        cap.release()   # the device is handed back however the read ended
 
     if frame is None:
         raise RuntimeError(

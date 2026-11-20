@@ -29,9 +29,9 @@ import time
 #----------------------------------------------------------------------
 ALLOWANCE = {
     #reading a photographed page: a fixed cost for the page, then per character
-    "classify": lambda chars: 2.0+0.025*chars,
+    "classify": lambda chars: 2.0+0.025*chars,   # two seconds for the page plus 25 ms a character
     #generating a line and drawing it: per character, the pen being the slow part
-    "reproduce": lambda chars: 4.0*chars,
+    "reproduce": lambda chars: 4.0*chars,   #four seconds a character covering travel and drawing
     #a drawing-only run is judged on the same reproduction allowance
     "draw": lambda chars: 4.0*chars,
 }
@@ -54,11 +54,11 @@ class Stage:
         self.t0 = None
 
     def __enter__(self):
-        self.t0 = time.perf_counter()
+        self.t0 = time.perf_counter()   #perf_counter ticks forward only so clock changes leave it alone
         return self
 
     def __exit__(self, *exc):
-        wall = time.perf_counter()-self.t0
+        wall = time.perf_counter()-self.t0   #end minus start gives the wall time of the step
         self.run.Record(self.name, wall, self.chars)
         return False
 
@@ -86,7 +86,7 @@ class Run:
     def Record(self, name, wall, chars):
         self.stages.append(dict(stage=name, seconds=round(wall, 4),
                                 characters=chars,
-                                secondsPerChar=round(wall/chars, 5) if chars else None))
+                                secondsPerChar=round(wall/chars, 5) if chars else None))   #the same time divided by characters is the per character figure
 
     #---Add: a stage timed inside this run but measured by the code itself---
     #the wall clock already covers it, so it must not be added again
@@ -96,17 +96,17 @@ class Run:
     #---Carry: a stage measured in an EARLIER request that counts here too---
     #this one is outside this run's wall clock, so it is added to the total
     def Carry(self, name, seconds, chars=0):
-        self.external += float(seconds)
+        self.external += float(seconds)   #carried time sits outside this wall clock so it joins the total
         self.Record(name, float(seconds), chars)
 
     #---Total: everything, including whatever was not inside a stage---
     def Total(self):
-        return (time.perf_counter()-self.t0)+self.external
+        return (time.perf_counter()-self.t0)+self.external   # elapsed clock plus whatever an earlier request carried in
 
     #---AsDict: the shape the browser reads---
     def AsDict(self):
         total = self.Total()
-        accounted = sum(s["seconds"] for s in self.stages)
+        accounted = sum(s["seconds"] for s in self.stages)    #how much of the total the named stages cover
         out = dict(
             kind=self.kind,
             characters=self.chars,
@@ -114,19 +114,19 @@ class Run:
             totalSeconds=round(total, 3),
             measuredSeconds=round(accounted, 3),
             #whatever the stages did not account for: encoding, json, disk
-            overheadSeconds=round(max(0.0, total-accounted), 3),
-            secondsPerCharacter=round(total/self.chars, 4) if self.chars else None,
+            overheadSeconds=round(max(0.0, total-accounted), 3),   #the remainder is encoding json and disk
+            secondsPerCharacter=round(total/self.chars, 4) if self.chars else None,   #total over characters is what the requirement is written in
             secondsPerLine=round(total/self.lines, 3) if self.lines else None,
-            charactersPerSecond=round(self.chars/total, 2) if self.chars and total else None,
+            charactersPerSecond=round(self.chars/total, 2) if self.chars and total else None,   # the same ratio the other way up
             stages=self.stages,
         )
         formula = ALLOWANCE.get(self.kind)
         if formula and self.chars:
-            limit = formula(self.chars)
+            limit = formula(self.chars)   #the allowance scales with how much writing is involved
             out["limitSeconds"] = round(limit, 2)
             out["limitFormula"] = ALLOWANCE_TEXT.get(self.kind, "")
-            out["withinLimit"] = bool(total <= limit)
-            out["fractionOfLimit"] = round(total/limit, 3)
+            out["withinLimit"] = bool(total <= limit)   # true while the total sits under the allowance
+            out["fractionOfLimit"] = round(total/limit, 3)   #under 1 is inside the allowance and over 1 is past it
             out["secondsSpare"] = round(limit-total, 2)
         return out
 
@@ -140,7 +140,7 @@ class Run:
         lines = ["timing for %s: %.2f s total, %d characters, %d lines"
                  % (d["kind"], d["totalSeconds"], d["characters"], d["lines"])]
         for s in d["stages"]:
-            share = 100*s["seconds"]/d["totalSeconds"] if d["totalSeconds"] else 0
+            share = 100*s["seconds"]/d["totalSeconds"] if d["totalSeconds"] else 0   #each stage as a percentage of the total
             perChar = "" if not s["secondsPerChar"] else "  %.4f s/char" % s["secondsPerChar"]
             lines.append("  %-*s %8.3f s  %5.1f%%%s"
                          % (width, s["stage"], s["seconds"], share, perChar))

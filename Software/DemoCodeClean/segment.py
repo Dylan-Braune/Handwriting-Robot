@@ -11,7 +11,7 @@ InputHeight,InputWidth = 64,640   #the crop size the classifiers take
 #----------------------------------------------------------------------
 def Integral(img):
     ii = np.zeros((img.shape[0]+1,img.shape[1]+1),np.float64)
-    np.cumsum(np.cumsum(img,axis=0),axis=1,out=ii[1:,1:])
+    np.cumsum(np.cumsum(img,axis=0),axis=1,out=ii[1:,1:])    #summing down then across builds the running total
     return ii
 
 #---BoxSum: the window sum around every pixel at once, from that running total---
@@ -19,32 +19,32 @@ def BoxSum(img,ry,rx):
     h,w = img.shape
     ii = Integral(img)
     y,x = np.arange(h),np.arange(w)
-    y1,y2 = np.clip(y-ry,0,h)[:,None],np.clip(y+ry+1,0,h)[:,None]
-    x1,x2 = np.clip(x-rx,0,w)[None,:],np.clip(x+rx+1,0,w)[None,:]
+    y1,y2 = np.clip(y-ry,0,h)[:,None],np.clip(y+ry+1,0,h)[:,None]   #window top and bottom row clamped to the image
+    x1,x2 = np.clip(x-rx,0,w)[None,:],np.clip(x+rx+1,0,w)[None,:]   #and the same for left and right
     return ii[y2,x2]-ii[y1,x2]-ii[y2,x1]+ii[y1,x1]   #BR - TR - BL + TL
 
 #---BoxCount: how many pixels each window covered, which is smaller at the edges---
 def BoxCount(ry,rx,h,w):
     y,x = np.arange(h),np.arange(w)
-    cy = (np.clip(y+ry+1,0,h)-np.clip(y-ry,0,h))[:,None]
+    cy = (np.clip(y+ry+1,0,h)-np.clip(y-ry,0,h))[:,None]   #rows the window really covers at this position
     cx = (np.clip(x+rx+1,0,w)-np.clip(x-rx,0,w))[None,:]
-    return cy*cx
+    return cy*cx   #rows times columns is the pixel count of the window
 
 #---BoxMean: the mean value in a window around every pixel, used as a local background---
 def BoxMean(a,r):
     p = np.pad(a,r,mode="edge").astype(np.float64)   #edge repeated, so every window is full
     ii = Integral(p)
     k = 2*r+1
-    return (ii[k:,k:]-ii[:-k,k:]-ii[k:,:-k]+ii[:-k,:-k])/(k*k)
+    return (ii[k:,k:]-ii[:-k,k:]-ii[k:,:-k]+ii[:-k,:-k])/(k*k)   #four corners of the running total over the window area
 
 #---Dilate: grows every shape outwards, a pixel turns on if any set pixel is in range---
 def Dilate(mask,ky,kx):
-    return BoxSum(mask.astype(np.float64),ky//2,kx//2)>0
+    return BoxSum(mask.astype(np.float64),ky//2,kx//2)>0   #any set pixel in the window makes the sum positive
 
 #---Erode: shrinks every shape inwards, a pixel stays on only if the window is full---
 def Erode(mask,ky,kx):
     ry,rx = ky//2,kx//2
-    return BoxSum(mask.astype(np.float64),ry,rx)>=BoxCount(ry,rx,*mask.shape)-0.5
+    return BoxSum(mask.astype(np.float64),ry,rx)>=BoxCount(ry,rx,*mask.shape)-0.5   #the sum reaching the full count means every pixel is set
 
 #---Close: dilate then erode by the same radius, bridging gaps without fattening---
 def Close(mask,ky,kx):
@@ -54,8 +54,8 @@ def Close(mask,ky,kx):
 def AnyWithinRadius(m,r,axis):
     a = np.moveaxis(m.astype(np.int32),axis,0)
     n = a.shape[0]
-    c = np.cumsum(np.pad(a,[(r+1,r)]+[(0,0)]*(a.ndim-1)),0)
-    return np.moveaxis((c[2*r+1:2*r+1+n]-c[:n])>0,0,axis)
+    c = np.cumsum(np.pad(a,[(r+1,r)]+[(0,0)]*(a.ndim-1)),0)   #a running total along the chosen axis
+    return np.moveaxis((c[2*r+1:2*r+1+n]-c[:n])>0,0,axis)   #the difference across 2r+1 places is the count in the window
 
 #---LongRunMask: keeps only ink lying on an unbroken run of at least n pixels along one axis---
 def LongRunMask(m,n,axis):
@@ -63,12 +63,12 @@ def LongRunMask(m,n,axis):
     L = a.shape[0]
     if L<n:
         return np.zeros(m.shape,bool)
-    c = np.cumsum(np.pad(a,((1,0),(0,0))),0)
+    c = np.cumsum(np.pad(a,((1,0),(0,0))),0)   #running total along the axis
     hit = ((c[n:]-c[:-n])==n).astype(np.int32)   #a run of n starts at i when c[i+n]-c[i]==n
     ch = np.cumsum(np.pad(hit,((1,0),(0,0))),0)   #a second sum turns starts into coverage
     j = np.arange(L)
-    lo,hi = np.maximum(0,j-n+1),np.minimum(j,L-n)
-    return np.moveaxis(((ch[hi+1]-ch[lo])>0)&(hi>=lo)[:,None],0,axis)
+    lo,hi = np.maximum(0,j-n+1),np.minimum(j,L-n)   #the window of run starts that could cover position j
+    return np.moveaxis(((ch[hi+1]-ch[lo])>0)&(hi>=lo)[:,None],0,axis)   #covered where any run start falls in that window
 
 #---RowRunLength: for every pixel, the length of the unbroken run of ink through it along its row---
 def RowRunLength(mask):
@@ -77,13 +77,13 @@ def RowRunLength(mask):
     starts = np.zeros_like(a)
     starts[:,0] = a[:,0]
     starts[:,1:] = (a[:,1:]==1)&(a[:,:-1]==0)   #a run starts where the row steps 0 to 1
-    runId = np.cumsum(starts.reshape(-1)).reshape(h,w)
-    runId[a==0] = 0
+    runId = np.cumsum(starts.reshape(-1)).reshape(h,w)   # counting the starts gives each run its own number
+    runId[a==0] = 0   #background pixels drop back to zero
     if runId.max()==0:
         return np.zeros_like(a)
-    counts = np.bincount(runId.reshape(-1))
+    counts = np.bincount(runId.reshape(-1))   # how many pixels carry each run number
     counts[0] = 0
-    return counts[runId]
+    return counts[runId]   #every pixel reads back the length of its own run
 
 #---Otsu: the threshold maximising between-class variance over the histogram---
 def Otsu(v,hi=None):
@@ -94,11 +94,11 @@ def Otsu(v,hi=None):
     else:
         hi = 1.2 if hi is None else float(hi)
         hist = np.histogram(np.clip(a,0,hi),bins=256,range=(0,hi))[0].astype(np.float64)
-    p = hist/max(hist.sum(),1.0)
+    p = hist/max(hist.sum(),1.0)   #the histogram as probabilities summing to one
     w = np.cumsum(p)   #mass at or below each bin
-    m = np.cumsum(p*np.arange(256))
-    var = (m[-1]*w-m)**2/np.maximum(w*(1-w),1e-12)
-    t = int(np.argmax(var))
+    m = np.cumsum(p*np.arange(256))   #running first moment of the same histogram
+    var = (m[-1]*w-m)**2/np.maximum(w*(1-w),1e-12)   # between class variance at every candidate threshold
+    t = int(np.argmax(var))   #the bin where that variance peaks
     return t if isInt else (t+0.5)*hi/256   #bin index for ints, bin centre for floats
 
 #----------------------------------------------------------------------
@@ -106,22 +106,22 @@ def Otsu(v,hi=None):
 #specks, and remove long thin runs, which are printed rules
 #----------------------------------------------------------------------
 def BinarizeLine(gray,stripRules=True,closeGaps=True):
-    ink = np.asarray(gray)<Otsu(np.asarray(gray,dtype=np.uint8))
+    ink = np.asarray(gray)<Otsu(np.asarray(gray,dtype=np.uint8))   #anything darker than the otsu level counts as ink
     h = ink.shape[0]
     if stripRules and ink.any():
-        hRun = RowRunLength(ink)
-        vRun = RowRunLength(ink.T).T
-        thin = vRun<=max(3,int(0.12*h))
+        hRun = RowRunLength(ink)   # run length through each pixel across its row
+        vRun = RowRunLength(ink.T).T   #and the same down its column
+        thin = vRun<=max(3,int(0.12*h))   #thin means under 12 percent of the crop height
         rule = (hRun>=max(24,int(1.1*h)))&thin   #long and thin
         if rule.any():
             ink = ink&~(rule&thin)
     if closeGaps and ink.any():
-        k = int(np.clip(round(0.045*h),2,4))
+        k = int(np.clip(round(0.045*h),2,4))   #closing radius about 4.5 percent of the crop height
         ink = Close(ink,k,k)
     labels,n = LabelComponents(ink)
     if n:
         areas = np.bincount(labels.ravel())
-        keep = areas>=6
+        keep = areas>=6   # blobs under 6 pixels are specks
         keep[0] = False
         ink = keep[labels]
     return ink
@@ -131,9 +131,9 @@ def CoreBand(ink):
     prof = ink.sum(axis=1).astype(np.float64)
     if prof.max()<=0:
         return None
-    rows = np.nonzero(prof>=0.45*prof.max())[0]
+    rows = np.nonzero(prof>=0.45*prof.max())[0]   #rows holding at least 45 percent of the busiest row
     top,base = int(rows[0]),int(rows[-1])
-    return (top,base) if base-top>=3 else None
+    return (top,base) if base-top>=3 else None   # a band under 3 rows tall is too small to measure
 
 #----------------------------------------------------------------------
 #LabelComponents: numbers every eight-connected blob of ink, row by row, merging the runs
@@ -162,7 +162,7 @@ def LabelComponents(mask):
         np.subtract(buf[1:],buf[:-1],out=dif)   #runs start at 0 to 1, end at 1 to 0
         d = dif
         cur,k = [],0
-        for a,b in zip(np.nonzero(d==1)[0].tolist(),np.nonzero(d==-1)[0].tolist()):
+        for a,b in zip(np.nonzero(d==1)[0].tolist(),np.nonzero(d==-1)[0].tolist()):    #a and b are the start and end of one run in this row
             while k<len(prev) and prev[k][1]<a:
                 k+=1
             l,kk = 0,k
@@ -171,16 +171,16 @@ def LabelComponents(mask):
                 if l==0:
                     l = r
                 elif r!=l:
-                    parent[max(r,l)] = min(r,l)
+                    parent[max(r,l)] = min(r,l)   #two runs touching the same run above merge under the lower id
                     l = min(r,l)
                 kk+=1
             if l==0:
                 parent.append(len(parent))
                 l = len(parent)-1
             cur.append((a,b,l))
-            lab[y,a:b] = l
+            lab[y,a:b] = l    #the whole run takes that label
         prev = cur
-    roots = np.array([Find(i) for i in range(len(parent))])
+    roots = np.array([Find(i) for i in range(len(parent))])   #every label resolved down to its final root
     _,comp = np.unique(roots,return_inverse=True)   #renumber 1..n after the merges
     return comp[lab].astype(np.int32),int(comp.max())
 
@@ -188,11 +188,11 @@ def LabelComponents(mask):
 def PieceBounds(labelAt,ys,xs,n,H,W):
     top,bot = np.full(n+1,H),np.zeros(n+1,int)
     left,right = np.full(n+1,W),np.zeros(n+1,int)
-    np.minimum.at(top,labelAt,ys)
+    np.minimum.at(top,labelAt,ys)   #a scattered minimum gives each piece its top row
     np.maximum.at(bot,labelAt,ys)
     np.minimum.at(left,labelAt,xs)
     np.maximum.at(right,labelAt,xs)
-    area = np.bincount(labelAt,minlength=n+1).astype(float)
+    area = np.bincount(labelAt,minlength=n+1).astype(float)   #pixels per piece
     return top,bot,left,right,area
 
 #----------------------------------------------------------------------
@@ -216,9 +216,9 @@ def Skeletonize(mask):
             B = sum(r[:8])   #how many neighbours are set
             A = sum(((r[k]==0)&(r[k+1]==1)).astype(np.uint8) for k in range(8))   #0 to 1 steps round the ring
             if step==0:
-                c1,c2 = (P2*P4*P6)==0,(P4*P6*P8)==0
+                c1,c2 = (P2*P4*P6)==0,(P4*P6*P8)==0   #at least one of north east and south is clear
             else:
-                c1,c2 = (P2*P4*P8)==0,(P2*P6*P8)==0
+                c1,c2 = (P2*P4*P8)==0,(P2*P6*P8)==0    #the mirrored pair on the second sub-pass
             go = (img==1)&(B>=2)&(B<=6)&(A==1)&c1&c2   #a==1 means deleting it cannot split the stroke
             if go.any():
                 img[go] = 0
@@ -230,12 +230,12 @@ def Skeletonize(mask):
 #every input pixel still contributes
 #----------------------------------------------------------------------
 def _Weights(inSize,outSize,kernel):
-    scale = inSize/float(outSize)
-    filterScale = max(1.0,scale)
-    support = (1.0 if kernel=='linear' else 0.5)*filterScale
+    scale = inSize/float(outSize)    #how many input pixels fall in one output pixel
+    filterScale = max(1.0,scale)   #the filter widens only when shrinking
+    support = (1.0 if kernel=='linear' else 0.5)*filterScale   #half width of the filter in input pixels
     centres = (np.arange(outSize)+0.5)*scale   #output centre, in input coordinates
-    half = int(np.ceil(support))+1
-    cols = np.floor(centres)[:,None]+np.arange(-half,half+1)[None,:]
+    half = int(np.ceil(support))+1   #how many taps sit either side of the centre
+    cols = np.floor(centres)[:,None]+np.arange(-half,half+1)[None,:]   #the input columns each output pixel reads from
     t = (cols+0.5-centres[:,None])/filterScale   #distance from the window centre
     if kernel=='linear':
         w = np.where(np.abs(t)<1.0,1.0-np.abs(t),0.0)   #triangle
@@ -243,7 +243,7 @@ def _Weights(inSize,outSize,kernel):
         w = np.where(np.abs(t)<=0.5,1.0,0.0)   #box
     cc = np.clip(cols,0,inSize-1).astype(np.int64)   #fold a window running off the image back on
     out = np.zeros((outSize,inSize),np.float64)
-    np.add.at(out,(np.repeat(np.arange(outSize),cols.shape[1]),cc.ravel()),w.ravel())
+    np.add.at(out,(np.repeat(np.arange(outSize),cols.shape[1]),cc.ravel()),w.ravel())  #the weights scattered into a full resampling matrix
     tot = out.sum(axis=1,keepdims=True)
     return out/np.where(tot>0,tot,1.0)   #each row sums to one
 
@@ -255,17 +255,17 @@ def Resize(arr,newW,newH,kernel='linear'):
     if h==newH and w==newW:
         return a.copy()
     if kernel=='nearest':   #for label maps, where an averaged value exists nowhere
-        sy = np.clip(((np.arange(newH)+0.5)*(h/float(newH))).astype(np.int64),0,h-1)
+        sy = np.clip(((np.arange(newH)+0.5)*(h/float(newH))).astype(np.int64),0,h-1)   #the nearest source row for each output row
         sx = np.clip(((np.arange(newW)+0.5)*(w/float(newW))).astype(np.int64),0,w-1)
         return a[sy[:,None],sx[None,:]]
     f = a.astype(np.float64)
     if newH!=h:
         f = _Along0(f,h,newH,kernel)
     if newW!=w:
-        f = np.swapaxes(_Along0(np.swapaxes(f,0,1),w,newW,kernel),0,1)
+        f = np.swapaxes(_Along0(np.swapaxes(f,0,1),w,newW,kernel),0,1)   #the width pass runs the same code on the transposed array
     if np.issubdtype(a.dtype,np.integer):
         i = np.iinfo(a.dtype)
-        return np.clip(np.rint(f),i.min,i.max).astype(a.dtype)
+        return np.clip(np.rint(f),i.min,i.max).astype(a.dtype)   # rounded back inside the range of the original type
     return f.astype(a.dtype)
 
 #----------------------------------------------------------------------
@@ -290,7 +290,7 @@ def _Taps(inSize,outSize,kernel):
     cc = np.clip(cols,0,inSize-1).astype(np.int64)   #a window off the edge folds back on
     tot = w.sum(axis=1,keepdims=True)
     w = w/np.where(tot>0,tot,1.0)   #each output pixel's weights sum to one
-    keep = w.any(axis=0)
+    keep = w.any(axis=0)   #columns no output pixel reads are dropped
     return cc[:,keep],w[:,keep]
 
 
@@ -303,7 +303,7 @@ def _Along0(f,inSize,outSize,kernel):
         wk = w[:,k]
         nz = wk!=0
         if nz.any():
-            out[nz] += wk[nz].reshape(shape)*f[cc[nz,k]]
+            out[nz] += wk[nz].reshape(shape)*f[cc[nz,k]]   #one tap applied across every output position at once
     return out
 
 
@@ -322,32 +322,32 @@ def FitFixedCanvas(gray,height,width,padValue=255):
     canvas = np.full((height,width),padValue,np.uint8)
     if w<=0 or h<=0:
         return canvas
-    s = min(height/float(h),width/float(w))
-    newW,newH = max(1,int(round(w*s))),max(1,int(round(h*s)))
+    s = min(height/float(h),width/float(w))   #one scale for both axes so nothing stretches
+    newW,newH = max(1,int(round(w*s))),max(1,int(round(h*s)))   #the scaled size rounded to whole pixels
     small = Resize(a.astype(np.uint8),newW,newH,'linear')
     y0 = max(0,(height-newH)//2)   #vertically centred, left flush
-    canvas[y0:y0+newH,:newW] = small[:height-y0,:width]
+    canvas[y0:y0+newH,:newW] = small[:height-y0,:width]   #the scaled crop dropped onto the paper canvas
     return canvas
 
 #---_Sample: reads the image at fractional positions, mixing the four neighbours---
 def _Sample(a,sx,sy,fill,edge='area'):
     h,w = a.shape[0],a.shape[1]
-    x0,y0 = np.floor(sx).astype(np.int64),np.floor(sy).astype(np.int64)
-    fx,fy = sx-x0,sy-y0
+    x0,y0 = np.floor(sx).astype(np.int64),np.floor(sy).astype(np.int64)   #the pixel above and left of the sample point
+    fx,fy = sx-x0,sy-y0   # how far into that pixel the sample sits
     if edge=='area':
         inside = (sx>-0.5)&(sx<w-0.5)&(sy>-0.5)&(sy<h-0.5)   #pixel i covers i-0.5 to i+0.5
     else:
         inside = (sx>=0)&(sx<=w-1)&(sy>=0)&(sy<=h-1)
     xi,yi = np.clip(x0,0,w-1),np.clip(y0,0,h-1)
     xj,yj = np.clip(x0+1,0,w-1),np.clip(y0+1,0,h-1)
-    top = a[yi,xi]*(1-fx)+a[yi,xj]*fx
-    bot = a[yj,xi]*(1-fx)+a[yj,xj]*fx
-    return np.where(inside,top*(1-fy)+bot*fy,float(fill))
+    top = a[yi,xi]*(1-fx)+a[yi,xj]*fx    #the two upper neighbours mixed by fx
+    bot = a[yj,xi]*(1-fx)+a[yj,xj]*fx   # and the two lower ones
+    return np.where(inside,top*(1-fy)+bot*fy,float(fill))   #those two mixed by fy makes it bilinear
 
 #---_Like: rounds a float result back to the input dtype---
 def _Like(out,like):
     if np.issubdtype(np.asarray(like).dtype,np.integer):
-        return np.clip(np.rint(out),0,255).astype(np.uint8)
+        return np.clip(np.rint(out),0,255).astype(np.uint8)   #rounded back to 8 bit
     return out
 
 #---Rotate: turns the image about its centre, reading backwards from each output pixel---
@@ -360,15 +360,15 @@ def Rotate(gray,deg,fill=255,rows=192):
     a = np.asarray(gray).astype(np.float64)
     h,w = a.shape[0],a.shape[1]
     th = np.radians(float(deg))
-    c,s = np.cos(th),np.sin(th)
-    cy,cx = (h-1)/2.0,(w-1)/2.0
-    dxs = np.arange(w,dtype=np.float64)-cx
+    c,s = np.cos(th),np.sin(th)   #cosine and sine of the trial angle
+    cy,cx = (h-1)/2.0,(w-1)/2.0  # the centre the rotation turns about
+    dxs = np.arange(w,dtype=np.float64)-cx   #column offsets from that centre
     out = np.empty((h,w),np.float64)
     for y0 in range(0,h,rows):
         y1 = min(h,y0+rows)
-        dy = np.arange(y0,y1,dtype=np.float64).reshape(-1,1)-cy
+        dy = np.arange(y0,y1,dtype=np.float64).reshape(-1,1)-cy   #row offsets for this band of rows
         #rows run downward, so this is the transpose of the textbook matrix
-        out[y0:y1] = _Sample(a,c*dxs-s*dy+cx,s*dxs+c*dy+cy,fill)
+        out[y0:y1] = _Sample(a,c*dxs-s*dy+cx,s*dxs+c*dy+cy,fill)   #each output pixel reads the source at the rotated position
     return _Like(out,gray)
 
 #---Warp: affine with six coefficients or perspective with eight, same backward read---
@@ -380,11 +380,11 @@ def Warp(gray,coeffs,fill=255):
     X,Y = xx+0.5,yy+0.5   #the coefficients act on the pixel centre
     k = [float(v) for v in coeffs]
     if len(k)==6:
-        sx,sy = k[0]*X+k[1]*Y+k[2]-0.5,k[3]*X+k[4]*Y+k[5]-0.5
+        sx,sy = k[0]*X+k[1]*Y+k[2]-0.5,k[3]*X+k[4]*Y+k[5]-0.5   #six coefficients give a straight affine map
     elif len(k)==8:
-        den = k[6]*X+k[7]*Y+1.0
+        den = k[6]*X+k[7]*Y+1.0   #the perspective denominator
         den = np.where(np.abs(den)<1e-12,1e-12,den)
-        sx,sy = (k[0]*X+k[1]*Y+k[2])/den-0.5,(k[3]*X+k[4]*Y+k[5])/den-0.5
+        sx,sy = (k[0]*X+k[1]*Y+k[2])/den-0.5,(k[3]*X+k[4]*Y+k[5])/den-0.5  #each coordinate over it makes the homography
     else:
         raise ValueError("Warp wants 6 coefficients for affine or 8 for perspective")
     return _Like(_Sample(a,sx,sy,fill,edge='centre'),gray)
@@ -397,17 +397,17 @@ def Blur(gray,sigma,mode='edge'):
         return np.asarray(gray).copy()
     r = max(1,int(np.ceil(3.0*s)))   #cut off at three sigma
     t = np.arange(-r,r+1,dtype=np.float64)
-    k = np.exp(-(t*t)/(2.0*s*s))
-    k /= k.sum()
+    k = np.exp(-(t*t)/(2.0*s*s))   # the gaussian itself
+    k /= k.sum()   #normalised so overall brightness holds
     pk = dict(edge='edge',constant='constant')[mode]
     pad = np.pad(a,((r,r),(r,r)),mode=pk)
     tmp = np.zeros_like(a)
     for i,wgt in enumerate(k):
-        tmp += wgt*pad[i:i+a.shape[0],r:r+a.shape[1]]
+        tmp += wgt*pad[i:i+a.shape[0],r:r+a.shape[1]]   #the vertical pass as a weighted sum of shifted copies
     pad2 = np.pad(tmp,((0,0),(r,r)),mode=pk)
     out = np.zeros_like(a)
     for i,wgt in enumerate(k):
-        out += wgt*pad2[:,i:i+a.shape[1]]
+        out += wgt*pad2[:,i:i+a.shape[1]]   #then the horizontal pass over that result
     return _Like(out,gray)
 
 #----------------------------------------------------------------------
@@ -417,11 +417,11 @@ def Blur(gray,sigma,mode='edge'):
 def Elastic(gray,sigma,alpha,rng):
     a = np.asarray(gray).astype(np.float64)
     h,w = a.shape
-    dx = Blur(rng.uniform(-1,1,(h,w)),sigma,mode='constant')*alpha
+    dx = Blur(rng.uniform(-1,1,(h,w)),sigma,mode='constant')*alpha  # a smoothed random field times alpha gives the x shift
     dy = Blur(rng.uniform(-1,1,(h,w)),sigma,mode='constant')*alpha
     yy,xx = np.meshgrid(np.arange(h,dtype=np.float64),
                         np.arange(w,dtype=np.float64),indexing='ij')
-    return _Like(_Sample(a,xx+dx,yy+dy,255,edge='centre'),gray)
+    return _Like(_Sample(a,xx+dx,yy+dy,255,edge='centre'),gray)   # every pixel reads the image at its shifted position
 
 #----------------------------------------------------------------------
 #DrawPolyline: draws a polyline with a round pen, filling where the distance to the
@@ -431,24 +431,24 @@ def DrawPolyline(img,pts,value,width):
     if len(pts)==0:
         return img
     h,w = img.shape[0],img.shape[1]
-    r = max(0.5,float(width)/2.0)
+    r = max(0.5,float(width)/2.0)   #half the pen width is the fill radius
     val = np.uint8(np.clip(round(float(value)),0,255))
     segs = [(pts[i],pts[i+1]) for i in range(len(pts)-1)] or [(pts[0],pts[0])]
     for (ax,ay),(bx,by) in segs:
-        x0,x1 = max(0,int(min(ax,bx)-r)-1),min(w,int(max(ax,bx)+r)+2)
+        x0,x1 = max(0,int(min(ax,bx)-r)-1),min(w,int(max(ax,bx)+r)+2)   #only the box around this segment is touched
         y0,y1 = max(0,int(min(ay,by)-r)-1),min(h,int(max(ay,by)+r)+2)
         if x1<=x0 or y1<=y0:
             continue
         yy,xx = np.meshgrid(np.arange(y0,y1,dtype=np.float64),
                             np.arange(x0,x1,dtype=np.float64),indexing='ij')
         vx,vy = bx-ax,by-ay
-        L2 = vx*vx+vy*vy
+        L2 = vx*vx+vy*vy   #squared length of the segment
         if L2<=1e-12:
             d = np.hypot(xx-ax,yy-ay)
         else:
             t = np.clip(((xx-ax)*vx+(yy-ay)*vy)/L2,0.0,1.0)   #how far along the segment
-            d = np.hypot(xx-(ax+t*vx),yy-(ay+t*vy))
-        img[y0:y1,x0:x1] = np.where(d<=r,val,img[y0:y1,x0:x1])
+            d = np.hypot(xx-(ax+t*vx),yy-(ay+t*vy))   #distance from each pixel to the nearest point on the segment
+        img[y0:y1,x0:x1] = np.where(d<=r,val,img[y0:y1,x0:x1])   #pixels inside the radius take the pen value
     return img
 
 #----------------------------------------------------------------------
@@ -459,12 +459,12 @@ def EstimateSlantDeg(ink):
     ys,xs = np.nonzero(ink)
     if len(xs)<50:
         return 0.0
-    yc = ys.mean()
+    yc = ys.mean()   #the shear turns about the mean ink row
     best,bestScore = 0.0,-1.0
     for deg in np.arange(-45,45.5,1.5):
-        xsh = (xs+(ys-yc)*-np.tan(np.radians(deg))).astype(np.int64)
-        prof = np.bincount(xsh-xsh.min()).astype(np.float64)
-        score = float((prof**2).sum())
+        xsh = (xs+(ys-yc)*-np.tan(np.radians(deg))).astype(np.int64)   #each ink pixel slid sideways by tan of the trial angle
+        prof = np.bincount(xsh-xsh.min()).astype(np.float64)  #ink per column after that shear
+        score = float((prof**2).sum())   #squaring rewards tall narrow columns
         if score>bestScore:
             bestScore,best = score,float(deg)
     return -best   #positive is a forward lean, so deslanting is x -= tan(slant)*y
@@ -474,13 +474,13 @@ def PolylineLength(p):
     a = np.asarray(p,dtype=np.float64)
     if len(a)<2:
         return 0.0
-    return float(np.hypot(*np.diff(a,axis=0).T).sum())
+    return float(np.hypot(*np.diff(a,axis=0).T).sum())  #the step distances between consecutive points added up
 
 #---InkMask: which pixels are ink, by comparing each to its own blurred background---
 def InkMask(gray):
     r = max(8,min(40,round(gray.shape[0]/41)))   #background radius scales with the image
-    ratio = gray/np.maximum(BoxMean(gray,r),1.0)
-    mask = ratio<Otsu(ratio)
+    ratio = gray/np.maximum(BoxMean(gray,r),1.0)   #each pixel measured against its own local background
+    mask = ratio<Otsu(ratio)   #otsu run on that ratio rather than on the raw grey
     solid = BoxMean(mask.astype(np.float64),4)>0.999   #a solid 9x9 block is not writing
     return mask&~(BoxMean(solid.astype(np.float64),3)>0),ratio
 
@@ -491,20 +491,20 @@ def InkMask(gray):
 def PaperRegionMask(g,P):
     H,W = g.shape
     s = 4
-    c = BoxMean(g[:H//s*s,:W//s*s].reshape(H//s,s,W//s,s).mean((1,3)),max(1,int(0.15*P/s)))
-    dark = c<0.45*np.median(c)
+    c = BoxMean(g[:H//s*s,:W//s*s].reshape(H//s,s,W//s,s).mean((1,3)),max(1,int(0.15*P/s)))   #the page averaged into 4x4 blocks then smoothed
+    dark = c<0.45*np.median(c)  #blocks under 45 percent of the median brightness
     if dark.mean()<0.002:
         return np.ones((H,W),bool)
     lab,n = LabelComponents(~dark)
-    big = np.kron(lab==np.bincount(lab.ravel())[1:].argmax()+1,np.ones((s,s),bool))
+    big = np.kron(lab==np.bincount(lab.ravel())[1:].argmax()+1,np.ones((s,s),bool))   #the largest bright blob blown back up by the block size
     full = np.ones((H,W),bool)
     full[:big.shape[0],:big.shape[1]] = big
-    r = int(0.4*P)
+    r = int(0.4*P)   #the border pulled in is 40 percent of a line pitch
     return ~AnyWithinRadius(AnyWithinRadius(~full,r,0),r,1)   #shrink in from the paper edge
 
 #the smallest gap between profile peaks that counts as line spacing, in
 #letter heights
-PEAK_MIN_PITCH_XH = 1.5
+PEAK_MIN_PITCH_XH = 1.5   #a peak gap under 1.5 letter heights sits inside one line
 
 #the lowest pitch that may be reported, in half-resolution pixels
 MIN_LINE_PITCH = 15
@@ -525,10 +525,10 @@ def _LetterHeight(mask):
     np.maximum.at(bot,pl,ys)
     area = np.bincount(pl,minlength=nc+1)
     hts = bot-top+1
-    sel = (area>=8)&(hts>=3)&(hts<=mask.shape[0])
+    sel = (area>=8)&(hts>=3)&(hts<=mask.shape[0])   # specks and page tall pieces stay out of the median
     if not sel[1:].any():
         return None
-    return float(np.median(hts[1:][sel[1:]]))
+    return float(np.median(hts[1:][sel[1:]]))   #the median blob height stands in for the letter height
 
 #----------------------------------------------------------------------
 #LinePitch: the spacing between lines, the median gap between peaks of the smoothed
@@ -536,29 +536,29 @@ def _LetterHeight(mask):
 #----------------------------------------------------------------------
 def LinePitch(mask):
     W = mask.shape[1]
-    prof = mask[:,int(0.05*W):int(0.97*W)].sum(1).astype(float)
-    k = np.exp(-0.5*(np.arange(-12,13)/4.0)**2)
-    sm = np.convolve(prof,k/k.sum(),"same")
+    prof = mask[:,int(0.05*W):int(0.97*W)].sum(1).astype(float)   #ink per row with the outer margins left off
+    k = np.exp(-0.5*(np.arange(-12,13)/4.0)**2)  # a gaussian window of sigma 4 rows
+    sm = np.convolve(prof,k/k.sum(),"same")   #the profile smoothed so single rows stop counting
 
     h = _LetterHeight(mask)
     floor = (PEAK_MIN_PITCH_XH*h) if h else 0.0   #a gap below this is within one line
 
-    peaks = [i for i in range(1,len(sm)-1) if sm[i]>=sm[i-1] and sm[i]>sm[i+1] and sm[i]>0.06*sm.max()]
+    peaks = [i for i in range(1,len(sm)-1) if sm[i]>=sm[i-1] and sm[i]>sm[i+1] and sm[i]>0.06*sm.max()]   #a peak beats both neighbours and 6 percent of the tallest
     if len(peaks)>=2:
-        p = int(np.median(np.diff(sorted(peaks))))
+        p = int(np.median(np.diff(sorted(peaks))))   # the median gap between peaks is the line pitch
         if p>=floor:
             return p,sm
 
-    a = sm-sm.mean()
-    ac = np.correlate(a,a,"full")[len(a)-1:]
+    a = sm-sm.mean()   # the mean comes off before correlating
+    ac = np.correlate(a,a,"full")[len(a)-1:]  #autocorrelation kept from zero lag upwards
     seg = ac[15:min(200,len(ac)//3)]
     idx = next((i for i in range(1,len(seg)-1)
-                if seg[i]>=0.7*seg.max() and seg[i]>=seg[i-1] and seg[i]>=seg[i+1]), None)
+                if seg[i]>=0.7*seg.max() and seg[i]>=seg[i-1] and seg[i]>=seg[i+1]), None)    # the first strong repeat in the lag range is the spacing
     if idx is not None and 15+idx>=floor:
         return 15+idx,sm
 
     if h:
-        return max(MIN_LINE_PITCH,int(round(2.2*h))),sm
+        return max(MIN_LINE_PITCH,int(round(2.2*h))),sm  #with no peaks the pitch falls back to 2.2 letter heights
     return 48,sm
 
 #----------------------------------------------------------------------
@@ -567,7 +567,7 @@ def LinePitch(mask):
 #----------------------------------------------------------------------
 def LeastCostSeam(cost,step=3):
     h,W = cost.shape
-    acc = cost.copy()
+    acc = cost.copy()   #running cost of reaching each row of this column
     back = np.zeros((h,W),np.int8)
     idx = np.arange(h)
     shifts = range(-step,step+1)
@@ -580,16 +580,16 @@ def LeastCostSeam(cost,step=3):
     st = pp.strides[0]
     for x in range(1,W):
         pp[:step] = np.inf
-        pp[step:step+h] = acc[:,x-1]
+        pp[step:step+h] = acc[:,x-1]   #the previous column padded with infinity at both ends
         pp[step+h:] = np.inf
-        cand = np.lib.stride_tricks.as_strided(pp,shape=(n,h),strides=(st,st))+pen
-        j = cand.argmin(0)
-        acc[:,x]+=cand[j,idx]
+        cand = np.lib.stride_tricks.as_strided(pp,shape=(n,h),strides=(st,st))+pen    #one sliding window holds every offset of that column
+        j = cand.argmin(0)   #the cheapest offset to arrive from
+        acc[:,x]+=cand[j,idx]   #its cost adds onto this column
         back[:,x] = j-step
     y = np.empty(W,int)
-    y[-1] = acc[:,-1].argmin()
+    y[-1] = acc[:,-1].argmin()   #the seam ends at the cheapest row of the last column
     for x in range(W-1,0,-1):
-        y[x-1] = y[x]+back[y[x],x]
+        y[x-1] = y[x]+back[y[x],x]   # backtracking follows the recorded offsets
     return y
 
 #----------------------------------------------------------------------
@@ -603,10 +603,10 @@ def SkewScore(mask,angleDeg):
     h = mask.shape[0]
     cy,cx = (h-1)/2.0,(mask.shape[1]-1)/2.0
     th = np.radians(float(angleDeg))
-    k = np.rint((ys-cy)*np.cos(th)-(xs-cx)*np.sin(th)+cy).astype(np.int64)
+    k = np.rint((ys-cy)*np.cos(th)-(xs-cx)*np.sin(th)+cy).astype(np.int64)  #each ink pixel turned by the trial angle and rounded to a row
     k -= k.min()   #shifted to zero, not clipped: clipping piles off-page ink into one row
     prof = np.bincount(k).astype(np.float64)
-    return float((prof**2).sum())
+    return float((prof**2).sum())   #squaring peaks when the ink piles into few rows
 
 #----------------------------------------------------------------------
 #Deskew: scores a range of angles on a quarter-size mask, rotates to the best, and
@@ -616,11 +616,11 @@ def Deskew(page):
     full = np.asarray(page,dtype=np.uint8)
     if full.ndim==3:
         full = np.rint(full[...,:3].mean(2)).astype(np.uint8)
-    halfA = Halve(full)
+    halfA = Halve(full)   #every decision below is taken at half resolution
 
     mask,_ = InkMask(halfA.astype(np.float64))
-    q = Halve(mask.astype(np.uint8)*255)>127
-    best = max(np.arange(-4,4.01,0.5),key=lambda a: SkewScore(q,a))
+    q = Halve(mask.astype(np.uint8)*255)>127   #and the skew search at a quarter
+    best = max(np.arange(-4,4.01,0.5),key=lambda a: SkewScore(q,a))   #angles from minus 4 to 4 in half degree steps
     #fill 255: whatever rotates in from outside the photograph is paper
     fullA = Rotate(full,best,fill=255)
     halfA = Rotate(halfA,best,fill=255)
@@ -630,12 +630,12 @@ def Deskew(page):
 
 #---RemovePrintedStructure: masks off everything outside the sheet, then deletes long straight runs---
 def RemovePrintedStructure(mask,g):
-    P,_ = LinePitch(mask)
+    P,_ = LinePitch(mask)   #the line pitch sets every radius below
     paper = PaperRegionMask(g,P)
     paperRemoved = int((mask&~paper).sum())
     mask&=paper
-    flat = AnyWithinRadius(LongRunMask(AnyWithinRadius(mask,1,0),int(1.25*P),1),1,0)&mask
-    upright = AnyWithinRadius(LongRunMask(AnyWithinRadius(mask,3,1),int(1.4*P),0),3,1)&mask
+    flat = AnyWithinRadius(LongRunMask(AnyWithinRadius(mask,1,0),int(1.25*P),1),1,0)&mask   #flat runs of 1.25 pitches across the page are printed rules
+    upright = AnyWithinRadius(LongRunMask(AnyWithinRadius(mask,3,1),int(1.4*P),0),3,1)&mask  #and 1.4 pitches down the page are vertical ones
     removed = int((flat|upright).sum())
     mask = mask&~flat&~upright
     return mask,paper,P,paperRemoved,removed
@@ -645,36 +645,36 @@ def RemovePrintedStructure(mask,g):
 #or too thin, faint vertical bars and crease shadows
 #----------------------------------------------------------------------
 def DropArtifactPieces(mask,ratio,P,H,W):
-    rc = max(1,int(0.1*P))
+    rc = max(1,int(0.1*P))   # closing radius a tenth of a line pitch
     dil = AnyWithinRadius(AnyWithinRadius(mask,rc,0),rc,1)
-    closed = ~AnyWithinRadius(AnyWithinRadius(~dil,rc,0),rc,1)
+    closed = ~AnyWithinRadius(AnyWithinRadius(~dil,rc,0),rc,1)   #dilate then erode joins the parts of one word
     lab,nc = LabelComponents(closed)
     ys,xs = np.nonzero(mask)
     pl = lab[ys,xs]
     area = np.bincount(pl,minlength=nc+1).astype(float)
     top,bot,xmin,xmax,_ = PieceBounds(pl,ys,xs,nc,H,W)
-    tall = (bot-top+1)>2.2*P
-    thin = (xmax-xmin+1)<=0.5*P
+    tall = (bot-top+1)>2.2*P   # over 2.2 pitches tall is taller than writing
+    thin = (xmax-xmin+1)<=0.5*P   #and under half a pitch wide is thin
     edgeTol = max(3,int(0.5*P))   #this close to the paper boundary counts as page
     touchL,touchR = xmin<=edgeTol,xmax>=W-1-edgeTol
     touchT,touchB = top<=edgeTol,bot>=H-1-edgeTol
     thinV = (bot-top+1)<=0.5*P
-    letters = (area>=0.065*P*P)&~tall
+    letters = (area>=0.065*P*P)&~tall   #pieces big enough to be letters
     #where the text block starts on the left, judged from the letters alone
     xL = np.percentile(xmin[letters],5) if letters.any() else -np.inf
-    vbar = ((xmax-xmin+1)<=0.12*P)&((bot-top+1)>=1.2*P)
+    vbar = ((xmax-xmin+1)<=0.12*P)&((bot-top+1)>=1.2*P)   #narrow and over a pitch tall is a bar
     otsuT = Otsu(ratio)
     #bincount with weights sums the ratio per piece, giving its mean darkness
     meanRatio = np.bincount(pl,weights=ratio[ys,xs],minlength=nc+1)/np.maximum(area,1)
-    faint = meanRatio>0.85*otsuT
+    faint = meanRatio>0.85*otsuT   #close to the threshold means barely darker than paper
     faintVbar = faint&((xmax-xmin+1)<=0.2*P)&((bot-top+1)>=0.6*P)
 
-    density = area/np.maximum((bot-top+1)*(xmax-xmin+1),1)
+    density = area/np.maximum((bot-top+1)*(xmax-xmin+1),1)   # ink over bounding box area
     edgeHeight = (bot-top+1)<=1.2*P
-    edgeShadow = (touchT|touchB)&edgeHeight&(density<0.15)&faint&((xmax-xmin+1)>P)
+    edgeShadow = (touchT|touchB)&edgeHeight&(density<0.15)&faint&((xmax-xmin+1)>P)   #wide faint sparse pieces along the top or bottom edge
 
     drop = (touchL|(touchR&thin)|((touchT|touchB)&thinV&thin)
-            |(tall&thin)|vbar|faintVbar|edgeShadow|(xmax<xL-1.2*P))
+            |(tall&thin)|vbar|faintVbar|edgeShadow|(xmax<xL-1.2*P))   #matching any one of these tests drops the piece
     drop[0] = False
     nArtifacts = int(drop.sum())
     mask&=~drop[lab]
@@ -686,16 +686,16 @@ def DropArtifactPieces(mask,ratio,P,H,W):
 #----------------------------------------------------------------------
 def LineCentres(mask,H,mergeValley=None):
     P,sm = LinePitch(mask)
-    peaks = [i for i in range(1,H-1) if sm[i]>=sm[i-1] and sm[i]>sm[i+1] and sm[i]>0.06*sm.max()]
+    peaks = [i for i in range(1,H-1) if sm[i]>=sm[i-1] and sm[i]>sm[i+1] and sm[i]>0.06*sm.max()]   #the same peak test run on the smoothed profile
     centres = []
     for c in sorted(peaks,key=lambda i:-sm[i]):
-        if all(abs(c-o)>=0.6*P for o in centres):
+        if all(abs(c-o)>=0.6*P for o in centres):   # taken strongest first and kept 0.6 pitches apart
             centres.append(c)
     centres.sort()
 
     thr = LINE_MERGE_VALLEY if mergeValley is None else float(mergeValley)
     while len(centres)>1 and thr<1.0:
-        ratios = [(float(sm[a:b+1].min())/max(float(min(sm[a],sm[b])),1e-9),i)
+        ratios = [(float(sm[a:b+1].min())/max(float(min(sm[a],sm[b])),1e-9),i)   #the dip between two centres against the smaller of them
                   for i,(a,b) in enumerate(zip(centres,centres[1:]))]
         worst,i = max(ratios)
         if worst<=thr:
@@ -709,8 +709,8 @@ def LineCentres(mask,H,mergeValley=None):
 #descenders instead of through them
 #----------------------------------------------------------------------
 def SeamCuts(mask,centres,P,H,W):
-    cuts = [np.full(W,max(0,centres[0]-int(0.75*P)))]
-    tailR = max(2,int(0.07*P))
+    cuts = [np.full(W,max(0,centres[0]-int(0.75*P)))]    # the top edge sits 0.75 pitches above the first centre
+    tailR = max(2,int(0.07*P))   #closing radius for the seam cost field
     #closing, not plain dilation: it fills the thin gap a seam could thread
     #through beside a stem while leaving the stroke's outer shape near real
     mdil = AnyWithinRadius(AnyWithinRadius(mask,tailR,0),tailR,1)
@@ -719,9 +719,9 @@ def SeamCuts(mask,centres,P,H,W):
 
     for c0,c1 in zip(centres,centres[1:]):
         yy = np.arange(c0,c1+1)[:, None]
-        mid,halfGap = c0+0.5*(c1-c0),max(1.0,(c1-c0)/2.0)
+        mid,halfGap = c0+0.5*(c1-c0),max(1.0,(c1-c0)/2.0)   #the midpoint between the two centres
         #the quadratic term pulls the seam gently back towards the midline
-        cuts.append(c0+LeastCostSeam(4.0*m[c0:c1+1]+0.012*((yy-mid)/halfGap)**2,step=7))
+        cuts.append(c0+LeastCostSeam(4.0*m[c0:c1+1]+0.012*((yy-mid)/halfGap)**2,step=7))   # ink costs 4 and straying from the midline costs 0.012 squared
 
     cuts.append(np.full(W,min(H-1,centres[-1]+int(0.75*P))))
     L = len(cuts)-1
@@ -737,39 +737,39 @@ def _BandOwnership(mask,lab,nc,cuts,cutsArr,L,P,H,W,centres):
     pl = lab[ys,xs]
     Y = np.arange(H)[:, None]
     #band index = how many seam boundaries sit above this pixel
-    region = sum((Y>=cuts[n][None,:]).astype(np.int16) for n in range(1,L)) if L>1 else np.zeros((H,W),np.int16)
+    region = sum((Y>=cuts[n][None,:]).astype(np.int16) for n in range(1,L)) if L>1 else np.zeros((H,W),np.int16)   # counting the seams above a pixel gives its band number
     rp = region[ys,xs]
-    ok = (ys>=cutsArr[0][xs])&(ys<cutsArr[-1][xs])
+    ok = (ys>=cutsArr[0][xs])&(ys<cutsArr[-1][xs])   #pixels lying between the top and bottom edges
     area = np.bincount(pl,minlength=nc+1).astype(float)
 
     A = np.bincount(pl,minlength=nc+1).astype(float)
-    cx = np.bincount(pl,xs,nc+1)/np.maximum(A,1)
+    cx = np.bincount(pl,xs,nc+1)/np.maximum(A,1)   #a weighted count over a plain one gives the centroid
     cy = np.bincount(pl,ys,nc+1)/np.maximum(A,1)
     #(piece,band) packed into one integer, so one bincount gives the table
-    cnt = np.bincount(pl[ok]*L+rp[ok],minlength=(nc+1)*L).reshape(nc+1,L)
-    substantial = cnt>=0.15*np.maximum(cnt.sum(1,keepdims=True),1)
+    cnt = np.bincount(pl[ok]*L+rp[ok],minlength=(nc+1)*L).reshape(nc+1,L)   #one bincount over the packed key fills the piece by band table
+    substantial = cnt>=0.15*np.maximum(cnt.sum(1,keepdims=True),1)   #a band holding 15 percent of a piece counts as real
     regionIdx = np.where(substantial,np.arange(L)[None,:],L)
     #a piece spanning two lines is reserved for the topmost it touches
-    major = np.where(substantial.any(1),regionIdx.min(1),cnt.argmax(1))
+    major = np.where(substantial.any(1),regionIdx.min(1),cnt.argmax(1))   #the topmost substantial band takes the piece
 
-    minor = (cnt>0)&(cnt<0.12*P*P)&(cnt<0.35*cnt.sum(1,keepdims=True))&(np.abs(np.arange(L)[None,:]-major[:, None])==1)
+    minor = (cnt>0)&(cnt<0.12*P*P)&(cnt<0.35*cnt.sum(1,keepdims=True))&(np.abs(np.arange(L)[None,:]-major[:, None])==1)   #a small part of a piece sitting one band away
     key = pl[ok]*L+rp[ok]
     xlo,xhi = np.full((nc+1)*L,W),np.zeros((nc+1)*L,int)
     np.minimum.at(xlo,key,xs[ok])
     np.maximum.at(xhi,key,xs[ok])
     minor&=((xhi-xlo+1).reshape(nc+1,L)<=0.55*P)   #a cut-off tail is narrow
-    big = (cnt.sum(1)>=0.05*P*P)
+    big = (cnt.sum(1)>=0.05*P*P)   #pieces big enough to mark where a line sits
     tiny = np.zeros(nc+1,bool)
     for l in np.nonzero((cnt.sum(1)>0)&(cnt.sum(1)<0.06*P*P))[0]:
         n = major[l]
         near = big&(major==n)&(np.abs(cx-cx[l])<=6*P)
         tiny[l] = True
-        speck = cnt[l].sum()<0.01*P*P
+        speck = cnt[l].sum()<0.01*P*P   #under a hundredth of a pitch squared is a speck
         if not near.any() or (speck and not (near&(np.abs(cx-cx[l])<=3*P)).any()):
             major[l] = -1   #nowhere near its line's writing
             continue
-        yc = np.median(cy[near&(np.abs(cx-cx[l])<=1.5*P)]) if (near&(np.abs(cx-cx[l])<=1.5*P)).any() else np.median(cy[near])
-        if cy[l]-yc>0.5*P and n+1<L:
+        yc = np.median(cy[near&(np.abs(cx-cx[l])<=1.5*P)]) if (near&(np.abs(cx-cx[l])<=1.5*P)).any() else np.median(cy[near])   #the row the nearby writing sits on
+        if cy[l]-yc>0.5*P and n+1<L:   # half a pitch below that writing puts it on the next line
             major[l] = -1 if speck else n+1
         elif yc-cy[l]>0.7*P and n>0:
             major[l] = -1 if speck else n-1
@@ -783,11 +783,11 @@ def _BandOwnership(mask,lab,nc,cuts,cutsArr,L,P,H,W,centres):
     #a dot goes with the letter body directly below it
     top2,bot2,x0b,x1b,_ = PieceBounds(pl,ys,xs,nc,H,W)
     hh,ww = bot2-top2+1,x1b-x0b+1
-    dot = (A>0)&(A<0.1*P*P)&(np.maximum(hh,ww)<=0.45*P)&(np.maximum(hh,ww)<=2.2*np.maximum(np.minimum(hh,ww),1))
+    dot = (A>0)&(A<0.1*P*P)&(np.maximum(hh,ww)<=0.45*P)&(np.maximum(hh,ww)<=2.2*np.maximum(np.minimum(hh,ww),1))   #small and nearly square makes a piece a dot
     stem = (A>=0.03*P*P)&~dot
     for l in np.nonzero(dot&(major>=0))[0]:
         xa,xb = max(0,x0b[l]-2),x1b[l]+3
-        for gap in range(1,int(0.4*P)+1):
+        for gap in range(1,int(0.4*P)+1):   #looking down as far as 0.4 pitches for a stem
             if bot2[l]+gap>=H:
                 break
             row = lab[bot2[l]+gap,xa:xb]
@@ -795,11 +795,11 @@ def _BandOwnership(mask,lab,nc,cuts,cutsArr,L,P,H,W,centres):
             if hit:
                 n2 = major[hit[0]]
                 rows = big&(major==n2)&(np.abs(cx-cx[l])<=1.5*P)
-                if rows.any() and 0.25*P<=np.median(cy[rows])-cy[l]<=0.7*P:
+                if rows.any() and 0.25*P<=np.median(cy[rows])-cy[l]<=0.7*P:   #a dot sits a quarter to seven tenths of a pitch above its line
                     major[l],tiny[l] = n2, True
                 break
     own = np.full((H,W),-1,np.int16)
-    own[ys[ok],xs[ok]] = np.where(tiny[pl]|minor[pl,rp],major[pl],rp)[ok]
+    own[ys[ok],xs[ok]] = np.where(tiny[pl]|minor[pl,rp],major[pl],rp)[ok]   #small pieces follow their piece and the rest follow their band
     ownBeforeEF = own.copy()
     return own,ownBeforeEF,region,area,ys,xs
 
@@ -813,7 +813,7 @@ def _DotsJoinedAbove(own,mask,lab,area,region,centres,L,P,H,W,ys,xs):
     Ar = np.bincount(pr,minlength=nr+1).astype(float)
     rt,rb,rowLeft,rr,_ = PieceBounds(pr,ys,xs,nr,H,W)
     h0,w0 = rb-rt+1,rr-rowLeft+1
-    dotr = (Ar>=0.015*P*P)&(Ar<0.1*P*P)&(np.maximum(h0,w0)<=0.5*P)&(np.maximum(h0,w0)<=2.2*np.maximum(np.minimum(h0,w0),1))
+    dotr = (Ar>=0.015*P*P)&(Ar<0.1*P*P)&(np.maximum(h0,w0)<=0.5*P)&(np.maximum(h0,w0)<=2.2*np.maximum(np.minimum(h0,w0),1))   # the same dot test on the unclosed pieces
     stemr = (Ar>=0.03*P*P)&~dotr
     for d in np.nonzero(dotr)[0]:
         for gap in range(1,int(0.4*P)+1):
@@ -829,7 +829,7 @@ def _DotsJoinedAbove(own,mask,lab,area,region,centres,L,P,H,W,ys,xs):
                     n1 = np.bincount(ov[ov>=0],minlength=L).argmax()
                     closedPiece = lab[ys[dv][0],xs[dv][0]]
                     wholeWord = area[closedPiece]>=0.2*P*P   #a word, not a floating dot
-                    if n2==n1+1 and not wholeWord and (rt[d]+rb[d])/2>=centres[n1]+0.45*P:
+                    if n2==n1+1 and not wholeWord and (rt[d]+rb[d])/2>=centres[n1]+0.45*P:   # a dot held by the line above moves down to its own stem
                         keep = ov==n1
                         own[ys[dv][keep],xs[dv][keep]] = n2
                 break
@@ -838,7 +838,7 @@ def _DotsJoinedAbove(own,mask,lab,area,region,centres,L,P,H,W,ys,xs):
 #---_RingsToStem: gives a closed ring sitting on a stem to the line that stem belongs to---
 def _RingsToStem(own,raw,nr,pr,Ar,lab,area,region,centres,P,H,W,ys,xs):
     colbot = np.full((nr+1,W),-1,np.int32)
-    np.maximum.at(colbot,(pr,xs),ys)
+    np.maximum.at(colbot,(pr,xs),ys)   #the lowest row of each piece in each column
     wr = int(0.35*P)
     for c in range(1,nr+1):
         cols = np.nonzero(colbot[c]>=0)[0]
@@ -857,13 +857,13 @@ def _RingsToStem(own,raw,nr,pr,Ar,lab,area,region,centres,P,H,W,ys,xs):
                 cc = np.nonzero(raw[r,xa:xe]==c)[0]
                 wd = (cc.max()-cc.min()+1) if len(cc) else 0
                 widest = max(widest,wd)
-                if wd<0.45*widest:
+                if wd<0.45*widest:   # narrowing to under half marks the top of the ring
                     rt = r
                     break
             else:
                 rt = max(0,yb-int(0.5*P))
             h = yb-rt
-            if not (0.2*P<=widest<=0.45*P and 0.6<=h/max(widest,1)<=1.6) or yb-rt>=0.5*P:
+            if not (0.2*P<=widest<=0.45*P and 0.6<=h/max(widest,1)<=1.6) or yb-rt>=0.5*P:   #a ring runs about as tall as it is wide and a fifth of a pitch across
                 continue
             blob = (raw[rt+1:yb+1,xa:xe]==c)
             bc = np.nonzero(blob.any(0))[0]
@@ -880,7 +880,7 @@ def _RingsToStem(own,raw,nr,pr,Ar,lab,area,region,centres,P,H,W,ys,xs):
                     ty,tx = yb+gap,max(0,xl-2)+hit[0]
                     n2 = region[ty,tx]
                     wholeWord = area[lab[yb,xb]]>=0.2*P*P
-                    if n2==n+1 and not wholeWord and ty>=centres[n2]-0.45*P:
+                    if n2==n+1 and not wholeWord and ty>=centres[n2]-0.45*P:   #the stem below it belongs to the next line down
                         sub = own[rt+1:yb+1,xl:xr+1]
                         sub[blob[:,xl-xa:xr-xa+1]&(sub==n)] = n2
                     break
@@ -898,9 +898,9 @@ def _FragmentsToNeighbour(own,ownBeforeEF,mask,centres,L,P,H,W):
             continue
         yy,xx = np.nonzero(comp)
         pc = comp[yy,xx]
-        inband = np.bincount(pc,weights=(np.abs(yy-centres[n])<=0.28*P).astype(float),minlength=nb+1)
+        inband = np.bincount(pc,weights=(np.abs(yy-centres[n])<=0.28*P).astype(float),minlength=nb+1)   #how much of each piece sits inside the x-height band
         size = np.bincount(pc,minlength=nb+1)
-        for c in np.nonzero((inband==0)&(size>=0.006*P*P))[0]:
+        for c in np.nonzero((inband==0)&(size>=0.006*P*P))[0]:    #pieces with nothing in the band and big enough to matter
             if c==0:
                 continue
             fy,fx = yy[pc==c],xx[pc==c]
@@ -909,17 +909,17 @@ def _FragmentsToNeighbour(own,ownBeforeEF,mask,centres,L,P,H,W):
             ya,yb,xa,xb = max(0,fy.min()-3),min(H,fy.max()+4),max(0,fx.min()-3),min(W,fx.max()+4)
             frag = np.zeros((yb-ya,xb-xa),bool)
             frag[fy-ya,fx-xa] = True
-            near = AnyWithinRadius(AnyWithinRadius(frag,2,0),2,1)&mask[ya:yb,xa:xb]&~frag
+            near = AnyWithinRadius(AnyWithinRadius(frag,2,0),2,1)&mask[ya:yb,xa:xb]&~frag   # the ink touching this fragment within two pixels
             ov = own0[ya:yb,xa:xb][near]
-            cnt = np.bincount(ov[(ov>=0)&(ov!=n)],minlength=L)
+            cnt = np.bincount(ov[(ov>=0)&(ov!=n)],minlength=L)   #which other bands that touching ink belongs to
             cyPiece = fy.mean()
             if cnt.max()>=3:
                 m = int(cnt.argmax())
-                if abs(m-n)==1 and (m>n)==(cyPiece>centres[n]):
+                if abs(m-n)==1 and (m>n)==(cyPiece>centres[n]):   #the move goes one band and in the direction the fragment leans
                     moves.append((fy,fx,m))
             else:
                 bestBand = min((m for m in (n-1,n+1) if 0<=m<L),key=lambda m: abs(cyPiece-centres[m]),default=None)
-                if bestBand is not None and abs(cyPiece-centres[bestBand])<=0.2*P:
+                if bestBand is not None and abs(cyPiece-centres[bestBand])<=0.2*P:    #or within a fifth of a pitch of a neighbouring centre
                     moves.append((fy,fx,bestBand))
     for fy,fx,m in moves:
         own[fy,fx] = m
@@ -941,10 +941,10 @@ def AssignOwnership(mask,lab,nc,cuts,cutsArr,L,centres,P,H,W):
 def _BuildLineCrop(n,own,norm,P,f,H,W,minInk):
     ink = own==n
     yy,xx = np.nonzero(ink)
-    if len(yy)<minInk or yy.max()-yy.min()<max(6,0.2*P):
+    if len(yy)<minInk or yy.max()-yy.min()<max(6,0.2*P):   # too little ink or too short to be a line of writing
         return None
     rowInk = np.bincount(yy,minlength=H)>0
-    gapAt = np.flatnonzero(~rowInk[yy.min():yy.max()+1])+yy.min()
+    gapAt = np.flatnonzero(~rowInk[yy.min():yy.max()+1])+yy.min()   #rows inside the band holding no ink at all
     if len(gapAt):   #keep the tallest contiguous run of ink, dropping distant marks
         runs,s = [],yy.min()
         for g in gapAt:
@@ -953,21 +953,21 @@ def _BuildLineCrop(n,own,norm,P,f,H,W,minInk):
             s = g+1
         runs.append((s,yy.max()))
         runs = [(a,b) for a,b in runs if b>=a]
-        mainRun = max(runs,key=lambda ab: int(ink[ab[0]:ab[1]+1].sum()))
-        if mainRun[1]-mainRun[0]+1<yy.max()-yy.min()+1-0.8*P:
+        mainRun = max(runs,key=lambda ab: int(ink[ab[0]:ab[1]+1].sum()))   # the run carrying the most ink
+        if mainRun[1]-mainRun[0]+1<yy.max()-yy.min()+1-0.8*P:   #kept alone when the rest sits over 0.8 pitches away
             keep = (yy>=mainRun[0])&(yy<=mainRun[1])
             ink = np.zeros_like(ink)
             ink[yy[keep],xx[keep]] = True
             yy,xx = yy[keep],xx[keep]
-    pad = int(0.15*P)
+    pad = int(0.15*P)  #the crop keeps a margin of 0.15 pitches
     y0,y1 = max(0,yy.min()-pad),min(H,yy.max()+1+pad)
     x0,x1 = max(0,xx.min()-pad),min(W,xx.max()+1+pad)
-    Y0,Y1,X0,X1 = int(y0*f),int(y1*f),int(x0*f),int(x1*f)
+    Y0,Y1,X0,X1 = int(y0*f),int(y1*f),int(x0*f),int(x1*f)  #half size coordinates scaled up to the full page
     inkC = ink[y0:y1,x0:x1]
     #bilinear: the soft edge it gives is what makes the stroke edge natural
     alpha = Resize((inkC*255).astype(np.uint8),X1-X0,Y1-Y0,'linear').astype(np.float32)/255.0
     haloR = max(1,int(0.20*P))
-    halo = AnyWithinRadius(AnyWithinRadius(inkC,haloR,0),haloR,1)
+    halo = AnyWithinRadius(AnyWithinRadius(inkC,haloR,0),haloR,1)   #the ink grown by 0.2 pitches gives a halo to recover inside
     haloAlpha = Resize((halo*255).astype(np.uint8),X1-X0,Y1-Y0,'linear').astype(np.float32)/255.0
     region = norm[Y0:Y1,X0:X1]
     localR = max(3,min(20,round(region.shape[0]/8)))
@@ -977,31 +977,31 @@ def _BuildLineCrop(n,own,norm,P,f,H,W,minInk):
     notOther = ~((ownC>=0)&(ownC!=n))   #never recover a pixel given to a neighbour
     #nearest, not bilinear: this is a yes or no ownership flag
     notOtherFull = Resize((notOther*255).astype(np.uint8),X1-X0,Y1-Y0,'nearest')>127
-    alpha = np.maximum(alpha,localMask*haloAlpha*notOtherFull)
+    alpha = np.maximum(alpha,localMask*haloAlpha*notOtherFull)   # local ink inside that halo joins the mask
     inkPix = region[alpha>0.5]
     black = np.percentile(inkPix,40) if len(inkPix) else 0.0   #typical ink darkness
-    white = np.percentile(region,75)
+    white = np.percentile(region,75)   #the 75th percentile stands in for paper
 
-    linear = np.clip((region-black)*(255.0/max(white-black,1.0)),0,255)
+    linear = np.clip((region-black)*(255.0/max(white-black,1.0)),0,255)   #ink to paper stretched across the whole 0 to 255 range
     darkness = np.clip((255.0-linear)/255.0,0,1)**0.55   #gamma below one darkens faint strokes
     enhanced = 255.0*(1.0-darkness)
-    crop = (alpha*enhanced+(1-alpha)*255).astype(np.uint8)
+    crop = (alpha*enhanced+(1-alpha)*255).astype(np.uint8)   # the stretched ink composited onto white through alpha
     margin = int(pad*f)   #the same left gap on every crop
-    firstCol = int(np.argmax((alpha>0.1).any(axis=0))) if (alpha>0.1).any() else margin
+    firstCol = int(np.argmax((alpha>0.1).any(axis=0))) if (alpha>0.1).any() else margin   #the first column holding any ink
     shift = firstCol-margin
     if shift>0:
-        crop = np.pad(crop[:,shift:],((0,0),(0,shift)),constant_values=255)
+        crop = np.pad(crop[:,shift:],((0,0),(0,shift)),constant_values=255)  #shifted left so every crop starts at the same margin
     return dict(image=crop,
                 clf=FitFixedCanvas(crop,InputHeight,InputWidth),
                 bbox=(X0,Y0,X1,Y1))
 
 #---_SheetCrop: crops the dark surround away, leaving the biggest bright blob---
 def _SheetCrop(g):
-    bright = g>0.60*np.percentile(g,95)
+    bright = g>0.60*np.percentile(g,95)  # over 60 percent of the brightest few percent is sheet
     lab,n = LabelComponents(bright)
     if n==0:
         return g
-    i = np.bincount(lab.ravel())[1:].argmax()+1
+    i = np.bincount(lab.ravel())[1:].argmax()+1  # the biggest bright blob is the page
     yy,xx = np.nonzero(lab==i)
     return g[yy.min():yy.max()+1,xx.min():xx.max()+1]
 
@@ -1045,17 +1045,17 @@ def _BuildCrops(L,own,norm,P,f,H,W,minInk):
 #axis the lines of writing run along
 #----------------------------------------------------------------------
 def LineAxisScore(page):
-    g = np.asarray(page)[::4,::4].astype(np.float64)
+    g = np.asarray(page)[::4,::4].astype(np.float64)   # every fourth pixel is enough for this test
     g = _SheetCrop(g)
     if g.size<100 or min(g.shape)<8:
         return 0.0
     mask,_ratio = InkMask(g)
     rows = mask.sum(axis=1).astype(np.float64)
     m = rows.mean()
-    return float((rows<0.35*m).mean()) if m>0 else 0.0
+    return float((rows<0.35*m).mean()) if m>0 else 0.0   #the share of rows under 35 percent of the mean ink
 
 #how much better the sideways score must be before the page is turned
-AXIS_TURN_MARGIN = 1.35
+AXIS_TURN_MARGIN = 1.35   #the sideways score has to beat the upright one by 35 percent
 
 #----------------------------------------------------------------------
 #UprightPage: stands a photographed page on the correct axis, which end is up is
@@ -1065,7 +1065,7 @@ def UprightPage(page):
     a = np.asarray(page)
     s0 = LineAxisScore(a)
     s90 = LineAxisScore(np.rot90(a))
-    if s90>AXIS_TURN_MARGIN*max(s0,1e-9):
+    if s90>AXIS_TURN_MARGIN*max(s0,1e-9):   # a better score sideways turns the page a quarter turn
         return np.ascontiguousarray(np.rot90(a)),90,s0,s90
     return a,0,s0,s90
 
@@ -1076,12 +1076,12 @@ def UprightPage(page):
 def DropSolidCrops(lines,maxAbsPct=15.0,maxMedianRatio=3.0):
     if not lines:
         return lines
-    ink = [float((np.asarray(l['image'])<128).mean()*100.0) for l in lines]
+    ink = [float((np.asarray(l['image'])<128).mean()*100.0) for l in lines]   #percentage of dark pixels in each crop
     med = float(np.median(ink))
     kept = []
     for l,v in zip(lines,ink):
         l['inkPct'] = v
-        if med>0 and v>maxAbsPct and v>maxMedianRatio*med:
+        if med>0 and v>maxAbsPct and v>maxMedianRatio*med:   # over 15 percent dark and three times the page median
             continue
         l['order'] = len(kept)
         kept.append(l)
@@ -1104,11 +1104,11 @@ def SegmentLines(page,mergeValley=None):
     #the crops come off the full-resolution page, though every decision
     #above was taken at half size
     r = max(8,min(40,round(H/41)))
-    bgFull = Resize(BoxMean(g,r).astype(np.float32),fullA.shape[1],fullA.shape[0],'linear')
-    norm = np.clip(fullA.astype(np.float32)/np.maximum(bgFull,1.0),0,1)*255
+    bgFull = Resize(BoxMean(g,r).astype(np.float32),fullA.shape[1],fullA.shape[0],'linear')   #the half size background blown up to full resolution
+    norm = np.clip(fullA.astype(np.float32)/np.maximum(bgFull,1.0),0,1)*255   # each full size pixel measured against its own background
     f = fullA.shape[1]/W   #half-size coordinate to full size
     perLine = np.bincount(own[own>=0],minlength=L)
-    minInk = max(60,0.12*np.median(perLine[perLine>0]))
+    minInk = max(60,0.12*np.median(perLine[perLine>0]))  #a line needs 12 percent of the median line ink
     lines = []
     for crop in _BuildCrops(L,own,norm,P,f,H,W,minInk):
         if crop is None:

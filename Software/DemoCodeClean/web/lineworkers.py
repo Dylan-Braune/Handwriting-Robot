@@ -19,10 +19,10 @@ import sys
 import numpy as np
 
 #how many workers; 0 asks for one per core, capped at the line count
-LINE_WORKERS = int(os.environ.get("LINE_WORKERS", "0"))
+LINE_WORKERS = int(os.environ.get("LINE_WORKERS", "0"))    #zero asks for one worker per core
 
 #below this many lines the pool costs more to start than it saves
-MIN_LINES_FOR_POOL = 4
+MIN_LINES_FOR_POOL = 4   #under four lines the pool costs more than it saves
 
 #filled by the parent before any work is handed out, inherited on fork
 _CFG = {}
@@ -37,7 +37,7 @@ def Configure(reader, namer, strokeNormalise):
 
 #---CanPool: whether this platform and this page justify a pool---
 def CanPool(n):
-    return (LINE_WORKERS != 1 and n >= MIN_LINES_FOR_POOL
+    return (LINE_WORKERS != 1 and n >= MIN_LINES_FOR_POOL   # a pool needs fork the line count and loaded models
             and hasattr(os, "fork") and bool(_CFG))
 
 
@@ -45,7 +45,7 @@ def CanPool(n):
 def _Workers(n):
     if LINE_WORKERS > 0:
         return min(LINE_WORKERS, n)
-    return max(1, min(os.cpu_count() or 1, n))
+    return max(1, min(os.cpu_count() or 1, n))  # one worker a core capped at the number of lines
 
 
 #----------------------------------------------------------------------
@@ -58,13 +58,13 @@ def _Workers(n):
 #library loaded later
 #----------------------------------------------------------------------
 def _CapThreads():
-    for v in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
+    for v in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):   #the variables are read when a library loads
         os.environ[v] = "1"
     try:
         import ctypes
         import glob
         import numpy
-        root = os.path.dirname(os.path.dirname(os.path.abspath(numpy.__file__)))
+        root = os.path.dirname(os.path.dirname(os.path.abspath(numpy.__file__)))   #the folder the numpy wheel ships its own libraries in
         pats = [os.path.join(root, "numpy.libs", "*openblas*.so*"),
                 os.path.join(root, "numpy", ".libs", "*openblas*.so*")]
         #the wheel renames its symbols, so the plain name is not there: the
@@ -83,7 +83,7 @@ def _CapThreads():
                 lib = ctypes.CDLL(so)
                 for fn in names:
                     if hasattr(lib, fn):
-                        getattr(lib, fn)(1)
+                        getattr(lib, fn)(1)   #the live thread count set to one through the library itself
                         return True
     except Exception:
         pass
@@ -100,8 +100,8 @@ def ReadOne(job):
     from PIL import Image
     import recognise as REC
     i, crop, flip = job
-    img = np.rot90(crop, 2) if flip else crop
-    text, score = REC.ReadTextScored(Image.fromarray(img).convert("L"),
+    img = np.rot90(crop, 2) if flip else crop  #a half turn is two quarter turns
+    text, score = REC.ReadTextScored(Image.fromarray(img).convert("L"),   # the reading and its mean column score
                                      _CFG["reader"])
     return i, text, score
 
@@ -112,7 +112,7 @@ def NameOne(job):
     from PIL import Image
     import recognise as REC
     i, crop = job
-    _idx, p = REC.ClassifyImage(Image.fromarray(crop).convert("L"),
+    _idx, p = REC.ClassifyImage(Image.fromarray(crop).convert("L"),   #the probability over the writers for this crop
                                 _CFG["namer"], strokeNormalise=_CFG["norm"])
     return i, np.asarray(p, dtype=np.float64)
 
@@ -128,12 +128,12 @@ def Map(fn, jobs):
     if not jobs:
         return []
     if not CanPool(len(jobs)):
-        return [fn(j) for j in jobs]
+        return [fn(j) for j in jobs]   #the sequential path gives the same answers
     try:
         import multiprocessing as mp
         ctx = mp.get_context("fork")
-        with ctx.Pool(processes=_Workers(len(jobs)), initializer=_Init) as pool:
-            out = pool.map(fn, jobs, chunksize=1)
+        with ctx.Pool(processes=_Workers(len(jobs)), initializer=_Init) as pool:   #a forked worker inherits the models already in memory
+            out = pool.map(fn, jobs, chunksize=1)   # one line a worker at a time keeps the order
         return out
     except Exception as e:
         print("[lineworkers] pool unavailable (%s), running in one process"
@@ -161,10 +161,10 @@ def NameWriter(crops):
     writing is less evidence than a full line and should not count the
     same as one.
     """
-    got = Map(NameOne, [(i, c) for i, c in enumerate(crops)])
-    per = [p for _i, p in sorted(got, key=lambda r: r[0])]
-    w = np.array([float((c < 128).sum()) for c in crops], dtype=np.float64)
+    got = Map(NameOne, [(i, c) for i, c in enumerate(crops)])   # every line votes rather than a spread sample
+    per = [p for _i, p in sorted(got, key=lambda r: r[0])]   #the results put back into line order
+    w = np.array([float((c < 128).sum()) for c in crops], dtype=np.float64)   #the dark pixel count is how much ink each line carries
     if w.sum() <= 0:
         w = np.ones(len(crops), dtype=np.float64)
-    avg = (np.vstack(per)*w[:, None]).sum(axis=0)/w.sum()
+    avg = (np.vstack(per)*w[:, None]).sum(axis=0)/w.sum()   #each line vote weighted by that ink then normalised
     return per, avg, w

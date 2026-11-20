@@ -137,9 +137,9 @@ renderTopbar("training");
 // every writer there is data for on this machine, and whether the shipped
 // namer has a class for them.  the eleven with a glyph library are the ones
 // the author model was trained on; 151 and 551 have pages but no class
-const DATABASE = ["150", "151", "152", "153", "384", "551", "552", "588"];
-const PERSONAL = ["abhinav", "dylan", "owen", "thiya", "yeukita"];
-const ELEVEN = ["150", "152", "153", "384", "552", "588",
+const DATABASE = ["150", "151", "152", "153", "384", "551", "552", "588"];   // the iam form writers this machine holds pages for
+const PERSONAL = ["abhinav", "dylan", "owen", "thiya", "yeukita"];    //and the five photographed ones
+const ELEVEN = ["150", "152", "153", "384", "552", "588",   //the eleven the shipped namer has a class for
                 "abhinav", "dylan", "owen", "thiya", "yeukita"];
 
 let task = "text";
@@ -148,9 +148,9 @@ let profiles = [];
 // ---- the writer picker ----------------------------------------------------
 (function buildPicker() {
   const el = document.getElementById("writerPicker");
-  const rows = DATABASE.map(w => [w, "database"]).concat(PERSONAL.map(w => [w, "photographed"]));
+  const rows = DATABASE.map(w => [w, "database"]).concat(PERSONAL.map(w => [w, "photographed"]));   //both groups listed with the tag each carries
   el.innerHTML = rows.map(([w, kind]) => {
-    const inEleven = ELEVEN.includes(w);
+    const inEleven = ELEVEN.includes(w);    //the eleven start ticked and the rest start off
     return `<label class="${inEleven ? "" : "off"}">
       <input type="checkbox" value="${w}" ${inEleven ? "checked" : ""} />
       <span>${w}</span><span class="tag">${kind}</span></label>`;
@@ -158,7 +158,7 @@ let profiles = [];
 })();
 
 function pickedWriters() {
-  return [...document.querySelectorAll("#writerPicker input:checked")].map(i => i.value);
+  return [...document.querySelectorAll("#writerPicker input:checked")].map(i => i.value);   //the names of every ticked box
 }
 function setPicked(list) {
   document.querySelectorAll("#writerPicker input").forEach(i => { i.checked = list.includes(i.value); });
@@ -171,9 +171,9 @@ document.getElementById("pickNoneBtn").addEventListener("click", () => setPicked
 // ---- which task -----------------------------------------------------------
 document.querySelectorAll("#taskSeg button").forEach(b => {
   b.addEventListener("click", () => {
-    task = b.dataset.task;
+    task = b.dataset.task;   //the button carries which task it selects
     document.querySelectorAll("#taskSeg button").forEach(x => x.classList.toggle("on", x === b));
-    document.getElementById("textOnly").hidden = task !== "text";
+    document.getElementById("textOnly").hidden = task !== "text";   // each task shows its own settings
     document.getElementById("authorOnly").hidden = task !== "author";
   });
 });
@@ -186,7 +186,7 @@ async function loadCheckpoints() {
     const names = [info.text_recognizer.weights_file,
                    info.writer_id_ink_based.weights_file,
                    info.writer_id_stroke_normalised.weights_file];
-    [...new Set(names)].forEach(n => {
+    [...new Set(names)].forEach(n => {   //one entry per checkpoint even where two handles share it
       const o = document.createElement("option");
       o.value = n; o.textContent = n;
       sel.appendChild(o);
@@ -209,9 +209,9 @@ async function loadProfiles() {
   for (const a of profiles) {
     h += `<tr><td>${a.id}</td><td class="num">${a.glyphs}</td>`
        + `<td class="num">${a.variants ?? "—"}</td><td class="num">${a.lines ?? "—"}</td>`
-       + `<td class="num">${a.slantDeg == null ? "—" : (a.slantDeg > 0 ? "+" : "") + a.slantDeg + "°"}</td>`
+       + `<td class="num">${a.slantDeg == null ? "—" : (a.slantDeg > 0 ? "+" : "") + a.slantDeg + "°"}</td>`   // a positive slant is shown with its plus sign
        + `<td class="num">${a.connectedness ?? "—"}</td>`
-       + `<td>${a.inGantryModels ? "yes" : "no class"}</td></tr>`;
+       + `<td>${a.inGantryModels ? "yes" : "no class"}</td></tr>`;    //whether the namer can score this writer
   }
   document.getElementById("profileTable").innerHTML = h;
 }
@@ -221,7 +221,7 @@ document.getElementById("startBtn").addEventListener("click", async () => {
   clearError("trainError");
   const body = {
     task,
-    epochs: parseInt(document.getElementById("epochs").value || "40", 10),
+    epochs: parseInt(document.getElementById("epochs").value || "40", 10),   // the server bounds every one of these again
     batch: parseInt(document.getElementById("batch").value || "8", 10),
     lr: parseFloat(document.getElementById("lr").value || "0.001"),
     seed: parseInt(document.getElementById("seed").value || "7", 10),
@@ -231,12 +231,12 @@ document.getElementById("startBtn").addEventListener("click", async () => {
   };
   if (task === "text") {
     body.source = document.getElementById("source").value;
-    body.personalFraction = parseFloat(document.getElementById("personalFraction").value || "0.2");
+    body.personalFraction = parseFloat(document.getElementById("personalFraction").value || "0.2");   //the share of each batch drawn from photographed lines
     const pages = document.getElementById("pages").value.trim();
     if (pages) body.pages = parseInt(pages, 10);
   } else {
     const w = pickedWriters();
-    if (!w.length) { showError("trainError", "Tick at least one writer."); return; }
+    if (!w.length) { showError("trainError", "Tick at least one writer."); return; }   //the author task needs at least one writer
     body.writers = w;
   }
   const btn = document.getElementById("startBtn");
@@ -248,7 +248,7 @@ document.getElementById("startBtn").addEventListener("click", async () => {
       body: JSON.stringify(body),
     });
     if (!res.started) showError("trainError", res.error || "Could not start.");
-    poll();
+    poll();  //the status poll picks the run up straight away
   } catch (e) {
     showError("trainError", e.message);
   } finally {
@@ -276,7 +276,7 @@ document.getElementById("addBtn").addEventListener("click", async () => {
   if (!name) { showError("addError", "Give the writer a name."); return; }
   if (!images.length) { showError("addError", "Attach at least one page photograph."); return; }
   if (!labels.length && !typed) { showError("addError", "Attach a transcript, or type the lines in."); return; }
-  if (!labels.length && images.length > 1) {
+  if (!labels.length && images.length > 1) {   //a typed transcript covers one page only
     showError("addError", "Typing the lines in only works for one page. Attach one "
                         + "'<page>_labels.txt' per image instead.");
     return;
@@ -284,7 +284,7 @@ document.getElementById("addBtn").addEventListener("click", async () => {
 
   const form = new FormData();
   form.append("name", name);
-  for (const f of images) form.append("images", f);
+  for (const f of images) form.append("images", f);  //every page goes up under the same field name
   for (const f of labels) form.append("labels", f);
   if (typed) form.append("transcript", typed);
 
@@ -307,7 +307,7 @@ function render(st) {
   const state = document.getElementById("jobState");
   if (st.running) {
     state.innerHTML = `<span class="running">${st.kind} — ${st.label}</span>`
-      + (st.seconds ? ` · ${st.seconds.toFixed(0)} s` : "");
+      + (st.seconds ? ` · ${st.seconds.toFixed(0)} s` : "");  //how long the job has been running
   } else if (st.kind) {
     state.textContent = `${st.kind} — ${st.label}: ${st.message || (st.ok ? "finished" : "stopped")}`;
     state.className = "v" + (st.ok === true ? " good" : st.ok === false ? " bad" : "");
@@ -316,7 +316,7 @@ function render(st) {
     state.className = "v";
   }
   const log = document.getElementById("jobLog");
-  const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 20;
+  const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 20;  //the log follows only while it is already scrolled to the end
   log.textContent = st.log || "(no log yet)";
   if (atBottom) log.scrollTop = log.scrollHeight;
 
@@ -331,11 +331,11 @@ function render(st) {
       + `<div class="stat-row"><span class="k">Slant / connectedness</span>`
       + `<span class="v">${r.slant_deg}° / ${r.connectedness}</span></div>`
       + `<div class="stat-row"><span class="k">In the namer's classes</span>`
-      + `<span class="v${r.in_namer_classes ? " good" : ""}">${
+      + `<span class="v${r.in_namer_classes ? " good" : ""}">${   //a new writer can be written and not yet judged
           r.in_namer_classes ? "yes" : "no"}</span></div>`
       ;
     box.classList.add("show");
-    loadProfiles();
+    loadProfiles();   //the profile table picks up the writer just built
   }
 }
 
@@ -344,11 +344,11 @@ function render(st) {
 let pollTimer = null;
 async function poll() {
   if (pollTimer) clearTimeout(pollTimer);
-  let next = 8000;
+  let next = 8000;   //the fallback gap when the status call fails
   try {
     const st = await apiFetch("/api/train/status");
     render(st);
-    next = st.running ? 2000 : 15000;
+    next = st.running ? 2000 : 15000;   //two seconds while a job runs and fifteen when nothing does
   } catch (_) {}
   pollTimer = setTimeout(poll, next);
 }

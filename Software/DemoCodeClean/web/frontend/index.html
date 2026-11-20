@@ -37,10 +37,8 @@
 
       <div class="btn-row">
         <button id="classifyBtn" disabled>Classify</button>
-        <button id="retraceBtn" class="secondary" disabled>Retrace to G-code</button>
       </div>
       <div class="error-banner" id="classifyError"></div>
-      <div class="result-box" id="retraceBox"></div>
     </div>
 
     <div class="panel">
@@ -86,7 +84,7 @@
 renderTopbar("read");
 populateAuthorDropdowns();
 
-const PAGE_KEY = "read";
+const PAGE_KEY = "read";   //the key this page saves its state under
 let capturedImageId = null;
 let capturedBlob = null;
 let previewOn = false;
@@ -94,14 +92,12 @@ let previewOn = false;
 const previewImg = document.getElementById("previewImg");
 const livePreviewImg = document.getElementById("livePreviewImg");
 const classifyBtn = document.getElementById("classifyBtn");
-const retraceBtn = document.getElementById("retraceBtn");
 const captureBtn = document.getElementById("captureBtn");
 const previewToggleBtn = document.getElementById("previewToggleBtn");
 const idlePlaceholder = document.getElementById("idlePlaceholder");
 
 function enableClassify() {
-  classifyBtn.disabled = !(capturedImageId || capturedBlob);
-  retraceBtn.disabled = classifyBtn.disabled;
+  classifyBtn.disabled = !(capturedImageId || capturedBlob);   //the buttons wake once there is a page to work on
 }
 
 function persist(extra = {}) {
@@ -109,14 +105,14 @@ function persist(extra = {}) {
     expectedText: document.getElementById("expectedText").value,
     expectedAuthor: document.getElementById("expectedAuthor").value,
     capturedImageId,
-    capturedDataUrl: extra.capturedDataUrl !== undefined ? extra.capturedDataUrl : (persist._lastDataUrl || null),
+    capturedDataUrl: extra.capturedDataUrl !== undefined ? extra.capturedDataUrl : (persist._lastDataUrl || null),   // an explicit value wins over the last one remembered
     lastResult: extra.lastResult !== undefined ? extra.lastResult : (persist._lastResult || null),
   });
   if (extra.capturedDataUrl !== undefined) persist._lastDataUrl = extra.capturedDataUrl;
   if (extra.lastResult !== undefined) persist._lastResult = extra.lastResult;
 }
 
-function pct(v) { return (v === null || v === undefined) ? "—" : v + "%"; }
+function pct(v) { return (v === null || v === undefined) ? "—" : v + "%"; }   //a missing figure shows as a dash
 
 function showResult(res) {
   idlePlaceholder.style.display = "none";
@@ -127,11 +123,11 @@ function showResult(res) {
   const ta = res.text_accuracy_pct;
   document.getElementById("rTextAcc").textContent =
     ta === null || ta === undefined ? "(no expected text)" : ta + "%";
-  document.getElementById("rTextAccBar").style.width = (ta || 0) + "%";
+  document.getElementById("rTextAccBar").style.width = (ta || 0) + "%";   //the bar width is the accuracy itself
 
   const authorLabel = document.getElementById("rAuthor");
   authorLabel.textContent = res.predicted_author +
-    (res.author_correct === true ? "  ✓" : res.author_correct === false ? "  ✗" : "");
+    (res.author_correct === true ? "  ✓" : res.author_correct === false ? "  ✗" : "");   //a tick or a cross only when an expected writer was given
   authorLabel.className = "v" + (res.author_correct === true ? " good"
                                : res.author_correct === false ? " bad" : "");
 
@@ -144,9 +140,9 @@ function showResult(res) {
   // page's own answer rather than against the truth, and it is labelled as
   // that instead of being passed off as an accuracy.
   const n = res.lines_detected;
-  const haveTruth = res.author_line_correct_pct !== null && res.author_line_correct_pct !== undefined;
+  const haveTruth = res.author_line_correct_pct !== null && res.author_line_correct_pct !== undefined;   //whether the server could score the lines against a truth
   const p = haveTruth ? res.author_line_correct_pct : res.author_line_agreement_pct;
-  const count = Math.round((p || 0) * n / 100);
+  const count = Math.round((p || 0) * n / 100);    //the percentage turned back into a line count
   document.getElementById("rAuthorLinesKey").textContent =
     haveTruth ? "Lines with the right author" : "Lines agreeing with the page";
   document.getElementById("rAuthorLines").textContent =
@@ -163,13 +159,13 @@ function showResult(res) {
 function renderLineTable(lines, pageAuthor) {
   const t = document.getElementById("rLineTable");
   if (!lines || !lines.length) { t.innerHTML = ""; return; }
-  const hasChar = lines.some(r => r.char_accuracy_pct !== null && r.char_accuracy_pct !== undefined);
+  const hasChar = lines.some(r => r.char_accuracy_pct !== null && r.char_accuracy_pct !== undefined);   //the text column appears only with per line truth
   const hasTruth = lines.some(r => r.author_correct !== null && r.author_correct !== undefined);
   let h = "<tr><th>#</th>"
         + (hasChar ? "<th class='num'>Text</th>" : "")
         + "<th>Author</th><th class='num'>Conf.</th></tr>";
   for (const r of lines) {
-    const wrong = hasTruth ? r.author_correct === false : r.author_matches_page === false;
+    const wrong = hasTruth ? r.author_correct === false : r.author_matches_page === false;   // against the truth where there is one and against the page otherwise
     h += "<tr><td class='num'>" + r.line + "</td>"
        + (hasChar ? "<td class='num'>" + pct(r.char_accuracy_pct) + "</td>" : "")
        + "<td" + (wrong ? " class='bad'" : "") + ">" + r.author_named
@@ -189,7 +185,6 @@ function resetPage() {
   previewImg.style.display = "none";
   previewImg.src = "";
   document.getElementById("resultBox").classList.remove("show");
-  document.getElementById("retraceBox").classList.remove("show");
   idlePlaceholder.style.display = "block";
   clearError("imageError");
   clearError("classifyError");
@@ -197,7 +192,7 @@ function resetPage() {
   stopPreview();
 }
 
-wireResetButton("resetPageBtn", PAGE_KEY, resetPage);
+wireResetButton("resetPageBtn", PAGE_KEY, resetPage);   // the reset button clears the saved state and blanks the form
 
 (function restore() {
   const s = loadPageState(PAGE_KEY);
@@ -212,12 +207,12 @@ wireResetButton("resetPageBtn", PAGE_KEY, resetPage);
   } else if (s.capturedDataUrl) {
     previewImg.src = s.capturedDataUrl;
     previewImg.style.display = "block";
-    fetch(s.capturedDataUrl).then(r => r.blob()).then(b => { capturedBlob = b; enableClassify(); });
+    fetch(s.capturedDataUrl).then(r => r.blob()).then(b => { capturedBlob = b; enableClassify(); });   //the saved data url turned back into a blob to send
   }
   if (s.expectedAuthor) {
     const trySet = () => {
       const sel = document.getElementById("expectedAuthor");
-      if ([...sel.options].some(o => o.value === s.expectedAuthor)) sel.value = s.expectedAuthor;
+      if ([...sel.options].some(o => o.value === s.expectedAuthor)) sel.value = s.expectedAuthor;   // the dropdown may still be loading so this retries
       else setTimeout(trySet, 200);
     };
     trySet();
@@ -235,7 +230,7 @@ async function stopPreview() {
   livePreviewImg.style.display = "none";
   livePreviewImg.src = "";
   previewToggleBtn.textContent = "🎥 Live preview";
-  try { await apiFetch("/api/camera/preview/stop", { method: "POST" }); } catch (_) {}
+  try { await apiFetch("/api/camera/preview/stop", { method: "POST" }); } catch (_) {}   //the camera is released as the preview closes
 }
 
 previewToggleBtn.addEventListener("click", async () => {
@@ -245,7 +240,7 @@ previewToggleBtn.addEventListener("click", async () => {
   try {
     await apiFetch("/api/camera/preview/start", { method: "POST" });
     previewOn = true;
-    livePreviewImg.src = absoluteUrl("/api/camera/preview/stream") + "?t=" + Date.now();
+    livePreviewImg.src = absoluteUrl("/api/camera/preview/stream") + "?t=" + Date.now();    // the timestamp keeps the browser off a cached stream
     livePreviewImg.style.display = "block";
     previewToggleBtn.textContent = "⏹ Stop preview";
     captureBtn.disabled = false;
@@ -288,35 +283,12 @@ document.getElementById("fileInput").addEventListener("change", (e) => {
   if (!file) return;
   capturedBlob = file;
   capturedImageId = null;
-  previewImg.src = URL.createObjectURL(file);
+  previewImg.src = URL.createObjectURL(file);   //the chosen file shown straight from the browser
   previewImg.style.display = "block";
   enableClassify();
   const reader = new FileReader();
   reader.onload = () => persist({ capturedDataUrl: reader.result });
   reader.readAsDataURL(file);
-});
-
-retraceBtn.addEventListener("click", async () => {
-  clearError("classifyError");
-  retraceBtn.disabled = true;
-  retraceBtn.innerHTML = '<span class="spinner"></span> Tracing...';
-  try {
-    const form = new FormData();
-    if (capturedBlob) form.append("image", capturedBlob, "page.jpg");
-    else if (capturedImageId) form.append("image_id", capturedImageId);
-    const res = await apiFetch("/api/retrace", { method: "POST", body: form });
-    const box = document.getElementById("retraceBox");
-    box.innerHTML =
-      `<div class="stat-row"><span class="k">Traced</span><span class="v">`
-      + `${res.lines_traced} lines, ${res.strokes_traced} strokes, ${res.gcode_line_count} G-code lines</span></div>`
-      + `<div class="btn-row"><a href="${absoluteUrl(res.gcode_url)}" download><button class="secondary">⬇ job.gcode</button></a></div>`;
-    box.classList.add("show");
-  } catch (e) {
-    showError("classifyError", e.message);
-  } finally {
-    retraceBtn.disabled = false;
-    retraceBtn.innerHTML = "Retrace to G-code";
-  }
 });
 
 classifyBtn.addEventListener("click", async () => {
@@ -327,7 +299,7 @@ classifyBtn.addEventListener("click", async () => {
     const form = new FormData();
     if (capturedBlob) form.append("image", capturedBlob);
     else if (capturedImageId) form.append("image_id", capturedImageId);
-    form.append("expected_text", document.getElementById("expectedText").value);
+    form.append("expected_text", document.getElementById("expectedText").value);   //the expected text drives the accuracy columns
     form.append("expected_author", document.getElementById("expectedAuthor").value);
 
     const res = await apiFetch("/api/classify", { method: "POST", body: form });
@@ -341,7 +313,7 @@ classifyBtn.addEventListener("click", async () => {
   }
 });
 
-window.addEventListener("beforeunload", stopPreview);
+window.addEventListener("beforeunload", stopPreview);   // leaving the page releases the camera
 </script>
 </body>
 </html>

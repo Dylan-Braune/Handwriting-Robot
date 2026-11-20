@@ -28,7 +28,7 @@ renderTopbar("stats");
 //list out of the model information endpoint, which is no longer asked for
 async function load() {
   try {
-    const authors = await apiFetch("/api/authors");
+    const authors = await apiFetch("/api/authors");   //the writers that have a stored glyph library
     await renderAuthorGallery(authors);
   } catch (e) {
     showError("loadError", e.message);
@@ -44,10 +44,10 @@ async function renderAuthorGallery(authors) {
   `).join("");
 
   for (const a of authors) {
-    const card = document.getElementById(`card-${a.id}`);
+    const card = document.getElementById(`card-${a.id}`);   //each card is filled once its images are fetched
     let samplesHtml = "";
     try {
-      const samples = await apiFetch(`/api/samples/${a.id}`);
+      const samples = await apiFetch(`/api/samples/${a.id}`);   //real line crops of that writer own hand
       if (Array.isArray(samples)) {
         samplesHtml = samples.map(s =>
           `<img src="${absoluteUrl(s.image_url)}" />`).join("");
@@ -58,7 +58,7 @@ async function renderAuthorGallery(authors) {
       <div class="samples">${samplesHtml}</div>
       <details class="glyphs">
         <summary>Show stored glyphs</summary>
-        <img src="${absoluteUrl(`/api/glyphs/${a.id}`)}" loading="lazy" />
+        <img src="${absoluteUrl(`/api/glyphs/${a.id}`)}" loading="lazy" />   //the glyph sheet loads only when the details open
       </details>`;
   }
 }

@@ -38,16 +38,16 @@ def PageImage(args):
     else:
         w = args.writer.capitalize()
         folder = paths.PersonalPages/w
-        pages = sorted((folder/"Pages").glob(w+"*.jpg"))
+        pages = sorted((folder/"Pages").glob(w+"*.jpg"))   #that writer pages in name order
         if not pages:
             raise SystemExit("no pages on disk for %r" % args.writer)
         if not 1 <= args.page <= len(pages):
             raise SystemExit("%s has %d pages, asked for %d"
                              % (w, len(pages), args.page))
-        p = pages[args.page-1]
+        p = pages[args.page-1]   #page 1 is the first on disk
     if not p.exists():
         raise SystemExit("no such page: %s" % p)
-    img = ImageOps.exif_transpose(Image.open(p)).convert("L")
+    img = ImageOps.exif_transpose(Image.open(p)).convert("L")   #the exif rotation is applied then the photo flattened to grey
     return p, np.asarray(img, dtype=np.uint8)
 
 
@@ -56,7 +56,7 @@ def Truth(pagePath, labelArg):
     if labelArg:
         lab = Path(labelArg)
     else:
-        lab = pagePath.parent.parent/"Labels"/(pagePath.stem+"_labels.txt")
+        lab = pagePath.parent.parent/"Labels"/(pagePath.stem+"_labels.txt")   #the dataset keeps transcripts in a sibling Labels folder
     if not lab.exists():
         return None
     import re
@@ -68,19 +68,19 @@ def Truth(pagePath, labelArg):
 
 #---Overlay: the page with a box drawn round every line the segmenter kept---
 def Overlay(gray, lines, pxPerBox=3):
-    rgb = np.repeat(np.asarray(gray, dtype=np.uint8)[:, :, None], 3, axis=2)
+    rgb = np.repeat(np.asarray(gray, dtype=np.uint8)[:, :, None], 3, axis=2)   #the grey page copied into three colour channels
     H, W = gray.shape
     for n, ln in enumerate(lines):
         X0, Y0, X1, Y1 = ln["bbox"]
-        X0, X1 = max(0, min(W-1, X0)), max(0, min(W-1, X1))
+        X0, X1 = max(0, min(W-1, X0)), max(0, min(W-1, X1))   #the box corners held inside the page
         Y0, Y1 = max(0, min(H-1, Y0)), max(0, min(H-1, Y1))
         #blue, because the report's figures are black, silver, white and blue
-        col = (31, 78, 160) if n % 2 == 0 else (120, 160, 210)
+        col = (31, 78, 160) if n % 2 == 0 else (120, 160, 210)    #alternating shades so neighbouring boxes read apart
         for t in range(pxPerBox):
-            for y in (Y0+t, Y1-t):
+            for y in (Y0+t, Y1-t):   # the top and bottom edges of the box
                 if 0 <= y < H:
                     rgb[y, X0:X1+1] = col
-            for x in (X0+t, X1-t):
+            for x in (X0+t, X1-t):   #and the left and right ones
                 if 0 <= x < W:
                     rgb[Y0:Y1+1, x] = col
     return rgb
@@ -120,11 +120,11 @@ def Main():
     (outDir/"lines").mkdir(parents=True, exist_ok=True)
     print("page     %s  %dx%d" % (pagePath.name, gray.shape[1], gray.shape[0]))
 
-    up, deg, s0, s90 = SEG.UprightPage(gray)
+    up, deg, s0, s90 = SEG.UprightPage(gray)   #the page turned a quarter turn when it reads better that way
     if deg:
         print("turned   %d deg (line score %.2f upright, %.2f sideways)"
               % (deg, s0, s90))
-    lines, _dbg, info = SEG.SegmentLines(up)
+    lines, _dbg, info = SEG.SegmentLines(up)   #the same segmentation call the server makes
     print("segment  %d lines, skew %+.1f deg, line pitch %d px, "
           "paper coverage %.0f%%"
           % (len(lines), info["angle"], info["pitch"],
@@ -146,15 +146,15 @@ def Main():
 
     reader = REC.PaperCRNNNumpy()
     namer = REC.AuthorClassifierCNNNumpy()
-    byIndex = {v: k for k, v in namer.authorMapping.items()}
+    byIndex = {v: k for k, v in namer.authorMapping.items()}   #class index back to the writer name
     #stroke normalised, as the namer was trained and as the server names
-    LW.Configure(reader, namer, True)
+    LW.Configure(reader, namer, True)  #the same worker pool the server uses
     crops = [np.asarray(ln["image"]) for ln in lines]
 
-    read = [t for _i, t, _s in sorted(LW.Map(LW.ReadOne,
+    read = [t for _i, t, _s in sorted(LW.Map(LW.ReadOne,   #the lines are read in parallel then put back in order
                                              [(i, c, False) for i, c in enumerate(crops)]),
                                       key=lambda r: r[0])]
-    perLine, avg, weights = LW.NameWriter(crops)
+    perLine, avg, weights = LW.NameWriter(crops)   #a vote per line and an ink weighted page vote
     truth = Truth(pagePath, args.labels)
 
     print()
@@ -165,9 +165,9 @@ def Main():
     for n, (txt, probs) in enumerate(zip(read, perLine)):
         who = byIndex[int(np.argmax(probs))]
         conf = 100*float(np.max(probs))
-        inkPct = 100*float(weights[n])/float(max(weights.sum(), 1))
+        inkPct = 100*float(weights[n])/float(max(weights.sum(), 1))   # this line share of the page ink is its share of the vote
         if truth and n < len(truth):
-            a = 100*REC.CharAcc(txt, truth[n])
+            a = 100*REC.CharAcc(txt, truth[n])    #the reading against the transcript line of the same index
             accs.append(a)
             print("%4d %5.1f  %-10s %5.1f%% %5.1f%%  %s"
                   % (n+1, inkPct, who, conf, a, txt[:46]))
@@ -175,11 +175,11 @@ def Main():
             print("%4d %5.1f  %-10s %5.1f%%  %s"
                   % (n+1, inkPct, who, conf, txt[:52]))
 
-    page = byIndex[int(np.argmax(avg))]
+    page = byIndex[int(np.argmax(avg))]   #the highest scoring writer over the whole page
     print()
     print("writer   %s at %.1f%% over %d lines"
           % (page, 100*float(np.max(avg)), len(crops)))
-    agree = sum(1 for p in perLine if byIndex[int(np.argmax(p))] == page)
+    agree = sum(1 for p in perLine if byIndex[int(np.argmax(p))] == page)    #how many single lines name that same writer
     print("         %d/%d lines name that writer on their own" % (agree, len(perLine)))
     if truth:
         if len(truth) != len(lines):
@@ -193,7 +193,7 @@ def Main():
             #own line alignment, so the two are close but not the same
             #measurement and should not be quoted as though they were
             print("page     %.1f%% reading the page as one string"
-                  % (100*REC.CharAcc(" ".join(read), " ".join(truth))))
+                  % (100*REC.CharAcc(" ".join(read), " ".join(truth))))   # the whole page as one string against the whole transcript
     print()
     print("wrote overlay.png and %d line image(s) to %s" % (len(lines), outDir))
 

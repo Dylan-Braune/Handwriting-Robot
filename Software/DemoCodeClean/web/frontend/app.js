@@ -7,7 +7,7 @@ const STORAGE_KEYS = {
 };
 
 function getBackendUrl() {
-  return (localStorage.getItem(STORAGE_KEYS.backendUrl) || "http://localhost:5000").replace(/\/+$/, "");
+  return (localStorage.getItem(STORAGE_KEYS.backendUrl) || "http://localhost:5000").replace(/\/+$/, "");    //any trailing slashes come off the saved address
 }
 
 function getApiKey() {
@@ -26,10 +26,10 @@ async function apiFetch(path, options = {}) {
   const url = getBackendUrl() + path;
   const headers = options.headers || {};
   const key = getApiKey();
-  if (key) headers["X-API-Key"] = key;
+  if (key) headers["X-API-Key"] = key;   //the key header goes on only when one is set
   let res;
   try {
-    res = await fetch(url, { ...options, headers });
+    res = await fetch(url, { ...options, headers });   // the caller options with the headers merged in
   } catch (e) {
     throw new Error(`Could not reach the backend at ${getBackendUrl()}.`);
   }
@@ -37,19 +37,19 @@ async function apiFetch(path, options = {}) {
     let detail = "";
     try {
       const j = await res.json();
-      detail = j.error || JSON.stringify(j);
+      detail = j.error || JSON.stringify(j);   // the error field of the body where there is one
     } catch (_) {
       detail = res.statusText;
     }
     throw new Error(`Backend returned ${res.status}: ${detail}`);
   }
-  const ct = res.headers.get("content-type") || "";
+  const ct = res.headers.get("content-type") || "";   //json is parsed and anything else handed back whole
   return ct.includes("application/json") ? res.json() : res;
 }
 
 function absoluteUrl(path) {
   if (!path) return path;
-  return path.startsWith("http") ? path : getBackendUrl() + path;
+  return path.startsWith("http") ? path : getBackendUrl() + path;   // a relative path is prefixed with the backend address
 }
 
 async function checkBackendStatus() {
@@ -58,7 +58,7 @@ async function checkBackendStatus() {
   if (!dot) return;
   try {
     await apiFetch("/api/authors");
-    dot.className = "status-dot ok";
+    dot.className = "status-dot ok";   //the dot turns green once the authors call answers
     label.textContent = "Connected";
   } catch (e) {
     dot.className = "status-dot bad";
@@ -69,7 +69,7 @@ async function checkBackendStatus() {
 /** Populates any <select data-author-select> element on the page with
  * the ten authors from the backend. Called once per page on load. */
 async function populateAuthorDropdowns() {
-  const selects = document.querySelectorAll("select[data-author-select]");
+  const selects = document.querySelectorAll("select[data-author-select]");   // every dropdown marked for the author list
   if (!selects.length) return;
   try {
     const authors = await apiFetch("/api/authors");
@@ -148,7 +148,7 @@ function renderTopbar(activePage) {
 --------------------------------------------------------------------- */
 function savePageState(pageKey, state) {
   try {
-    localStorage.setItem("hwrobot_state_" + pageKey, JSON.stringify(state));
+    localStorage.setItem("hwrobot_state_" + pageKey, JSON.stringify(state));   //one saved state per page keyed by its name
   } catch (_) {
     // localStorage can throw (quota, private-mode Safari) -- losing
     // persistence silently is fine, it's a convenience, not correctness.
@@ -158,7 +158,7 @@ function savePageState(pageKey, state) {
 function loadPageState(pageKey) {
   try {
     const raw = localStorage.getItem("hwrobot_state_" + pageKey);
-    return raw ? JSON.parse(raw) : null;
+    return raw ? JSON.parse(raw) : null;   //nothing saved yet gives null
   } catch (_) {
     return null;
   }
@@ -207,7 +207,7 @@ function renderTiming(containerId, timing) {
   if (!timing) { el.innerHTML = ""; return; }
 
   const rows = (timing.stages || []).map((s) => {
-    const share = timing.totalSeconds ? (100 * s.seconds) / timing.totalSeconds : 0;
+    const share = timing.totalSeconds ? (100 * s.seconds) / timing.totalSeconds : 0;   //each stage as a percentage of the total
     return `<tr><td>${s.stage}</td><td class="num secs">${s.seconds.toFixed(3)}</td>
             <td class="num">${share.toFixed(1)}%</td></tr>`;
   });
@@ -215,7 +215,7 @@ function renderTiming(containerId, timing) {
   // what it took beside what was expected, and nothing else: no allowance
   // formula, no share of the allowance, no pass or fail colour.  a server
   // that sends no limit simply leaves the phrase out
-  const expected = timing.limitSeconds
+  const expected = timing.limitSeconds   //the allowance is shown only when the server sends one
     ? `&middot; expected ${timing.limitSeconds.toFixed(2)} s` : "";
 
   el.innerHTML = `
